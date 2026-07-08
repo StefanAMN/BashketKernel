@@ -99,7 +99,7 @@ void panic(const char* msg) {
     kprintf("%s\n", msg);
     kprintf("System halted.\n");
     asm volatile("cli");
-    for (;;) {
+    while (1) {
         asm volatile("hlt");
     }
 }
