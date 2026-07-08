@@ -4,20 +4,41 @@ BashketKernel is a learning-first x86_64 higher-half kernel. It is built to stri
 
 ## Prerequisites
 
-To compile and run BashketKernel, you need the following tools installed on a Debian/Ubuntu-based system:
-- `build-essential` (for `gcc`, `make`, `ld`)
-- `xorriso` (for building the bootable ISO image)
-- `qemu-system-x86` (for emulating the hardware)
-- `gdb` (for debugging)
+To compile and run BashketKernel, you need a C toolchain, `xorriso` (for
+building the bootable ISO image), a QEMU x86 system emulator, and `gdb` (for
+debugging). Exact package names by distribution:
+
+| Distro | Packages |
+|---|---|
+| Ubuntu/Debian | `build-essential xorriso qemu-system-x86 gdb` |
+| Fedora/RHEL | `gcc gcc-c++ make binutils xorriso qemu-system-x86 gdb` |
+| Arch/Manjaro | `base-devel xorriso qemu-system-x86 gdb` |
+
+On any other distribution, install the equivalent packages for those four
+tools manually.
 
 ### Automated Setup
 
-We have provided a small setup script that automates the installation of these dependencies.
+We have provided a setup script that detects your distribution (or lets you
+pick one) and installs the dependencies above.
 
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
+
+It installs the OS packages above and also clones the
+[Limine bootloader](https://github.com/limine-bootloader/limine) (pinned to a
+specific release tag) into `./limine`, which `make iso` needs to build the
+bootable image. It will show what it's about to do and ask for confirmation
+before making any changes. For non-interactive use:
+
+```bash
+./setup.sh --distro=fedora --yes
+./setup.sh --distro=arch --yes
+```
+
+Run `./setup.sh --help` for all options.
 
 ## Building and Running
 
