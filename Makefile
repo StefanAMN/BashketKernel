@@ -3,7 +3,8 @@ LD = ld
 
 CFLAGS = -Wall -Wextra -O2 -pipe \
          -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
-         -mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2
+         -mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2 \
+         -masm=intel
 LDFLAGS = -nostdlib -T linker.ld -z max-page-size=0x1000 -z text
 
 CFILES = $(wildcard src/*.c)

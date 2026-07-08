@@ -91,6 +91,7 @@ primary source, note that it's the kind of entry that belongs in
 `docs/ai-was-wrong.md` (a human writes the actual entry).
 
 ## Code Style
+- **Assembly Syntax:** Use Intel syntax (not AT&T) for all inline assembly and standalone assembly files. Ensure `-masm=intel` is used in the build system.
 - Favor clarity over cleverness — comment the *why*, not just the *what*,
   especially around magic numbers, bit layouts, and hardware/ABI quirks.
 - Keep the repo layout intact:
