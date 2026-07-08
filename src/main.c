@@ -19,7 +19,7 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
 // Halt and catch fire function.
 static void hcf(void) {
     asm("cli");
-    for (;;) {
+    while (1) {
         asm("hlt");
     }
 }
