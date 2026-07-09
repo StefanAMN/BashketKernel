@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "console.h"
 #include "kprintf.h"
+#include "test.h"
 
 // Set the base revision to 2 or 1. Let's use 2 as it's the latest in v8.x/v12.x
 __attribute__((used, section(".requests")))
@@ -49,7 +50,11 @@ void _start(void) {
     kprintf("Resolution: %dx%d\n", fb->width, fb->height);
     kprintf("Phase 1 initialization complete.\n");
 
-    // Phase 1: Halt or test panic
-    // panic("Test panic!");
-    hcf();
+    // Run Kernel Unit Tests
+    run_all_tests();
+
+    // Phase 1: Halt
+    while (1) {
+        asm("hlt");
+    }
 }

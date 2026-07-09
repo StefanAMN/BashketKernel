@@ -3,3 +3,4 @@ BashketKernel.iso
 iso_root/
 src/*.o
 limine/
+build/
