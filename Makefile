@@ -5,10 +5,12 @@ CFLAGS = -Wall -Wextra -O2 -pipe \
          -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
          -mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2 \
          -masm=intel
+ASFLAGS = -ffreestanding -fno-pie -fno-pic -mno-red-zone -mcmodel=kernel -masm=intel
 LDFLAGS = -nostdlib -T linker.ld -z max-page-size=0x1000 -z text
 
 CFILES = $(wildcard src/*.c) $(wildcard tests/*.c)
-OBJFILES = $(patsubst %.c, build/obj/%.o, $(CFILES))
+SFILES = $(wildcard src/*.S)
+OBJFILES = $(patsubst %.c, build/obj/%.o, $(CFILES)) $(patsubst %.S, build/obj/%.o, $(SFILES))
 
 $(shell mkdir -p build/obj/src build/obj/tests)
 
@@ -21,6 +23,9 @@ build/kernel.elf: $(OBJFILES) linker.ld
 
 build/obj/%.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+build/obj/%.o: %.S
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 clean:
 	rm -rf build

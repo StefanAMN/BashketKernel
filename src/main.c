@@ -5,6 +5,9 @@
 #include "serial.h"
 #include "console.h"
 #include "kprintf.h"
+#include "gdt.h"
+#include "idt.h"
+#include "pic.h"
 #include "test.h"
 
 // Set the base revision to 2 or 1. Let's use 2 as it's the latest in v8.x/v12.x
@@ -35,7 +38,11 @@ void _start(void) {
     }
 
     serial_init();
-    
+
+    gdt_init();
+    idt_init();
+    pic_remap();
+
     if (framebuffer_request.response == NULL
      || framebuffer_request.response->framebuffer_count < 1) {
         hcf();
@@ -49,6 +56,12 @@ void _start(void) {
     kprintf("Framebuffer address: %p\n", fb->address);
     kprintf("Resolution: %dx%d\n", fb->width, fb->height);
     kprintf("Phase 1 initialization complete.\n");
+    kprintf("GDT loaded.\n");
+    kprintf("IDT loaded (vectors 0-31 wired to exception handlers).\n");
+    kprintf("PIC remapped to 0x20/0x28, all lines masked.\n");
+    // Interrupts are deliberately left disabled (no `sti`): no IRQ handler
+    // exists yet for anything the PIC could deliver (PIT/PS2 are a later
+    // Phase 2 slice) -- this is a scope boundary, not an oversight.
 
     // Run Kernel Unit Tests
     run_all_tests();
