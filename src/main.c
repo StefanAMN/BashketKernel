@@ -6,6 +6,9 @@
 #include "console.h"
 #include "kprintf.h"
 #include "test.h"
+#include "gdt.h"
+#include "idt.h"
+#include "pic.h"
 
 // Set the base revision to 2 or 1. Let's use 2 as it's the latest in v8.x/v12.x
 __attribute__((used, section(".requests")))
@@ -50,8 +53,29 @@ void _start(void) {
     kprintf("Resolution: %dx%d\n", fb->width, fb->height);
     kprintf("Phase 1 initialization complete.\n");
 
+    // Phase 2: CPU Tables & Interrupts
+    gdt_init();
+    kprintf("GDT loaded.\n");
+
+    idt_init();
+    kprintf("IDT loaded.\n");
+
+    pic_remap(32, 40);
+    kprintf("PIC remapped.\n");
+
+    // Unmask hardware interrupts
+    asm volatile("sti");
+    kprintf("Interrupts enabled (STI).\n");
+
     // Run Kernel Unit Tests
     run_all_tests();
+
+    // Trigger a Divide-by-Zero to test our new exception handler
+    kprintf("Triggering Divide-by-Zero Exception...\n");
+    volatile int a = 1;
+    volatile int b = 0;
+    volatile int c = a / b;
+    (void)c; // Prevent unused variable warning
 
     // Phase 1: Halt
     while (1) {

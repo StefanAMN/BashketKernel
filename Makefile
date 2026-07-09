@@ -8,7 +8,8 @@ CFLAGS = -Wall -Wextra -O2 -pipe \
 LDFLAGS = -nostdlib -T linker.ld -z max-page-size=0x1000 -z text
 
 CFILES = $(wildcard src/*.c) $(wildcard tests/*.c)
-OBJFILES = $(patsubst %.c, build/obj/%.o, $(CFILES))
+SFILES = $(wildcard src/*.S)
+OBJFILES = $(patsubst %.c, build/obj/%.o, $(CFILES)) $(patsubst %.S, build/obj/%.o, $(SFILES))
 
 $(shell mkdir -p build/obj/src build/obj/tests)
 
@@ -20,6 +21,9 @@ build/kernel.elf: $(OBJFILES) linker.ld
 	$(LD) $(LDFLAGS) $(OBJFILES) -o $@
 
 build/obj/%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/obj/%.o: %.S
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
