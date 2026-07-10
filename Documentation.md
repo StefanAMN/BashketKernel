@@ -48,14 +48,25 @@ This document tracks the recommended order of topics and concepts to learn as fe
 
 ---
 
-### 3. Memory Management (Phase 3 - Upcoming)
+### 3. Memory Management (Phase 3 - Implemented)
 **Goal:** Understand physical frame allocation, virtual page tables, and dynamic kernel heap allocation.
 
-- **Order of Learning (Preview):**
-  1. **Limine Memory Map Parsing:** Extracting usable physical memory regions from bootloader memory maps.
-  2. **Physical Frame Allocator (Bitmap/Buddy):** Allocating and freeing 4KiB physical frames.
-  3. **Virtual Memory Manager (Paging):** 4-level page table walking (PML4 -> PDPT -> PD -> PT), page mapping, and Higher Half Kernel memory layout.
-  4. **Kernel Heap Allocator (`kmalloc` / `kfree`):** Managing dynamic kernel memory.
+- **Order of Learning:**
+  1. **Physical Memory Manager (PMM):**
+     - **Concepts:** Parsing Limine memory map entries (`USABLE`, `RESERVED`, `KERNEL_AND_MODULES`).
+     - **Frame Allocator:** 4KiB page frame bitmap allocation. Using HHDM (`phys + hhdm_offset`) to access physical RAM.
+     - Files to inspect: `src/pmm.h`, `src/pmm.c`
+  2. **Virtual Memory Manager (VMM & 4-Level Paging):**
+     - **Concepts:** x86_64 4-level paging structure (PML4 -> PDPT -> PD -> PT).
+     - **Page Flags:** `VMM_PRESENT`, `VMM_WRITABLE`, `VMM_USER`, `VMM_NO_EXECUTE`.
+     - **Page Mapping & TLB:** Address translation, page table creation, invalidating TLB entries via `invlpg`.
+     - Files to inspect: `src/vmm.h`, `src/vmm.c`
+  3. **Page Fault Exception Diagnostics:**
+     - **Concepts:** Vector 14 handling, reading fault address from `CR2`, decoding fault causes (present vs non-present, read vs write, user vs kernel).
+     - Files to inspect: `src/isr.c`
+  4. **Kernel Heap Allocator (`kmalloc` / `kfree`):**
+     - **Concepts:** Dynamic memory management on virtual address ranges, block headers, first-fit searching, block splitting, and free block coalescing.
+     - Files to inspect: `src/heap.h`, `src/heap.c`
 
 ---
 
