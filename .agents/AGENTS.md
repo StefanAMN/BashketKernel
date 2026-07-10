@@ -110,10 +110,10 @@ primary source, note that it's the kind of entry that belongs in
   guessing from symptoms.
 - Prefer serial output for kernel debug logging once it exists (Phase 1);
   use the framebuffer console for user-facing output.
+- **Unit Testing:** After implementing any new feature, write unit tests for it inside the `tests/` folder using the in-kernel testing framework (`EXPECT_EQ`, `EXPECT_TRUE`, etc.).
 
 ## Git Workflow & Commits
-- `main` is protected — all work happens on feature branches via PRs, no
-  direct pushes.
+- `main` is protected — all work should be committed directly to the `ToleaCiumeg` branch. No direct pushes to main.
 - **Feature Completion:** Always commit changes after finishing the
   implementation or update of a new feature.
 - **Commit Management:** Avoid making too many small commits for minor
