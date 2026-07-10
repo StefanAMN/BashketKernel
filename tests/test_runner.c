@@ -1,5 +1,5 @@
-#include "../src/test.h"
-#include "../src/kprintf.h"
+#include "test.h"
+#include "kprintf.h"
 
 int tests_run = 0;
 int tests_passed = 0;

@@ -1,5 +1,5 @@
-#include "../src/test.h"
-#include "../src/pmm.h"
+#include "test.h"
+#include "pmm.h"
 
 TEST(pmm_allocation) {
     size_t free_before = pmm_get_free_frames();

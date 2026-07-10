@@ -1,7 +1,17 @@
+/**
+ * @file isr.c
+ * @brief High-Level C Interrupt & Exception Dispatcher
+ */
+
 #include "interrupts.h"
 #include "kprintf.h"
+#include <stddef.h>
 
-// Array of exception messages
+// Hardware IRQ Handler function pointer type
+typedef void (*irq_handler_t)(struct registers *regs);
+
+static irq_handler_t irq_handlers[16] = {0};
+
 const char *exception_messages[] = {
     "Division By Zero",
     "Debug",
@@ -25,20 +35,20 @@ const char *exception_messages[] = {
     "SIMD Floating-Point Exception",
     "Virtualization Exception",
     "Control Protection Exception",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved"
+    "Reserved", "Reserved", "Reserved", "Reserved",
+    "Reserved", "Reserved", "Reserved", "Reserved",
+    "Reserved", "Reserved"
 };
+
+void register_irq_handler(uint8_t irq, irq_handler_t handler) {
+    if (irq < 16) {
+        irq_handlers[irq] = handler;
+    }
+}
 
 void isr_handler(struct registers *regs) {
     if (regs->int_no < 32) {
+        // CPU Exception (0..31)
         kprintf("\n=================================================\n");
         kprintf("CPU EXCEPTION: %s (Interrupt %d)\n", exception_messages[regs->int_no], regs->int_no);
         kprintf("Error Code: 0x%x\n", regs->err_code);
@@ -59,12 +69,23 @@ void isr_handler(struct registers *regs) {
         kprintf("RAX: 0x%x  RBX: 0x%x  RCX: 0x%x  RDX: 0x%x\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
         kprintf("RSI: 0x%x  RDI: 0x%x  RBP: 0x%x\n", regs->rsi, regs->rdi, regs->rbp);
         kprintf("=================================================\n");
-        
-        // Halt on exception
-        while(1) { asm volatile("cli; hlt"); }
+
+        while (1) { asm volatile("cli; hlt"); }
+    } else if (regs->int_no >= 32 && regs->int_no < 48) {
+        // Hardware IRQ (32..47)
+        uint8_t irq = regs->int_no - 32;
+        if (irq_handlers[irq] != NULL) {
+            irq_handlers[irq](regs);
+        }
+
+        // Send EOI (End of Interrupt) to PIC
+        if (regs->int_no >= 40) {
+            // Send EOI to Slave PIC
+            asm volatile("out 0xA0, %0" : : "a"((uint8_t)0x20));
+        }
+        // Send EOI to Master PIC
+        asm volatile("out 0x20, %0" : : "a"((uint8_t)0x20));
     } else {
-        // Hardware IRQ (32-255)
-        // For now, we don't have IRQ handlers, just print and continue
-        kprintf("Unhandled Interrupt: %d\n", regs->int_no);
+        kprintf("Unhandled Interrupt Vector: %d\n", regs->int_no);
     }
 }

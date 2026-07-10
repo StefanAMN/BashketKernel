@@ -1,17 +1,17 @@
 CC = gcc
 LD = ld
 
-CFLAGS = -Wall -Wextra -O2 -pipe \
+INCLUDES = -Isrc -Isrc/phase1 -Isrc/phase2 -Isrc/phase3 -Isrc/phase4 -Isrc/phase5 -Isrc/phase6 -Isrc/phase7
+
+CFLAGS = -Wall -Wextra -O2 -pipe $(INCLUDES) \
          -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
          -mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2 \
          -masm=intel
 LDFLAGS = -nostdlib -T linker.ld -z max-page-size=0x1000 -z text
 
-CFILES = $(wildcard src/*.c) $(wildcard tests/*.c)
-SFILES = $(wildcard src/*.S)
+CFILES = $(shell find src tests -name '*.c')
+SFILES = $(shell find src tests -name '*.S')
 OBJFILES = $(patsubst %.c, build/obj/%.o, $(CFILES)) $(patsubst %.S, build/obj/%.o, $(SFILES))
-
-$(shell mkdir -p build/obj/src build/obj/tests)
 
 .PHONY: all clean iso run run-gdb
 
@@ -21,9 +21,11 @@ build/kernel.elf: $(OBJFILES) linker.ld
 	$(LD) $(LDFLAGS) $(OBJFILES) -o $@
 
 build/obj/%.o: %.c
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 build/obj/%.o: %.S
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

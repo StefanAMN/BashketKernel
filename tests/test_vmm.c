@@ -1,6 +1,6 @@
-#include "../src/test.h"
-#include "../src/vmm.h"
-#include "../src/pmm.h"
+#include "test.h"
+#include "vmm.h"
+#include "pmm.h"
 
 TEST(vmm_mapping) {
     void *phys_frame = pmm_alloc_frame();

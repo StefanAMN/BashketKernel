@@ -1,5 +1,5 @@
-#include "../src/test.h"
-#include "../src/heap.h"
+#include "test.h"
+#include "heap.h"
 #include <string.h>
 
 TEST(heap_allocation) {

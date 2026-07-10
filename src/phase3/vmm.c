@@ -1,3 +1,8 @@
+/**
+ * @file vmm.c
+ * @brief Implementation of Virtual Memory Manager and 4-Level Paging
+ */
+
 #include "vmm.h"
 #include "pmm.h"
 #include "kprintf.h"
