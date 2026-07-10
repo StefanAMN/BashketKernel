@@ -38,31 +38,9 @@ before writing code, not just before committing it.
   subtly broken. Don't declare a phase complete just because nothing
   crashed; confirm the behavior matches what was predicted.
 
-## The Learning Gates (do not skip these — they are the actual point of the repo)
-1. **Explain-Back Gate.** Every PR needs 3–8 sentences from the *human*
-   reviewer (not the AI, not the person who drove the AI) explaining what
-   the non-obvious code does and why. If the agent is asked to write this
-   explanation itself, decline and explain that it must come from the human
-   reviewer — an AI-written explanation defeats the purpose of the gate.
-2. **Delete-and-Rederive primitives.** These five must be understood well
-   enough for a human to rewrite from notes, not just reviewed:
-   - IDT setup + an end-to-end interrupt handler
-   - The page-table walk / map function (4-level paging)
-   - The physical frame allocator
-   - The context switch (save one task, restore another)
-   - The syscall entry/exit path
-   When working on any of these, favor over-explaining and exposing
-   intermediate steps over handing over a finished, opaque block — the
-   human needs to be able to reconstruct it later.
-3. **Lesson docs.** Each phase ends in a human-written `docs/NN-topic.md`.
-   The agent should not draft this file's content wholesale on the human's
-   behalf; it can help by pointing out what topics/gotchas the phase
-   surfaced, but the write-up itself is the human's job.
-4. **Break-it exercises.** Each phase includes deliberately breaking
-   something (unmapped page touch, missing PIC remap, corrupted tar header,
-   etc.) and predicting the failure *before* running it. When implementing a
-   phase, mention what the natural break-it exercise for that piece would
-   be, even if the human doesn't ask.
+## Development & Learning Workflow
+- **Autonomous Kernel Development:** Focus directly on further developing the kernel according to `plan.md`. The human developer handles learning independently, so the AI agent does not block development or wait for human learning gates (Explain-Back, Delete-and-Rederive).
+- **Curated Learning Documentation:** As new features are implemented, the AI agent maintains and updates `Documentation.md` in the project root. This file provides a structured, ordered guide of what concepts and features to learn and in what recommended sequence.
 
 ## AI-Specific Review Checklist (apply this to your own output before handing it over)
 - Is this genuinely **64-bit**, not leftover 32-bit convention? (register
