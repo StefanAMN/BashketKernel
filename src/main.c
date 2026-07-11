@@ -16,6 +16,8 @@
 #include "pit.h"
 #include "syscall.h"
 #include "elf.h"
+#include "vfs.h"
+#include "initrd.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -106,6 +108,10 @@ void _start(void) {
     // Phase 5: Userspace & System Calls
     syscall_init();
     kprintf("Phase 5 Syscalls & ELF Loader initialization complete.\n");
+
+    // Phase 6: Filesystem & Initrd
+    vfs_init();
+    kprintf("Phase 6 Virtual Filesystem initialization complete.\n");
 
     // Create a demo kernel thread
     task_create("worker1", background_worker_task);
