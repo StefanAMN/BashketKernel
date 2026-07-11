@@ -6,7 +6,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "kprintf.h"
-#include <string.h>
+#include "string_util.h"
 
 static uint64_t *kernel_pml4 = NULL;
 

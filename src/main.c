@@ -14,6 +14,8 @@
 #include "heap.h"
 #include "sched.h"
 #include "pit.h"
+#include "syscall.h"
+#include "elf.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -100,6 +102,10 @@ void _start(void) {
     sched_init();
     pit_init(100); // 100 Hz timer tick
     kprintf("Phase 4 Multitasking initialization complete.\n");
+
+    // Phase 5: Userspace & System Calls
+    syscall_init();
+    kprintf("Phase 5 Syscalls & ELF Loader initialization complete.\n");
 
     // Create a demo kernel thread
     task_create("worker1", background_worker_task);
