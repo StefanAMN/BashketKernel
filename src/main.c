@@ -18,6 +18,8 @@
 #include "elf.h"
 #include "vfs.h"
 #include "initrd.h"
+#include "keyboard.h"
+#include "shell.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -47,13 +49,40 @@ static void hcf(void) {
     }
 }
 
-static void background_worker_task(void) {
-    kprintf("[Task 1] Background worker thread started!\n");
-    for (int i = 0; i < 3; i++) {
-        kprintf("[Task 1] Working... (step %d)\n", i + 1);
-        sched_yield();
+static void shell_task_entry(void) {
+    kprintf("\n=== Interactive Shell Started ===\n");
+    kprintf("Type 'help' for available commands.\n\n");
+
+    char line_buf[128];
+    size_t line_pos = 0;
+
+    kprintf("BashketOS> ");
+
+    while (1) {
+        if (keyboard_has_char()) {
+            char c = keyboard_getchar();
+            if (c == '\n') {
+                kprintf("\n");
+                line_buf[line_pos] = '\0';
+                shell_run_cmd(line_buf);
+                line_pos = 0;
+                kprintf("BashketOS> ");
+            } else if (c == '\b') {
+                if (line_pos > 0) {
+                    line_pos--;
+                    kprintf("\b \b");
+                }
+            } else {
+                if (line_pos < sizeof(line_buf) - 1) {
+                    line_buf[line_pos++] = c;
+                    char str[2] = {c, '\0'};
+                    kprintf("%s", str);
+                }
+            }
+        } else {
+            sched_yield();
+        }
     }
-    kprintf("[Task 1] Background worker thread finished.\n");
 }
 
 void _start(void) {
@@ -113,13 +142,18 @@ void _start(void) {
     vfs_init();
     kprintf("Phase 6 Virtual Filesystem initialization complete.\n");
 
-    // Create a demo kernel thread
-    task_create("worker1", background_worker_task);
+    // Phase 7: Keyboard & Shell
+    keyboard_init();
+    shell_init();
+    kprintf("Phase 7 Keyboard & Shell initialization complete.\n");
 
-    // Run Kernel Unit Tests
+    // Run Kernel Unit Tests (Phases 1 - 7)
     run_all_tests();
 
-    // Idle loop yielding to background tasks
+    // Create interactive shell task
+    task_create("shell", shell_task_entry);
+
+    // Idle loop yielding to shell task
     while (1) {
         sched_yield();
         asm("hlt");
