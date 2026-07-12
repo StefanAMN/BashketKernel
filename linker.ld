@@ -16,6 +16,7 @@ SECTIONS
 {
     /* Higher-half virtual address for the kernel */
     . = 0xffffffff80000000;
+    __kernel_start = .;
 
     .text : {
         *(.text .text.*)
@@ -39,6 +40,8 @@ SECTIONS
         *(COMMON)
         *(.bss .bss.*)
     } :data
+
+    __kernel_end = .;
 
     /DISCARD/ : {
         *(.eh_frame)
