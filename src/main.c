@@ -26,6 +26,8 @@
 #include "lapic.h"
 #include "ioapic.h"
 #include "smp.h"
+#include "virtio_blk.h"
+#include "fat32.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -174,7 +176,11 @@ void _start(void) {
     smp_init();
     kprintf("Phase 10 SMP & Atomic Spinlocks initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 10)
+    // Phase 11: Real Block Storage & Persistent Filesystem (VirtIO-Blk & FAT32)
+    fat32_init();
+    kprintf("Phase 11 Block Storage & FAT32 initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 11)
     run_all_tests();
 
     // Create interactive shell task
