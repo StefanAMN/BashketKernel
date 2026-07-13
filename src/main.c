@@ -25,6 +25,7 @@
 #include "mmap.h"
 #include "lapic.h"
 #include "ioapic.h"
+#include "smp.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -169,7 +170,11 @@ void _start(void) {
     ioapic_init();
     kprintf("Phase 9 Local APIC & I/O APIC initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 9)
+    // Phase 10: Symmetric Multiprocessing (SMP & Spinlocks)
+    smp_init();
+    kprintf("Phase 10 SMP & Atomic Spinlocks initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 10)
     run_all_tests();
 
     // Create interactive shell task
