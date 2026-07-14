@@ -9,6 +9,8 @@
 #include "cow.h"
 #include "vmm.h"
 #include "kstring.h"
+#include "vfs.h"
+#include "elf.h"
 
 static int next_pid = 100;
 
@@ -34,7 +36,35 @@ pid_t process_fork(void) {
 
 int process_execve(const char *path) {
     if (!path) return -1;
-    kprintf("Process: execve loaded binary '%s'\n", path);
+
+    // 1. Locate binary file in Virtual Filesystem (VFS)
+    vnode_t *file = vfs_find(NULL, path);
+    if (!file) {
+        // Fallback: try searching relative path without leading slash
+        if (path[0] == '/') {
+            file = vfs_find(NULL, path + 1);
+        }
+    }
+
+    if (!file || file->type != VFS_FILE || !file->data) {
+        kprintf("Process execve ERROR: Binary '%s' not found in VFS!\n", path);
+        return -1;
+    }
+
+    // 2. Parse ELF64 binary and map PT_LOAD segments to user memory
+    void *entry_point = NULL;
+    if (!elf_load(file->data, &entry_point)) {
+        kprintf("Process execve ERROR: Failed to load ELF binary '%s'\n", path);
+        return -1;
+    }
+
+    // 3. Update current active task state with new binary context
+    task_t *current = sched_get_current_task();
+    if (current) {
+        strncpy(current->name, file->name, sizeof(current->name) - 1);
+    }
+
+    kprintf("Process: execve loaded binary '%s' (Entry Point: %p)\n", path, entry_point);
     return 0;
 }
 
