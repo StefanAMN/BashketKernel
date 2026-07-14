@@ -1,32 +1,57 @@
 # BashketKernel
 
-BashketKernel is a learning-first x86_64 higher-half kernel. It is built to strictly follow a phased roadmap where each layer of the operating system is built from scratch and thoroughly understood.
+BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed for learning kernel architecture, memory management, scheduling, storage, and modern hardware drivers.
+
+## Feature Roadmap & Status (All 14 Phases Completed)
+
+- **Phase 1: Boot & Console System** — Framebuffer console rendering, COM1 serial logging (`kprintf`).
+- **Phase 2: CPU Architecture & Interrupts** — GDT, TSS, IDT, ISR assembly stubs, 8259 PIC remapping.
+- **Phase 3: Memory Management** — Limine PMM frame allocator, 4-level paging VMM, higher-half mapping, first-fit kernel heap (`kmalloc`/`kfree`).
+- **Phase 4: Multitasking & Scheduler** — Preemptive round-robin scheduler, assembly context switching (`ctx_switch.S`), 8254 PIT timer at 100 Hz.
+- **Phase 5: Userspace & System Calls** — `syscall`/`sysret` MSR configuration, assembly entry trampoline, ELF64 binary executable loader.
+- **Phase 6: Virtual Filesystem (VFS)** — Hierarchical VFS tree nodes, directory operations, USTAR tar ramdisk parser.
+- **Phase 7: Interactive Kernel Shell** — PS/2 keyboard driver, scancode mapping, interactive shell (`help`, `ls`, `cat`, `echo`, `mem`, `clear`).
+- **Phase 8: Advanced Memory Management** — Slab cache object allocator (`kmem_cache_t`), Copy-on-Write (COW) frame refcounting, virtual `mmap`/`munmap` API.
+- **Phase 9: Modern Interrupt Architecture** — Local APIC (LAPIC) driver and I/O APIC (IOAPIC) driver replacing 8259 PIC.
+- **Phase 10: Symmetric Multiprocessing (SMP)** — Per-CPU context structures, multi-core BSP initialization, atomic spinlock primitives (`spinlock_t`).
+- **Phase 11: Real Block Storage & Persistent Filesystem** — VirtIO Block Device driver (`virtio-blk`), FAT32 File System driver (`fat32`).
+- **Phase 12: UNIX Process Lifecycle & Signals** — Process fork (`process_fork`), binary execution (`process_execve`), child waiting (`process_waitpid`), UNIX signals (`SIGKILL`, `SIGINT`).
+- **Phase 13: PCI Bus & VirtIO Network Stack** — PCI Configuration Space bus scanner, VirtIO Network Card driver (`virtio-net`).
+- **Phase 14: Custom x86_64 Bare-Metal Bootloader** — Stage 1 MBR bootsector, 64-bit Long Mode CPU capability verification (`CPUID`).
+
+---
+
+## Unit Testing Framework
+
+BashketKernel features a built-in unit test framework with **267 automated kernel unit tests** covering all 14 phases. All tests execute automatically during kernel boot.
+
+---
 
 ## Prerequisites
 
-To compile and run BashketKernel, you need the following tools:
-- A C compiler suite (e.g., `build-essential`, `base-devel`, or `Development Tools`)
+To compile and run BashketKernel, you need:
+- A C compiler suite (`gcc`, `make`, `ld`)
 - `xorriso` (for building the bootable ISO image)
-- `qemu-system-x86` (for emulating the hardware)
-- `gdb` (for debugging)
+- `qemu-system-x86_64` (for hardware emulation)
+- `gdb` (optional, for debugging)
 
 ### Automated Setup
 
-We provide a setup script that automatically detects your Linux distribution's package manager (`apt`, `pacman`, `dnf`, or `zypper`) and installs the required dependencies.
+We provide a setup script that automatically detects your package manager and installs dependencies:
 
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
 
-
+---
 
 ## Building and Running
 
-The project uses `Makefile` to handle building the kernel, combining it with the Limine bootloader, and spinning it up in QEMU.
+The project uses `Makefile` to handle building the kernel, creating the ISO image, and booting in QEMU.
 
 ### 1. Build the ISO
-To compile the kernel and package it into `BashketKernel.iso`:
+To compile the kernel and package it into `build/BashketKernel.iso`:
 ```bash
 make iso
 ```
@@ -38,8 +63,8 @@ make run
 ```
 
 ### 3. Debugging with GDB
-To start QEMU in a suspended state waiting for a GDB connection on `localhost:1234`:
+To start QEMU in suspended mode waiting for GDB:
 ```bash
 make run-gdb
 ```
-*(In a separate terminal, run `gdb kernel.elf` and type `target remote :1234`)*
+*(In a separate terminal, run `gdb build/kernel.elf` and type `target remote :1234`)*
