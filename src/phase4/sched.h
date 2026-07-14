@@ -42,4 +42,9 @@ task_t *sched_get_current_task(void);
  */
 void task_exit(void);
 
+/**
+ * @brief Display process list table for ps shell command.
+ */
+void sched_print_tasks(void);
+
 #endif // SCHED_H

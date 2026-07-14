@@ -151,3 +151,20 @@ void task_exit(void) {
     // Should never reach here
     while (1) { asm volatile("hlt"); }
 }
+
+void sched_print_tasks(void) {
+    kprintf("PID\tSTATE\t\tNAME\n");
+    kprintf("----------------------------------------\n");
+    task_t *curr = task_queue_head;
+    while (curr) {
+        const char *state_str = "UNKNOWN";
+        switch (curr->state) {
+            case TASK_READY:   state_str = "READY  "; break;
+            case TASK_RUNNING: state_str = "RUNNING"; break;
+            case TASK_BLOCKED: state_str = "BLOCKED"; break;
+            case TASK_ZOMBIE:  state_str = "ZOMBIE "; break;
+        }
+        kprintf("%d\t%s\t%s\n", curr->pid, state_str, curr->name);
+        curr = curr->next;
+    }
+}

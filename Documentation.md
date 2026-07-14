@@ -71,7 +71,7 @@ This document tracks the recommended order of topics and concepts to learn as fe
 ---
 
 ### 4. Multitasking & Preemptive Scheduling (Phase 4)
-**Goal:** Task Control Blocks (TCB), stack creation, assembly context switching, 8259 PIT timer driver, and preemptive round-robin scheduling.
+**Goal:** Task Control Blocks (TCB), stack creation, assembly context switching, 8254 PIT timer driver, and preemptive round-robin scheduling.
 
 - **Order of Learning:**
   1. **Task Control Block (TCB):**
@@ -110,7 +110,7 @@ This document tracks the recommended order of topics and concepts to learn as fe
 
 - **Order of Learning:**
   1. **Virtual Filesystem (VFS) Abstraction:**
-     - **Concepts:** `vnode_t` structures (`VFS_FILE` vs `VFS_DIRECTORY`), parent/child/sibling tree hierarchy, directory creation, path resolution (`vfs_find`), and `vfs_read`.
+     - **Concepts:** `vnode_t` structures (`VFS_FILE` vs `VFS_DIRECTORY`), parent/child/sibling tree hierarchy, directory creation, path resolution (`vfs_find`), `vfs_unlink`, `vfs_stat`, and `vfs_read`.
      - Files to inspect: `src/phase6/vfs.h`, `src/phase6/vfs.c`
   2. **USTAR (Tar) Initrd Parser:**
      - **Concepts:** Reading 512-byte tar headers, octal size conversion, mounting files and directories into VFS tree on boot.
@@ -119,14 +119,14 @@ This document tracks the recommended order of topics and concepts to learn as fe
 ---
 
 ### 7. Core Input & Interactive Kernel Shell (Phase 7)
-**Goal:** PS/2 Keyboard hardware interrupts, scancode mapping, circular input buffers, and interactive command-line shell.
+**Goal:** PS/2 Keyboard hardware interrupts, scancode mapping, circular input buffers, and interactive command-line shell with coreutils.
 
 - **Order of Learning:**
   1. **PS/2 Keyboard Controller Driver:**
      - **Concepts:** Reading scancodes from port `0x60` on IRQ 1 (Vector 33), Shift key state handling, converting scancodes to ASCII, and buffering keys in a thread-safe circular queue.
      - Files to inspect: `src/phase7/keyboard.h`, `src/phase7/keyboard.c`
-  2. **Interactive Kernel Shell:**
-     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `clear`), terminal prompt rendering, and backspace handling.
+  2. **Interactive Kernel Shell & Core Utilities:**
+     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`), terminal prompt rendering, and backspace handling.
      - Files to inspect: `src/phase7/shell.h`, `src/phase7/shell.c`
 
 ---
@@ -219,3 +219,26 @@ This document tracks the recommended order of topics and concepts to learn as fe
   1. **CPUID 64-Bit Verification & Transition:**
      - **Concepts:** Checking CPUID bit 29 for Long Mode support, validating PML4 transition layout.
      - Files to inspect: `src/phase14/boot_loader.h`, `src/phase14/boot_loader.c`
+
+---
+
+### 15. PS/2 Mouse Driver & Graphical Cursor (Phase 15)
+**Goal:** PS/2 Auxiliary Mouse Packet Parsing (IRQ 12) & Screen Cursor Rendering.
+
+- **Order of Learning:**
+  1. **PS/2 Auxiliary Mouse Driver:**
+     - **Concepts:** Ports `0x60`/`0x64`, IRQ 12 (Vector 44), decoding 3-byte movement and button state packets.
+     - Files to inspect: `src/phase15/mouse.h`, `src/phase15/mouse.c`
+  2. **Framebuffer Cursor Renderer:**
+     - **Concepts:** Mouse position tracking, cursor update routines.
+     - Files to inspect: `src/phase15/cursor.h`, `src/phase15/cursor.c`
+
+---
+
+### 16. Userland Environment & ELF Executables (Phase 16)
+**Goal:** Userland Program Binary Installation & Shell Command Execution (`exec`).
+
+- **Order of Learning:**
+  1. **Userland Binary Installation:**
+     - **Concepts:** Registering built-in user binaries (`/bin/hello`, `/bin/calc`) into VFS `/bin`.
+     - Files to inspect: `src/phase16/user_apps.h`, `src/phase16/user_apps.c`

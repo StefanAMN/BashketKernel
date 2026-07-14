@@ -148,3 +148,34 @@ size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
     memcpy(buf, src, to_read);
     return to_read;
 }
+
+int vfs_unlink(vnode_t *parent, const char *name) {
+    if (!parent) parent = vfs_root;
+    if (!name || parent->type != VFS_DIRECTORY) return -1;
+
+    vnode_t *curr = parent->children;
+    vnode_t *prev = NULL;
+
+    while (curr) {
+        if (strcmp(curr->name, name) == 0) {
+            if (prev) {
+                prev->next = curr->next;
+            } else {
+                parent->children = curr->next;
+            }
+            kfree(curr);
+            return 0;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+
+    return -1; // File not found
+}
+
+int vfs_stat(vnode_t *node, size_t *out_size, uint32_t *out_type) {
+    if (!node) return -1;
+    if (out_size) *out_size = node->size;
+    if (out_type) *out_type = node->type;
+    return 0;
+}
