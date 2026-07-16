@@ -292,3 +292,53 @@ This document tracks the recommended order of topics and concepts to learn as fe
   1. **RamFS & VFS Write:**
      - **Concepts:** `vfs_write` memory allocation, dynamic file growth, `/tmp` dynamic scratch filesystem.
      - Files to inspect: `src/phase21/ramfs.h`, `src/phase21/ramfs.c`
+
+---
+
+### 22. Priority-Based Scheduler & Multi-Level Queues (Phase 22)
+**Goal:** Task Execution Priority Levels (`PRIO_HIGH`, `PRIO_NORMAL`, `PRIO_LOW`).
+
+- **Order of Learning:**
+  1. **Task Priority Management:**
+     - **Concepts:** Priority assignment, priority inheritance, scheduling queue selection.
+     - Files to inspect: `src/phase22/priority.h`, `src/phase22/priority.c`
+
+---
+
+### 23. Counting Semaphores & Thread Synchronization (Phase 23)
+**Goal:** Counting Semaphores (`sem_t`, `sem_wait`, `sem_post`).
+
+- **Order of Learning:**
+  1. **Semaphore Synchronization:**
+     - **Concepts:** Atomic spinlock protection, wait queues, signal posting.
+     - Files to inspect: `src/phase23/sem.h`, `src/phase23/sem.c`
+
+---
+
+### 24. Pseudo-Filesystem ProcFS (`/proc`) (Phase 24)
+**Goal:** Virtual Filesystem Mounted at `/proc` with System Information Nodes.
+
+- **Order of Learning:**
+  1. **ProcFS Virtual Nodes:**
+     - **Concepts:** `/proc/version`, `/proc/cpuinfo`, dynamic proc node reads.
+     - Files to inspect: `src/phase24/procfs.h`, `src/phase24/procfs.c`
+
+---
+
+### 25. Virtual Terminal TTY Device (Phase 25)
+**Goal:** Virtual TTY Streams & Screen Input Ring Buffer.
+
+- **Order of Learning:**
+  1. **TTY Streams:**
+     - **Concepts:** TTY device ring buffers, non-blocking reads and writes.
+     - Files to inspect: `src/phase25/tty.h`, `src/phase25/tty.c`
+
+---
+
+### 26. Hardware FPU & SSE State Management (Phase 26)
+**Goal:** Enabling x87 FPU, MMX, SSE, and SSE2 Extensions.
+
+- **Order of Learning:**
+  1. **FPU / SSE Enablement:**
+     - **Concepts:** Control registers `CR0` and `CR4`, `fninit` instruction, floating-point arithmetic support.
+     - Files to inspect: `src/phase26/fpu.h`, `src/phase26/fpu.c`

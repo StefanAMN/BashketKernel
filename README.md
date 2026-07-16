@@ -2,7 +2,7 @@
 
 BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed for learning kernel architecture, memory management, scheduling, storage, and modern hardware drivers.
 
-## Feature Roadmap & Status (All 21 Phases Completed)
+## Feature Roadmap & Status (All 26 Phases Completed)
 
 - **Phase 1: Boot & Console System** — Framebuffer console rendering, COM1 serial logging (`kprintf`).
 - **Phase 2: CPU Architecture & Interrupts** — GDT, TSS, IDT, ISR assembly stubs, 8259 PIC remapping.
@@ -25,12 +25,17 @@ BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed f
 - **Phase 19: Inter-Process Communication & Pipes** — 4 KiB IPC ring-buffer stream pipes (`pipe_create`, `pipe_read`, `pipe_write`).
 - **Phase 20: Terminal ANSI Color Decoder** — ANSI escape color decoder mapping ANSI 30..37 indices to RGB colors.
 - **Phase 21: Dynamic RamFS & VFS Write Operations** — `/tmp` RAM filesystem, dynamic memory file growth, `vfs_write`.
+- **Phase 22: Priority-Based Scheduler & Multi-Level Queues** — Execution priority levels (`PRIO_HIGH`, `PRIO_NORMAL`, `PRIO_LOW`), `task_set_priority`.
+- **Phase 23: Counting Semaphores & Thread Sync** — Counting semaphores (`sem_t`, `sem_wait`, `sem_post`), atomic spinlock protection.
+- **Phase 24: Pseudo-Filesystem ProcFS (`/proc`)** — Virtual `/proc` directory mounting `/proc/version`, `/proc/cpuinfo`.
+- **Phase 25: Virtual Terminal TTY Device** — Virtual TTY input/output ring buffer stream device.
+- **Phase 26: Hardware FPU & SSE State Management** — Control registers CR0/CR4 configuration, `fninit`, x87 FPU, MMX, and SSE hardware extensions enabled.
 
 ---
 
 ## Unit Testing Framework
 
-BashketKernel features a built-in unit test framework with **299 automated kernel unit tests** covering all 21 phases. All tests execute automatically during kernel boot.
+BashketKernel features a built-in unit test framework with **312 automated kernel unit tests** covering all 26 phases. All tests execute automatically during kernel boot.
 
 ---
 

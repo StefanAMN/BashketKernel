@@ -40,6 +40,11 @@
 #include "pipe.h"
 #include "ansi.h"
 #include "ramfs.h"
+#include "priority.h"
+#include "sem.h"
+#include "procfs.h"
+#include "tty.h"
+#include "fpu.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -224,7 +229,19 @@ void _start(void) {
     ramfs_init();
     kprintf("Phase 21 Dynamic RamFS initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 21)
+    // Phase 24: Pseudo-Filesystem ProcFS
+    procfs_init();
+    kprintf("Phase 24 ProcFS initialization complete.\n");
+
+    // Phase 25: Virtual Terminal TTY
+    tty_init();
+    kprintf("Phase 25 TTY Subsystem initialization complete.\n");
+
+    // Phase 26: Hardware FPU & SSE State Management
+    fpu_init();
+    kprintf("Phase 26 FPU/SSE initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 26)
     run_all_tests();
 
     // Create interactive shell task

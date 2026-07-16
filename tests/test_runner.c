@@ -30,6 +30,11 @@ extern void test_suite_env(void);
 extern void test_suite_pipe(void);
 extern void test_suite_ansi(void);
 extern void test_suite_ramfs(void);
+extern void test_suite_priority(void);
+extern void test_suite_sem(void);
+extern void test_suite_procfs(void);
+extern void test_suite_tty(void);
+extern void test_suite_fpu(void);
 
 void run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -58,6 +63,11 @@ void run_all_tests(void) {
     test_suite_pipe();
     test_suite_ansi();
     test_suite_ramfs();
+    test_suite_priority();
+    test_suite_sem();
+    test_suite_procfs();
+    test_suite_tty();
+    test_suite_fpu();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);
