@@ -51,6 +51,12 @@
 #include "window.h"
 #include "auth.h"
 #include "klog.h"
+#include "hrtimer.h"
+#include "mount.h"
+#include "shm.h"
+#include "crypto.h"
+#include "dev.h"
+#include "bench.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -259,7 +265,15 @@ void _start(void) {
     klog_init();
     kprintf("Phase 32 Kernel Logger initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 32)
+    // Phase 33: High-Resolution Timers
+    hrtimer_init();
+    kprintf("Phase 33 High-Resolution Timers initialization complete.\n");
+
+    // Phase 37: Virtual Devices (/dev)
+    dev_init();
+    kprintf("Phase 37 Virtual Hardware Devices initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 38)
     run_all_tests();
 
     // Create interactive shell task
