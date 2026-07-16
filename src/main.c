@@ -45,6 +45,12 @@
 #include "procfs.h"
 #include "tty.h"
 #include "fpu.h"
+#include "swap.h"
+#include "elf_dyn.h"
+#include "socket.h"
+#include "window.h"
+#include "auth.h"
+#include "klog.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -241,7 +247,19 @@ void _start(void) {
     fpu_init();
     kprintf("Phase 26 FPU/SSE initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 26)
+    // Phase 27: Virtual Memory Swap Manager
+    swap_init(1024);
+    kprintf("Phase 27 Swap Manager initialization complete.\n");
+
+    // Phase 31: User Accounts & Authentication
+    auth_init();
+    kprintf("Phase 31 Auth Subsystem initialization complete.\n");
+
+    // Phase 32: Kernel Logging Ring Buffer
+    klog_init();
+    kprintf("Phase 32 Kernel Logger initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 32)
     run_all_tests();
 
     // Create interactive shell task
