@@ -39,7 +39,7 @@ BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed f
 - **Phase 33: High-Resolution Timers & Nanosleep** — Nanosecond precision sleep (`nanosleep`), HRT timer queue.
 - **Phase 34: VFS Mount Manager** — Path mount points (`vfs_mount`), mount table management, shell `mount` command.
 - **Phase 35: POSIX Shared Memory (SHM)** — Inter-process shared physical frame regions (`shm_create`, `shm_get`, `shm_destroy`).
-- **Phase 36: Cryptographic Primitives** — Production-grade Kernel Crypto Suite: SHA-1, SHA-256, SHA-512, MD5, BLAKE2s, AES-128, AES-256, ChaCha20, Poly1305, HMAC, CRC32/CRC32C.
+- **Phase 36: Cryptographic Primitives** — Production-grade Kernel Crypto Suite: SHA-1, SHA-256, SHA-512, MD5, BLAKE2s, SipHash-2-4, AES-128/256, AES-XTS, AES-GCM, ChaCha20, Poly1305, HMAC, HKDF, Ed25519, CRC32/CRC32C.
 - **Phase 37: Virtual Hardware Devices (/dev)** — Virtual character devices (`/dev/null`, `/dev/zero`, `/dev/random`), RDTSC pseudo-random number generator (`get_random_u32`).
 - **Phase 38: Kernel Performance Benchmark Suite** — Memory copy speed benchmark, CPU MIPS loop test, shell `bench` command (`bench_run_all`).
 
