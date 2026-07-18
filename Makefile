@@ -52,7 +52,7 @@ iso: build/kernel.elf limine/limine
 	./limine/limine bios-install build/BashketKernel.iso
 
 run: iso
-	qemu-system-x86_64 -m 2G -cdrom build/BashketKernel.iso -boot d
+	qemu-system-x86_64 -m 2G -cdrom build/BashketKernel.iso -boot d -serial stdio
 
 run-gdb: iso
 	qemu-system-x86_64 -m 2G -cdrom build/BashketKernel.iso -boot d -s -S
