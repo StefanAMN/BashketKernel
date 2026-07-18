@@ -45,6 +45,43 @@ BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed f
 
 ---
 
+## Directory Architecture
+
+BashketKernel source code (`src/`) is organized into modular subsystem directories:
+
+```
+src/
+├── arch/x86_64/         # CPU architecture, GDT/IDT/ISRs, APIC, SMP, FPU, low-level assembly
+├── boot/                # Limine bootloader protocol handover & headers
+├── drivers/
+│   ├── block/           # VirtIO Block storage driver
+│   ├── bus/             # PCI Bus enumerator & config space
+│   ├── char/            # Serial (COM1 UART), RTC, /dev virtual devices
+│   ├── console/         # Framebuffer console & bitmap font blitter
+│   ├── input/           # PS/2 Keyboard, Mouse & Cursor blitter
+│   ├── net/             # VirtIO NIC driver
+│   └── tty/             # TTY line discipline
+├── fs/                  # VFS, InitRD, RAMFS, FAT32, ProcFS, Mount Manager, Pipes, ELF loaders
+├── gui/
+│   └── compositor/      # Desktop window manager/compositor & ANSI escape parser
+├── include/             # Global test & subsystem headers
+├── init/                # Kernel entry point (kmain in main.c)
+├── kernel/
+│   ├── ipc/             # POSIX Shared Memory (SHM)
+│   ├── log/             # Kernel syslog ring buffer (klog & dmesg)
+│   ├── proc/            # Process control, User apps, Environment vars, Auth, Shell
+│   ├── sched/           # Task scheduler, Task Control Block, Priority scheduling
+│   ├── sync/            # Spinlocks & Semaphores
+│   ├── syscall/         # System call dispatcher & table
+│   ├── time/            # High-resolution timers (hrtimer & nanosleep), PIT driver
+│   └── bench.{c,h}      # Kernel diagnostic benchmark suite
+├── lib/                 # Kernel utility functions (kprintf, kstring, string_util)
+├── mm/                  # Memory Management (PMM, VMM, Heap, Slab, COW, MMAP, Swap)
+└── net/                 # UDP/IP Network socket stack
+```
+
+---
+
 ## Unit Testing Framework
 
 BashketKernel features a built-in unit test framework with **342 automated kernel unit tests** covering all 38 phases. All tests execute automatically during kernel boot.

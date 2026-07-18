@@ -1,7 +1,9 @@
 CC = gcc
 LD = ld
-
-INCLUDES = -Ilib -Isrc -Isrc/phase1 -Isrc/phase2 -Isrc/phase3 -Isrc/phase4 -Isrc/phase5 -Isrc/phase6 -Isrc/phase7 -Isrc/phase8 -Isrc/phase9 -Isrc/phase10 -Isrc/phase11 -Isrc/phase12 -Isrc/phase13 -Isrc/phase14 -Isrc/phase15 -Isrc/phase16 -Isrc/phase17 -Isrc/phase18 -Isrc/phase19 -Isrc/phase20 -Isrc/phase21 -Isrc/phase22 -Isrc/phase23 -Isrc/phase24 -Isrc/phase25 -Isrc/phase26 -Isrc/phase27 -Isrc/phase28 -Isrc/phase29 -Isrc/phase30 -Isrc/phase31 -Isrc/phase32 -Isrc/phase33 -Isrc/phase34 -Isrc/phase35 -Isrc/phase36 -Isrc/phase37 -Isrc/phase38
+INCLUDES = -Ilib -Isrc -Isrc/include -Isrc/init -Isrc/arch/x86_64 -Isrc/boot \
+           -Isrc/drivers/block -Isrc/drivers/bus -Isrc/drivers/char -Isrc/drivers/console -Isrc/drivers/input -Isrc/drivers/net -Isrc/drivers/tty \
+           -Isrc/fs -Isrc/gui/compositor -Isrc/kernel -Isrc/kernel/ipc -Isrc/kernel/log -Isrc/kernel/proc -Isrc/kernel/sched -Isrc/kernel/sync -Isrc/kernel/syscall -Isrc/kernel/time \
+           -Isrc/lib -Isrc/mm -Isrc/net
 
 CFLAGS = -Wall -Wextra -O2 -pipe $(INCLUDES) \
          -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
