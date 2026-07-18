@@ -1,6 +1,6 @@
 /**
  * @file process.c
- * @brief Implementation of UNIX Process Subsystem
+ * @brief Implementation of UNIX Process Subsystem & Stack-Based Environment Execve
  */
 
 #include "process.h"
@@ -8,9 +8,11 @@
 #include "kprintf.h"
 #include "cow.h"
 #include "vmm.h"
+#include "pmm.h"
 #include "kstring.h"
 #include "vfs.h"
 #include "elf.h"
+#include "env.h"
 
 static int next_pid = 100;
 
@@ -34,13 +36,13 @@ pid_t process_fork(void) {
     return child_pid;
 }
 
-int process_execve(const char *path) {
+int process_execve_env(const char *path, char *const argv[], char *const envp[]) {
+    (void)argv;
     if (!path) return -1;
 
     // 1. Locate binary file in Virtual Filesystem (VFS)
     vnode_t *file = vfs_find(NULL, path);
     if (!file) {
-        // Fallback: try searching relative path without leading slash
         if (path[0] == '/') {
             file = vfs_find(NULL, path + 1);
         }
@@ -58,14 +60,31 @@ int process_execve(const char *path) {
         return -1;
     }
 
-    // 3. Update current active task state with new binary context
+    // 3. Allocate user stack page (0x7FFFFFFF000)
+    uint64_t user_stack_top = 0x7FFFFFFF000ULL;
+    void *stack_frame = pmm_alloc_frame();
+    if (stack_frame) {
+        vmm_map_page(NULL, user_stack_top - PAGE_SIZE, (uint64_t)stack_frame, VMM_PRESENT | VMM_WRITABLE | VMM_USER);
+    }
+
+    // 4. Setup environment variables directly on the user process stack frame
+    uint64_t user_rsp = user_stack_top;
+    uint64_t envp_vaddr = 0;
+    env_setup_user_stack(user_stack_top, envp, &user_rsp, &envp_vaddr);
+
+    // 5. Update current active task state with new binary context
     task_t *current = sched_get_current_task();
     if (current) {
         strncpy(current->name, file->name, sizeof(current->name) - 1);
     }
 
-    kprintf("Process: execve loaded binary '%s' (Entry Point: %p)\n", path, entry_point);
+    kprintf("Process: execve loaded binary '%s' (Entry: %p, User RSP: %p, envp: %p)\n",
+            path, entry_point, (void *)user_rsp, (void *)envp_vaddr);
     return 0;
+}
+
+int process_execve(const char *path) {
+    return process_execve_env(path, NULL, NULL);
 }
 
 pid_t process_waitpid(pid_t pid, int *status) {

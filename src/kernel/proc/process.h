@@ -23,9 +23,18 @@ typedef int pid_t;
 pid_t process_fork(void);
 
 /**
- * @brief Execute new ELF executable binary (execve).
+ * @brief Execute new ELF executable binary with environment array (execve).
  * @param path File path to binary.
- * @return Does not return on success, -1 on failure.
+ * @param argv Array of argument strings (or NULL).
+ * @param envp Array of environment variable strings (or NULL).
+ * @return 0 on success, -1 on failure.
+ */
+int process_execve_env(const char *path, char *const argv[], char *const envp[]);
+
+/**
+ * @brief Execute new ELF executable binary (execve convenience wrapper).
+ * @param path File path to binary.
+ * @return 0 on success, -1 on failure.
  */
 int process_execve(const char *path);
 
