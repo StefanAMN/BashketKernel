@@ -18,12 +18,10 @@ void serial_init(void) {
 }
 
 static int is_transmit_empty(void) {
-    // Bit 5 of Line Status Register (COM1 + 5) is Transmit Holding Register Empty
     return inb(COM1 + 5) & 0x20;
 }
 
 void serial_putchar(char c) {
-    // Wait until transmit buffer is empty before sending next byte
     while (is_transmit_empty() == 0);
     outb(COM1, c);
 }
@@ -33,4 +31,16 @@ void serial_write(const char *str) {
     for (size_t i = 0; str[i] != '\0'; i++) {
         serial_putchar(str[i]);
     }
+}
+
+bool serial_has_char(void) {
+    // Bit 0 of Line Status Register (COM1 + 5) is Data Ready
+    return (inb(COM1 + 5) & 0x01) != 0;
+}
+
+char serial_getchar(void) {
+    while (!serial_has_char()) {
+        asm volatile("pause");
+    }
+    return (char)inb(COM1);
 }

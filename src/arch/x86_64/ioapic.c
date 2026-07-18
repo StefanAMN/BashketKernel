@@ -32,6 +32,10 @@ void ioapic_init(void) {
     uint32_t ver = ioapic_read(0x01);
     uint32_t max_redirection_entries = ((ver >> 16) & 0xFF) + 1;
 
+    // Route legacy ISA IRQs: IRQ 0 (Timer -> Vector 32), IRQ 1 (Keyboard -> Vector 33)
+    ioapic_route_irq(0, 32, 0);
+    ioapic_route_irq(1, 33, 0);
+
     kprintf("IOAPIC Init: Controller mapped (Max Redirection Lines: %u)\n", max_redirection_entries);
 }
 
