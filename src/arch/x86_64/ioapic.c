@@ -7,6 +7,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "kprintf.h"
+#include "pic.h"
 
 static volatile uint32_t *ioapic_regsel = NULL;
 static volatile uint32_t *ioapic_iowin = NULL;
@@ -32,6 +33,9 @@ void ioapic_init(void) {
     uint32_t ver = ioapic_read(0x01);
     uint32_t max_redirection_entries = ((ver >> 16) & 0xFF) + 1;
 
+    // Mask legacy 8259 PIC to avoid IRQ routing conflicts
+    pic_disable();
+
     // Route legacy ISA IRQs: IRQ 0 (Timer -> Vector 32), IRQ 1 (Keyboard -> Vector 33)
     ioapic_route_irq(0, 32, 0);
     ioapic_route_irq(1, 33, 0);
@@ -45,13 +49,16 @@ void ioapic_route_irq(uint8_t irq, uint8_t vector, uint32_t apic_id) {
     uint32_t reg_low  = 0x10 + (irq * 2);
     uint32_t reg_high = 0x10 + (irq * 2) + 1;
 
-    // Lower 32 bits: Vector number, unmasked (bit 16 = 0)
-    uint32_t low_val = vector;
-    // Upper 32 bits: Target LAPIC ID (bits 31..24)
+    // 1. Mask interrupt first while configuring high bits (target APIC ID)
     uint32_t high_val = (apic_id & 0xFF) << 24;
+    uint32_t masked_low = 0x10000 | vector;
 
-    ioapic_write(reg_low, low_val);
+    ioapic_write(reg_low, masked_low);
     ioapic_write(reg_high, high_val);
+
+    // 2. Unmask interrupt
+    uint32_t unmasked_low = vector;
+    ioapic_write(reg_low, unmasked_low);
 
     kprintf("IOAPIC: Routed IRQ %u -> Vector %u (LAPIC ID %u)\n", irq, vector, apic_id);
 }

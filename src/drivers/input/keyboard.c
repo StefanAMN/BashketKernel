@@ -112,39 +112,44 @@ bool keyboard_has_char(void) {
     if (kbd_head != kbd_tail) {
         return true;
     }
-    if (inb(0x64) & 1) {
+    uint8_t status = inb(0x64);
+    if ((status & 0x21) == 0x01) { // Keyboard data ready (bit 0 = 1, bit 5 = 0)
         return true;
     }
     return serial_has_char();
 }
 
 char keyboard_getchar(void) {
-    while (!keyboard_has_char()) {
-        sched_yield();
-    }
-
-    if (kbd_head != kbd_tail) {
-        char c = kbd_buffer[kbd_tail];
-        kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
-        return c;
-    }
-
-    if (inb(0x64) & 1) {
-        uint8_t scancode = inb(0x60);
-        if (scancode == 0x2A || scancode == 0x36) shift_pressed = true;
-        else if (scancode == 0xAA || scancode == 0xB6) shift_pressed = false;
-        else if (!(scancode & 0x80) && scancode < 128) {
-            char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
+    while (1) {
+        if (kbd_head != kbd_tail) {
+            char c = kbd_buffer[kbd_tail];
+            kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
             if (c != 0) return c;
         }
-    }
 
-    if (serial_has_char()) {
-        char c = serial_getchar();
-        if (c == '\r') c = '\n';
-        if (c == 127) c = '\b';
-        return c;
-    }
+        uint8_t status = inb(0x64);
+        if (status & 0x01) {
+            uint8_t scancode = inb(0x60);
+            if (!(status & 0x20)) { // Keyboard data (bit 5 == 0)
+                if (scancode == 0x2A || scancode == 0x36) {
+                    shift_pressed = true;
+                } else if (scancode == 0xAA || scancode == 0xB6) {
+                    shift_pressed = false;
+                } else if (!(scancode & 0x80) && scancode < 128) {
+                    char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
+                    if (c != 0) return c;
+                }
+            }
+        }
 
-    return 0;
+        if (serial_has_char()) {
+            char c = serial_getchar();
+            if (c == '\r') c = '\n';
+            if (c == 127) c = '\b';
+            if (c != 0) return c;
+        }
+
+        sched_yield();
+    }
 }
+
