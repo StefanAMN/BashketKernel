@@ -1,0 +1,337 @@
+# BashketKernel — Repair Plan
+
+This plan fixes the problems found in the October 2026 review. It does not add
+features. The goal is that everything the README claims is true, and that the
+core of the kernel is correct enough to build on.
+
+The original learning roadmap (`plan.md`, phases 1 to 7 and the learning gates)
+was removed from the tree when this plan replaced it. It is still in git:
+`git show 0c3bd4d:plan.md`. References below to "the original roadmap" mean
+that file.
+
+## Progress
+
+- **Milestone 0:** build and doc items done. The items that need a human
+  (learning contract, hand-written lesson docs) are open.
+- **Milestone 1:** done and verified in QEMU.
+- **Milestones 2 to 5:** not started.
+
+## Where things stand
+
+- **Real and working:** boot, console, serial, GDT/IDT, PMM, VMM, heap, context
+  switch, round-robin scheduler, VFS tree, keyboard, kernel shell.
+- **Broken but hidden:** syscall entry, timer rate, PMM sizing, locking.
+- **Mock code presented as complete:** userspace, fork/exec/wait/signals,
+  virtio-blk, FAT32, virtio-net, sockets, SMP, swap, priority scheduling, FPU
+  state, "custom bootloader", initrd loading, auth, hrtimer, window manager.
+
+## Rules for this plan
+
+1. One milestone at a time, in order. Each one ends with a check that is run
+   and passes, not with "it boots".
+2. No new subsystems until Milestone 4 is done.
+3. A feature is either real, or labelled as a stub in the README, or deleted.
+   Nothing that returns a hardcoded value is described as implemented.
+4. The learning gates in section 0 of the original roadmap apply again. See
+   Milestone 0.
+
+---
+
+## Milestone 0 — Honest docs and a reproducible build
+
+Nothing here touches kernel behaviour. Do it first so every later change is
+measured against a true baseline.
+
+- [x] **README status table.** Replace "All 38 Phases Completed" with a table
+      marking each phase `real`, `partial` or `stub`. Remove "production-grade"
+      from the crypto entry. Fix the test count (it is 420, not 342), or drop
+      the number.
+- [x] **Documentation.md.** For each section, remove concepts the listed files
+      do not contain (blocking pipes, priority aging, `fxsave`/`fxrstor`,
+      password hashing, alpha-blended cursor, virtqueues, cluster chains), or
+      mark the section "not implemented yet".
+- [ ] **Learning contract.** `.agents/AGENTS.md` line 42 tells agents to skip
+      the Explain-Back and Delete-and-Rederive gates. Decide whether that still
+      stands. Recommended: remove it and restore "one phase at a time, ask
+      before building later-phase infrastructure".
+- [ ] **Write `docs/00-toolchain.md`** (currently empty) by hand: the boot
+      chain from power-on to `_start`, and why each compiler flag exists.
+- [ ] **Start `docs/ai-was-wrong.md`.** The bugs in Milestones 1 and 3 are the
+      first entries: write each one up as wrong code, right code, source. The
+      timer bug in 1.1 is a good first one, because the first diagnosis of it
+      was also wrong.
+- [x] **Fetch Limine in the build.** `limine/` is gitignored and nothing
+      downloads it, so a fresh clone cannot run `make iso`. Add a Makefile rule
+      that clones a pinned binary release tag, and document the version.
+- [x] **Header dependencies.** Add `-MMD -MP` to `CFLAGS` and
+      `-include $(OBJFILES:.o=.d)` so editing a header rebuilds its users.
+- [x] **Remove the duplicate `src/.vscode/`.**
+
+**Check:** a fresh `git clone` followed by `make run` boots, with no manual
+steps. Touching `src/mm/vmm.h` rebuilds every file that includes it.
+
+---
+
+## Milestone 1 — Fix the core that already exists
+
+### 1.1 Timer: one source, one known rate — done
+
+Problem: the kernel counted about 255 ticks per second while `uptime` and
+`SYS_SLEEP` assume 100.
+
+What was actually wrong (found by tracing QEMU's interrupt controllers, not by
+reading the code):
+
+- The LAPIC timer was started uncalibrated on vector 32, the same vector as
+  the PIT. That added roughly 55 ticks per second.
+- Every PIT period was delivered twice. The PIT was in mode 3 (square wave);
+  under QEMU its output line is re-asserted while already high, and QEMU's
+  I/O APIC delivers an edge-triggered interrupt on every assertion.
+- The first diagnosis blamed I/O APIC pins 0 and 2 both being routed to
+  vector 32. That routing was wrong but harmless on QEMU, which never signals
+  pin 0.
+
+- [x] PIT programmed in mode 2 (rate generator), one rising edge per period
+      (`src/kernel/time/pit.c`).
+- [x] ISA IRQs are routed through the pin, polarity and trigger mode given by
+      the ACPI MADT (`src/arch/x86_64/acpi.c`, `ioapic_route_isa_irq`). On QEMU
+      the MADT wires IRQ 0 to GSI 2.
+- [x] The LAPIC timer is no longer started. It needs calibration against the
+      PIT and its own vector before it comes back.
+- [x] `TIMER_HZ` replaces the literal `100` in the shell and `nanosleep`.
+
+**Check (passed):** two `uptime` calls 10.5 seconds apart differ by 1047 ticks.
+
+Known leftover: ticks are still lost while interrupts are off for a long time.
+`kprintf` holds interrupts off while it draws to the framebuffer, so a burst of
+boot logging drops ticks. Fix by buffering console output, or by taking
+wall time from a counter instead of counting interrupts.
+
+### 1.2 PMM: size from usable memory — done
+
+Problem: the bitmap is sized from the highest address of any memory map entry,
+including reserved regions near 1 TiB. A 2 GB VM reports 1,048,576 MB total and
+allocates a 32 MB bitmap, which is scanned from frame 1 on every allocation.
+
+- [x] Compute `highest_addr` from `USABLE` and `BOOTLOADER_RECLAIMABLE` entries
+      only (`src/mm/pmm.c:37-45`).
+- [x] Keep a "next free" hint so allocation does not rescan from frame 1
+      (`pmm.c:151`).
+- [x] Delete the kernel and boot-stack reservation blocks that guess physical
+      addresses with `& 0x7FFFFFFF` (`pmm.c:108-138`). They reserve the wrong
+      frames, and they are unnecessary: Limine does not mark kernel or module
+      memory as usable. Write down why in the lesson doc.
+- [x] Make `pmm_free_frames` report a double free instead of ignoring it.
+
+**Check (passed):** `-m 2G` reports 2047 MB and `-m 512M` reports 511 MB.
+`pmm_exhaustion_and_recovery` in `tests/test_pmm.c` allocates every frame, gets
+NULL, frees them all and finds the free count restored.
+
+### 1.3 Locking under preemption — done
+
+Problem: the timer interrupt can switch tasks at any instruction. The heap,
+PMM bitmap, `kprintf`, the run queue and the keyboard buffer have no
+protection. It works today only because two tasks exist.
+
+- [x] Add `spinlock_acquire_irqsave` / `spinlock_release_irqrestore`, which
+      save RFLAGS, disable interrupts, then take the lock.
+- [x] Use it in `kmalloc`/`kfree`, `pmm_alloc_frames`/`pmm_free_frames`, the
+      slab allocator, `kprintf`, and the keyboard and serial ring buffers.
+- [x] Disable interrupts across run queue changes and `ctx_switch` in
+      `sched_yield`. The saved RFLAGS already restores them per task.
+- [x] Merge the two PID counters (`sched.c:18` and `process.c:17`).
+- [x] Reap zombie tasks: free the task struct and its kernel stack.
+
+**Check (passed):** `heap_stress_under_preemption` in `tests/test_sched.c` runs
+four tasks that each do 20,000 random `kmalloc`/`kfree` calls and never yield,
+then confirms no block was corrupted and the heap's allocated-bytes counter is
+back to its starting value.
+
+Still to do by hand (break-it): comment out the lock in `kmalloc`/`kfree`,
+predict what the test will report, and run it.
+
+### 1.4 Boot stack — done
+
+- [x] Replace the inline `mov rsp` in `_start` (`main.c:134-136`) with Limine's
+      stack size request. Changing RSP inside a compiled C function only works
+      while the compiler happens not to use the old frame.
+
+### 1.5 Fault safety net — done
+
+- [x] Give the double fault handler its own stack through IST1 in the TSS, so a
+      kernel stack overflow prints a report instead of triple-faulting.
+- [x] Add an unmapped guard page below each task's kernel stack. This means
+      mapping stacks into kernel virtual space instead of using HHDM addresses.
+
+**Check (passed):** `crash stack` in the shell prints a double fault report
+with "KERNEL STACK OVERFLOW" and halts, instead of resetting QEMU. `crash pf`
+and `crash div0` report vector 14 and vector 0.
+
+Not covered: PID 0 still runs on the Limine boot stack, which has no guard
+page.
+
+---
+
+## Milestone 2 — Tests that mean something
+
+- [ ] **Separate test build.** `make test` builds with `-DKERNEL_TESTS`, runs
+      the tests, and exits QEMU through `isa-debug-exit` with a pass/fail
+      status. `make run` boots straight to the shell without running tests.
+- [ ] **No leaked state.** Tests currently rename PID 0 to `sh`, leave zombie
+      tasks, re-initialise swap, and create `readme.txt` in the live VFS. Each
+      test cleans up after itself.
+- [ ] **Remove tests that assert a mock.** `test_swap`, `test_process`,
+      `test_storage`, `test_net`, `test_boot` and similar only prove that the
+      placeholder returns its placeholder. Delete them with the stubs, or mark
+      them as stub tests in the output.
+- [ ] **Add fault tests.** A deliberate divide by zero and a deliberate
+      not-present page access, each confirming the right vector and CR2. These
+      are the "break-it" exercises from the original roadmap. The shell
+      command `crash div0|pf|stack` already triggers them by hand.
+- [ ] **CI.** A GitHub Actions job that runs `make test` headless on each push.
+
+**Check:** `make test; echo $?` prints 0 on success and non-zero when one
+`EXPECT` is deliberately broken.
+
+---
+
+## Milestone 3 — Phase 5 for real: one program in ring 3
+
+Everything after phase 4 depends on this, and none of it works yet. The target
+is one small user program, built from source, that prints through a `write`
+syscall and exits.
+
+### 3.1 GDT and STAR
+
+Problem: `sysretq` loads CS from `STAR[63:48] + 16` and SS from
+`STAR[63:48] + 8`. With the current base of `0x18` and user code at `0x18`,
+that loads the TSS descriptor as CS.
+
+- [ ] Reorder the GDT: `0x08` kernel code, `0x10` kernel data, `0x18` user
+      data, `0x20` user code, `0x28` TSS (`src/arch/x86_64/gdt.c:65-71`).
+- [ ] Set `STAR[47:32] = 0x08` and `STAR[63:48] = 0x10` (`syscall.c:43`).
+- [ ] Verify both rules against the Intel SDM entries for SYSCALL and SYSRET,
+      and record it in `ai-was-wrong.md`.
+
+### 3.2 Syscall entry
+
+Problems: the entry stub stays on the user's stack, and it pushes registers in
+the reverse order of `struct registers`, so `regs->rax` reads the user's r15.
+
+- [ ] On entry, save the user RSP and load the current task's kernel stack. On
+      a single CPU a pair of global variables is enough; move to `swapgs` and
+      per-CPU data only when real SMP arrives.
+- [ ] Push registers so the frame matches `struct registers` exactly, or define
+      a separate `struct syscall_frame`. Add a `_Static_assert` on the offsets.
+- [ ] Add direction flag (bit 10) to `SFMASK` alongside the interrupt flag.
+- [ ] Before `sysretq`, check that the return RIP is a canonical user address.
+
+### 3.3 Address spaces and entering user mode
+
+Problem: every user mapping goes into the single kernel PML4.
+
+- [ ] `vmm_create_address_space()`: a new PML4 whose upper 256 entries are
+      copied from the kernel's. `vmm_destroy_address_space()` frees the lower
+      half and its frames.
+- [ ] Make `elf_load`, the user stack setup and `mmap` take the target PML4
+      instead of passing NULL.
+- [ ] Call `tss_set_rsp0` on every context switch. It is never called today.
+- [ ] Enter ring 3 for the first time with an `iretq` frame: CS `0x23`,
+      SS `0x1B`, RFLAGS `0x202`.
+- [ ] `munmap` frees the frames it unmaps (`src/mm/mmap.c:60`).
+
+### 3.4 A real user program and a real initrd
+
+- [ ] Create `user/` with a tiny `crt0`, a syscall wrapper and `hello.c`,
+      linked at a low address with its own linker script.
+- [ ] Pack `user/` binaries into a USTAR archive at build time, load it as a
+      Limine module, and call `initrd_mount` at boot. The parser exists but is
+      never called.
+- [ ] Delete the mock ELF headers in `src/kernel/proc/user_apps.c`.
+
+### 3.5 Do not trust user input
+
+- [ ] `elf_load` takes the file size and rejects any `e_phoff`, `p_offset` or
+      `p_filesz` that points outside the file, and any `p_vaddr` in the kernel
+      half (`src/fs/elf.c:30-62`).
+- [ ] Zero the whole of each loaded segment, including segments with
+      `p_filesz == 0`.
+- [ ] Add `copy_from_user` / `copy_to_user` that validate the range is in the
+      user half and mapped. Use them for every pointer argument in
+      `syscall_handler`.
+- [ ] An exception that arrives from ring 3 kills that task. Only a kernel-mode
+      exception halts the machine (`src/arch/x86_64/isr.c:75`).
+- [ ] Remove the IDT's DPL 3 gate for vector `0x80` unless it is used.
+
+**Checks:**
+1. `exec /bin/hello` prints from ring 3 and the shell prompt returns.
+2. A user program that executes `cli` is killed with a #GP report and the shell
+   survives.
+3. A user program that reads a kernel address is killed with a page fault
+   report and the shell survives.
+4. A user program that passes a kernel pointer to `write` gets an error.
+5. Delete-and-rederive the syscall entry path, per the original roadmap.
+
+---
+
+## Milestone 4 — Real process lifecycle
+
+- [ ] **Blocking.** Add wait queues and a real `TASK_BLOCKED` path. Replace the
+      yield loops in `SYS_SLEEP`, `SYS_READ`, `sem_wait`, `nanosleep` and the
+      shell input loop. The idle task halts when nothing is runnable.
+- [ ] **`exit` and `wait`.** Exit status is stored, the parent is woken,
+      `waitpid` blocks and reaps, and the address space is destroyed.
+- [ ] **`exec`.** Replaces the current task's address space and jumps to the
+      new entry point, with `argv` on the user stack.
+- [ ] **`fork`.** Start with a full copy of the address space. Add
+      copy-on-write afterwards, using the refcounts in `src/mm/cow.c` and a
+      write-fault path in the page fault handler.
+- [ ] **File descriptors.** A per-process table, so `open`, `read`, `write` and
+      `close` act on real files. `SYS_OPEN` currently returns 3 for any path.
+- [ ] **`brk` and the mmap cursor** become per-process (`syscall.c:20`,
+      `mmap.c:12`).
+- [ ] **Userspace shell.** Move the shell into `user/` once `fork`, `exec` and
+      `wait` work. This is the Phase 7 capstone in the original roadmap.
+
+**Check:** a user program forks, the child execs `/bin/hello`, and the parent
+prints the child's exit status after `waitpid`. Run it 1000 times in a loop and
+confirm free frame count and heap usage return to their starting values.
+
+---
+
+## Milestone 5 — Deal with the stubs
+
+For each item, pick one: implement it properly, or delete the code, its test
+and its README entry. Suggested calls, in the order worth doing:
+
+| Subsystem | Suggestion |
+|---|---|
+| Pipes | Implement: blocking read/write and EOF, on top of Milestone 4 wait queues. |
+| TTY | Implement: a line discipline between the keyboard and `read`. |
+| Priority scheduling | Implement, or delete. The scheduler never reads the priority table today. |
+| FPU/SSE | Implement `fxsave`/`fxrstor` per task before any user program uses floats. |
+| virtio-blk | Implement against a real `-drive if=virtio` disk. A good first real driver. |
+| FAT32 | Implement read-only on top of real virtio-blk. Parse the BPB and follow cluster chains. |
+| SMP | Defer. Needs per-CPU data, `swapgs` and audited locking first. |
+| virtio-net, sockets | Defer or delete. |
+| Swap | Delete until a real block device and page reclaim exist. |
+| Window manager, auth | Delete or leave clearly marked as stubs. |
+| `boot_loader.c` | Delete. It is a CPUID check, and Limine boots the kernel. |
+| hrtimer | Delete, or rebuild on a calibrated LAPIC timer. |
+| Crypto library | Keep in `lib/` as a separate library. Nothing in the kernel calls it and it has not been audited. |
+
+Add QEMU flags to `make run` as the real drivers land, for example
+`-drive file=disk.img,if=virtio,format=raw` and later `-smp 2`.
+
+---
+
+## Order and dependencies
+
+```
+0 docs/build ──> 1 core fixes ──> 2 tests ──> 3 ring 3 ──> 4 processes ──> 5 stubs
+```
+
+Milestones 0 to 2 are small. Milestone 3 is the large one and is where the
+project resumes the original roadmap. After Milestone 4 the kernel matches
+phases 1 to 7 of the original roadmap honestly, which that document already calls a
+success.

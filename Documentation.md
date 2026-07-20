@@ -2,11 +2,17 @@
 
 Welcome to **BashketKernel**! This document serves as an ordered, structured guide for learning the concepts and features implemented throughout the 38 phases of the kernel development roadmap.
 
-Each section breaks down a kernel subsystem, key operating system concepts, and the exact source files in the codebase where those concepts are implemented.
+Each section breaks down a kernel subsystem, key operating system concepts, and the source files for it.
+
+**Read the status line under each heading first.** Where a phase is marked
+*partial* or *stub*, the "Concepts" below it describe what the subsystem is
+meant to teach, not what the listed files currently contain.
 
 ---
 
 ### 1. Boot to Output & Serial Infrastructure (Phase 1)
+**Status: real.** Framebuffer console, COM1 serial, `kprintf`.
+
 **Goal:** Higher-half kernel entry, Limine boot protocol, text console blitter, COM1 serial logging.
 
 - **Order of Learning:**
@@ -23,6 +29,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 2. CPU Tables & Interrupt Handling (Phase 2)
+**Status: real.** Double faults run on their own stack (IST1).
+
 **Goal:** Global Descriptor Table (GDT), Interrupt Descriptor Table (IDT), 8259 PIC remap, ISR stubs.
 
 - **Order of Learning:**
@@ -42,6 +50,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 3. Memory Management: PMM, VMM & Kernel Heap (Phase 3)
+**Status: real.** Bitmap frame allocator, 4-level paging, first-fit heap. One address space only.
+
 **Goal:** Physical frame bitmap allocator, 4-level x86_64 page tables, kernel heap allocator.
 
 - **Order of Learning:**
@@ -61,6 +71,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 4. Multitasking & Context Switching (Phase 4)
+**Status: real.** Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. 100 Hz PIT tick.
+
 **Goal:** Task Control Block (TCB), cooperative and preemptive round-robin scheduler.
 
 - **Order of Learning:**
@@ -80,6 +92,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 5. Userspace & System Calls (Phase 5)
+**Status: partial.** The dispatcher and an ELF header parser exist. The `syscall` entry path is broken and nothing runs in ring 3 yet.
+
 **Goal:** Syscall/sysret MSR setup, user privilege transition (Ring 3), ELF64 loader.
 
 - **Order of Learning:**
@@ -94,6 +108,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 6. Virtual Filesystem (VFS) & InitRD (Phase 6)
+**Status: partial.** In-memory VFS tree works. The USTAR parser is never called; no initrd is loaded.
+
 **Goal:** VFS inode and file operation abstractions, USTAR initrd parser.
 
 - **Order of Learning:**
@@ -107,6 +123,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 7. Interactive Shell & Keyboard Input (Phase 7)
+**Status: real.** Runs as a kernel thread, not a user program.
+
 **Goal:** PS/2 keyboard scancode decoding, interactive shell commands (`ls`, `cat`, `echo`).
 
 - **Order of Learning:**
@@ -120,6 +138,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 8. Advanced Memory Management (Phase 8)
+**Status: partial.** Slab allocator works. COW is a refcount table with no fault handler. `mmap` maps into the kernel address space.
+
 **Goal:** Slab object allocator, Copy-On-Write (COW), Anonymous memory mapping (`mmap`).
 
 - **Order of Learning:**
@@ -136,6 +156,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 9. APIC & IOAPIC Interrupt Controller Subsystem (Phase 9)
+**Status: real.** ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used.
+
 **Goal:** Local APIC timer, IOAPIC redirection table configuration.
 
 - **Order of Learning:**
@@ -149,6 +171,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 10. SMP Multiprocessing & Spinlocks (Phase 10)
+**Status: stub.** Spinlocks are real. Only the boot CPU is ever started.
+
 **Goal:** Multi-core CPU initialization via Limine SMP, kernel spinlocks.
 
 - **Order of Learning:**
@@ -162,6 +186,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 11. Storage Subsystem & FAT32 Filesystem (Phase 11)
+**Status: stub.** A RAM buffer and an in-memory file table. No virtqueues, no on-disk format.
+
 **Goal:** VirtIO Block device driver, FAT32 directory and file reading/writing.
 
 - **Order of Learning:**
@@ -175,6 +201,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 12. Process Life Cycle & Signal Handling (Phase 12)
+**Status: stub.** `fork` starts a kernel thread; `exec`, `waitpid` and `kill` only print.
+
 **Goal:** Process hierarchy (`fork`, `exec`, `waitpid`, `exit`), UNIX signal dispatching.
 
 - **Order of Learning:**
@@ -188,6 +216,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 13. PCI Bus & VirtIO Network Driver (Phase 13)
+**Status: partial.** PCI scan works (function 0 only). virtio-net only logs.
+
 **Goal:** PCI bus enumeration, VirtIO Net driver (Ethernet frame transmit/receive).
 
 - **Order of Learning:**
@@ -201,6 +231,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 14. Bootloader Information Handover (Phase 14)
+**Status: stub.** A CPUID check. Limine boots the kernel.
+
 **Goal:** Structured inspection of Limine boot tags (framebuffer, memory map, RSDP, modules).
 
 - **Order of Learning:**
@@ -211,6 +243,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 15. PS/2 Mouse Driver & Graphical Cursor (Phase 15)
+**Status: stub.** The IRQ handler discards mouse bytes. Nothing is drawn.
+
 **Goal:** PS/2 mouse packet parsing, hardware cursor blitting.
 
 - **Order of Learning:**
@@ -224,6 +258,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 16. Userland Application Infrastructure (Phase 16)
+**Status: stub.** `/bin/hello` and `/bin/calc` are bare ELF headers with no code.
+
 **Goal:** Loading and executing standalone ring-3 binaries from filesystem.
 
 - **Order of Learning:**
@@ -234,6 +270,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 17. Real-Time Clock (RTC) Driver (Phase 17)
+**Status: real.** Reads date and time from CMOS.
+
 **Goal:** Reading CMOS Real-Time Clock registers for system date and time.
 
 - **Order of Learning:**
@@ -244,6 +282,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 18. Environment Variables (Phase 18)
+**Status: real.** One global table, not per process.
+
 **Goal:** Per-process environment variable management (`getenv`, `setenv`, `env`).
 
 - **Order of Learning:**
@@ -254,6 +294,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 19. Inter-Process Communication Pipes (Phase 19)
+**Status: partial.** A ring buffer with no blocking and no file descriptors.
+
 **Goal:** POSIX Anonymous Pipes (`pipe`), blocking read/write ring buffers.
 
 - **Order of Learning:**
@@ -264,6 +306,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 20. Terminal ANSI Escape Sequence Parser (Phase 20)
+**Status: stub.** A lookup from color code to RGB. No escape-sequence parser.
+
 **Goal:** ANSI escape sequence handling for text coloring and cursor movement.
 
 - **Order of Learning:**
@@ -274,6 +318,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 21. In-Memory RAM Filesystem (RAMFS) (Phase 21)
+**Status: stub.** Creates `/tmp` in the VFS tree. Not a separate filesystem.
+
 **Goal:** Dynamic in-memory hierarchical filesystem (`mkdir`, `create`, `write`, `read`).
 
 - **Order of Learning:**
@@ -284,6 +330,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 22. Multi-Level Priority Scheduler (Phase 22)
+**Status: stub.** Priorities are stored; the scheduler ignores them.
+
 **Goal:** Priority-based task scheduling (Real-Time, High, Normal, Low priority queues).
 
 - **Order of Learning:**
@@ -294,6 +342,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 23. Counting Semaphores (Phase 23)
+**Status: partial.** Correct counting, but waiters spin with `sched_yield` instead of blocking.
+
 **Goal:** POSIX-style counting semaphores (`sem_init`, `sem_wait`, `sem_post`).
 
 - **Order of Learning:**
@@ -304,6 +354,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 24. Virtual Process Filesystem (/proc) (Phase 24)
+**Status: stub.** Two static text files.
+
 **Goal:** Virtual `/proc` filesystem exposing system diagnostics (`/proc/meminfo`, `/proc/cpuinfo`, `/proc/uptime`).
 
 - **Order of Learning:**
@@ -314,6 +366,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 25. Teletype Subsystem (TTY) (Phase 25)
+**Status: stub.** A ring buffer. No line discipline.
+
 **Goal:** TTY line discipline, raw vs canonical mode, echo control.
 
 - **Order of Learning:**
@@ -324,6 +378,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 26. Floating Point Unit (FPU/SSE) State Management (Phase 26)
+**Status: partial.** CR0/CR4 are set up. No per-task state is saved.
+
 **Goal:** FPU/SSE register initialization (`CR0`/`CR4`), `fxsave`/`fxrstor` context switching.
 
 - **Order of Learning:**
@@ -334,6 +390,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 27. Paging Swap Subsystem (Phase 27)
+**Status: stub.** A slot bitmap. No page is ever written out.
+
 **Goal:** Out-of-memory page swapping to disk block storage (`swap_out`, `swap_in`).
 
 - **Order of Learning:**
@@ -344,6 +402,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 28. Dynamic Executable Linking (Phase 28)
+**Status: stub.** Recognises relocation types and returns 0.
+
 **Goal:** Parsing dynamic ELF section headers (`.dynamic`, `.got`, `.plt`), runtime symbol resolution.
 
 - **Order of Learning:**
@@ -354,6 +414,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 29. UDP/IP Network Socket Stack (Phase 29)
+**Status: stub.** Internet checksum works. No packets are built or sent.
+
 **Goal:** Network socket layer (`socket`, `bind`, `sendto`, `recvfrom`), IPv4/UDP packet handling.
 
 - **Order of Learning:**
@@ -364,6 +426,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 30. Desktop Window Manager & GUI Compositor (Phase 30)
+**Status: stub.** Allocates a pixel buffer. Nothing is composited.
+
 **Goal:** Graphical GUI window creation (`window_create`), compositing back-buffer blitter.
 
 - **Order of Learning:**
@@ -374,6 +438,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 31. User Account Authentication (Phase 31)
+**Status: stub.** Accepts `root` with any password.
+
 **Goal:** User account authentication (`auth_login`), UID/GID context management.
 
 - **Order of Learning:**
@@ -384,6 +450,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 32. Kernel Ring Buffer & dmesg (Phase 32)
+**Status: real.** 4 KiB ring buffer.
+
 **Goal:** Kernel syslog ring buffer (`klog_write`), `dmesg` shell command.
 
 - **Order of Learning:**
@@ -394,6 +462,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 33. High-Resolution Timers & Nanosleep (Phase 33)
+**Status: stub.** `nanosleep` polls the 100 Hz tick.
+
 **Goal:** Nanosecond precision sleep (`nanosleep`), HRT timer queue.
 
 - **Order of Learning:**
@@ -404,6 +474,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 34. VFS Mount Manager (Phase 34)
+**Status: partial.** Records mount points; path lookup does not use them.
+
 **Goal:** Path mount points (`vfs_mount`), mount table management, shell `mount` command.
 
 - **Order of Learning:**
@@ -414,6 +486,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 35. POSIX Shared Memory (SHM) (Phase 35)
+**Status: partial.** Keyed kernel heap buffers. Not mapped into processes.
+
 **Goal:** Inter-process shared physical frame regions (`shm_create`, `shm_get`, `shm_destroy`).
 
 - **Order of Learning:**
@@ -424,6 +498,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 36. Cryptographic Primitives (Phase 36)
+**Status: real.** Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it.
+
 **Goal:** Production-grade Kernel Cryptographic Suite (SHA-1, SHA-256, SHA-512, MD5, BLAKE2s, SipHash-2-4, AES-128/256, AES-XTS, AES-GCM, ChaCha20, Poly1305, HMAC, HKDF-SHA256, Ed25519, CRC32/CRC32C).
 
 - **Order of Learning:**
@@ -440,6 +516,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 37. Virtual Hardware Devices (/dev) (Phase 37)
+**Status: stub.** Static files. `/dev/random` contains the text `RND`.
+
 **Goal:** Virtual character devices (`/dev/null`, `/dev/zero`, `/dev/random`), RDTSC pseudo-random number generator (`get_random_u32`).
 
 - **Order of Learning:**
@@ -450,6 +528,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 ---
 
 ### 38. Kernel Performance Benchmark Suite (Phase 38)
+**Status: real.** Memory copy and CPU loop timing.
+
 **Goal:** CPU MIPS calculation & memory throughput diagnostic suite.
 
 - **Order of Learning:**
