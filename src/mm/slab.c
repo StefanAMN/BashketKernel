@@ -9,6 +9,7 @@
 #include "heap.h"
 #include "kprintf.h"
 #include "string_util.h"
+#include "spinlock.h"
 
 typedef struct slab_page {
     void *freelist;             // Linked list of free objects in this page
@@ -28,6 +29,9 @@ struct kmem_cache {
 };
 
 static kmem_cache_t *cache_chain = NULL;
+
+// One lock for all caches. Lock order: slab_lock, then the PMM lock.
+static spinlock_t slab_lock = SPINLOCK_INIT;
 
 static slab_page_t *slab_page_create(kmem_cache_t *cache) {
     void *phys_frame = pmm_alloc_frame();
@@ -87,16 +91,17 @@ kmem_cache_t *kmem_cache_create(const char *name, size_t object_size, size_t ali
         cache->aligned_size = sizeof(void *);
     }
 
+    uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
     cache->next = cache_chain;
     cache_chain = cache;
+    spinlock_release_irqrestore(&slab_lock, flags);
 
     kprintf("Slab Init: Cache '%s' created (Obj Size: %zu, Aligned: %zu)\n", cache->name, object_size, cache->aligned_size);
     return cache;
 }
 
-void *kmem_cache_alloc(kmem_cache_t *cache) {
-    if (!cache) return NULL;
-
+// Caller must hold slab_lock.
+static void *kmem_cache_alloc_locked(kmem_cache_t *cache) {
     slab_page_t *slab = cache->slabs_partial;
     if (!slab) {
         slab = cache->slabs_free;
@@ -127,8 +132,19 @@ void *kmem_cache_alloc(kmem_cache_t *cache) {
     return obj;
 }
 
+void *kmem_cache_alloc(kmem_cache_t *cache) {
+    if (!cache) return NULL;
+
+    uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
+    void *obj = kmem_cache_alloc_locked(cache);
+    spinlock_release_irqrestore(&slab_lock, flags);
+    return obj;
+}
+
 void kmem_cache_free(kmem_cache_t *cache, void *obj) {
     if (!cache || !obj) return;
+
+    uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
 
     // Locate slab page header from object virtual address (4 KiB page aligned)
     uint64_t page_addr = (uint64_t)obj & ~0xFFFULL;
@@ -152,10 +168,14 @@ void kmem_cache_free(kmem_cache_t *cache, void *obj) {
             cache->slabs_partial = slab;
         }
     }
+
+    spinlock_release_irqrestore(&slab_lock, flags);
 }
 
 void kmem_cache_destroy(kmem_cache_t *cache) {
     if (!cache) return;
+
+    uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
 
     // Free all slab pages
     slab_page_t *lists[3] = {cache->slabs_full, cache->slabs_partial, cache->slabs_free};
@@ -178,6 +198,8 @@ void kmem_cache_destroy(kmem_cache_t *cache) {
     if (*curr_c) {
         *curr_c = cache->next;
     }
+
+    spinlock_release_irqrestore(&slab_lock, flags);
 
     kfree(cache);
 }

@@ -57,6 +57,7 @@
 #include "crypto.h"
 #include "dev.h"
 #include "bench.h"
+#include "acpi.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -79,7 +80,19 @@ static volatile struct limine_hhdm_request hhdm_request = {
     .revision = 0
 };
 
-static uint8_t dedicated_kernel_stack[128 * 1024] __attribute__((aligned(4096)));
+__attribute__((used, section(".requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST,
+    .revision = 0
+};
+
+// Ask Limine for a 128 KiB boot stack. kmain keeps running on it as PID 0.
+__attribute__((used, section(".requests")))
+static volatile struct limine_stack_size_request stack_size_request = {
+    .id = LIMINE_STACK_SIZE_REQUEST,
+    .revision = 0,
+    .stack_size = 128 * 1024
+};
 
 static void hcf(void) {
     asm("cli");
@@ -130,11 +143,6 @@ static void shell_task_entry(void) {
 }
 
 void _start(void) {
-    // Switch to dedicated 128 KiB higher-half kernel stack safely
-    uint64_t new_rsp = (uint64_t)dedicated_kernel_stack + sizeof(dedicated_kernel_stack) - 128;
-    new_rsp &= ~0xFULL; // Ensure 16-byte alignment
-    asm volatile("mov rsp, %0" : : "r"(new_rsp));
-
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
         hcf();
     }
@@ -182,7 +190,7 @@ void _start(void) {
 
     // Phase 4: Multitasking & Scheduler
     sched_init();
-    pit_init(100); // 100 Hz timer tick
+    pit_init(TIMER_HZ);
     kprintf("Phase 4 Multitasking initialization complete.\n");
 
     // Phase 5: Userspace & System Calls
@@ -203,9 +211,11 @@ void _start(void) {
     kprintf("Phase 8 Slab Allocator, Refcounting & mmap initialization complete.\n");
 
     // Phase 9: Modern Interrupt Architecture (LAPIC & IOAPIC)
+    // The PIT stays the only tick source. The LAPIC timer is left off until
+    // it is calibrated and given its own vector.
     lapic_init();
+    acpi_init(rsdp_request.response ? (void *)rsdp_request.response->address : NULL);
     ioapic_init();
-    lapic_timer_init(0x100000);
     kprintf("Phase 9 Local APIC & I/O APIC initialization complete.\n");
 
     // Phase 10: Symmetric Multiprocessing (SMP & Spinlocks)
@@ -286,8 +296,9 @@ void _start(void) {
     // Create interactive shell task
     task_create("shell", shell_task_entry);
 
-    // Idle loop yielding to shell task
+    // Idle loop: free exited tasks, then yield to whatever is runnable
     while (1) {
+        sched_reap();
         sched_yield();
         asm("hlt");
     }

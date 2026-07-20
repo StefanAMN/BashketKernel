@@ -21,8 +21,47 @@ TEST(pmm_multi_allocation) {
     EXPECT_EQ(pmm_get_free_frames(), free_before);
 }
 
+TEST(pmm_sized_from_ram) {
+    // Total frames must describe RAM, not the top of the physical address
+    // space: nearly all of it should have been free at boot.
+    size_t total = pmm_get_total_frames();
+    EXPECT_TRUE(total > 0);
+    EXPECT_TRUE(pmm_get_free_frames() + pmm_get_used_frames() == total);
+    EXPECT_TRUE(pmm_get_free_frames() > total / 2);
+}
+
+TEST(pmm_exhaustion_and_recovery) {
+    size_t free_before = pmm_get_free_frames();
+    uint64_t hhdm = pmm_get_hhdm_offset();
+
+    // Allocate every frame, chaining them through their own first 8 bytes
+    void *head = NULL;
+    size_t taken = 0;
+    while (taken < free_before) {
+        void *frame = pmm_alloc_frame();
+        if (!frame) break;
+        *(void **)((uint64_t)frame + hhdm) = head;
+        head = frame;
+        taken++;
+    }
+
+    EXPECT_TRUE(taken == free_before);
+    EXPECT_TRUE(pmm_get_free_frames() == 0);
+    EXPECT_TRUE(pmm_alloc_frame() == NULL); // Prints one out-of-memory error
+
+    while (head) {
+        void *next = *(void **)((uint64_t)head + hhdm);
+        pmm_free_frame(head);
+        head = next;
+    }
+
+    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+}
+
 void test_suite_pmm(void) {
     kprintf("Suite: PMM (Physical Memory Manager)\n");
     RUN_TEST(pmm_allocation);
     RUN_TEST(pmm_multi_allocation);
+    RUN_TEST(pmm_sized_from_ram);
+    RUN_TEST(pmm_exhaustion_and_recovery);
 }

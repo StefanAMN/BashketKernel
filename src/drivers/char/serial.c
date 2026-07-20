@@ -8,6 +8,7 @@
 #include "interrupts.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include "spinlock.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -16,8 +17,13 @@ static char serial_buffer[SERIAL_BUFFER_SIZE];
 static volatile size_t serial_head = 0;
 static volatile size_t serial_tail = 0;
 
-static void serial_irq_handler(struct registers *regs) {
-    (void)regs;
+// Guards the receive ring buffer and reads of the UART data register, which
+// the IRQ handler and the polling path both perform.
+static spinlock_t serial_rx_lock = SPINLOCK_INIT;
+
+// Move every byte the UART is holding into the ring buffer.
+// Caller must hold serial_rx_lock.
+static void serial_drain_uart(void) {
     while (inb(COM1 + 5) & 0x01) {
         char c = (char)inb(COM1);
         if (c == '\r') c = '\n';
@@ -30,6 +36,13 @@ static void serial_irq_handler(struct registers *regs) {
             }
         }
     }
+}
+
+static void serial_irq_handler(struct registers *regs) {
+    (void)regs;
+    uint64_t flags = spinlock_acquire_irqsave(&serial_rx_lock);
+    serial_drain_uart();
+    spinlock_release_irqrestore(&serial_rx_lock, flags);
 }
 
 void serial_init(void) {
@@ -67,32 +80,25 @@ void serial_write(const char *str) {
 }
 
 bool serial_has_char(void) {
-    if (serial_head != serial_tail) {
-        return true;
-    }
-    // Bit 0 of Line Status Register (COM1 + 5) is Data Ready
-    return (inb(COM1 + 5) & 0x01) != 0;
+    uint64_t flags = spinlock_acquire_irqsave(&serial_rx_lock);
+    serial_drain_uart(); // Polling fallback for bytes with no interrupt yet
+    bool has = (serial_head != serial_tail);
+    spinlock_release_irqrestore(&serial_rx_lock, flags);
+    return has;
 }
 
 char serial_getchar(void) {
-    if (serial_head != serial_tail) {
-        char c = serial_buffer[serial_tail];
-        serial_tail = (serial_tail + 1) % SERIAL_BUFFER_SIZE;
-        return c;
-    }
+    while (1) {
+        uint64_t flags = spinlock_acquire_irqsave(&serial_rx_lock);
+        serial_drain_uart();
+        if (serial_head != serial_tail) {
+            char c = serial_buffer[serial_tail];
+            serial_tail = (serial_tail + 1) % SERIAL_BUFFER_SIZE;
+            spinlock_release_irqrestore(&serial_rx_lock, flags);
+            return c;
+        }
+        spinlock_release_irqrestore(&serial_rx_lock, flags);
 
-    while (!serial_has_char()) {
         asm volatile("pause");
     }
-
-    if (serial_head != serial_tail) {
-        char c = serial_buffer[serial_tail];
-        serial_tail = (serial_tail + 1) % SERIAL_BUFFER_SIZE;
-        return c;
-    }
-
-    char c = (char)inb(COM1);
-    if (c == '\r') c = '\n';
-    if (c == 127) c = '\b';
-    return c;
 }

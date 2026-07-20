@@ -38,6 +38,9 @@ void idt_init(void) {
         idt_set_gate(i, isr_stub_table[i], 0x08, flags);
     }
 
+    // Vector 8 (double fault) runs on the IST1 stack set up in gdt_init
+    idt_entries[8].ist = 1;
+
     // Load IDTR via LIDT instruction
     asm volatile ("lidt [%0]" : : "r"(&idt_pointer));
 }

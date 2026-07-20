@@ -19,6 +19,12 @@ static struct {
 static struct gdt_ptr gdt_pointer;
 static struct tss sys_tss;
 
+// Dedicated stack for the double fault handler (TSS IST1). A double fault is
+// what the CPU raises when it cannot deliver an exception, most often because
+// the kernel stack itself is bad. Running the handler on that same stack would
+// fault again and reset the machine (triple fault).
+static uint8_t double_fault_stack[16 * 1024] __attribute__((aligned(16)));
+
 static void set_gdt_entry(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
     gdt_table.entries[num].base_low    = (base & 0xFFFF);
     gdt_table.entries[num].base_middle = (base >> 16) & 0xFF;
@@ -73,6 +79,7 @@ void gdt_init(void) {
     // Setup TSS
     memset(&sys_tss, 0, sizeof(struct tss));
     sys_tss.iomap_base = sizeof(struct tss);
+    sys_tss.ist1 = (uint64_t)double_fault_stack + sizeof(double_fault_stack);
     set_tss_entry((uint64_t)&sys_tss, sizeof(struct tss) - 1);
 
     // Flush GDT and TSS via assembly

@@ -7,6 +7,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "kprintf.h"
+#include "spinlock.h"
 
 typedef struct heap_block {
     size_t size;               // Payload size in bytes
@@ -21,6 +22,11 @@ typedef struct heap_block {
 static heap_block_t *heap_start = NULL;
 static uint64_t heap_end_virt = KHEAP_START_VIRT;
 static size_t total_allocated_bytes = 0;
+
+// The block list is walked and edited by every kmalloc/kfree, and a timer
+// interrupt can switch tasks in the middle of either one.
+// Lock order: heap_lock, then the VMM lock, then the PMM lock.
+static spinlock_t heap_lock = SPINLOCK_INIT;
 
 static bool expand_heap(size_t bytes) {
     size_t page_count = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -63,8 +69,8 @@ size_t kheap_get_allocated_bytes(void) {
     return total_allocated_bytes;
 }
 
-void *kmalloc(size_t size) {
-    if (size == 0) return NULL;
+// Caller must hold heap_lock.
+static void *kmalloc_locked(size_t size) {
 
     size_t aligned_size = ALIGN(size);
     heap_block_t *current = heap_start;
@@ -109,11 +115,22 @@ void *kmalloc(size_t size) {
     expanded->next = NULL;
     prev_end->next = expanded;
 
-    return kmalloc(size);
+    return kmalloc_locked(size);
+}
+
+void *kmalloc(size_t size) {
+    if (size == 0 || heap_start == NULL) return NULL;
+
+    uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
+    void *ptr = kmalloc_locked(size);
+    spinlock_release_irqrestore(&heap_lock, flags);
+    return ptr;
 }
 
 void kfree(void *ptr) {
     if (ptr == NULL) return;
+
+    uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
 
     heap_block_t *block = (heap_block_t *)((uint8_t *)ptr - BLOCK_HEADER_SIZE);
     block->is_free = true;
@@ -131,4 +148,6 @@ void kfree(void *ptr) {
             current = current->next;
         }
     }
+
+    spinlock_release_irqrestore(&heap_lock, flags);
 }

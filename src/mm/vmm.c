@@ -7,8 +7,12 @@
 #include "pmm.h"
 #include "kprintf.h"
 #include "string_util.h"
+#include "spinlock.h"
 
 static uint64_t *kernel_pml4 = NULL;
+
+// Protects page-table edits. Lock order: vmm_lock, then the PMM lock.
+static spinlock_t vmm_lock = SPINLOCK_INIT;
 
 static uint64_t *get_next_level(uint64_t *current_table, size_t index, bool allocate, uint64_t flags) {
     if ((current_table[index] & VMM_PRESENT) && !(current_table[index] & VMM_HUGE)) {
@@ -68,18 +72,21 @@ bool vmm_map_page(uint64_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags) 
     size_t pd_idx   = (virt >> 21) & 0x1FF;
     size_t pt_idx   = (virt >> 12) & 0x1FF;
 
+    uint64_t irq_flags = spinlock_acquire_irqsave(&vmm_lock);
+    bool ok = false;
+
     uint64_t *pdpt = get_next_level(pml4, pml4_idx, true, flags);
-    if (!pdpt) return false;
+    uint64_t *pd = pdpt ? get_next_level(pdpt, pdpt_idx, true, flags) : NULL;
+    uint64_t *pt = pd ? get_next_level(pd, pd_idx, true, flags) : NULL;
 
-    uint64_t *pd = get_next_level(pdpt, pdpt_idx, true, flags);
-    if (!pd) return false;
+    if (pt) {
+        pt[pt_idx] = (phys & PTE_ADDR_MASK) | flags | VMM_PRESENT;
+        vmm_invlpg(virt);
+        ok = true;
+    }
 
-    uint64_t *pt = get_next_level(pd, pd_idx, true, flags);
-    if (!pt) return false;
-
-    pt[pt_idx] = (phys & PTE_ADDR_MASK) | flags | VMM_PRESENT;
-    vmm_invlpg(virt);
-    return true;
+    spinlock_release_irqrestore(&vmm_lock, irq_flags);
+    return ok;
 }
 
 bool vmm_unmap_page(uint64_t *pml4, uint64_t virt) {
@@ -92,18 +99,46 @@ bool vmm_unmap_page(uint64_t *pml4, uint64_t virt) {
     size_t pd_idx   = (virt >> 21) & 0x1FF;
     size_t pt_idx   = (virt >> 12) & 0x1FF;
 
+    uint64_t irq_flags = spinlock_acquire_irqsave(&vmm_lock);
+    bool ok = false;
+
     uint64_t *pdpt = get_next_level(pml4, pml4_idx, false, 0);
-    if (!pdpt) return false;
+    uint64_t *pd = pdpt ? get_next_level(pdpt, pdpt_idx, false, 0) : NULL;
+    uint64_t *pt = pd ? get_next_level(pd, pd_idx, false, 0) : NULL;
 
-    uint64_t *pd = get_next_level(pdpt, pdpt_idx, false, 0);
-    if (!pd) return false;
+    if (pt && (pt[pt_idx] & VMM_PRESENT)) {
+        pt[pt_idx] = 0;
+        vmm_invlpg(virt);
+        ok = true;
+    }
 
-    uint64_t *pt = get_next_level(pd, pd_idx, false, 0);
-    if (!pt) return false;
+    spinlock_release_irqrestore(&vmm_lock, irq_flags);
+    return ok;
+}
 
-    pt[pt_idx] = 0;
-    vmm_invlpg(virt);
-    return true;
+uint64_t vmm_get_phys(uint64_t *pml4, uint64_t virt) {
+    if (pml4 == NULL) {
+        pml4 = kernel_pml4;
+    }
+
+    size_t pml4_idx = (virt >> 39) & 0x1FF;
+    size_t pdpt_idx = (virt >> 30) & 0x1FF;
+    size_t pd_idx   = (virt >> 21) & 0x1FF;
+    size_t pt_idx   = (virt >> 12) & 0x1FF;
+
+    uint64_t irq_flags = spinlock_acquire_irqsave(&vmm_lock);
+    uint64_t phys = 0;
+
+    uint64_t *pdpt = get_next_level(pml4, pml4_idx, false, 0);
+    uint64_t *pd = pdpt ? get_next_level(pdpt, pdpt_idx, false, 0) : NULL;
+    uint64_t *pt = pd ? get_next_level(pd, pd_idx, false, 0) : NULL;
+
+    if (pt && (pt[pt_idx] & VMM_PRESENT)) {
+        phys = pt[pt_idx] & PTE_ADDR_MASK;
+    }
+
+    spinlock_release_irqrestore(&vmm_lock, irq_flags);
+    return phys;
 }
 
 void vmm_invlpg(uint64_t virt) {

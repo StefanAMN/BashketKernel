@@ -26,8 +26,13 @@ void pit_init(uint32_t frequency_hz) {
 
     uint32_t divisor = 1193182 / frequency_hz;
 
-    // Command byte 0x36: Channel 0, Access mode lobyte/hibyte, Mode 3 (Square Wave Generator)
-    outb(0x43, 0x36);
+    // Command byte 0x34: Channel 0, Access mode lobyte/hibyte, Mode 2 (Rate Generator).
+    //
+    // Mode 2 holds the output high and pulses it low for one input clock per
+    // period, so there is exactly one rising edge per tick. Mode 3 (square
+    // wave, 0x36) was used here before; under QEMU its output is re-asserted
+    // while already high, and the I/O APIC delivered every tick twice.
+    outb(0x43, 0x34);
     outb(0x40, (uint8_t)(divisor & 0xFF));
     outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
 

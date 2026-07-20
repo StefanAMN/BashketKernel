@@ -13,7 +13,7 @@ void hrtimer_init(void) {
 }
 
 void nanosleep(uint64_t nanoseconds) {
-    uint64_t target_ticks = pit_get_ticks() + (nanoseconds / 10000000ULL);
+    uint64_t target_ticks = pit_get_ticks() + (nanoseconds / (1000000000ULL / TIMER_HZ));
     while (pit_get_ticks() < target_ticks) {
         sched_yield();
     }

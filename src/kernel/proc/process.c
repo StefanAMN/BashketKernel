@@ -14,8 +14,6 @@
 #include "elf.h"
 #include "env.h"
 
-static int next_pid = 100;
-
 static void child_entry_stub(void) {
     kprintf("Process: Child process executed entry point successfully\n");
     task_exit();
@@ -25,12 +23,10 @@ pid_t process_fork(void) {
     task_t *current = sched_get_current_task();
     if (!current) return -1;
 
-    pid_t child_pid = next_pid++;
     task_t *child = task_create("forked_child", child_entry_stub);
     if (!child) return -1;
 
-    child->pid = child_pid;
-    child->state = TASK_READY;
+    pid_t child_pid = (pid_t)child->pid;
 
     kprintf("Process: Forked child PID %d from parent PID %u\n", child_pid, current->pid);
     return child_pid;
