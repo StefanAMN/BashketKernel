@@ -74,20 +74,21 @@ void isr_handler(struct registers *regs) {
 
         while (1) { asm volatile("cli\nhlt"); }
     } else if (regs->int_no >= 32 && regs->int_no < 48) {
+        // Send End of Interrupt (EOI) to Local APIC and 8259 PIC before dispatching
+        // handler, so preemptive context switches (sched_yield) do not leave the
+        // interrupt in-service in the Local APIC.
+        lapic_eoi();
+
+        if (regs->int_no >= 40) {
+            outb(PIC2_COMMAND, 0x20);
+        }
+        outb(PIC1_COMMAND, 0x20);
+
         // Hardware IRQ (32..47)
         uint8_t irq = regs->int_no - 32;
         if (irq_handlers[irq] != NULL) {
             irq_handlers[irq](regs);
         }
-
-        // Send End of Interrupt (EOI) to Local APIC
-        lapic_eoi();
-
-        // Send End of Interrupt (EOI) to 8259 PIC
-        if (regs->int_no >= 40) {
-            outb(PIC2_COMMAND, 0x20);
-        }
-        outb(PIC1_COMMAND, 0x20);
     } else {
         kprintf("Unhandled Interrupt Vector: %zd\n", regs->int_no);
     }

@@ -10,8 +10,8 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 **Goal:** Higher-half kernel entry, Limine boot protocol, text console blitter, COM1 serial logging.
 
 - **Order of Learning:**
-  1. **Framebuffer Console Blitter:**
-     - **Concepts:** Linear framebuffers, bitmap font glyph blitting (`BlitChar`), text row scrolling.
+  1. **Framebuffer Console Blitter & RAM Backbuffer:**
+     - **Concepts:** Linear framebuffers, bitmap font glyph blitting (`BlitChar`), fast RAM double buffering (`console_enable_backbuffer`), zero-MMIO-read 64-bit streaming text row scrolling.
      - Files to inspect: `src/drivers/console/console.h`, `src/drivers/console/console.c`
   2. **Serial Port Logging:**
      - **Concepts:** COM1 UART I/O ports (`0x3F8`), line control register, baud rate divisor.
@@ -65,14 +65,14 @@ Each section breaks down a kernel subsystem, key operating system concepts, and 
 
 - **Order of Learning:**
   1. **Task Control Block & Task Creation:**
-     - **Concepts:** Task states (READY, RUNNING, SLEEPING, DEAD), saved register context.
-     - Files to inspect: `src/kernel/sched/task.h`
+     - **Concepts:** Task states (READY, RUNNING, SLEEPING, DEAD), System V AMD64 ABI 16-byte stack frame alignment (`(RSP + 8) % 16 == 0` at entry), saved register context.
+     - Files to inspect: `src/kernel/sched/task.h`, `src/kernel/sched/sched.c`
   2. **Context Switching:**
-     - **Concepts:** Callee-saved register saving/restoring (`rbx`, `rbp`, `r12–r15`), `rsp` swapping.
+     - **Concepts:** Callee-saved register saving/restoring (`rbx`, `rbp`, `r12–r15`), `rsp` swapping, address space (`cr3`) switching.
      - Files to inspect: `src/arch/x86_64/ctx_switch.S`
-  3. **Timer IRQ (PIT):**
-     - **Concepts:** 8254 PIT tick frequency configuration, preemption trigger.
-     - Files to inspect: `src/kernel/time/pit.h`, `src/kernel/time/pit.c`
+  3. **Timer IRQ (PIT) & Interrupt Acknowledgment:**
+     - **Concepts:** 8254 PIT tick frequency configuration, Local APIC and PIC EOI ordering before preemptive context switch, preventing interrupt starvation.
+     - Files to inspect: `src/kernel/time/pit.h`, `src/kernel/time/pit.c`, `src/arch/x86_64/isr.c`
   4. **Round-Robin Scheduler:**
      - **Concepts:** Runqueue traversal, preemptive scheduling on timer interrupt.
      - Files to inspect: `src/kernel/sched/sched.h`, `src/kernel/sched/sched.c`
