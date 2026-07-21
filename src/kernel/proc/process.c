@@ -174,40 +174,6 @@ int process_exec(struct registers *regs, const char *path, char *const argv[]) {
     return 0;
 }
 
-// Copy every user page of `src` into `dst` (a full copy, not copy-on-write).
-static bool copy_user_pages(uint64_t *dst, uint64_t *src) {
-    uint64_t hhdm = pmm_get_hhdm_offset();
-
-    for (size_t i4 = 0; i4 < 256; i4++) {
-        if (!(src[i4] & VMM_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)((src[i4] & PTE_ADDR_MASK) + hhdm);
-
-        for (size_t i3 = 0; i3 < 512; i3++) {
-            if (!(pdpt[i3] & VMM_PRESENT) || (pdpt[i3] & VMM_HUGE)) continue;
-            uint64_t *pd = (uint64_t *)((pdpt[i3] & PTE_ADDR_MASK) + hhdm);
-
-            for (size_t i2 = 0; i2 < 512; i2++) {
-                if (!(pd[i2] & VMM_PRESENT) || (pd[i2] & VMM_HUGE)) continue;
-                uint64_t *pt = (uint64_t *)((pd[i2] & PTE_ADDR_MASK) + hhdm);
-
-                for (size_t i1 = 0; i1 < 512; i1++) {
-                    uint64_t pte = pt[i1];
-                    if (!(pte & VMM_PRESENT)) continue;
-
-                    uint64_t virt = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
-                                    ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
-                    uint64_t flags = pte & (VMM_WRITABLE | VMM_USER | VMM_NO_EXECUTE);
-
-                    void *copy = vmm_alloc_user_page(dst, virt, flags);
-                    if (!copy) return false;
-                    memcpy(copy, (void *)((pte & PTE_ADDR_MASK) + hhdm), PAGE_SIZE);
-                }
-            }
-        }
-    }
-    return true;
-}
-
 pid_t process_fork(struct registers *regs) {
     task_t *parent = sched_get_current_task();
     if (!parent || !parent->is_user || !regs) return -1;
@@ -215,7 +181,8 @@ pid_t process_fork(struct registers *regs) {
     uint64_t *child_pml4 = vmm_create_address_space();
     if (!child_pml4) return -1;
 
-    if (!copy_user_pages(child_pml4, vmm_space_from_phys((uint64_t)parent->pml4_phys))) {
+    // Share every page copy-on-write: nothing is copied until one side writes
+    if (!vmm_clone_user_space(child_pml4, vmm_space_from_phys((uint64_t)parent->pml4_phys))) {
         vmm_destroy_address_space(child_pml4);
         return -1;
     }

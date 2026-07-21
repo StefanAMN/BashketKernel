@@ -22,11 +22,11 @@ that gap.
 | 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader. No file descriptors yet. |
 | 6 | VFS and initrd | real | In-memory VFS tree. A USTAR initrd with the user programs is loaded as a Limine module. Read-only. |
 | 7 | Shell | real | Runs as a kernel thread, not a user program. |
-| 8 | Slab, COW, mmap | partial | Slab allocator works. Anonymous `mmap`, `munmap` and `brk` work per process. Frame sharing counts exist, but `fork` still copies every page. |
+| 8 | Slab, COW, mmap | partial | Slab allocator works. Anonymous `mmap`, `munmap` and `brk` work per process. `fork` shares pages copy-on-write. Nothing is demand-paged or file-backed. |
 | 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |
 | 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
 | 11 | virtio-blk and FAT32 | stub | A RAM buffer and an in-memory file table. No virtqueues, no on-disk format. |
-| 12 | fork, exec, wait, kill | real | `fork` (full copy), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. No signal handlers. |
+| 12 | fork, exec, wait, kill | real | `fork` (copy-on-write), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. No signal handlers. |
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |

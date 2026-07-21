@@ -42,7 +42,7 @@ pid_t process_spawn(const char *path, char *const argv[]);
 int process_exec(struct registers *regs, const char *path, char *const argv[]);
 
 /**
- * @brief Create a copy of the calling process.
+ * @brief Create a copy of the calling process. Memory is shared copy-on-write.
  * @param regs The caller's syscall frame; the child resumes from a copy of it.
  * @return Child PID to the parent; the child sees 0 from its own syscall return.
  */

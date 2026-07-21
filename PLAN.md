@@ -305,9 +305,9 @@ Differences from the plan as written:
 - [x] **`exec`.** Replaces the current task's address space and jumps to the
       new entry point, with `argv` on the user stack.
 - [x] **`fork`, full copy.** Works, including a child that execs.
-- [ ] **`fork`, copy-on-write.** The frame sharing counts in `src/mm/cow.c` are
-      ready; what is missing is marking shared pages read-only and a
-      write-fault path in the page fault handler.
+- [x] **`fork`, copy-on-write.** `vmm_clone_user_space` shares every frame and
+      marks writable pages read-only + `VMM_COW` in both processes; the page
+      fault handler copies on the first write (`vmm_handle_cow_fault`).
 - [ ] **File descriptors.** A per-process table, so `open`, `read`, `write` and
       `close` act on real files. `SYS_OPEN` currently returns 3 for any path.
 - [x] **`brk` and the mmap cursor** become per-process (`syscall.c:20`,

@@ -123,10 +123,78 @@ TEST(frame_sharing_counts) {
     EXPECT_TRUE(pmm_get_free_frames() == free_after_alloc + 1);
 }
 
+TEST(copy_on_write_clone) {
+    size_t free_before = pmm_get_free_frames();
+    uint64_t hhdm = pmm_get_hhdm_offset();
+
+    uint64_t *parent = vmm_create_address_space();
+    uint64_t *child = vmm_create_address_space();
+    const uint64_t data_va = 0x500000, text_va = 0x501000; // Same page table
+
+    uint8_t *data = vmm_alloc_user_page(parent, data_va, VMM_WRITABLE | VMM_NO_EXECUTE);
+    EXPECT_TRUE(vmm_alloc_user_page(parent, text_va, 0) != NULL);   // Read-only, like program text
+    data[0] = 0x11;
+    uint64_t data_phys = vmm_get_phys(parent, data_va);
+    uint64_t text_phys = vmm_get_phys(parent, text_va);
+
+    size_t free_before_clone = pmm_get_free_frames();
+    EXPECT_TRUE(vmm_clone_user_space(child, parent));
+
+    // Cloning copies no page: the child only needs a PDPT, a PD and a PT
+    EXPECT_TRUE(free_before_clone - pmm_get_free_frames() == 3);
+    EXPECT_TRUE(vmm_get_phys(child, data_va) == data_phys);
+    EXPECT_TRUE(vmm_get_phys(child, text_va) == text_phys);
+    EXPECT_EQ(pmm_get_frame_ref((void *)data_phys), 2u);
+
+    // The writable page is now read-only + COW on both sides; flags survive
+    uint64_t parent_pte = vmm_get_pte(parent, data_va);
+    uint64_t child_pte = vmm_get_pte(child, data_va);
+    EXPECT_TRUE(!(parent_pte & VMM_WRITABLE) && (parent_pte & VMM_COW));
+    EXPECT_TRUE(!(child_pte & VMM_WRITABLE) && (child_pte & VMM_COW));
+    EXPECT_TRUE((child_pte & VMM_USER) && (child_pte & VMM_NO_EXECUTE));
+    // The read-only page is shared but is not COW: writing it stays an error
+    EXPECT_TRUE(!(vmm_get_pte(child, text_va) & (VMM_COW | VMM_WRITABLE)));
+    EXPECT_TRUE(!vmm_handle_cow_fault(child, text_va));
+    // A COW page still counts as writable memory for syscall arguments
+    EXPECT_TRUE(vmm_user_range_ok(child, data_va, 8, true));
+    EXPECT_TRUE(!vmm_user_range_ok(child, text_va, 8, true));
+
+    // Child writes first: it gets a private copy with the same contents
+    EXPECT_TRUE(vmm_handle_cow_fault(child, data_va + 123));
+    uint64_t child_phys = vmm_get_phys(child, data_va);
+    EXPECT_TRUE(child_phys != data_phys);
+    EXPECT_EQ(((uint8_t *)(child_phys + hhdm))[0], 0x11);
+    EXPECT_TRUE(vmm_get_pte(child, data_va) & VMM_WRITABLE);
+    EXPECT_TRUE(!(vmm_get_pte(child, data_va) & VMM_COW));
+    EXPECT_EQ(pmm_get_frame_ref((void *)data_phys), 1u);
+    ((uint8_t *)(child_phys + hhdm))[0] = 0x22;
+    EXPECT_EQ(data[0], 0x11);
+
+    // Parent writes next: it is the last owner, so no copy, just write access
+    size_t free_before_fault = pmm_get_free_frames();
+    EXPECT_TRUE(vmm_handle_cow_fault(parent, data_va));
+    EXPECT_TRUE(vmm_get_phys(parent, data_va) == data_phys);
+    EXPECT_TRUE(vmm_get_pte(parent, data_va) & VMM_WRITABLE);
+    EXPECT_TRUE(pmm_get_free_frames() == free_before_fault);
+
+    // Not COW any more, unmapped, and kernel addresses: all refused
+    EXPECT_TRUE(!vmm_handle_cow_fault(parent, data_va));
+    EXPECT_TRUE(!vmm_handle_cow_fault(parent, 0x900000));
+    EXPECT_TRUE(!vmm_handle_cow_fault(parent, 0xFFFFFFFF80000000ULL));
+
+    // Destroying one space leaves the other's shared pages alive
+    vmm_destroy_address_space(parent);
+    EXPECT_TRUE(vmm_get_phys(child, text_va) == text_phys);
+    EXPECT_EQ(pmm_get_frame_ref((void *)text_phys), 1u);
+    vmm_destroy_address_space(child);
+    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+}
+
 void test_suite_mmap(void) {
     kprintf("Suite: Address Spaces, mmap and brk\n");
     RUN_TEST(address_space_is_isolated_and_freed);
     RUN_TEST(user_range_validation);
     RUN_TEST(mmap_brk_and_unmap);
     RUN_TEST(frame_sharing_counts);
+    RUN_TEST(copy_on_write_clone);
 }

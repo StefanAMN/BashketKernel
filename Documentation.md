@@ -138,7 +138,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 8. Advanced Memory Management (Phase 8)
-**Status: partial.** Slab works; `mmap`/`brk` work per process; `fork` still copies every page (no copy-on-write fault path).
+**Status: partial.** Slab works; `mmap`/`brk` work per process; `fork` shares pages copy-on-write (`vmm_clone_user_space`, `vmm_handle_cow_fault`).
 
 **Goal:** Slab object allocator, Copy-On-Write (COW), Anonymous memory mapping (`mmap`).
 
@@ -201,7 +201,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 12. Process Life Cycle & Signal Handling (Phase 12)
-**Status: real.** `fork` (full copy), `execve`, `waitpid`, `kill` and exit statuses work. No signal handlers.
+**Status: real.** `fork` (copy-on-write), `execve`, `waitpid`, `kill` and exit statuses work. No signal handlers.
 
 **Goal:** Process hierarchy (`fork`, `exec`, `waitpid`, `exit`), UNIX signal dispatching.
 

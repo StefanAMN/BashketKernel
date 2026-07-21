@@ -128,11 +128,74 @@ static void check_fork(void) {
     CHECK(kill(pid, 9) == -ESRCH);
 }
 
+/* Copy-on-write: after fork both processes share every page until one writes. */
+static void check_copy_on_write(void) {
+    enum { PAGES = 64 };
+    unsigned char *big = mmap_anon(PAGES * 4096);
+    int *shared_status = mmap_anon(4096);
+    CHECK(big != NULL && shared_status != NULL);
+    if (!big || !shared_status) return;
+
+    for (int i = 0; i < PAGES; i++) big[i * 4096] = (unsigned char)i;
+
+    long pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        /* The child sees the parent's data, and its writes stay private */
+        int ok = 1;
+        for (int i = 0; i < PAGES; i++) {
+            if (big[i * 4096] != (unsigned char)i) ok = 0;
+            big[i * 4096] = 0xEE;
+        }
+        /* The kernel writing into a still-shared page must copy it too */
+        struct { char sysname[65]; char rest[4 * 65]; } *info = (void *)(big + 4096 + 8);
+        if (syscall1(SYS_UNAME, info) != 0 || strcmp(info->sysname, "BashketOS") != 0) ok = 0;
+        exit(ok ? 7 : 1);
+    }
+
+    /* The parent has not touched shared_status since the fork, so the page is
+     * still shared when the kernel stores the exit status through it. */
+    CHECK(waitpid(pid, shared_status) == pid);
+    CHECK(*shared_status == 7);
+
+    for (int i = 0; i < PAGES; i++) {
+        if (big[i * 4096] != (unsigned char)i) { CHECK(!"child write reached the parent"); break; }
+    }
+    CHECK(big[4096 + 8] == 0);             /* Nor did the kernel's write for the child */
+
+    /* The parent can still write its own pages after the child is gone */
+    big[0] = 0x55;
+    CHECK(big[0] == 0x55);
+
+    /* Forks of forks: a chain of processes each bumps its private copy */
+    static int depth_value = 0;
+    long first = fork();
+    if (first == 0) {
+        depth_value = 1;
+        long second = fork();
+        if (second == 0) {
+            depth_value = 2;
+            exit(depth_value);
+        }
+        int status = -1;
+        waitpid(second, &status);
+        exit(status == 2 && depth_value == 1 ? 3 : 1);
+    }
+    int status = -1;
+    CHECK(waitpid(first, &status) == first);
+    CHECK(status == 3);
+    CHECK(depth_value == 0);
+
+    CHECK(munmap(big, PAGES * 4096) == 0);
+    CHECK(munmap(shared_status, 4096) == 0);
+}
+
 int main(void) {
     check_basics();
     check_bad_pointers();
     check_memory();
     check_fork();
+    check_copy_on_write();
 
     if (failures == 0) {
         printf("syscheck: all checks passed\n");
