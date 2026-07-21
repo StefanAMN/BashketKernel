@@ -29,13 +29,10 @@ void idt_init(void) {
 
     // Load all 256 ISR stubs into IDT
     for (int i = 0; i < 256; i++) {
-        // Default: 0x8E = Present (0x80) | Ring 0 (0x00) | 64-bit Interrupt Gate (0x0E)
-        // Note: For int 0x80 (syscall/trap gate from user), we set DPL=3 (0xEE) later.
-        uint8_t flags = 0x8E;
-        if (i == 0x80) {
-            flags = 0xEE; // Allow Ring 3 user execution
-        }
-        idt_set_gate(i, isr_stub_table[i], 0x08, flags);
+        // 0x8E = Present (0x80) | DPL 0 | 64-bit Interrupt Gate (0x0E).
+        // DPL 0 for every gate: user code cannot raise these with `int n`
+        // (it gets #GP instead). System calls use the syscall instruction.
+        idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E);
     }
 
     // Vector 8 (double fault) runs on the IST1 stack set up in gdt_init

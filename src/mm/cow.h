@@ -1,6 +1,11 @@
 /**
  * @file cow.h
- * @brief Copy-On-Write (COW) Frame Reference Counting Interface
+ * @brief Physical frame sharing counts (the basis for copy-on-write)
+ *
+ * A frame handed out by the PMM has one owner. When a second address space
+ * maps the same frame (fork), it takes a reference. Each owner drops its
+ * reference when it unmaps the frame; the frame returns to the PMM only when
+ * the last owner lets go.
  */
 
 #ifndef COW_H
@@ -10,27 +15,23 @@
 #include <stddef.h>
 
 /**
- * @brief Initialize Frame Reference Counter array based on total PMM physical frames.
+ * @brief Allocate the sharing table, one counter per physical frame.
  */
 void cow_init(void);
 
 /**
- * @brief Increment reference counter for physical frame.
- * @param phys_frame Physical frame address.
+ * @brief Record one more owner of a frame.
  */
 void pmm_ref_frame(void *phys_frame);
 
 /**
- * @brief Decrement reference counter for physical frame. If refcount drops to 0, frame is freed.
- * @param phys_frame Physical frame address.
+ * @brief Drop one owner. Frees the frame if that was the last one.
  */
 void pmm_unref_frame(void *phys_frame);
 
 /**
- * @brief Get current reference count of physical frame.
- * @param phys_frame Physical frame address.
- * @return Number of active references.
+ * @brief Number of owners of an allocated frame (1 = not shared).
  */
-uint16_t pmm_get_frame_ref(void *phys_frame);
+uint32_t pmm_get_frame_ref(void *phys_frame);
 
 #endif // COW_H

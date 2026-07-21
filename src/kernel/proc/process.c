@@ -1,95 +1,308 @@
 /**
  * @file process.c
- * @brief Implementation of UNIX Process Subsystem & Stack-Based Environment Execve
+ * @brief User process creation and lifecycle
  */
 
 #include "process.h"
 #include "sched.h"
 #include "kprintf.h"
-#include "cow.h"
 #include "vmm.h"
 #include "pmm.h"
+#include "mmap.h"
 #include "kstring.h"
 #include "vfs.h"
 #include "elf.h"
-#include "env.h"
+#include "gdt.h"
+#include "spinlock.h"
 
-static void child_entry_stub(void) {
-    kprintf("Process: Child process executed entry point successfully\n");
-    task_exit();
+extern void enter_user_mode(uint64_t rip, uint64_t rsp);
+extern void user_frame_return(void);
+
+// Everything needed to start a program in a fresh address space
+typedef struct {
+    uint64_t *pml4;
+    uint64_t entry;
+    uint64_t rsp;
+    uint64_t image_end;
+    char name[32];
+} user_image_t;
+
+static uint64_t page_align_up(uint64_t value) {
+    return (value + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
 }
 
-pid_t process_fork(void) {
-    task_t *current = sched_get_current_task();
-    if (!current) return -1;
+// Lay out argc/argv on the new program's stack the way the System V AMD64
+// ABI specifies for process entry:
+//
+//   high addresses   argument strings
+//                    padding to 16 bytes
+//                    NULL                  (end of envp)
+//                    NULL                  (end of argv)
+//                    argv[argc-1] ... argv[0]
+//   RSP ->           argc
+//
+// RSP must be 16-byte aligned at entry. The stack belongs to another address
+// space, so it is written through vmm_copy_to_space.
+static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[], uint64_t *out_rsp) {
+    uint64_t stack_bottom = USER_STACK_TOP - (uint64_t)USER_STACK_PAGES * PAGE_SIZE;
+    if (user_map_range(pml4, stack_bottom, USER_STACK_PAGES * PAGE_SIZE, PROT_READ | PROT_WRITE) != 0) {
+        return false;
+    }
 
-    task_t *child = task_create("forked_child", child_entry_stub);
-    if (!child) return -1;
+    char *const default_argv[] = { (char *)path, NULL };
+    if (!argv || !argv[0]) argv = default_argv;
 
-    pid_t child_pid = (pid_t)child->pid;
+    uint64_t arg_addrs[PROCESS_MAX_ARGS];
+    size_t argc = 0;
+    size_t string_bytes = 0;
+    uint64_t sp = USER_STACK_TOP;
 
-    kprintf("Process: Forked child PID %d from parent PID %u\n", child_pid, current->pid);
-    return child_pid;
+    for (; argv[argc] != NULL; argc++) {
+        if (argc >= PROCESS_MAX_ARGS) return false;
+
+        size_t len = strlen(argv[argc]) + 1;
+        string_bytes += len;
+        if (string_bytes > PROCESS_ARG_BYTES) return false;
+
+        sp -= len;
+        if (vmm_copy_to_space(pml4, sp, argv[argc], len) != len) return false;
+        arg_addrs[argc] = sp;
+    }
+
+    sp &= ~0xFULL;
+
+    // argc + argv pointers + two NULLs; pad so the final RSP is 16-byte aligned
+    size_t slots = 1 + argc + 2;
+    if (slots % 2) sp -= 8;
+
+    uint64_t vec[PROCESS_MAX_ARGS + 3];
+    vec[0] = argc;
+    for (size_t i = 0; i < argc; i++) vec[1 + i] = arg_addrs[i];
+    vec[1 + argc] = 0;
+    vec[2 + argc] = 0;
+
+    sp -= slots * sizeof(uint64_t);
+    if (vmm_copy_to_space(pml4, sp, vec, slots * sizeof(uint64_t)) != slots * sizeof(uint64_t)) return false;
+
+    *out_rsp = sp;
+    return true;
 }
 
-int process_execve_env(const char *path, char *const argv[], char *const envp[]) {
-    (void)argv;
+// Build a complete user image for `path`. On failure nothing is left allocated.
+static bool load_user_image(const char *path, char *const argv[], user_image_t *image) {
+    vnode_t *file = vfs_find(NULL, path);
+    if (!file || file->type != VFS_FILE || !file->data) return false;
+
+    image->pml4 = vmm_create_address_space();
+    if (!image->pml4) return false;
+
+    if (!elf_load(image->pml4, file->data, file->size, &image->entry, &image->image_end) ||
+        !build_user_stack(image->pml4, path, argv, &image->rsp)) {
+        vmm_destroy_address_space(image->pml4);
+        image->pml4 = NULL;
+        return false;
+    }
+
+    strncpy(image->name, file->name, sizeof(image->name) - 1);
+    image->name[sizeof(image->name) - 1] = '\0';
+    return true;
+}
+
+static void apply_image(task_t *task, const user_image_t *image) {
+    task->is_user = true;
+    task->pml4_phys = (uint64_t *)((uint64_t)image->pml4 - pmm_get_hhdm_offset());
+    task->user_entry = image->entry;
+    task->user_rsp = image->rsp;
+    task->brk_start = page_align_up(image->image_end);
+    task->brk_end = task->brk_start;
+    task->mmap_next = USER_MMAP_BASE;
+    strncpy(task->name, image->name, sizeof(task->name) - 1);
+    task->name[sizeof(task->name) - 1] = '\0';
+}
+
+// First code a new process runs, in ring 0 on its own kernel stack. The
+// scheduler has already loaded its address space and pointed TSS.RSP0 at this
+// stack, so all that is left is the drop to ring 3.
+static void user_task_start(void) {
+    task_t *self = sched_get_current_task();
+    enter_user_mode(self->user_entry, self->user_rsp);
+}
+
+pid_t process_spawn(const char *path, char *const argv[]) {
     if (!path) return -1;
 
-    // 1. Locate binary file in Virtual Filesystem (VFS)
-    vnode_t *file = vfs_find(NULL, path);
-    if (!file) {
-        if (path[0] == '/') {
-            file = vfs_find(NULL, path + 1);
-        }
-    }
+    user_image_t image;
+    if (!load_user_image(path, argv, &image)) return -1;
 
-    if (!file || file->type != VFS_FILE || !file->data) {
-        kprintf("Process execve ERROR: Binary '%s' not found in VFS!\n", path);
+    task_t *task = task_alloc(image.name, user_task_start);
+    if (!task) {
+        vmm_destroy_address_space(image.pml4);
         return -1;
     }
 
-    // 2. Parse ELF64 binary and map PT_LOAD segments to user memory
-    void *entry_point = NULL;
-    if (!elf_load(file->data, &entry_point)) {
-        kprintf("Process execve ERROR: Failed to load ELF binary '%s'\n", path);
-        return -1;
-    }
+    apply_image(task, &image);
+    task->detached = false; // The creator is expected to process_wait() for it
 
-    // 3. Allocate user stack page (0x7FFFFFFF000)
-    uint64_t user_stack_top = 0x7FFFFFFF000ULL;
-    void *stack_frame = pmm_alloc_frame();
-    if (stack_frame) {
-        vmm_map_page(NULL, user_stack_top - PAGE_SIZE, (uint64_t)stack_frame, VMM_PRESENT | VMM_WRITABLE | VMM_USER);
-    }
-
-    // 4. Setup environment variables directly on the user process stack frame
-    uint64_t user_rsp = user_stack_top;
-    uint64_t envp_vaddr = 0;
-    env_setup_user_stack(user_stack_top, envp, &user_rsp, &envp_vaddr);
-
-    // 5. Update current active task state with new binary context
-    task_t *current = sched_get_current_task();
-    if (current) {
-        strncpy(current->name, file->name, sizeof(current->name) - 1);
-    }
-
-    kprintf("Process: execve loaded binary '%s' (Entry: %p, User RSP: %p, envp: %p)\n",
-            path, entry_point, (void *)user_rsp, (void *)envp_vaddr);
-    return 0;
-}
-
-int process_execve(const char *path) {
-    return process_execve_env(path, NULL, NULL);
-}
-
-pid_t process_waitpid(pid_t pid, int *status) {
-    if (status) *status = 0;
-    kprintf("Process: waitpid waited on child PID %d\n", pid);
+    pid_t pid = (pid_t)task->pid;
+    sched_add(task);
     return pid;
 }
 
+int process_exec(struct registers *regs, const char *path, char *const argv[]) {
+    task_t *self = sched_get_current_task();
+    if (!self || !self->is_user || !regs || !path) return -1;
+
+    // Build the new image completely before touching the old one, so a
+    // failed exec returns to a program that still exists.
+    user_image_t image;
+    if (!load_user_image(path, argv, &image)) return -1;
+
+    uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
+    apply_image(self, &image);
+
+    // Leave the old address space before freeing it
+    vmm_switch_pml4(self->pml4_phys);
+    vmm_destroy_address_space(old_pml4);
+
+    // Rewrite the syscall frame: the return to ring 3 starts the new program
+    memset(regs, 0, sizeof(*regs));
+    regs->rip = image.entry;
+    regs->rsp = image.rsp;
+    regs->cs = USER_CS;
+    regs->ss = USER_DS;
+    regs->rflags = 0x202;
+    return 0;
+}
+
+// Copy every user page of `src` into `dst` (a full copy, not copy-on-write).
+static bool copy_user_pages(uint64_t *dst, uint64_t *src) {
+    uint64_t hhdm = pmm_get_hhdm_offset();
+
+    for (size_t i4 = 0; i4 < 256; i4++) {
+        if (!(src[i4] & VMM_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)((src[i4] & PTE_ADDR_MASK) + hhdm);
+
+        for (size_t i3 = 0; i3 < 512; i3++) {
+            if (!(pdpt[i3] & VMM_PRESENT) || (pdpt[i3] & VMM_HUGE)) continue;
+            uint64_t *pd = (uint64_t *)((pdpt[i3] & PTE_ADDR_MASK) + hhdm);
+
+            for (size_t i2 = 0; i2 < 512; i2++) {
+                if (!(pd[i2] & VMM_PRESENT) || (pd[i2] & VMM_HUGE)) continue;
+                uint64_t *pt = (uint64_t *)((pd[i2] & PTE_ADDR_MASK) + hhdm);
+
+                for (size_t i1 = 0; i1 < 512; i1++) {
+                    uint64_t pte = pt[i1];
+                    if (!(pte & VMM_PRESENT)) continue;
+
+                    uint64_t virt = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
+                                    ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
+                    uint64_t flags = pte & (VMM_WRITABLE | VMM_USER | VMM_NO_EXECUTE);
+
+                    void *copy = vmm_alloc_user_page(dst, virt, flags);
+                    if (!copy) return false;
+                    memcpy(copy, (void *)((pte & PTE_ADDR_MASK) + hhdm), PAGE_SIZE);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+pid_t process_fork(struct registers *regs) {
+    task_t *parent = sched_get_current_task();
+    if (!parent || !parent->is_user || !regs) return -1;
+
+    uint64_t *child_pml4 = vmm_create_address_space();
+    if (!child_pml4) return -1;
+
+    if (!copy_user_pages(child_pml4, vmm_space_from_phys((uint64_t)parent->pml4_phys))) {
+        vmm_destroy_address_space(child_pml4);
+        return -1;
+    }
+
+    task_t *child = task_alloc(parent->name, NULL);
+    if (!child) {
+        vmm_destroy_address_space(child_pml4);
+        return -1;
+    }
+
+    child->is_user = true;
+    child->detached = false;
+    child->pml4_phys = (uint64_t *)((uint64_t)child_pml4 - pmm_get_hhdm_offset());
+    child->brk_start = parent->brk_start;
+    child->brk_end = parent->brk_end;
+    child->mmap_next = parent->mmap_next;
+
+    // The child's kernel stack starts with a copy of the parent's syscall
+    // frame, except that its syscall "returns" 0. Below the frame goes the
+    // context that ctx_switch pops, with user_frame_return as the return
+    // address, so the first switch to the child lands in ring 3 right after
+    // the parent's syscall instruction.
+    uint64_t stack_top = ((uint64_t)child->kernel_stack + KERNEL_STACK_SIZE) & ~0xFULL;
+    struct registers *child_regs = (struct registers *)(stack_top - sizeof(struct registers));
+    *child_regs = *regs;
+    child_regs->rax = 0;
+
+    uint64_t *sp = (uint64_t *)child_regs;
+    *(--sp) = (uint64_t)user_frame_return; // Return address for ctx_switch's ret
+    *(--sp) = 0x002;                       // RFLAGS: interrupts off until iretq
+    *(--sp) = 0;                           // R15
+    *(--sp) = 0;                           // R14
+    *(--sp) = 0;                           // R13
+    *(--sp) = 0;                           // R12
+    *(--sp) = 0;                           // RBP
+    *(--sp) = 0;                           // RBX
+    child->rsp = (uint64_t)sp;
+
+    pid_t pid = (pid_t)child->pid;
+    sched_add(child);
+    return pid;
+}
+
+pid_t process_wait(pid_t pid, int *status) {
+    task_t *self = sched_get_current_task();
+    if (!self) return -1;
+
+    while (1) {
+        pid_t found = -1;
+        bool have_child = false;
+
+        // Interrupts off while walking the queue: the idle loop frees tasks
+        uint64_t flags = irq_save();
+        for (task_t *t = sched_first_task(); t; t = t->next) {
+            if (t->parent_pid != self->pid || t == self || t->detached) continue;
+            if (pid != -1 && (pid_t)t->pid != pid) continue;
+
+            have_child = true;
+            if (t->state == TASK_ZOMBIE) {
+                if (status) *status = t->exit_status;
+                found = (pid_t)t->pid;
+                t->detached = true; // Collected: the idle loop may free it now
+                break;
+            }
+        }
+        irq_restore(flags);
+
+        if (found != -1) return found;
+        if (!have_child) return -1;
+
+        sched_yield();
+    }
+}
+
 int process_kill(pid_t pid, int sig) {
-    kprintf("Process: Sent signal %d to PID %d\n", sig, pid);
+    task_t *target = sched_find_task((uint32_t)pid);
+    if (!target || !target->is_user || target->state == TASK_ZOMBIE) return -1;
+
+    if (target == sched_get_current_task()) {
+        task_exit_status(128 + sig);
+    }
+
+    // The target is not running (one CPU, and we are). Marking it a zombie
+    // means the scheduler never picks it again; its parent collects it.
+    uint64_t flags = irq_save();
+    target->exit_status = 128 + sig;
+    target->state = TASK_ZOMBIE;
+    irq_restore(flags);
     return 0;
 }

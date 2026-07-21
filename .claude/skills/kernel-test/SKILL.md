@@ -40,7 +40,7 @@ takes under a second.
 
 ```
 tools/qemu_shell.py --quiet 'ps' 'mem'
-tools/qemu_shell.py --quiet --expect 'Hello from ring 3' 'exec /bin/hello'
+tools/qemu_shell.py --quiet --expect 'Hello from ring 3' 'exec /bin/hello a b'
 tools/qemu_shell.py --mem 512M --quiet 'mem'
 ```
 

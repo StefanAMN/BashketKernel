@@ -68,13 +68,14 @@ void gdt_init(void) {
     // Access: 0x92 = Present (0x80) | Ring 0 | Read/Write (0x02)
     set_gdt_entry(2, 0, 0xFFFFFFFF, 0x92, 0x00);
 
-    // 0x18: User Code Segment (64-bit, Ring 3)
-    // Access: 0xFA = Present (0x80) | Ring 3 (0x60) | Executable (0x08) | Read (0x02)
-    set_gdt_entry(3, 0, 0xFFFFFFFF, 0xFA, 0x20);
-
-    // 0x20: User Data Segment (Ring 3)
+    // 0x18: User Data Segment (Ring 3)
     // Access: 0xF2 = Present (0x80) | Ring 3 (0x60) | Read/Write (0x02)
-    set_gdt_entry(4, 0, 0xFFFFFFFF, 0xF2, 0x00);
+    // Must come before user code: see the SYSRET note in gdt.h.
+    set_gdt_entry(3, 0, 0xFFFFFFFF, 0xF2, 0x00);
+
+    // 0x20: User Code Segment (64-bit, Ring 3)
+    // Access: 0xFA = Present (0x80) | Ring 3 (0x60) | Executable (0x08) | Read (0x02)
+    set_gdt_entry(4, 0, 0xFFFFFFFF, 0xFA, 0x20);
 
     // Setup TSS
     memset(&sys_tss, 0, sizeof(struct tss));

@@ -55,6 +55,43 @@ static void shell_crash(const char *kind) {
     }
 }
 
+// Run a user program in the foreground: split the line into arguments,
+// start the process, and wait for it to exit.
+static void shell_exec(const char *args_line) {
+    char line[128];
+    char *argv[PROCESS_MAX_ARGS + 1];
+    size_t argc = 0;
+
+    strncpy(line, args_line, sizeof(line) - 1);
+    line[sizeof(line) - 1] = '\0';
+
+    for (char *p = line; *p != '\0' && argc < PROCESS_MAX_ARGS; ) {
+        while (*p == ' ') p++;
+        if (*p == '\0') break;
+        argv[argc++] = p;
+        while (*p != '\0' && *p != ' ') p++;
+        if (*p == ' ') *p++ = '\0';
+    }
+    argv[argc] = NULL;
+
+    if (argc == 0) {
+        kprintf("usage: exec <path> [args...]\n");
+        return;
+    }
+
+    pid_t pid = process_spawn(argv[0], argv);
+    if (pid < 0) {
+        kprintf("exec: cannot run '%s' (not found, or not a valid executable)\n", argv[0]);
+        return;
+    }
+
+    int status = 0;
+    process_wait(pid, &status);
+    if (status != 0) {
+        kprintf("[pid %d exited with status %d]\n", pid, status);
+    }
+}
+
 void shell_run_cmd(const char *cmdline) {
     if (!cmdline || cmdline[0] == '\0') return;
 
@@ -77,7 +114,7 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("  touch <file>    - Create new empty file in VFS\n");
         kprintf("  mkdir <dir>     - Create new directory in VFS\n");
         kprintf("  rm <file>       - Remove file from VFS\n");
-        kprintf("  exec <path>     - Execute ELF binary program\n");
+        kprintf("  exec <path> [args] - Run a user program and wait for it\n");
         kprintf("  kill <pid>      - Send SIGKILL signal to process\n");
         kprintf("  clear           - Clear screen\n");
         kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack)\n");
@@ -194,13 +231,12 @@ void shell_run_cmd(const char *cmdline) {
             kprintf("rm: file '%s' not found\n", filename);
         }
     } else if (strncmp(cmdline, "exec ", 5) == 0) {
-        const char *path = cmdline + 5;
-        if (process_execve(path) != 0) {
-            kprintf("exec: failed to execute '%s'\n", path);
-        }
+        shell_exec(cmdline + 5);
     } else if (strncmp(cmdline, "kill ", 5) == 0) {
         int pid = parse_int(cmdline + 5);
-        process_kill(pid, SIGKILL);
+        if (process_kill(pid, SIGKILL) != 0) {
+            kprintf("kill: no such process %d\n", pid);
+        }
     } else if (strncmp(cmdline, "crash ", 6) == 0) {
         shell_crash(cmdline + 6);
     } else if (strcmp(cmdline, "clear") == 0) {

@@ -1,6 +1,10 @@
 /**
  * @file syscall.c
- * @brief Implementation of x86_64 System Call Dispatcher and MSR Configuration
+ * @brief System call dispatcher and MSR configuration
+ *
+ * Every pointer argument comes from a user program and is untrusted. Nothing
+ * here dereferences one before user_range_ok() has confirmed it lies in the
+ * caller's own mapped memory with the right permission.
  */
 
 #include "syscall.h"
@@ -12,12 +16,24 @@
 #include "vfs.h"
 #include "keyboard.h"
 #include "mmap.h"
+#include "vmm.h"
+#include "pmm.h"
 #include "process.h"
 #include "kstring.h"
+#include "gdt.h"
+#include "heap.h"
 
 extern void syscall_entry(void);
 
-static uint64_t user_brk = 0x00007FFFF0000000ULL;
+#define MSR_EFER   0xC0000080
+#define MSR_STAR   0xC0000081
+#define MSR_LSTAR  0xC0000082
+#define MSR_SFMASK 0xC0000084
+
+#define RFLAGS_IF (1ULL << 9)
+#define RFLAGS_DF (1ULL << 10)
+
+#define PATH_MAX 128
 
 static inline void wrmsr(uint32_t msr, uint64_t val) {
     uint32_t low = (uint32_t)val;
@@ -32,186 +48,242 @@ static inline uint64_t rdmsr(uint32_t msr) {
 }
 
 void syscall_init(void) {
-    // 1. Enable SCE (System Call Extensions) bit in EFER MSR (0xC0000080)
-    uint64_t efer = rdmsr(0xC0000080);
-    efer |= 1ULL; // Bit 0 = SCE
-    wrmsr(0xC0000080, efer);
+    // 1. Enable SCE (System Call Extensions), bit 0 of EFER
+    wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1ULL);
 
-    // 2. Configure STAR MSR (0xC0000081)
-    // Bits 47..32: Kernel CS (0x08)
-    // Bits 63..48: User CS base selector (0x18)
-    uint64_t star = ((uint64_t)0x08 << 32) | ((uint64_t)0x18 << 48);
-    wrmsr(0xC0000081, star);
+    // 2. STAR selects the segments:
+    //    bits 47..32: SYSCALL loads CS from this value and SS from value + 8
+    //                 -> 0x08 kernel code, 0x10 kernel data
+    //    bits 63..48: SYSRET loads SS from value + 8 and CS from value + 16
+    //                 -> 0x10 gives SS 0x18 (user data), CS 0x20 (user code)
+    uint64_t star = ((uint64_t)GDT_KERNEL_CODE << 32) | ((uint64_t)GDT_KERNEL_DATA << 48);
+    wrmsr(MSR_STAR, star);
 
-    // 3. Configure LSTAR MSR (0xC0000082) with syscall_entry target address
-    wrmsr(0xC0000082, (uint64_t)syscall_entry);
+    // 3. LSTAR: where SYSCALL jumps
+    wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
 
-    // 4. Configure SFMASK MSR (0xC0000084) to mask RFLAGS Interrupt Flag (0x200)
-    wrmsr(0xC0000084, 0x200);
+    // 4. SFMASK: RFLAGS bits cleared on entry. IF, because the entry stub runs
+    //    on the user's stack until it switches; DF, because compiled C code
+    //    assumes the direction flag is clear.
+    wrmsr(MSR_SFMASK, RFLAGS_IF | RFLAGS_DF);
 
     kprintf("Syscall Init: MSRs configured for syscall/sysret (LSTAR: %p)\n", syscall_entry);
 }
 
+// --- User memory access -----------------------------------------------------
+
+static uint64_t *current_space(void) {
+    task_t *task = sched_get_current_task();
+    return vmm_space_from_phys((uint64_t)task->pml4_phys);
+}
+
+static bool user_range_ok(uint64_t addr, size_t len, bool write) {
+    return vmm_user_range_ok(current_space(), addr, len, write);
+}
+
+// Copy a NUL-terminated string from user memory into a kernel buffer.
+// Returns its length, or -EFAULT if it is unreadable or does not fit.
+static int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t dst_size) {
+    for (size_t i = 0; i < dst_size; i++) {
+        // Check once per page, not once per byte
+        if (i == 0 || ((user_src + i) & (PAGE_SIZE - 1)) == 0) {
+            if (!user_range_ok(user_src + i, 1, false)) return -EFAULT;
+        }
+        dst[i] = *(const char *)(user_src + i);
+        if (dst[i] == '\0') return (int64_t)i;
+    }
+    return -EFAULT; // No terminator within dst_size
+}
+
+// --- Individual system calls -------------------------------------------------
+
+static int64_t sys_read(int fd, uint64_t buf, size_t count) {
+    if (fd != 0) return -EBADF;
+    if (count == 0) return 0;
+    if (!user_range_ok(buf, count, true)) return -EFAULT;
+
+    // Block until at least one character is available, then return what is
+    // there. The caller's address space stays loaded across sched_yield.
+    char *out = (char *)buf;
+    size_t n = 0;
+    while (n < count) {
+        if (keyboard_has_char()) {
+            out[n++] = keyboard_getchar();
+        } else if (n > 0) {
+            break;
+        } else {
+            sched_yield();
+        }
+    }
+    return (int64_t)n;
+}
+
+static int64_t sys_write(int fd, uint64_t buf, size_t count) {
+    if (fd != 1 && fd != 2) return -EBADF;
+    if (count == 0) return 0;
+    if (!user_range_ok(buf, count, false)) return -EFAULT;
+
+    const char *in = (const char *)buf;
+    for (size_t i = 0; i < count; i++) {
+        serial_putchar(in[i]);
+        console_putchar(in[i]);
+    }
+    return (int64_t)count;
+}
+
+static int64_t sys_brk(uint64_t new_brk) {
+    task_t *task = sched_get_current_task();
+    if (new_brk == 0) return (int64_t)task->brk_end;
+    return (int64_t)user_set_brk(current_space(), task->brk_start, &task->brk_end, new_brk);
+}
+
+static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags) {
+    // Only private anonymous memory at a kernel-chosen address is supported
+    if (addr != 0 || !(flags & MAP_ANONYMOUS) || (flags & MAP_FIXED)) return -EINVAL;
+    if (length == 0) return -EINVAL;
+
+    task_t *task = sched_get_current_task();
+    uint64_t mapped = user_mmap_anon(current_space(), &task->mmap_next, length, prot);
+    return mapped ? (int64_t)mapped : -ENOMEM;
+}
+
+static int64_t sys_munmap(uint64_t addr, size_t length) {
+    if (addr < USER_MMAP_BASE) return -EINVAL; // Not something mmap handed out
+    return user_unmap_range(current_space(), addr, length) == 0 ? 0 : -EINVAL;
+}
+
+static int64_t sys_sleep(uint64_t milliseconds) {
+    uint64_t ticks = (milliseconds * TIMER_HZ + 999) / 1000;
+    uint64_t start = pit_get_ticks();
+    while (pit_get_ticks() - start < ticks) {
+        sched_yield();
+    }
+    return 0;
+}
+
+static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t user_argv) {
+    // Copy the path and arguments into kernel memory first: exec destroys the
+    // address space they live in.
+    char path[PATH_MAX];
+    char *argv[PROCESS_MAX_ARGS + 1];
+
+    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+
+    char *arg_storage = kmalloc(PROCESS_ARG_BYTES);
+    if (!arg_storage) return -ENOMEM;
+
+    int64_t result = 0;
+    size_t argc = 0;
+    size_t used = 0;
+    if (user_argv != 0) {
+        for (; argc < PROCESS_MAX_ARGS; argc++) {
+            uint64_t slot = user_argv + argc * sizeof(uint64_t);
+            if (!user_range_ok(slot, sizeof(uint64_t), false)) { result = -EFAULT; break; }
+
+            uint64_t user_arg = *(const uint64_t *)slot;
+            if (user_arg == 0) break;
+
+            int64_t len = copy_string_from_user(arg_storage + used, user_arg, PROCESS_ARG_BYTES - used);
+            if (len < 0) { result = -EFAULT; break; }
+            argv[argc] = arg_storage + used;
+            used += (size_t)len + 1;
+        }
+    }
+    argv[argc] = NULL;
+
+    // On success the frame describes the new program, and the 0 returned here
+    // lands in its RAX, which a new program does not look at.
+    if (result == 0 && process_exec(regs, path, argc ? argv : NULL) != 0) {
+        result = -ENOENT;
+    }
+
+    kfree(arg_storage);
+    return result;
+}
+
+static int64_t sys_waitpid(int pid, uint64_t user_status) {
+    if (user_status != 0 && !user_range_ok(user_status, sizeof(int), true)) return -EFAULT;
+
+    int status = 0;
+    pid_t child = process_wait(pid, &status);
+    if (child < 0) return -ECHILD;
+
+    if (user_status != 0) *(int *)user_status = status;
+    return child;
+}
+
+static int64_t sys_uname(uint64_t user_buf) {
+    if (!user_range_ok(user_buf, sizeof(struct utsname), true)) return -EFAULT;
+
+    struct utsname *buf = (struct utsname *)user_buf;
+    memset(buf, 0, sizeof(*buf));
+    strncpy(buf->sysname, "BashketOS", 64);
+    strncpy(buf->nodename, "bashket", 64);
+    strncpy(buf->release, "0.1.0", 64);
+    strncpy(buf->version, "BashketKernel", 64);
+    strncpy(buf->machine, "x86_64", 64);
+    return 0;
+}
+
+static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
+    if (size < 2) return -EINVAL;
+    if (!user_range_ok(user_buf, 2, true)) return -EFAULT;
+
+    char *buf = (char *)user_buf;
+    buf[0] = '/';
+    buf[1] = '\0';
+    return (int64_t)user_buf;
+}
+
+// --- Dispatcher --------------------------------------------------------------
+
 int64_t syscall_handler(struct registers *regs) {
-    uint64_t syscall_num = regs->rax;
+    task_t *task = sched_get_current_task();
 
-    switch (syscall_num) {
-        case SYS_READ: {
-            int fd = (int)regs->rdi;
-            char *buf = (char *)regs->rsi;
-            size_t count = (size_t)regs->rdx;
-
-            if (buf == NULL || count == 0) return -1;
-
-            if (fd == 0) { // stdin
-                size_t read_bytes = 0;
-                while (read_bytes < count) {
-                    if (keyboard_has_char()) {
-                        buf[read_bytes++] = keyboard_getchar();
-                    } else {
-                        if (read_bytes > 0) break;
-                        sched_yield();
-                    }
-                }
-                return (int64_t)read_bytes;
-            } else { // VFS Read
-                vnode_t *root = vfs_get_root();
-                if (!root) return -1;
-                return (int64_t)vfs_read(root, 0, count, buf);
-            }
-        }
-
-        case SYS_WRITE: {
-            int fd = (int)regs->rdi;
-            const char *buf = (const char *)regs->rsi;
-            size_t count = (size_t)regs->rdx;
-
-            if (buf == NULL) return -1;
-
-            if (fd == 1 || fd == 2) { // stdout or stderr
-                for (size_t i = 0; i < count && buf[i] != '\0'; i++) {
-                    serial_putchar(buf[i]);
-                    console_putchar(buf[i]);
-                }
-                return (int64_t)count;
-            }
-            return -1;
-        }
-
-        case SYS_OPEN: {
-            const char *path = (const char *)regs->rdi;
-            if (!path || path[0] == '\0') return -1;
-            return 3; // Return file descriptor 3 for valid open path
-        }
-
-        case SYS_CLOSE: {
-            int fd = (int)regs->rdi;
-            return (fd >= 0) ? 0 : -1;
-        }
+    switch (regs->rax) {
+        case SYS_READ:    return sys_read((int)regs->rdi, regs->rsi, (size_t)regs->rdx);
+        case SYS_WRITE:   return sys_write((int)regs->rdi, regs->rsi, (size_t)regs->rdx);
 
         case SYS_YIELD:
             sched_yield();
             return 0;
 
-        case SYS_EXIT: {
-            int status = (int)regs->rdi;
-            kprintf("Syscall Exit: Task requested exit with status %d\n", status);
-            task_exit();
-            return 0;
-        }
+        case SYS_EXIT:
+            task_exit_status((int)regs->rdi & 0xFF);
+            return 0; // Not reached
 
         case SYS_GETPID:
-        case SYS_GETPID_ALT: {
-            task_t *curr = sched_get_current_task();
-            return curr ? (int64_t)curr->pid : 0;
+        case SYS_GETPID_ALT:
+            return (int64_t)task->pid;
+        case SYS_GETPPID:
+            return (int64_t)task->parent_pid;
+
+        case SYS_BRK:     return sys_brk(regs->rdi);
+        case SYS_MMAP:    return sys_mmap(regs->rdi, (size_t)regs->rsi, (int)regs->rdx, (int)regs->r10);
+        case SYS_MUNMAP:  return sys_munmap(regs->rdi, (size_t)regs->rsi);
+        case SYS_SLEEP:   return sys_sleep(regs->rdi);
+        case SYS_TIME:    return (int64_t)pit_get_ticks();
+
+        case SYS_FORK: {
+            pid_t child = process_fork(regs);
+            return child < 0 ? -ENOMEM : child;
         }
+        case SYS_EXECVE:  return sys_execve(regs, regs->rdi, regs->rsi);
+        case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi);
+        case SYS_KILL:
+            return process_kill((pid_t)regs->rdi, (int)regs->rsi) == 0 ? 0 : -ESRCH;
 
-        case SYS_MMAP: {
-            void *addr = (void *)regs->rdi;
-            size_t length = (size_t)regs->rsi;
-            int prot = (int)regs->rdx;
-            int flags = (int)regs->r10;
-            int fd = (int)regs->r8;
-            int64_t offset = (int64_t)regs->r9;
-
-            void *res = mmap(addr, length, prot, flags, fd, offset);
-            return (int64_t)res;
-        }
-
-        case SYS_MUNMAP: {
-            void *addr = (void *)regs->rdi;
-            size_t length = (size_t)regs->rsi;
-            return (int64_t)munmap(addr, length);
-        }
-
-        case SYS_BRK: {
-            uint64_t new_brk = regs->rdi;
-            if (new_brk == 0) {
-                return (int64_t)user_brk;
-            }
-            user_brk = new_brk;
-            return (int64_t)user_brk;
-        }
-
-        case SYS_SLEEP: {
-            uint64_t ticks = regs->rdi;
-            uint64_t start = pit_get_ticks();
-            while (pit_get_ticks() - start < ticks) {
-                sched_yield();
-            }
-            return 0;
-        }
-
-        case SYS_FORK:
-            return (int64_t)process_fork();
-
-        case SYS_EXECVE: {
-            const char *path = (const char *)regs->rdi;
-            char *const *argv = (char *const *)regs->rsi;
-            char *const *envp = (char *const *)regs->rdx;
-            return (int64_t)process_execve_env(path, argv, envp);
-        }
-
-        case SYS_WAITPID: {
-            pid_t pid = (pid_t)regs->rdi;
-            int *status = (int *)regs->rsi;
-            return (int64_t)process_waitpid(pid, status);
-        }
-
-        case SYS_KILL: {
-            pid_t pid = (pid_t)regs->rdi;
-            int sig = (int)regs->rsi;
-            return (int64_t)process_kill(pid, sig);
-        }
-
-        case SYS_UNAME: {
-            struct utsname *buf = (struct utsname *)regs->rdi;
-            if (!buf) return -1;
-            strncpy(buf->sysname, "BashketOS", 64);
-            strncpy(buf->nodename, "bashket", 64);
-            strncpy(buf->release, "1.0.0", 64);
-            strncpy(buf->version, "Phase 5 Syscalls", 64);
-            strncpy(buf->machine, "x86_64", 64);
-            return 0;
-        }
-
-        case SYS_GETCWD: {
-            char *buf = (char *)regs->rdi;
-            size_t size = (size_t)regs->rsi;
-            if (!buf || size < 2) return -1;
-            strncpy(buf, "/", size);
-            return (int64_t)buf;
-        }
+        case SYS_UNAME:   return sys_uname(regs->rdi);
+        case SYS_GETCWD:  return sys_getcwd(regs->rdi, (size_t)regs->rsi);
 
         case SYS_CLEAR:
             kprintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
             return 0;
 
-        case SYS_TIME:
-            return (int64_t)pit_get_ticks();
-
+        // Files need a per-process descriptor table, which does not exist yet
+        case SYS_OPEN:
+        case SYS_CLOSE:
         default:
-            kprintf("Syscall Warning: Unknown syscall number %zu\n", syscall_num);
-            return -1;
+            return -ENOSYS;
     }
 }

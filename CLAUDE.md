@@ -24,13 +24,21 @@ make test         # separate test kernel in build-test/, exit 0 only if all pass
 make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
 
-tools/qemu_shell.py --quiet 'ps' 'mem'    # boot headless, type shell commands (<1 s)
+tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 ```
 
 Two project skills in `.claude/skills/` hold the full procedures:
 `kernel-test` (verify a change) and `kernel-debug` (faults, hangs, interrupts).
 Use them rather than improvising QEMU command lines.
+
+## Layout
+
+- `src/` kernel, `lib/` freestanding libc bits and crypto, `tests/` in-kernel tests.
+- `user/*.c` user programs, each built into `/bin/<name>` of the initrd;
+  `user/lib` is their C library and `crt0`.
+- Entry to and from ring 3: `src/arch/x86_64/syscall_entry.S`. Processes:
+  `src/kernel/proc/process.c`. Address spaces: `src/mm/vmm.c`.
 
 ## Findings worth keeping
 
@@ -79,6 +87,29 @@ would change how the next problem is approached.
 - **Stack overflow needs two things to be reportable:** an unmapped guard page
   below the stack (so it faults at all) and an IST stack for the double fault
   (the page fault cannot be delivered on the overflowed stack).
+
+### Design choices that paid off
+
+- **One frame layout for interrupts and system calls.** `syscall_entry` builds
+  the same `struct registers` the interrupt stubs build. `fork` is then a copy
+  of that frame onto the child's kernel stack with RAX set to 0, and `execve`
+  is a rewrite of it. No second code path to keep in sync.
+- **Create all 256 kernel-half PML4 entries at boot.** Process PML4s copy
+  those entries once. Because none is ever added later, every address space
+  shares the same kernel page tables without any synchronisation.
+- **Write into another address space through the direct map.** The ELF loader
+  and the argv builder never switch CR3: they look up the frame behind a user
+  address and write to it via the HHDM. This also sidesteps write protection
+  on read-only segments.
+- **Build the new image fully before destroying the old one** in `execve`, so
+  a failed exec returns to a program that still exists.
+- **Test user-facing kernel behaviour from ring 3.** `/bin/syscheck` and
+  `/bin/fault` run as real processes and the kernel tests check their exit
+  status. Calling `syscall_handler` from a kernel test only proved it accepted
+  kernel pointers, which is exactly what it must refuse.
+- **Check for leaks by counting.** Free frames and heap bytes before and after
+  a workload must match once tasks are reaped. This caught nothing here only
+  because the destroy paths were written against that test.
 
 ### Compiler traps in freestanding code
 

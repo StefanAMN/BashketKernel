@@ -50,17 +50,18 @@ TEST(zombie_reaping) {
 // Heap stress under preemption: these tasks never yield, so every task switch
 // between them is the timer interrupt landing at an arbitrary instruction.
 #define STRESS_TASKS 4
-#define STRESS_ITERATIONS 20000
+#define STRESS_TICKS 30 // Run for 0.3 s, so each task is preempted many times
 
 static volatile int stress_done = 0;
 static volatile int stress_corrupt = 0;
+static volatile uint64_t stress_deadline = 0;
 
 static void heap_stress_task(void) {
     uint32_t seed = 0x9E3779B9u ^ (uint32_t)(uint64_t)&seed;
     uint8_t *held[8] = {0};
     size_t held_size[8] = {0};
 
-    for (int i = 0; i < STRESS_ITERATIONS; i++) {
+    while (pit_get_ticks() < stress_deadline) {
         seed = seed * 1664525u + 1013904223u;
         size_t slot = (seed >> 8) % 8;
 
@@ -92,7 +93,7 @@ static void heap_stress_task(void) {
 TEST(heap_stress_under_preemption) {
     sched_reap();
     size_t heap_before = kheap_get_allocated_bytes();
-    uint64_t ticks_before = pit_get_ticks();
+    stress_deadline = pit_get_ticks() + STRESS_TICKS;
 
     for (int i = 0; i < STRESS_TASKS; i++) {
         EXPECT_TRUE(task_create("heap_stress", heap_stress_task) != NULL);
@@ -102,8 +103,6 @@ TEST(heap_stress_under_preemption) {
     }
 
     EXPECT_EQ(stress_corrupt, 0);
-    // The run must have been long enough to be preempted many times
-    EXPECT_TRUE(pit_get_ticks() - ticks_before >= 5);
 
     // Once the tasks are reaped, every byte they allocated (and their task
     // structs) must be back: a lost or doubled list update would show here.

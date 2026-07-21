@@ -16,7 +16,10 @@ that file.
 - **Milestone 1:** done and verified in QEMU.
 - **Milestone 2:** test build, exit status and CI done. Cleaning up test
   state leaks and mock tests is open.
-- **Milestones 3 to 5:** not started.
+- **Milestone 3:** done. Programs run in ring 3.
+- **Milestone 4:** fork, exec, wait, kill, brk and mmap work. Blocking wait
+  queues, file descriptors, copy-on-write and a user-space shell are open.
+- **Milestone 5:** not started.
 
 ## Where things stand
 
@@ -201,7 +204,7 @@ behaviour checks, and `tools/symbolize.sh` maps addresses to source lines.
 
 ---
 
-## Milestone 3 — Phase 5 for real: one program in ring 3
+## Milestone 3 — Phase 5 for real: one program in ring 3 — done
 
 Everything after phase 4 depends on this, and none of it works yet. The target
 is one small user program, built from source, that prints through a `write`
@@ -213,10 +216,10 @@ Problem: `sysretq` loads CS from `STAR[63:48] + 16` and SS from
 `STAR[63:48] + 8`. With the current base of `0x18` and user code at `0x18`,
 that loads the TSS descriptor as CS.
 
-- [ ] Reorder the GDT: `0x08` kernel code, `0x10` kernel data, `0x18` user
+- [x] Reorder the GDT: `0x08` kernel code, `0x10` kernel data, `0x18` user
       data, `0x20` user code, `0x28` TSS (`src/arch/x86_64/gdt.c:65-71`).
-- [ ] Set `STAR[47:32] = 0x08` and `STAR[63:48] = 0x10` (`syscall.c:43`).
-- [ ] Verify both rules against the Intel SDM entries for SYSCALL and SYSRET,
+- [x] Set `STAR[47:32] = 0x08` and `STAR[63:48] = 0x10` (`syscall.c:43`).
+- [x] Verify both rules against the Intel SDM entries for SYSCALL and SYSRET,
       and record it in `ai-was-wrong.md`.
 
 ### 3.2 Syscall entry
@@ -224,59 +227,69 @@ that loads the TSS descriptor as CS.
 Problems: the entry stub stays on the user's stack, and it pushes registers in
 the reverse order of `struct registers`, so `regs->rax` reads the user's r15.
 
-- [ ] On entry, save the user RSP and load the current task's kernel stack. On
+- [x] On entry, save the user RSP and load the current task's kernel stack. On
       a single CPU a pair of global variables is enough; move to `swapgs` and
       per-CPU data only when real SMP arrives.
-- [ ] Push registers so the frame matches `struct registers` exactly, or define
+- [x] Push registers so the frame matches `struct registers` exactly, or define
       a separate `struct syscall_frame`. Add a `_Static_assert` on the offsets.
-- [ ] Add direction flag (bit 10) to `SFMASK` alongside the interrupt flag.
-- [ ] Before `sysretq`, check that the return RIP is a canonical user address.
+- [x] Add direction flag (bit 10) to `SFMASK` alongside the interrupt flag.
+- [x] Before `sysretq`, check that the return RIP is a canonical user address.
 
 ### 3.3 Address spaces and entering user mode
 
 Problem: every user mapping goes into the single kernel PML4.
 
-- [ ] `vmm_create_address_space()`: a new PML4 whose upper 256 entries are
+- [x] `vmm_create_address_space()`: a new PML4 whose upper 256 entries are
       copied from the kernel's. `vmm_destroy_address_space()` frees the lower
       half and its frames.
-- [ ] Make `elf_load`, the user stack setup and `mmap` take the target PML4
+- [x] Make `elf_load`, the user stack setup and `mmap` take the target PML4
       instead of passing NULL.
-- [ ] Call `tss_set_rsp0` on every context switch. It is never called today.
-- [ ] Enter ring 3 for the first time with an `iretq` frame: CS `0x23`,
+- [x] Call `tss_set_rsp0` on every context switch. It is never called today.
+- [x] Enter ring 3 for the first time with an `iretq` frame: CS `0x23`,
       SS `0x1B`, RFLAGS `0x202`.
-- [ ] `munmap` frees the frames it unmaps (`src/mm/mmap.c:60`).
+- [x] `munmap` frees the frames it unmaps (`src/mm/mmap.c:60`).
 
 ### 3.4 A real user program and a real initrd
 
-- [ ] Create `user/` with a tiny `crt0`, a syscall wrapper and `hello.c`,
+- [x] Create `user/` with a tiny `crt0`, a syscall wrapper and `hello.c`,
       linked at a low address with its own linker script.
-- [ ] Pack `user/` binaries into a USTAR archive at build time, load it as a
+- [x] Pack `user/` binaries into a USTAR archive at build time, load it as a
       Limine module, and call `initrd_mount` at boot. The parser exists but is
       never called.
-- [ ] Delete the mock ELF headers in `src/kernel/proc/user_apps.c`.
+- [x] Delete the mock ELF headers in `src/kernel/proc/user_apps.c`.
 
 ### 3.5 Do not trust user input
 
-- [ ] `elf_load` takes the file size and rejects any `e_phoff`, `p_offset` or
+- [x] `elf_load` takes the file size and rejects any `e_phoff`, `p_offset` or
       `p_filesz` that points outside the file, and any `p_vaddr` in the kernel
       half (`src/fs/elf.c:30-62`).
-- [ ] Zero the whole of each loaded segment, including segments with
+- [x] Zero the whole of each loaded segment, including segments with
       `p_filesz == 0`.
-- [ ] Add `copy_from_user` / `copy_to_user` that validate the range is in the
+- [x] Add `copy_from_user` / `copy_to_user` that validate the range is in the
       user half and mapped. Use them for every pointer argument in
       `syscall_handler`.
-- [ ] An exception that arrives from ring 3 kills that task. Only a kernel-mode
+- [x] An exception that arrives from ring 3 kills that task. Only a kernel-mode
       exception halts the machine (`src/arch/x86_64/isr.c:75`).
-- [ ] Remove the IDT's DPL 3 gate for vector `0x80` unless it is used.
+- [x] Remove the IDT's DPL 3 gate for vector `0x80` unless it is used.
 
-**Checks:**
-1. `exec /bin/hello` prints from ring 3 and the shell prompt returns.
-2. A user program that executes `cli` is killed with a #GP report and the shell
-   survives.
-3. A user program that reads a kernel address is killed with a page fault
-   report and the shell survives.
-4. A user program that passes a kernel pointer to `write` gets an error.
-5. Delete-and-rederive the syscall entry path, per the original roadmap.
+**Checks (all passed, and all are now automated in `make test`):**
+1. `exec /bin/hello one two` prints from ring 3 with its arguments and the
+   shell prompt returns.
+2. `/bin/fault cli` is killed with a #GP report and the shell survives.
+3. `/bin/fault kread` and `kwrite` are killed with a page fault report. So are
+   `null`, `text` (write to code), `exec-stack` (NX) and `int`.
+4. `/bin/syscheck` passes kernel pointers, wrapping lengths and read-only
+   buffers to system calls and gets `-EFAULT` each time.
+5. Still to do by hand: delete-and-rederive the syscall entry path, per the
+   original roadmap.
+
+Differences from the plan as written:
+- The syscall frame uses the same `struct registers` layout as interrupts,
+  rather than a separate struct. That is what makes `fork` a frame copy.
+- `vmm_init` now creates all 256 kernel-half PML4 entries up front, so every
+  address space shares the same kernel page tables for good.
+- The single-CPU stack switch uses two globals (`syscall_user_rsp`,
+  `syscall_kernel_rsp`). SMP will need `swapgs` and per-CPU data.
 
 ---
 
@@ -285,16 +298,17 @@ Problem: every user mapping goes into the single kernel PML4.
 - [ ] **Blocking.** Add wait queues and a real `TASK_BLOCKED` path. Replace the
       yield loops in `SYS_SLEEP`, `SYS_READ`, `sem_wait`, `nanosleep` and the
       shell input loop. The idle task halts when nothing is runnable.
-- [ ] **`exit` and `wait`.** Exit status is stored, the parent is woken,
+- [x] **`exit` and `wait`.** Exit status is stored, the parent is woken,
       `waitpid` blocks and reaps, and the address space is destroyed.
-- [ ] **`exec`.** Replaces the current task's address space and jumps to the
+- [x] **`exec`.** Replaces the current task's address space and jumps to the
       new entry point, with `argv` on the user stack.
-- [ ] **`fork`.** Start with a full copy of the address space. Add
-      copy-on-write afterwards, using the refcounts in `src/mm/cow.c` and a
+- [x] **`fork`, full copy.** Works, including a child that execs.
+- [ ] **`fork`, copy-on-write.** The frame sharing counts in `src/mm/cow.c` are
+      ready; what is missing is marking shared pages read-only and a
       write-fault path in the page fault handler.
 - [ ] **File descriptors.** A per-process table, so `open`, `read`, `write` and
       `close` act on real files. `SYS_OPEN` currently returns 3 for any path.
-- [ ] **`brk` and the mmap cursor** become per-process (`syscall.c:20`,
+- [x] **`brk` and the mmap cursor** become per-process (`syscall.c:20`,
       `mmap.c:12`).
 - [ ] **Userspace shell.** Move the shell into `user/` once `fork`, `exec` and
       `wait` work. This is the Phase 7 capstone in the original roadmap.

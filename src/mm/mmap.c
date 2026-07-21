@@ -1,64 +1,92 @@
 /**
  * @file mmap.c
- * @brief Implementation of Virtual Memory Allocation (mmap / munmap)
+ * @brief Anonymous memory mappings and program break for user address spaces
  */
 
 #include "mmap.h"
 #include "vmm.h"
 #include "pmm.h"
-#include "kprintf.h"
+#include "cow.h"
 #include "string_util.h"
 
-static uint64_t next_user_mmap_addr = 0x0000700000000000ULL;
-
-void *mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t offset) {
-    (void)fd;
-    (void)offset;
-
-    if (length == 0) return MAP_FAILED;
-
-    size_t page_count = (length + PAGE_SIZE - 1) / PAGE_SIZE;
-
-    uint64_t target_vaddr = (uint64_t)addr;
-    if (target_vaddr == 0) {
-        target_vaddr = next_user_mmap_addr;
-        next_user_mmap_addr += page_count * PAGE_SIZE;
-    }
-
-    uint64_t pte_flags = VMM_PRESENT | VMM_USER;
-    if (prot & PROT_WRITE) {
-        pte_flags |= VMM_WRITABLE;
-    }
-
-    for (size_t i = 0; i < page_count; i++) {
-        uint64_t vaddr = target_vaddr + (i * PAGE_SIZE);
-
-        void *phys_frame = NULL;
-        if (flags & MAP_ANONYMOUS) {
-            phys_frame = pmm_alloc_frame();
-            if (!phys_frame) return MAP_FAILED;
-            
-            // Zero out physical frame contents
-            uint64_t hhdm = pmm_get_hhdm_offset();
-            memset((void *)((uint64_t)phys_frame + hhdm), 0, PAGE_SIZE);
-        }
-
-        vmm_map_page(NULL, vaddr, (uint64_t)phys_frame, pte_flags);
-    }
-
-    return (void *)target_vaddr;
+static uint64_t page_align_up(uint64_t value) {
+    return (value + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
 }
 
-int munmap(void *addr, size_t length) {
-    if (!addr || length == 0) return -1;
+static uint64_t prot_to_pte_flags(int prot) {
+    uint64_t flags = VMM_PRESENT | VMM_USER;
+    if (prot & PROT_WRITE) flags |= VMM_WRITABLE;
+    if (!(prot & PROT_EXEC)) flags |= VMM_NO_EXECUTE;
+    return flags;
+}
 
-    size_t page_count = (length + PAGE_SIZE - 1) / PAGE_SIZE;
-    uint64_t start_vaddr = (uint64_t)addr;
+int user_unmap_range(uint64_t *pml4, uint64_t addr, size_t length) {
+    if (!pml4 || length == 0 || (addr & (PAGE_SIZE - 1))) return -1;
+    if (addr >= USER_SPACE_END || length > USER_SPACE_END - addr) return -1;
 
-    for (size_t i = 0; i < page_count; i++) {
-        uint64_t vaddr = start_vaddr + (i * PAGE_SIZE);
-        vmm_unmap_page(NULL, vaddr);
+    uint64_t end = addr + page_align_up(length);
+    for (uint64_t page = addr; page < end; page += PAGE_SIZE) {
+        uint64_t phys = vmm_get_phys(pml4, page);
+        if (phys) {
+            vmm_unmap_page(pml4, page);
+            pmm_unref_frame((void *)phys);
+        }
+    }
+    return 0;
+}
+
+int user_map_range(uint64_t *pml4, uint64_t addr, size_t length, int prot) {
+    if (!pml4 || length == 0 || (addr & (PAGE_SIZE - 1))) return -1;
+    if (addr < PAGE_SIZE || addr >= USER_SPACE_END || length > USER_SPACE_END - addr) return -1;
+
+    uint64_t flags = prot_to_pte_flags(prot);
+    uint64_t end = addr + page_align_up(length);
+
+    for (uint64_t page = addr; page < end; page += PAGE_SIZE) {
+        if (vmm_get_pte(pml4, page) & VMM_PRESENT) continue; // Already backed
+
+        if (!vmm_alloc_user_page(pml4, page, flags)) {
+            // Out of memory: give back what this call mapped so far
+            if (page > addr) user_unmap_range(pml4, addr, page - addr);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+uint64_t user_mmap_anon(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot) {
+    if (!pml4 || !next_addr || length == 0) return 0;
+
+    uint64_t size = page_align_up(length);
+    if (size < length) return 0; // Overflow
+
+    uint64_t addr = *next_addr;
+    if (addr >= USER_MMAP_END || size > USER_MMAP_END - addr) return 0;
+
+    if (user_map_range(pml4, addr, size, prot) != 0) return 0;
+
+    *next_addr = addr + size;
+    return addr;
+}
+
+uint64_t user_set_brk(uint64_t *pml4, uint64_t brk_start, uint64_t *brk_end, uint64_t new_brk) {
+    if (!pml4 || !brk_end) return 0;
+
+    // Out-of-range requests leave the break where it is; the caller sees the
+    // unchanged value and knows the request failed (Linux brk semantics).
+    if (new_brk < brk_start || new_brk > brk_start + USER_BRK_MAX) return *brk_end;
+
+    uint64_t old_top = page_align_up(*brk_end);
+    uint64_t new_top = page_align_up(new_brk);
+
+    if (new_top > old_top) {
+        if (user_map_range(pml4, old_top, new_top - old_top, PROT_READ | PROT_WRITE) != 0) {
+            return *brk_end;
+        }
+    } else if (new_top < old_top) {
+        user_unmap_range(pml4, new_top, old_top - new_top);
     }
 
-    return 0;
+    *brk_end = new_brk;
+    return new_brk;
 }
