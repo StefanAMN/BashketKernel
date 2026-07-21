@@ -36,11 +36,11 @@ ISO_ROOT = $(BUILD)/iso_root
 
 # --- User programs and the initrd -------------------------------------------
 # Every user/*.c becomes /bin/<name> in the initrd, linked against the small
-# library in user/lib. -mgeneral-regs-only: the kernel does not save FPU/SSE
-# state across task switches yet, so user code must not use those registers.
+# library in user/lib. User code may use floating point and SSE: the kernel
+# saves that state per task.
 USER_CFLAGS = -Wall -Wextra -O2 -g -pipe -Iuser/lib \
               -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
-              -mgeneral-regs-only -masm=intel -MMD -MP
+              -masm=intel -MMD -MP
 USER_LDFLAGS = -nostdlib -static -T user/linker.ld -z max-page-size=0x1000
 
 USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o

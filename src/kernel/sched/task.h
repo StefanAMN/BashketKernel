@@ -48,6 +48,11 @@ typedef struct task {
     uint64_t brk_end;        // Current program break (heap end)
     uint64_t mmap_next;      // Next free address in the mmap region
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
+
+    // FPU/SSE registers while the task is not running (FXSAVE format).
+    // FXSAVE needs 16-byte alignment: kmalloc guarantees it for the struct,
+    // the attribute for this member within it.
+    uint8_t fpu_state[512] __attribute__((aligned(16)));
 } task_t;
 
 #endif // TASK_H

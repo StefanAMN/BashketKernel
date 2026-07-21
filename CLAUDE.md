@@ -133,6 +133,18 @@ would change how the next problem is approached.
   files point into the boot module and test files into string constants; the
   first write copies into an owned buffer (`owns_data`).
 
+### Testing that a test can fail
+
+- **Mutate the kernel once to prove a new test detects the bug it is for.**
+  `/bin/fptest` passed on the first run; commenting out the `fpu_restore` in
+  `sched_yield` made all four workers fail, which is what shows the test is
+  worth having. Do this for any test that passes first time.
+- **Check test arithmetic on the host first.** The first version of that
+  calculation overflowed to infinity for every seed, so every "result" was
+  equal. Compiling the same function with the host gcc showed it in seconds.
+- `make test | grep FAIL` also matches the compiler command lines
+  (`-DKERNEL_TESTS`). Use `make test 2>&1 | tail -6`, or grep `build-test/test.log`.
+
 ### Design choices that paid off
 
 - **One frame layout for interrupts and system calls.** `syscall_entry` builds
