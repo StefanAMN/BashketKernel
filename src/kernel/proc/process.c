@@ -14,6 +14,7 @@
 #include "elf.h"
 #include "gdt.h"
 #include "spinlock.h"
+#include "file.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
@@ -143,6 +144,16 @@ pid_t process_spawn(const char *path, char *const argv[]) {
     apply_image(task, &image);
     task->detached = false; // The creator is expected to process_wait() for it
 
+    // Standard input, output and error all start as the console
+    file_t *console = file_open_console();
+    if (!console) {
+        task_free(task);
+        return -1;
+    }
+    task->fds[0] = console;
+    task->fds[1] = file_dup(console);
+    task->fds[2] = file_dup(console);
+
     pid_t pid = (pid_t)task->pid;
     sched_add(task);
     return pid;
@@ -199,6 +210,11 @@ pid_t process_fork(struct registers *regs) {
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
     child->mmap_next = parent->mmap_next;
+
+    // The child shares the parent's open files, positions included
+    for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
+        child->fds[fd] = file_dup(parent->fds[fd]);
+    }
 
     // The child's kernel stack starts with a copy of the parent's syscall
     // frame, except that its syscall "returns" 0. Below the frame goes the

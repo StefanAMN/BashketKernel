@@ -22,6 +22,7 @@
 #include "kstring.h"
 #include "gdt.h"
 #include "heap.h"
+#include "file.h"
 
 extern void syscall_entry(void);
 
@@ -97,33 +98,124 @@ static int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t dst_si
 
 // --- Individual system calls -------------------------------------------------
 
+// Look up a descriptor in the calling process's table
+static file_t *fd_to_file(int fd) {
+    task_t *task = sched_get_current_task();
+    if (fd < 0 || fd >= TASK_MAX_FDS) return NULL;
+    return task->fds[fd];
+}
+
 static int64_t sys_read(int fd, uint64_t buf, size_t count) {
-    if (fd != 0) return -EBADF;
+    file_t *file = fd_to_file(fd);
+    if (!file) return -EBADF;
     if (count == 0) return 0;
     if (!user_range_ok(buf, count, true)) return -EFAULT;
 
-    // Sleep until at least one character is available, then return what is
-    // there. The caller's address space is loaded again whenever it runs.
-    char *out = (char *)buf;
-    size_t n = 0;
-    out[n++] = keyboard_getchar();
-    while (n < count && keyboard_has_char()) {
-        out[n++] = keyboard_getchar();
-    }
-    return (int64_t)n;
+    // May sleep (console, pipe). The caller's address space is loaded again
+    // whenever it runs, so writing to its buffer afterwards is fine.
+    return file_read(file, (void *)buf, count);
 }
 
 static int64_t sys_write(int fd, uint64_t buf, size_t count) {
-    if (fd != 1 && fd != 2) return -EBADF;
+    file_t *file = fd_to_file(fd);
+    if (!file) return -EBADF;
     if (count == 0) return 0;
     if (!user_range_ok(buf, count, false)) return -EFAULT;
 
-    const char *in = (const char *)buf;
-    for (size_t i = 0; i < count; i++) {
-        serial_putchar(in[i]);
-        console_putchar(in[i]);
+    return file_write(file, (const void *)buf, count);
+}
+
+static int64_t sys_open(uint64_t user_path, int flags) {
+    char path[PATH_MAX];
+    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+
+    file_t *file = NULL;
+    int err = file_open(path, flags, &file);
+    if (err != 0) return err;
+
+    int fd = fd_install(sched_get_current_task()->fds, file);
+    if (fd < 0) file_close(file);
+    return fd;
+}
+
+static int64_t sys_close(int fd) {
+    file_t *file = fd_to_file(fd);
+    if (!file) return -EBADF;
+
+    sched_get_current_task()->fds[fd] = NULL;
+    file_close(file);
+    return 0;
+}
+
+static int64_t sys_pipe(uint64_t user_fds) {
+    if (!user_range_ok(user_fds, 2 * sizeof(int), true)) return -EFAULT;
+
+    file_t *reader = NULL, *writer = NULL;
+    int err = file_open_pipe(&reader, &writer);
+    if (err != 0) return err;
+
+    task_t *task = sched_get_current_task();
+    int read_fd = fd_install(task->fds, reader);
+    int write_fd = (read_fd >= 0) ? fd_install(task->fds, writer) : -EMFILE;
+    if (write_fd < 0) {
+        if (read_fd >= 0) task->fds[read_fd] = NULL;
+        file_close(reader);
+        file_close(writer);
+        return -EMFILE;
     }
-    return (int64_t)count;
+
+    int *out = (int *)user_fds;
+    out[0] = read_fd;
+    out[1] = write_fd;
+    return 0;
+}
+
+static int64_t sys_dup2(int old_fd, int new_fd) {
+    file_t *file = fd_to_file(old_fd);
+    if (!file || new_fd < 0 || new_fd >= TASK_MAX_FDS) return -EBADF;
+    if (old_fd == new_fd) return new_fd;
+
+    task_t *task = sched_get_current_task();
+    file_t *replaced = task->fds[new_fd];
+    task->fds[new_fd] = file_dup(file);
+    file_close(replaced);
+    return new_fd;
+}
+
+static int64_t sys_readdir(int fd, uint64_t user_entry) {
+    file_t *file = fd_to_file(fd);
+    if (!file) return -EBADF;
+    if (!user_range_ok(user_entry, sizeof(struct dirent_info), true)) return -EFAULT;
+
+    return file_readdir(file, (struct dirent_info *)user_entry);
+}
+
+static int64_t sys_mkdir(uint64_t user_path) {
+    char path[PATH_MAX];
+    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+
+    const char *leaf = NULL;
+    vnode_t *parent = vfs_find_parent(path, &leaf);
+    if (!parent) return -ENOENT;
+
+    // Copy the leaf without a trailing slash ("mkdir /tmp/dir/")
+    char name[PATH_MAX];
+    size_t len = 0;
+    while (leaf[len] != '\0' && leaf[len] != '/') { name[len] = leaf[len]; len++; }
+    name[len] = '\0';
+
+    if (vfs_find_child(parent, name)) return -EEXIST;
+    return vfs_create_dir(parent, name) ? 0 : -ENOMEM;
+}
+
+static int64_t sys_unlink(uint64_t user_path) {
+    char path[PATH_MAX];
+    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+
+    const char *leaf = NULL;
+    vnode_t *parent = vfs_find_parent(path, &leaf);
+    if (!parent) return -ENOENT;
+    return vfs_unlink(parent, leaf);
 }
 
 static int64_t sys_brk(uint64_t new_brk) {
@@ -272,9 +364,18 @@ int64_t syscall_handler(struct registers *regs) {
             kprintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
             return 0;
 
-        // Files need a per-process descriptor table, which does not exist yet
-        case SYS_OPEN:
-        case SYS_CLOSE:
+        case SYS_OPEN:    return sys_open(regs->rdi, (int)regs->rsi);
+        case SYS_CLOSE:   return sys_close((int)regs->rdi);
+        case SYS_LSEEK: {
+            file_t *file = fd_to_file((int)regs->rdi);
+            return file ? file_seek(file, (int64_t)regs->rsi, (int)regs->rdx) : -EBADF;
+        }
+        case SYS_PIPE:    return sys_pipe(regs->rdi);
+        case SYS_DUP2:    return sys_dup2((int)regs->rdi, (int)regs->rsi);
+        case SYS_READDIR: return sys_readdir((int)regs->rdi, regs->rsi);
+        case SYS_MKDIR:   return sys_mkdir(regs->rdi);
+        case SYS_UNLINK:  return sys_unlink(regs->rdi);
+
         default:
             return -ENOSYS;
     }

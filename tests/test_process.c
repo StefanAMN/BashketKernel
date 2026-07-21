@@ -3,6 +3,8 @@
 #include "sched.h"
 #include "pmm.h"
 #include "heap.h"
+#include "vfs.h"
+#include "string_util.h"
 
 static int run(const char *path, char *const argv[]) {
     pid_t pid = process_spawn(path, argv);
@@ -66,10 +68,57 @@ TEST(processes_leave_nothing_behind) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// The user shell builds pipelines and redirections from fork, exec, pipe,
+// dup2 and open. Its results are checked here from the kernel side.
+TEST(shell_pipelines_and_redirection) {
+    sched_reap();
+    size_t free_before = pmm_get_free_frames();
+    char buf[64] = {0};
+
+    char *to_file[] = { "/bin/sh", "-c", "echo one two three | cat | wc > /tmp/sh_out", NULL };
+    EXPECT_EQ(run("/bin/sh", to_file), 0);
+    vnode_t *out = vfs_find(NULL, "/tmp/sh_out");
+    EXPECT_TRUE(out != NULL);
+    if (out) {
+        size_t n = vfs_read(out, 0, sizeof(buf) - 1, buf);
+        buf[n] = '\0';
+        EXPECT_EQ(strcmp(buf, "1 3 14\n"), 0);   // wc: lines words bytes
+    }
+
+    // Input redirection and append
+    char *append[] = { "/bin/sh", "-c", "cat < /etc/motd >> /tmp/sh_out", NULL };
+    EXPECT_EQ(run("/bin/sh", append), 0);
+    if (out) {
+        size_t n = vfs_read(out, 0, sizeof(buf) - 1, buf);
+        buf[n] = '\0';
+        EXPECT_EQ(strcmp(buf, "1 3 14\nWelcome to BashketOS.\n"), 0);
+    }
+
+    // The status of a pipeline is that of its last program
+    char *status[] = { "/bin/sh", "-c", "echo x | fault", NULL };
+    EXPECT_EQ(run("/bin/sh", status), 2);
+    char *missing[] = { "/bin/sh", "-c", "no-such-program", NULL };
+    EXPECT_EQ(run("/bin/sh", missing), 127);
+    char *syntax[] = { "/bin/sh", "-c", "echo |", NULL };
+    EXPECT_EQ(run("/bin/sh", syntax), 2);
+    char *exit_code[] = { "/bin/sh", "-c", "exit 42", NULL };
+    EXPECT_EQ(run("/bin/sh", exit_code), 42);
+
+    // A writer whose reader has already exited gets an error, not a hang
+    char *broken[] = { "/bin/sh", "-c", "cat /bin/sh | fault", NULL };
+    EXPECT_EQ(run("/bin/sh", broken), 2);
+
+    // Every descriptor was closed: the file can be deleted, and nothing leaked
+    EXPECT_EQ(vfs_unlink(vfs_find(NULL, "/tmp"), "sh_out"), 0);
+    sched_reap();
+    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+}
+
 void test_suite_process(void) {
     kprintf("Suite: User Processes\n");
     RUN_TEST(spawn_runs_program_and_returns_status);
     RUN_TEST(spawn_rejects_bad_targets);
     RUN_TEST(faulting_programs_are_killed);
     RUN_TEST(processes_leave_nothing_behind);
+    RUN_TEST(shell_pipelines_and_redirection);
 }

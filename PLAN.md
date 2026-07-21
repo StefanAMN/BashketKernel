@@ -17,8 +17,8 @@ that file.
 - **Milestone 2:** test build, exit status and CI done. Cleaning up test
   state leaks and mock tests is open.
 - **Milestone 3:** done. Programs run in ring 3.
-- **Milestone 4:** fork, exec, wait, kill, brk and mmap work. Blocking wait
-  queues, file descriptors, copy-on-write and a user-space shell are open.
+- **Milestone 4:** done. Blocking, copy-on-write fork, exec, wait, kill, file
+  descriptors, pipes and a user-space shell all work.
 - **Milestone 5:** not started.
 
 ## Where things stand
@@ -308,12 +308,17 @@ Differences from the plan as written:
 - [x] **`fork`, copy-on-write.** `vmm_clone_user_space` shares every frame and
       marks writable pages read-only + `VMM_COW` in both processes; the page
       fault handler copies on the first write (`vmm_handle_cow_fault`).
-- [ ] **File descriptors.** A per-process table, so `open`, `read`, `write` and
-      `close` act on real files. `SYS_OPEN` currently returns 3 for any path.
+- [x] **File descriptors.** Per-process table of reference-counted open files
+      (`src/fs/file.c`) over VFS nodes, pipe ends and the console. `open`,
+      `close`, `read`, `write`, `lseek`, `pipe`, `dup2`, `readdir`, `mkdir`,
+      `unlink`. Files are closed when a process dies, not when it is reaped.
 - [x] **`brk` and the mmap cursor** become per-process (`syscall.c:20`,
       `mmap.c:12`).
-- [ ] **Userspace shell.** Move the shell into `user/` once `fork`, `exec` and
-      `wait` work. This is the Phase 7 capstone in the original roadmap.
+- [x] **Userspace shell.** `/bin/sh` (`user/sh.c`) runs pipelines and
+      redirections using only system calls. The kernel-thread shell stays as
+      the boot shell because it has the debugging commands (`crash`, `mem`,
+      `ps`) and the test driver talks to it. Booting straight into `/bin/sh`
+      as an init process is the remaining step.
 
 **Check:** a user program forks, the child execs `/bin/hello`, and the parent
 prints the child's exit status after `waitpid`. Run it 1000 times in a loop and

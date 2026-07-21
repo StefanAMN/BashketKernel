@@ -12,6 +12,7 @@
 #include "kstack.h"
 #include "spinlock.h"
 #include "gdt.h"
+#include "file.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 
@@ -132,6 +133,7 @@ task_t *task_create(const char *name, void (*entry)(void)) {
 
 void task_free(task_t *t) {
     if (!t) return;
+    file_close_all(t->fds); // Normally already empty: closed when it died
     if (t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
         vmm_destroy_address_space(vmm_space_from_phys((uint64_t)t->pml4_phys));
     }
@@ -279,6 +281,10 @@ void sched_make_zombie(task_t *task, int status) {
     uint64_t flags = irq_save();
     task->exit_status = status;
     task->state = TASK_ZOMBIE;
+
+    // Close its files now rather than when it is reaped: a reader at the
+    // other end of a pipe must see end-of-file as soon as the writer dies.
+    file_close_all(task->fds);
 
     // Children of a dead task have nobody left to wait for them
     task_t *parent = NULL;

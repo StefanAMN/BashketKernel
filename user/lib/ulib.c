@@ -133,28 +133,69 @@ long atoi(const char *s) {
     return negative ? -value : value;
 }
 
-/* --- I/O ----------------------------------------------------------------- */
+/* --- Files --------------------------------------------------------------- */
 
-long read(int fd, void *buf, size_t count)        { return syscall3(SYS_READ, fd, buf, count); }
-long write(int fd, const void *buf, size_t count) { return syscall3(SYS_WRITE, fd, buf, count); }
+long open(const char *path, int flags)             { return syscall2(SYS_OPEN, path, flags); }
+long close(int fd)                                 { return syscall1(SYS_CLOSE, fd); }
+long read(int fd, void *buf, size_t count)         { return syscall3(SYS_READ, fd, buf, count); }
+long write(int fd, const void *buf, size_t count)  { return syscall3(SYS_WRITE, fd, buf, count); }
+long lseek(int fd, long offset, int whence)        { return syscall3(SYS_LSEEK, fd, offset, whence); }
+long pipe(int fds[2])                              { return syscall1(SYS_PIPE, fds); }
+long dup2(int old_fd, int new_fd)                  { return syscall2(SYS_DUP2, old_fd, new_fd); }
+long readdir(int fd, struct dirent *entry)         { return syscall2(SYS_READDIR, fd, entry); }
+long mkdir(const char *path)                       { return syscall1(SYS_MKDIR, path); }
+long unlink(const char *path)                      { return syscall1(SYS_UNLINK, path); }
 
-void puts(const char *s) {
-    write(1, s, strlen(s));
-    write(1, "\n", 1);
+const char *strerror(long err) {
+    switch (err < 0 ? -err : err) {
+        case 0:         return "success";
+        case ENOENT:    return "no such file or directory";
+        case ESRCH:     return "no such process";
+        case EBADF:     return "bad file descriptor";
+        case ECHILD:    return "no child processes";
+        case ENOMEM:    return "out of memory";
+        case EFAULT:    return "bad address";
+        case EBUSY:     return "file is in use";
+        case EEXIST:    return "file exists";
+        case ENOTDIR:   return "not a directory";
+        case EISDIR:    return "is a directory";
+        case EINVAL:    return "invalid argument";
+        case EMFILE:    return "too many open files";
+        case ENOSPC:    return "no space left";
+        case ESPIPE:    return "cannot seek";
+        case EPIPE:     return "broken pipe";
+        case ENOSYS:    return "not implemented";
+        case ENOTEMPTY: return "directory not empty";
+        default:        return "unknown error";
+    }
 }
 
-/* printf builds the whole line in a buffer and writes it with one system
- * call, so output from two processes does not interleave mid-line. */
+/* --- Formatted output ---------------------------------------------------- */
+
+void puts(const char *s) {
+    printf("%s\n", s);
+}
+
+/* Output is collected in a buffer and written with one system call per
+ * printf, so lines from two processes do not interleave mid-line. */
 typedef struct {
+    int fd;
     char data[256];
     size_t len;
 } outbuf_t;
 
-static void out_char(outbuf_t *out, char c) {
-    if (out->len == sizeof(out->data)) {
-        write(1, out->data, out->len);
-        out->len = 0;
+static void out_flush(outbuf_t *out) {
+    size_t sent = 0;
+    while (sent < out->len) {
+        long n = write(out->fd, out->data + sent, out->len - sent);
+        if (n <= 0) break; /* Closed pipe, bad descriptor: drop the rest */
+        sent += (size_t)n;
     }
+    out->len = 0;
+}
+
+static void out_char(outbuf_t *out, char c) {
+    if (out->len == sizeof(out->data)) out_flush(out);
     out->data[out->len++] = c;
 }
 
@@ -175,12 +216,10 @@ static void out_number(outbuf_t *out, unsigned long value, unsigned base, int ne
 }
 
 /* Supports %d %u %x %p %s %c %% and the l length modifier. */
-void printf(const char *fmt, ...) {
+static void format(int fd, const char *fmt, va_list args) {
     outbuf_t out;
+    out.fd = fd;
     out.len = 0;
-
-    va_list args;
-    va_start(args, fmt);
 
     for (; *fmt; fmt++) {
         if (*fmt != '%') { out_char(&out, *fmt); continue; }
@@ -206,17 +245,35 @@ void printf(const char *fmt, ...) {
         }
     }
 
-    va_end(args);
-    if (out.len) write(1, out.data, out.len);
+    out_flush(&out);
 }
 
-/* Read one line from the keyboard with echo and backspace handling.
- * Returns the length, without the newline. */
+void printf(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    format(1, fmt, args);
+    va_end(args);
+}
+
+void fprintf(int fd, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    format(fd, fmt, args);
+    va_end(args);
+}
+
+/* Read one line from standard input into buf, without the newline. When
+ * input is the console this echoes what is typed and handles backspace.
+ * Returns the length, or -1 at end of input with nothing read. */
 long readline(char *buf, size_t size) {
     size_t len = 0;
     for (;;) {
         char c;
-        if (read(0, &c, 1) != 1) continue;
+        long n = read(0, &c, 1);
+        if (n <= 0) {
+            buf[len] = '\0';
+            return len > 0 ? (long)len : -1;
+        }
 
         if (c == '\n' || c == '\r') {
             write(1, "\n", 1);

@@ -18,6 +18,10 @@ typedef struct vnode {
     uint32_t type;              // VFS_FILE or VFS_DIRECTORY
     size_t size;                // File size in bytes
     const void *data;           // Pointer to file data
+    bool owns_data;             // data is a kmalloc buffer this node must free
+                                // (false: it points into the initrd or a constant)
+    size_t capacity;            // Size of that buffer when owns_data
+    uint32_t open_count;        // Open file descriptions referring to this node
     struct vnode *parent;       // Pointer to parent directory node
     struct vnode *children;     // Pointer to first child node if directory
     struct vnode *next;         // Pointer to next sibling in directory listing
@@ -78,6 +82,24 @@ size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf);
  * @param name File or directory name to delete.
  * @return 0 on success, -1 on failure.
  */
+/**
+ * @brief Cut a file to `size` bytes (only shrinking is supported).
+ */
+void vfs_truncate(vnode_t *file, size_t size);
+
+/**
+ * @brief Find the directory that would contain `path`.
+ * @param out_leaf Receives a pointer to the final component inside `path`.
+ * @return The parent directory, or NULL if it does not exist or the path has
+ *         no final component.
+ */
+vnode_t *vfs_find_parent(const char *path, const char **out_leaf);
+
+/**
+ * @brief Find a direct child of a directory by name.
+ */
+vnode_t *vfs_find_child(vnode_t *dir, const char *name);
+
 int vfs_unlink(vnode_t *parent, const char *name);
 
 /**

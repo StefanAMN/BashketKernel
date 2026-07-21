@@ -25,6 +25,7 @@ make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
 
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
+tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 ```
 
@@ -117,6 +118,20 @@ would change how the next problem is approached.
   is cleaned up by the ordinary destroy path, with no special unwinding.
 - **Last owner writes: no copy.** If the frame's count is 1, just restore the
   writable bit.
+
+### Files and pipes
+
+- **Close a process's files when it dies, not when it is reaped.** A zombie
+  holding the write end of a pipe keeps the reader waiting for end-of-file,
+  and the reader's parent is often the one that would reap the zombie.
+- **A pipe needs "the other end is gone" in both directions**: read returns 0
+  only when empty *and* the writer closed; write fails with EPIPE when the
+  reader closed. Without the second, `big | exits-early` hangs forever.
+- **The shell must close its own copies of pipe ends after forking**, or no
+  reader ever sees end-of-file. Same in every child before exec.
+- **Never overwrite file data in place if the node does not own it.** Initrd
+  files point into the boot module and test files into string constants; the
+  first write copies into an owned buffer (`owns_data`).
 
 ### Design choices that paid off
 

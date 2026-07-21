@@ -6,6 +6,7 @@ fixed sleeps and the run takes as long as the kernel actually needs.
 
     tools/qemu_shell.py 'ps' 'mem'                # run commands, print output
     tools/qemu_shell.py --expect 'Hello' 'exec /bin/hello'
+    tools/qemu_shell.py 'exec /bin/sh' 'ls /bin | wc' 'exit'   # user shell
     tools/qemu_shell.py --mem 512M --qemu-arg=-smp --qemu-arg=2 'uptime'
     tools/qemu_shell.py --trace-irq 'uptime'      # also write irq-trace.log
 
@@ -24,6 +25,7 @@ import sys
 import time
 
 PROMPT = b"BashketOS> "
+USER_PROMPT = b"\n$ "  # /bin/sh, when a command starts it (e.g. 'exec /bin/sh')
 CRASH_END = b"=================================================\n"
 
 
@@ -82,12 +84,12 @@ def main():
             for command in args.commands:
                 proc.stdin.write(command.encode() + b"\n")
                 proc.stdin.flush()
-                hit = read_until(proc, buf, [PROMPT, b"CPU EXCEPTION", b"KERNEL PANIC"],
+                hit = read_until(proc, buf, [PROMPT, USER_PROMPT, b"CPU EXCEPTION", b"KERNEL PANIC"],
                                  time.monotonic() + args.timeout)
                 if hit is None:
                     status = 2
                     break
-                if hit != PROMPT:
+                if hit not in (PROMPT, USER_PROMPT):
                     # Let the fault report finish printing
                     read_until(proc, buf, [b"RBP:"], time.monotonic() + 3)
                     read_until(proc, buf, [CRASH_END], time.monotonic() + 2)

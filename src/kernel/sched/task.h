@@ -13,6 +13,9 @@
 #include <stdbool.h>
 
 #define KERNEL_STACK_SIZE (16 * 1024) // 16 KiB kernel stack per task
+#define TASK_MAX_FDS 16               // Open file descriptors per process
+
+struct file;
 
 typedef enum {
     TASK_READY,
@@ -44,6 +47,7 @@ typedef struct task {
     uint64_t brk_start;      // First address after the loaded program image
     uint64_t brk_end;        // Current program break (heap end)
     uint64_t mmap_next;      // Next free address in the mmap region
+    struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
 } task_t;
 
 #endif // TASK_H

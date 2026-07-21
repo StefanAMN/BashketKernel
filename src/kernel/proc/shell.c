@@ -65,12 +65,19 @@ static void shell_exec(const char *args_line) {
     strncpy(line, args_line, sizeof(line) - 1);
     line[sizeof(line) - 1] = '\0';
 
+    // Arguments are separated by spaces; "double quotes" keep spaces in one
     for (char *p = line; *p != '\0' && argc < PROCESS_MAX_ARGS; ) {
         while (*p == ' ') p++;
         if (*p == '\0') break;
+
+        char end = ' ';
+        if (*p == '"') {
+            end = '"';
+            p++;
+        }
         argv[argc++] = p;
-        while (*p != '\0' && *p != ' ') p++;
-        if (*p == ' ') *p++ = '\0';
+        while (*p != '\0' && *p != end) p++;
+        if (*p != '\0') *p++ = '\0';
     }
     argv[argc] = NULL;
 

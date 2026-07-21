@@ -13,27 +13,64 @@
 #define SYS_YIELD    4
 #define SYS_EXIT     5
 #define SYS_GETPID   6
+#define SYS_LSEEK    8
 #define SYS_MMAP     9
 #define SYS_MUNMAP   11
 #define SYS_BRK      12
+#define SYS_PIPE     22
+#define SYS_DUP2     33
 #define SYS_SLEEP    35
 #define SYS_FORK     57
 #define SYS_EXECVE   59
 #define SYS_WAITPID  61
 #define SYS_KILL     62
 #define SYS_UNAME    63
+#define SYS_READDIR  78
 #define SYS_GETCWD   79
+#define SYS_MKDIR    83
+#define SYS_UNLINK   87
 #define SYS_GETPPID  110
 #define SYS_TIME     201
 
-#define ENOENT 2
-#define ESRCH  3
-#define EBADF  9
-#define ECHILD 10
-#define ENOMEM 12
-#define EFAULT 14
-#define EINVAL 22
-#define ENOSYS 38
+#define ENOENT   2
+#define ESRCH    3
+#define EBADF    9
+#define ECHILD  10
+#define ENOMEM  12
+#define EFAULT  14
+#define EBUSY   16
+#define EEXIST  17
+#define ENOTDIR 20
+#define EISDIR  21
+#define EINVAL  22
+#define EMFILE  24
+#define ENOSPC  28
+#define ESPIPE  29
+#define EPIPE   32
+#define ENOSYS  38
+#define ENOTEMPTY 39
+
+#define O_RDONLY 0x000
+#define O_WRONLY 0x001
+#define O_RDWR   0x002
+#define O_CREAT  0x040
+#define O_TRUNC  0x200
+#define O_APPEND 0x400
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+#define DT_FILE 1
+#define DT_DIR  2
+
+/* One directory entry, filled in by readdir() */
+struct dirent {
+    uint32_t type;      /* DT_FILE or DT_DIR */
+    uint32_t reserved;
+    uint64_t size;
+    char name[128];
+};
 
 #define PROT_READ  1
 #define PROT_WRITE 2

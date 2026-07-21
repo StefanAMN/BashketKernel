@@ -1,6 +1,6 @@
 /**
  * @file pipe.h
- * @brief Inter-Process Communication (IPC) Ring-Buffer Pipe Interface
+ * @brief Pipes: a one-way byte stream between processes
  */
 
 #ifndef PIPE_H
@@ -12,41 +12,39 @@
 
 #define PIPE_BUFFER_SIZE 4096
 
-typedef struct {
-    uint8_t buffer[PIPE_BUFFER_SIZE];
-    size_t head;
-    size_t tail;
-    size_t count;
+typedef struct pipe {
+    uint8_t buffer[PIPE_BUFFER_SIZE]; // Ring buffer
+    size_t head;                      // Next byte to write
+    size_t tail;                      // Next byte to read
+    size_t count;                     // Bytes currently buffered
+    bool reader_open;                 // The read end has not been closed
+    bool writer_open;                 // The write end has not been closed
 } pipe_t;
 
 /**
- * @brief Allocate and initialize a new IPC ring-buffer pipe.
- * @return Pointer to newly allocated pipe structure.
+ * @brief Create a pipe with both ends open.
  */
 pipe_t *pipe_create(void);
 
 /**
- * @brief Read bytes from an IPC pipe.
- * @param pipe Pointer to target pipe.
- * @param buf Output destination buffer.
- * @param count Maximum number of bytes to read.
- * @return Number of bytes successfully read.
+ * @brief Read up to `count` bytes. Sleeps while the pipe is empty and the
+ *        write end is open.
+ * @return Bytes read; 0 means end-of-file (empty and the writer is gone).
  */
-size_t pipe_read(pipe_t *pipe, void *buf, size_t count);
+int64_t pipe_read(pipe_t *pipe, void *buf, size_t count);
 
 /**
- * @brief Write bytes to an IPC pipe.
- * @param pipe Pointer to target pipe.
- * @param buf Source data buffer.
- * @param count Number of bytes to write.
- * @return Number of bytes successfully written.
+ * @brief Write all `count` bytes, sleeping whenever the pipe is full.
+ * @return Bytes written, or -EPIPE if the read end is closed and nothing
+ *         could be written.
  */
-size_t pipe_write(pipe_t *pipe, const void *buf, size_t count);
+int64_t pipe_write(pipe_t *pipe, const void *buf, size_t count);
 
 /**
- * @brief Free pipe resource allocations.
- * @param pipe Pipe to destroy.
+ * @brief Close one end. Wakes the other side; frees the pipe once both ends
+ *        are closed.
  */
-void pipe_destroy(pipe_t *pipe);
+void pipe_close_reader(pipe_t *pipe);
+void pipe_close_writer(pipe_t *pipe);
 
 #endif // PIPE_H
