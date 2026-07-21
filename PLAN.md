@@ -295,9 +295,11 @@ Differences from the plan as written:
 
 ## Milestone 4 — Real process lifecycle
 
-- [ ] **Blocking.** Add wait queues and a real `TASK_BLOCKED` path. Replace the
-      yield loops in `SYS_SLEEP`, `SYS_READ`, `sem_wait`, `nanosleep` and the
-      shell input loop. The idle task halts when nothing is runnable.
+- [x] **Blocking.** `sched_block(channel, wake_tick)` and
+      `sched_wakeup(channel)` (the xv6 sleep/wakeup design, chosen over linked
+      wait queues because a killed sleeper leaves nothing to unlink). Used by
+      `SYS_SLEEP`, `SYS_READ`, `waitpid`, `sem_wait`, `nanosleep` and the
+      shell input loop. The CPU halts when nothing is runnable.
 - [x] **`exit` and `wait`.** Exit status is stored, the parent is woken,
       `waitpid` blocks and reaps, and the address space is destroyed.
 - [x] **`exec`.** Replaces the current task's address space and jumps to the

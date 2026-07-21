@@ -18,7 +18,7 @@ that gap.
 | 1 | Boot, console, serial | real | Framebuffer console, COM1 serial, `kprintf`. |
 | 2 | GDT, TSS, IDT, interrupts | real | Double faults run on their own stack (IST1). |
 | 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap, per-process address spaces. |
-| 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. 100 Hz PIT tick. |
+| 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. Tasks block (sleep, input, wait, semaphores) instead of polling. 100 Hz PIT tick. |
 | 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader. No file descriptors yet. |
 | 6 | VFS and initrd | real | In-memory VFS tree. A USTAR initrd with the user programs is loaded as a Limine module. Read-only. |
 | 7 | Shell | real | Runs as a kernel thread, not a user program. |
@@ -26,7 +26,7 @@ that gap.
 | 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |
 | 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
 | 11 | virtio-blk and FAT32 | stub | A RAM buffer and an in-memory file table. No virtqueues, no on-disk format. |
-| 12 | fork, exec, wait, kill | real | `fork` (full copy), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. No signal handlers; waiting polls. |
+| 12 | fork, exec, wait, kill | real | `fork` (full copy), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. No signal handlers. |
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
@@ -37,7 +37,7 @@ that gap.
 | 20 | ANSI colors | stub | A lookup from color code to RGB. No escape-sequence parser. |
 | 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |
 | 22 | Priority scheduling | stub | Priorities are stored; the scheduler ignores them. |
-| 23 | Semaphores | partial | Correct counting, but waiters spin with `sched_yield` instead of blocking. |
+| 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
 | 24 | ProcFS | stub | Two static text files. |
 | 25 | TTY | stub | A ring buffer. No line discipline. |
 | 26 | FPU/SSE | partial | CR0/CR4 are set up. No per-task state is saved. |
@@ -47,7 +47,7 @@ that gap.
 | 30 | Window manager | stub | Allocates a pixel buffer. Nothing is composited. |
 | 31 | User authentication | stub | Accepts `root` with any password. |
 | 32 | Kernel log, `dmesg` | real | 4 KiB ring buffer. |
-| 33 | High-resolution timers | stub | `nanosleep` polls the 100 Hz tick. |
+| 33 | High-resolution timers | partial | `nanosleep` blocks without using CPU, but its resolution is the 10 ms tick. |
 | 34 | Mount table | partial | Records mount points; path lookup does not use them. |
 | 35 | Shared memory | partial | Keyed kernel heap buffers. Not mapped into processes. |
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |

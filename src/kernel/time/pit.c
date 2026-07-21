@@ -8,6 +8,7 @@
 #include "interrupts.h"
 #include "sched.h"
 #include "kprintf.h"
+#include "spinlock.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -17,7 +18,8 @@ static void pit_irq_handler(struct registers *regs) {
     (void)regs;
     ticks++;
 
-    // Trigger preemptive context switch every tick
+    // Wake tasks whose sleep has ended, then let the scheduler preempt
+    sched_wake_sleepers(ticks);
     sched_tick();
 }
 
@@ -40,6 +42,17 @@ void pit_init(uint32_t frequency_hz) {
     register_irq_handler(0, pit_irq_handler);
 
     kprintf("PIT Init: Timer configured at %u Hz (IRQ 0)\n", frequency_hz);
+}
+
+void sched_sleep_ticks(uint64_t count) {
+    if (count == 0) return;
+
+    uint64_t flags = irq_save();
+    uint64_t deadline = ticks + count;
+    while (ticks < deadline) {
+        sched_block(NULL, deadline);
+    }
+    irq_restore(flags);
 }
 
 uint64_t pit_get_ticks(void) {

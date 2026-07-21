@@ -30,6 +30,10 @@ typedef struct task {
     void *kernel_stack;      // Virtual base pointer of 16 KiB kernel stack
     struct task *next;       // Next task link in scheduler queue
 
+    // --- Blocking (valid while state is TASK_BLOCKED) ---
+    void *wait_channel;      // What it is waiting for; sched_wakeup(channel) wakes it
+    uint64_t wake_tick;      // If non-zero, timer tick at which it wakes regardless
+
     // --- Process state (user tasks only) ---
     bool is_user;            // Owns a user address space and runs in ring 3
     bool detached;           // Nobody will wait for it: the idle loop reaps it on exit

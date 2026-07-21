@@ -94,6 +94,15 @@ static void keyboard_irq_handler(struct registers *regs) {
     uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
     keyboard_handle_port();
     spinlock_release_irqrestore(&kbd_lock, flags);
+
+    keyboard_input_arrived();
+}
+
+// Readers sleep on this address; both input interrupts wake it
+static char input_channel;
+
+void keyboard_input_arrived(void) {
+    sched_wakeup(&input_channel);
 }
 
 void keyboard_init(void) {
@@ -154,17 +163,23 @@ bool keyboard_has_char(void) {
 }
 
 char keyboard_getchar(void) {
+    // Interrupts off between finding both buffers empty and going to sleep,
+    // so a key that arrives in between still wakes us.
+    uint64_t flags = irq_save();
+    char c;
+
     while (1) {
-        char c = kbd_buffer_pop();
-        if (c != 0) return c;
+        c = kbd_buffer_pop();
+        if (c != 0) break;
 
         if (serial_has_char()) {
             c = serial_getchar();
-            if (c == '\r') c = '\n';
-            if (c == 127) c = '\b';
-            if (c != 0) return c;
+            if (c != 0) break;
         }
 
-        sched_yield();
+        sched_block(&input_channel, 0);
     }
+
+    irq_restore(flags);
+    return c;
 }

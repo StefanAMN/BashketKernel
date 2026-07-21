@@ -13,8 +13,7 @@ void hrtimer_init(void) {
 }
 
 void nanosleep(uint64_t nanoseconds) {
-    uint64_t target_ticks = pit_get_ticks() + (nanoseconds / (1000000000ULL / TIMER_HZ));
-    while (pit_get_ticks() < target_ticks) {
-        sched_yield();
-    }
+    // The tick (1 / TIMER_HZ s) is the finest resolution available: round up
+    uint64_t ns_per_tick = 1000000000ULL / TIMER_HZ;
+    sched_sleep_ticks((nanoseconds + ns_per_tick - 1) / ns_per_tick);
 }

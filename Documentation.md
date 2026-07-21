@@ -71,7 +71,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 4. Multitasking & Context Switching (Phase 4)
-**Status: real.** Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. 100 Hz PIT tick.
+**Status: real.** Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. Tasks block (sleep, input, wait, semaphores) instead of polling. 100 Hz PIT tick.
 
 **Goal:** Task Control Block (TCB), cooperative and preemptive round-robin scheduler.
 
@@ -342,7 +342,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 23. Counting Semaphores (Phase 23)
-**Status: partial.** Correct counting, but waiters spin with `sched_yield` instead of blocking.
+**Status: real.** Waiters block on the semaphore and are woken by `sem_post`.
 
 **Goal:** POSIX-style counting semaphores (`sem_init`, `sem_wait`, `sem_post`).
 
@@ -462,7 +462,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 33. High-Resolution Timers & Nanosleep (Phase 33)
-**Status: stub.** `nanosleep` polls the 100 Hz tick.
+**Status: partial.** `nanosleep` blocks without using CPU, but its resolution is the 10 ms tick.
 
 **Goal:** Nanosecond precision sleep (`nanosleep`), HRT timer queue.
 

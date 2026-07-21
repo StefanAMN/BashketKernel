@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "spinlock.h"
+#include "keyboard.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -43,6 +44,8 @@ static void serial_irq_handler(struct registers *regs) {
     uint64_t flags = spinlock_acquire_irqsave(&serial_rx_lock);
     serial_drain_uart();
     spinlock_release_irqrestore(&serial_rx_lock, flags);
+
+    keyboard_input_arrived();
 }
 
 void serial_init(void) {
@@ -51,7 +54,7 @@ void serial_init(void) {
     outb(COM1 + 0, 0x01); // Set divisor to 1 (lo byte) 115200 baud
     outb(COM1 + 1, 0x00); //                (hi byte)
     outb(COM1 + 3, 0x03); // 8 bits, no parity, one stop bit (8N1), clear DLAB
-    outb(COM1 + 2, 0xC7); // Enable FIFO, clear them, with 14-byte threshold
+    outb(COM1 + 2, 0x07); // Enable FIFO, clear them, interrupt on every byte
     outb(COM1 + 4, 0x0B); // IRQs enabled, RTS/DSR set
     outb(COM1 + 1, 0x01); // Enable Received Data Available Interrupt (IER bit 0)
 
