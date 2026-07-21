@@ -49,7 +49,7 @@ extern void test_suite_dev(void);
 extern void test_suite_bench(void);
 extern void test_suite_lib(void);
 
-void run_all_tests(void) {
+bool run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
     
     test_suite_example();
@@ -100,4 +100,5 @@ void run_all_tests(void) {
     kprintf("Passed: %d\n", tests_passed);
     kprintf("Failed: %d\n", tests_failed);
     kprintf("--------------------------\n\n");
+    return tests_failed == 0;
 }

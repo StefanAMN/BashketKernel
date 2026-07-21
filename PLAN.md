@@ -14,7 +14,9 @@ that file.
 - **Milestone 0:** build and doc items done. The items that need a human
   (learning contract, hand-written lesson docs) are open.
 - **Milestone 1:** done and verified in QEMU.
-- **Milestones 2 to 5:** not started.
+- **Milestone 2:** test build, exit status and CI done. Cleaning up test
+  state leaks and mock tests is open.
+- **Milestones 3 to 5:** not started.
 
 ## Where things stand
 
@@ -174,7 +176,7 @@ page.
 
 ## Milestone 2 — Tests that mean something
 
-- [ ] **Separate test build.** `make test` builds with `-DKERNEL_TESTS`, runs
+- [x] **Separate test build.** `make test` builds with `-DKERNEL_TESTS`, runs
       the tests, and exits QEMU through `isa-debug-exit` with a pass/fail
       status. `make run` boots straight to the shell without running tests.
 - [ ] **No leaked state.** Tests currently rename PID 0 to `sh`, leave zombie
@@ -188,10 +190,14 @@ page.
       not-present page access, each confirming the right vector and CR2. These
       are the "break-it" exercises from the original roadmap. The shell
       command `crash div0|pf|stack` already triggers them by hand.
-- [ ] **CI.** A GitHub Actions job that runs `make test` headless on each push.
+- [x] **CI.** A GitHub Actions job that runs `make test` headless on each push
+      (`.github/workflows/test.yml`). Written but not yet run on GitHub.
 
-**Check:** `make test; echo $?` prints 0 on success and non-zero when one
+**Check (passed):** `make test; echo $?` prints 0 on success and 2 when one
 `EXPECT` is deliberately broken.
+
+Also added: `tools/qemu_shell.py` drives the kernel shell over serial for
+behaviour checks, and `tools/symbolize.sh` maps addresses to source lines.
 
 ---
 
