@@ -30,7 +30,7 @@ that gap.
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | One global table, not per process. |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -98,6 +98,8 @@ src/
 BashketKernel has a built-in unit test framework (`tests/`). `make test` builds a separate test kernel, boots it headless in QEMU, and exits non-zero if any test fails. The normal kernel (`make run`) does not include the tests. Tests for stub subsystems only check the placeholder behaviour.
 
 `make test-lowmem` boots the normal kernel with 64 MB of RAM and runs `/bin/stress`, which exhausts memory in different ways (mappings, `brk`, a fork bomb, copy-on-write, a growing file) and checks that the kernel refuses cleanly and keeps working.
+
+`make fuzz` runs `/bin/fuzz`, which makes random system calls with hostile arguments (kernel addresses, pointers at the edge of a mapping, huge lengths, closed descriptors) from ring 3. The kernel must survive every seed and pass `/bin/syscheck` afterwards. Seeds are fixed, so a failure can be reproduced with `make fuzz FUZZ_SEEDS=<n>`.
 
 ---
 

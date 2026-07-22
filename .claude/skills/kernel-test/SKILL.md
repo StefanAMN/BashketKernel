@@ -96,6 +96,18 @@ seconds). Run it after any change to allocation, page tables, fork, the heap
 or file growth. Logs are in `build/lowmem-<mode>.log`. To try one by hand:
 `tools/qemu_shell.py --quiet --mem 64M 'exec /bin/stress fork' 'mem'`.
 
+### Hostile system calls
+
+```
+make fuzz                     # 8 fixed seeds, about 80 seconds
+make fuzz FUZZ_SEEDS="3"      # reproduce one seed
+```
+
+Run after changing anything a system call can reach. Logs are in
+`build/fuzz-<seed>.log` and contain NUL bytes: read them with `grep -a`.
+"killed" and "stopped by watchdog" rounds are normal; a failure is a kernel
+exception, a hang, or `/bin/syscheck` failing afterwards.
+
 ### Does the test detect the bug?
 
 When a new test passes on its first run, break the kernel on purpose once
