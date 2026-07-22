@@ -3,6 +3,7 @@
 #include "sched.h"
 #include "pmm.h"
 #include "heap.h"
+#include "spinlock.h"
 #include "vfs.h"
 #include "string_util.h"
 
@@ -114,6 +115,81 @@ TEST(shell_pipelines_and_redirection) {
     EXPECT_TRUE(pmm_get_free_frames() == free_before);
 }
 
+// Count tasks in a given state whose name matches
+static int count_tasks(const char *name) {
+    int n = 0;
+    uint64_t flags = irq_save();
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (strcmp(t->name, name) == 0 && t->state != TASK_ZOMBIE) n++;
+    }
+    irq_restore(flags);
+    return n;
+}
+
+TEST(kill_takes_effect_at_a_safe_point) {
+    sched_reap();
+    size_t free_before = pmm_get_free_frames();
+
+    // A program in an endless loop makes no system calls, so the only place
+    // it can die is the timer interrupt's return to user mode.
+    pid_t pid = process_spawn("/bin/spin", NULL);
+    EXPECT_TRUE(pid > 0);
+    sched_sleep_ticks(3);                       // Let it start spinning
+
+    task_t *task = sched_find_task((uint32_t)pid);
+    EXPECT_TRUE(task != NULL);
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    // The request is recorded; the target has not been torn down from outside
+    EXPECT_EQ(task->kill_pending, SIGKILL);
+    EXPECT_TRUE(task->state != TASK_ZOMBIE);
+
+    int status = -1;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    EXPECT_EQ(status, 128 + SIGKILL);
+
+    // A sleeping process is woken in order to die
+    char *sleeper[] = { "/bin/spin", "sleep", NULL };
+    pid = process_spawn("/bin/spin", sleeper);
+    sched_sleep_ticks(3);
+    EXPECT_EQ(sched_find_task((uint32_t)pid)->state, TASK_BLOCKED);
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    EXPECT_EQ(status, 128 + SIGKILL);
+
+    // Kernel threads and missing processes are refused
+    EXPECT_EQ(process_kill(0, SIGKILL), -1);
+    EXPECT_EQ(process_kill(pid, SIGKILL), -1);
+    EXPECT_EQ(process_kill(99999, SIGKILL), -1);
+
+    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+}
+
+// Ctrl-C ends the programs a shell is running but not the shell, which has
+// asked to be left alone.
+TEST(interrupt_spares_processes_that_ignore_it) {
+    sched_reap();
+    size_t free_before = pmm_get_free_frames();
+
+    // An interactive shell reading from the console would wait for the test
+    // forever, so run one that runs "spin | spin" and then one more command.
+    char *args[] = { "/bin/sh", "-c", "spin | spin", NULL };
+    pid_t shell = process_spawn("/bin/sh", args);
+    EXPECT_TRUE(shell > 0);
+    for (int i = 0; i < 100 && count_tasks("spin") < 2; i++) sched_sleep_ticks(1);
+    EXPECT_EQ(count_tasks("spin"), 2);
+
+    process_interrupt_all();
+
+    // The shell survived to collect both and report the last one's status
+    int status = -1;
+    EXPECT_EQ(process_wait(shell, &status), shell);
+    EXPECT_EQ(status, 128 + SIGINT);
+    EXPECT_EQ(count_tasks("spin"), 0);
+
+    sched_reap();
+    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+}
+
 void test_suite_process(void) {
     kprintf("Suite: User Processes\n");
     RUN_TEST(spawn_runs_program_and_returns_status);
@@ -121,4 +197,6 @@ void test_suite_process(void) {
     RUN_TEST(faulting_programs_are_killed);
     RUN_TEST(processes_leave_nothing_behind);
     RUN_TEST(shell_pipelines_and_redirection);
+    RUN_TEST(kill_takes_effect_at_a_safe_point);
+    RUN_TEST(interrupt_spares_processes_that_ignore_it);
 }

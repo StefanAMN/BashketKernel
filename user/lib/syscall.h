@@ -31,6 +31,7 @@
 #define SYS_UNLINK   87
 #define SYS_GETPPID  110
 #define SYS_TIME     201
+#define SYS_IGNORE_INTERRUPT 300
 
 #define ENOENT   2
 #define ESRCH    3

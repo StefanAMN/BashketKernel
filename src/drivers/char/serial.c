@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include "spinlock.h"
 #include "keyboard.h"
+#include "process.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -29,7 +30,9 @@ static void serial_drain_uart(void) {
         char c = (char)inb(COM1);
         if (c == '\r') c = '\n';
         if (c == 127) c = '\b';
-        if (c != 0) {
+        if (c == 0x03) {
+            process_interrupt_all(); // Ctrl-C: not data, interrupts running programs
+        } else if (c != 0) {
             size_t next_head = (serial_head + 1) % SERIAL_BUFFER_SIZE;
             if (next_head != serial_tail) {
                 serial_buffer[serial_head] = c;

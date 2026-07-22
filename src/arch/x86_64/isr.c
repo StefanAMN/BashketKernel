@@ -147,6 +147,11 @@ void isr_handler(struct registers *regs) {
         if (irq_handlers[irq] != NULL) {
             irq_handlers[irq](regs);
         }
+
+        // This interrupt arrived while user code was running and is about to
+        // return to it, so the task holds nothing in the kernel: a safe point
+        // for a pending kill. (This is what stops a program stuck in a loop.)
+        if ((regs->cs & 3) == 3) sched_check_kill();
     } else {
         kprintf("Unhandled Interrupt Vector: %zd\n", regs->int_no);
     }

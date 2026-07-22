@@ -17,6 +17,7 @@ long kill(long pid, int sig)                       { return syscall2(SYS_KILL, p
 void yield(void)                                   { syscall0(SYS_YIELD); }
 void sleep_ms(unsigned long ms)                    { syscall1(SYS_SLEEP, ms); }
 long uptime_ticks(void)                            { return syscall0(SYS_TIME); }
+void ignore_interrupt(int ignore)                  { syscall1(SYS_IGNORE_INTERRUPT, ignore); }
 
 /* --- Memory -------------------------------------------------------------- */
 

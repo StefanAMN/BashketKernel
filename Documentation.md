@@ -201,7 +201,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 12. Process Life Cycle & Signal Handling (Phase 12)
-**Status: real.** `fork` (copy-on-write), `execve`, `waitpid`, `kill` and exit statuses work. No signal handlers.
+**Status: real.** `fork` (copy-on-write), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. Kills and Ctrl-C take effect at safe points (sleep, syscall return, interrupt return to user code). No signal handlers: a signal can only end a process or be ignored (Ctrl-C).
 
 **Goal:** Process hierarchy (`fork`, `exec`, `waitpid`, `exit`), UNIX signal dispatching.
 

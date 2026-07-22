@@ -44,6 +44,7 @@
 #define SYS_GETPPID     110
 #define SYS_CLEAR       100
 #define SYS_TIME        201  // Timer ticks since boot
+#define SYS_IGNORE_INTERRUPT 300 // (flag): whether Ctrl-C leaves this process alone
 
 struct utsname {
     char sysname[65];

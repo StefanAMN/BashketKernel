@@ -233,11 +233,23 @@ void sched_yield(void) {
 //     while (!condition) sched_block(channel, 0);
 //     irq_restore(flags);
 
+static void wake_task(task_t *t) {
+    t->wait_channel = NULL;
+    t->wake_tick = 0;
+    t->state = TASK_READY;
+}
+
 void sched_block(void *channel, uint64_t wake_tick) {
     task_t *self = current_task;
     if (!scheduler_active || !self) return;
 
     uint64_t flags = irq_save();
+
+    // A process that has been killed must not go (back) to sleep. Anything
+    // that sleeps is at a point where it holds no lock and is prepared to
+    // lose the CPU, so this is a safe place to end it.
+    if (self->kill_pending) task_exit_status(128 + self->kill_pending);
+
     self->wait_channel = channel;
     self->wake_tick = wake_tick;
     self->state = TASK_BLOCKED;
@@ -254,13 +266,24 @@ void sched_block(void *channel, uint64_t wake_tick) {
     // If the wakeup arrived while we were halted above, no switch happened and
     // the state still says READY.
     self->state = TASK_RUNNING;
+
+    if (self->kill_pending) task_exit_status(128 + self->kill_pending); // Woken to die
     irq_restore(flags);
 }
 
-static void wake_task(task_t *t) {
-    t->wait_channel = NULL;
-    t->wake_tick = 0;
-    t->state = TASK_READY;
+void sched_request_kill(task_t *task, int sig) {
+    uint64_t flags = irq_save();
+    if (task->state != TASK_ZOMBIE && task->kill_pending == 0) {
+        task->kill_pending = sig;
+        // A sleeper would otherwise not notice until its event happens
+        if (task->state == TASK_BLOCKED) wake_task(task);
+    }
+    irq_restore(flags);
+}
+
+void sched_check_kill(void) {
+    task_t *self = current_task;
+    if (self && self->kill_pending) task_exit_status(128 + self->kill_pending);
 }
 
 void sched_wakeup(void *channel) {
