@@ -160,6 +160,13 @@ static size_t find_free_run(size_t from, size_t to, size_t count) {
     return 0;
 }
 
+// How many allocation requests could not be satisfied (see /proc/meminfo)
+static size_t failed_allocations = 0;
+
+size_t pmm_get_failed_allocations(void) {
+    return failed_allocations;
+}
+
 void *pmm_alloc_frames(size_t count) {
     if (count == 0 || bitmap == NULL) return NULL;
 
@@ -172,8 +179,10 @@ void *pmm_alloc_frames(size_t count) {
     }
 
     if (start_frame == 0) {
+        // Not an error to report here: user programs can run the machine out
+        // of memory at will, and every caller handles NULL. Count it instead.
+        failed_allocations++;
         spinlock_release_irqrestore(&pmm_lock, flags);
-        kprintf("PMM ERROR: Out of physical memory for %zu frames!\n", count);
         return NULL;
     }
 

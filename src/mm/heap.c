@@ -22,25 +22,40 @@ typedef struct heap_block {
 static heap_block_t *heap_start = NULL;
 static uint64_t heap_end_virt = KHEAP_START_VIRT;
 static size_t total_allocated_bytes = 0;
+static size_t failed_allocations = 0;
 
 // The block list is walked and edited by every kmalloc/kfree, and a timer
 // interrupt can switch tasks in the middle of either one.
 // Lock order: heap_lock, then the VMM lock, then the PMM lock.
 static spinlock_t heap_lock = SPINLOCK_INIT;
 
+// Give the pages in [new_end, heap_end_virt) back to the frame allocator.
+static void shrink_heap(uint64_t new_end) {
+    while (heap_end_virt > new_end) {
+        heap_end_virt -= PAGE_SIZE;
+        uint64_t phys = vmm_get_phys(NULL, heap_end_virt);
+        vmm_unmap_page(NULL, heap_end_virt);
+        if (phys) pmm_free_frame((void *)phys);
+    }
+}
+
+// Grow the heap by whole pages. All or nothing: if memory runs out part way,
+// the pages added so far are returned, so a failed large request does not
+// leave the heap sitting on the last free frames of the machine.
 static bool expand_heap(size_t bytes) {
     size_t page_count = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t old_end = heap_end_virt;
 
     for (size_t i = 0; i < page_count; i++) {
         void *phys = pmm_alloc_frame();
         if (phys == NULL) {
-            kprintf("KHEAP ERROR: Could not allocate frame to expand heap!\n");
+            shrink_heap(old_end);
             return false;
         }
 
         if (!vmm_map_page(NULL, heap_end_virt, (uint64_t)phys, VMM_PRESENT | VMM_WRITABLE)) {
-            kprintf("KHEAP ERROR: Could not map page at %p!\n", (void *)heap_end_virt);
             pmm_free_frame(phys);
+            shrink_heap(old_end);
             return false;
         }
 
@@ -67,6 +82,14 @@ void kheap_init(void) {
 
 size_t kheap_get_allocated_bytes(void) {
     return total_allocated_bytes;
+}
+
+size_t kheap_get_mapped_bytes(void) {
+    return (size_t)(heap_end_virt - KHEAP_START_VIRT);
+}
+
+size_t kheap_get_failed_allocations(void) {
+    return failed_allocations;
 }
 
 // Caller must hold heap_lock.
@@ -97,29 +120,36 @@ static void *kmalloc_locked(size_t size) {
         current = current->next;
     }
 
-    // Expand heap if no existing free block is large enough
-    size_t required = aligned_size + BLOCK_HEADER_SIZE;
-    heap_block_t *prev_end = heap_start;
-    while (prev_end->next != NULL) {
-        prev_end = prev_end->next;
+    // No free block is large enough: grow the heap at its end. If the last
+    // block is free, only the shortfall is needed and the block is extended;
+    // otherwise a new block is added after it.
+    heap_block_t *last = heap_start;
+    while (last->next != NULL) {
+        last = last->next;
     }
 
+    size_t required = last->is_free ? aligned_size - last->size : aligned_size + BLOCK_HEADER_SIZE;
     if (!expand_heap(required)) {
-        kprintf("KHEAP ERROR: kmalloc failed for %zu bytes!\n", size);
+        failed_allocations++;
         return NULL;
     }
 
-    heap_block_t *expanded = (heap_block_t *)((uint8_t *)prev_end + BLOCK_HEADER_SIZE + prev_end->size);
-    expanded->size = (heap_end_virt - (uint64_t)expanded) - BLOCK_HEADER_SIZE;
-    expanded->is_free = true;
-    expanded->next = NULL;
-    prev_end->next = expanded;
+    if (last->is_free) {
+        last->size = (heap_end_virt - (uint64_t)last) - BLOCK_HEADER_SIZE;
+    } else {
+        heap_block_t *expanded = (heap_block_t *)((uint8_t *)last + BLOCK_HEADER_SIZE + last->size);
+        expanded->size = (heap_end_virt - (uint64_t)expanded) - BLOCK_HEADER_SIZE;
+        expanded->is_free = true;
+        expanded->next = NULL;
+        last->next = expanded;
+    }
 
     return kmalloc_locked(size);
 }
 
 void *kmalloc(size_t size) {
     if (size == 0 || heap_start == NULL) return NULL;
+    if (size > KHEAP_MAX_ALLOC) return NULL; // Also keeps the size arithmetic from overflowing
 
     uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
     void *ptr = kmalloc_locked(size);
@@ -146,6 +176,21 @@ void kfree(void *ptr) {
             current->next = current->next->next;
         } else {
             current = current->next;
+        }
+    }
+
+    // `current` is now the last block. If it is free and large, hand most of
+    // it back to the frame allocator: memory freed by the kernel (a deleted
+    // file, exited processes) becomes available to programs again.
+    if (current != NULL && current->is_free && current->size >= KHEAP_TRIM_THRESHOLD) {
+        uint64_t payload = (uint64_t)current + BLOCK_HEADER_SIZE;
+        uint64_t new_end = (payload + KHEAP_TRIM_KEEP + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+        uint64_t floor = KHEAP_START_VIRT + KHEAP_INITIAL_SIZE; // Never below the initial size
+        if (new_end < floor) new_end = floor;
+
+        if (new_end < heap_end_virt) {
+            shrink_heap(new_end);
+            current->size = heap_end_virt - payload;
         }
     }
 

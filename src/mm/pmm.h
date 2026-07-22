@@ -51,6 +51,11 @@ void pmm_free_frames(void *phys_addr, size_t count);
 
 // Memory statistics
 size_t pmm_get_total_frames(void);
+
+/**
+ * @brief Number of allocation requests refused for lack of memory since boot.
+ */
+size_t pmm_get_failed_allocations(void);
 size_t pmm_get_free_frames(void);
 size_t pmm_get_used_frames(void);
 uint64_t pmm_get_hhdm_offset(void);

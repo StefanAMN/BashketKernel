@@ -84,7 +84,21 @@ static bool try_copy_on_write(struct registers *regs) {
 
     uint64_t cr2;
     asm volatile("mov %0, cr2" : "=r"(cr2));
-    return vmm_handle_cow_fault(vmm_space_from_phys((uint64_t)task->pml4_phys), cr2);
+    uint64_t *space = vmm_space_from_phys((uint64_t)task->pml4_phys);
+    if (vmm_handle_cow_fault(space, cr2)) return true;
+
+    // Still a copy-on-write page? Then the copy could not be made: memory is
+    // exhausted. fork promised this page without reserving a frame for it,
+    // and a store instruction has no way to return an error, so the process
+    // has to go. That holds even if the kernel was the one writing (to this
+    // process's buffer, during its system call): it is still this process
+    // that cannot continue, not a kernel bug.
+    if (cr2 < USER_SPACE_END && (vmm_get_pte(space, cr2 & ~0xFFFULL) & VMM_COW)) {
+        kprintf("\n[pid %u %s] killed: out of memory copying a shared page at 0x%zx\n",
+                task->pid, task->name, cr2);
+        task_exit_status(128 + SIGKILL);
+    }
+    return false;
 }
 
 void isr_handler(struct registers *regs) {
