@@ -98,3 +98,21 @@ char *strcat(char *dest, const char *src) {
     while ((*dest++ = *src++) != '\0');
     return orig;
 }
+
+char *strchr(const char *s, int c) {
+    for (;; s++) {
+        if (*s == (char)c) return (char *)s; // Also finds the terminator when c is 0
+        if (*s == '\0') return NULL;
+    }
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    if (*needle == '\0') return (char *)haystack;
+
+    for (; *haystack != '\0'; haystack++) {
+        const char *h = haystack, *n = needle;
+        while (*n != '\0' && *h == *n) { h++; n++; }
+        if (*n == '\0') return (char *)haystack;
+    }
+    return NULL;
+}

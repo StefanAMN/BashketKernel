@@ -74,6 +74,13 @@ void sched_sleep_ticks(uint64_t ticks);
 void sched_make_zombie(task_t *task, int status);
 
 /**
+ * @brief Remove one zombie from the task list and free it. The caller must
+ *        not be the zombie. On one CPU a zombie other than the caller is never
+ *        still on its kernel stack, so freeing it at once is safe.
+ */
+void sched_free_zombie(task_t *task);
+
+/**
  * @brief Head of the run queue, for walking all tasks via ->next.
  */
 task_t *sched_first_task(void);

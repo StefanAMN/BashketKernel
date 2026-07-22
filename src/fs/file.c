@@ -114,7 +114,7 @@ int fd_install(file_t *fds[TASK_MAX_FDS], file_t *file) {
 }
 
 // Sleep until at least one character is typed, then return what is there.
-static int64_t console_read(char *out, size_t count) {
+int64_t console_read(char *out, size_t count) {
     size_t n = 0;
 
     char first = keyboard_getchar();
@@ -129,7 +129,7 @@ static int64_t console_read(char *out, size_t count) {
     return (int64_t)n;
 }
 
-static int64_t console_write_bytes(const char *in, size_t count) {
+int64_t console_write_bytes(const char *in, size_t count) {
     for (size_t i = 0; i < count; i++) {
         serial_putchar(in[i]);
         console_putchar(in[i]);
@@ -148,6 +148,12 @@ int64_t file_read(file_t *file, void *buf, size_t count) {
             return pipe_read(file->pipe, buf, count);
         case FILE_VNODE: {
             if (file->node->type == VFS_DIRECTORY) return -EISDIR;
+            if (file->node->ops) {
+                if (!file->node->ops->read) return 0;
+                int64_t n = file->node->ops->read(file->node, file->offset, buf, count);
+                if (n > 0) file->offset += (size_t)n;
+                return n;
+            }
             size_t n = vfs_read(file->node, file->offset, count, buf);
             file->offset += n;
             return (int64_t)n;
@@ -166,6 +172,12 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
         case FILE_PIPE:
             return pipe_write(file->pipe, buf, count);
         case FILE_VNODE: {
+            if (file->node->ops) {
+                if (!file->node->ops->write) return -EINVAL; // Read-only device
+                int64_t n = file->node->ops->write(file->node, file->offset, buf, count);
+                if (n > 0) file->offset += (size_t)n;
+                return n;
+            }
             if (file->append) file->offset = file->node->size;
             size_t n = vfs_write(file->node, file->offset, count, buf);
             if (n == 0) return -ENOSPC;

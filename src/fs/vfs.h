@@ -13,6 +13,16 @@
 #define VFS_FILE      1
 #define VFS_DIRECTORY 2
 
+struct vnode;
+
+// A device node has no stored contents: reading and writing it call these.
+// Either may be NULL (reads then return end-of-file, writes fail).
+// Both return bytes transferred or a negative error number, and may sleep.
+typedef struct vnode_ops {
+    int64_t (*read)(struct vnode *node, size_t offset, void *buf, size_t count);
+    int64_t (*write)(struct vnode *node, size_t offset, const void *buf, size_t count);
+} vnode_ops_t;
+
 typedef struct vnode {
     char name[128];             // Node name
     uint32_t type;              // VFS_FILE or VFS_DIRECTORY
@@ -22,6 +32,7 @@ typedef struct vnode {
                                 // (false: it points into the initrd or a constant)
     size_t capacity;            // Size of that buffer when owns_data
     uint32_t open_count;        // Open file descriptions referring to this node
+    const vnode_ops_t *ops;     // Non-NULL for a device node (/dev, /proc)
     struct vnode *parent;       // Pointer to parent directory node
     struct vnode *children;     // Pointer to first child node if directory
     struct vnode *next;         // Pointer to next sibling in directory listing
@@ -55,6 +66,11 @@ vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, si
  * @brief Create a new directory vnode under specified parent directory.
  */
 vnode_t *vfs_create_dir(vnode_t *parent, const char *name);
+
+/**
+ * @brief Create a device node whose reads and writes are served by `ops`.
+ */
+vnode_t *vfs_create_device(vnode_t *parent, const char *name, const vnode_ops_t *ops);
 
 /**
  * @brief Read bytes from a file vnode.

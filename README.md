@@ -38,7 +38,7 @@ that gap.
 | 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |
 | 22 | Priority scheduling | stub | Priorities are stored; the scheduler ignores them. |
 | 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
-| 24 | ProcFS | stub | Two static text files. |
+| 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks` and `cpuinfo` are generated from live kernel state on every read. |
 | 25 | TTY | stub | A ring buffer. No line discipline. |
 | 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
@@ -51,7 +51,7 @@ that gap.
 | 34 | Mount table | partial | Records mount points; path lookup does not use them. |
 | 35 | Shared memory | partial | Keyed kernel heap buffers. Not mapped into processes. |
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |
-| 37 | /dev devices | stub | Static files. `/dev/random` contains the text `RND`. |
+| 37 | /dev devices | real | `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` is a seeded xorshift generator, not cryptographically secure. |
 | 38 | Benchmarks | real | Memory copy and CPU loop timing. |
 
 ---
