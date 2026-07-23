@@ -140,6 +140,15 @@ would change how the next problem is approached.
 - A side effect worth knowing: `kill()` returning does not mean the target is
   gone yet. Wait for it before testing for the consequences.
 
+### Demand paging
+
+- **The page fault handler is a dispatcher.** Order matters: copy-on-write
+  (write to a present page), then stack growth (page not present, address in
+  the stack region), and only then "this is a real fault". Each handler must
+  refuse quickly anything that is not its case, or it will hide real bugs.
+- **Leave the lowest page of the stack region unmapped for good.** It is what
+  turns runaway recursion into a fault at a known address.
+
 ### Running out of memory
 
 Found by `/bin/stress` on a 64 MB machine (`make test-lowmem`); the 2 GB test

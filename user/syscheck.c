@@ -295,6 +295,39 @@ static void check_pipes(void) {
     close(fds[1]);
 }
 
+/* Uses about `depth` * 4 KiB of stack */
+__attribute__((noinline)) static unsigned long recurse(int depth) {
+    volatile char page[4096];
+    page[0] = (char)depth;
+    page[4095] = 1;
+    if (depth == 0) return 0;
+    return recurse(depth - 1) + (unsigned long)page[0] + (unsigned long)page[4095] - (unsigned long)(char)depth;
+}
+
+static void check_stack_growth(void) {
+    /* The stack starts at 16 KiB and grows as it is used: 2 MiB works */
+    CHECK(recurse(500) == 500);
+
+    /* A child inherits the grown stack and can grow its own further */
+    long pid = fork();
+    if (pid == 0) exit(recurse(1000) == 1000 ? 0 : 1);
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+
+    /* Runaway recursion hits the limit (8 MiB) and is killed, not the system */
+    pid = fork();
+    if (pid == 0) exit((int)recurse(1 << 20));
+    status = -1;
+    CHECK(waitpid(pid, &status) == pid);
+    CHECK(status == 128 + 11);
+
+    /* The kernel does not grow the stack on a program's behalf: a buffer
+     * below the mapped part is simply a bad address */
+    char here;
+    unsigned long far_below = (unsigned long)&here - (4UL << 20);
+    CHECK(read(0, (void *)far_below, 1) == -EFAULT);
+}
+
 /* Copy-on-write: after fork both processes share every page until one writes. */
 static void check_copy_on_write(void) {
     enum { PAGES = 64 };
@@ -363,6 +396,7 @@ int main(void) {
     check_memory();
     check_fork();
     check_copy_on_write();
+    check_stack_growth();
     check_files();
     check_pipes();
 

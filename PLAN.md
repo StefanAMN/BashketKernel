@@ -388,8 +388,10 @@ Known gaps in the parts that are otherwise real, most important first.
 5. **Orphans are not re-parented.** A process whose parent has exited is
    reaped by the idle loop when it exits; nobody collects its status. A
    blocked orphan stays until it is killed.
-6. **Memory is committed eagerly.** `mmap`, `brk` and the 128 KiB user stack
-   are backed by frames at once; the stack does not grow. Only `fork` is lazy.
+6. **`mmap` and `brk` memory is committed eagerly.** Only `fork` (copy-on-write)
+   and the user stack (grows on demand to 8 MiB) are lazy. The stack grows
+   only on faults taken by the program itself: a system call given a buffer
+   below the mapped part of the stack returns `EFAULT`.
 7. **A killed process can leak a small kernel buffer** if it dies inside a
    system call that was holding one (`/proc` reads allocate a page).
 8. **The file system is RAM only**, has no hard limit on file size other than

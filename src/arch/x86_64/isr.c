@@ -101,8 +101,19 @@ static bool try_copy_on_write(struct registers *regs) {
     return false;
 }
 
+// A fault on a page that is not there, inside the stack region of a user
+// process, means the stack needs to grow.
+static bool try_grow_stack(struct registers *regs) {
+    if (regs->int_no != 14 || (regs->err_code & 1)) return false; // Not "page not present"
+
+    uint64_t cr2;
+    asm volatile("mov %0, cr2" : "=r"(cr2));
+    return process_grow_stack(cr2);
+}
+
 void isr_handler(struct registers *regs) {
     if (try_copy_on_write(regs)) return;
+    if (try_grow_stack(regs)) return;
 
     if (regs->int_no < 32 && (regs->cs & 3) == 3) {
         kill_faulting_process(regs);

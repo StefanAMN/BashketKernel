@@ -17,7 +17,9 @@
 
 // User address space layout (see also mmap.h)
 #define USER_STACK_TOP   0x00007FFFFFFFF000ULL
-#define USER_STACK_PAGES 32                     // 128 KiB
+#define USER_STACK_PAGES 4                      // Mapped at start (16 KiB); the rest on demand
+#define USER_STACK_MAX   (8ULL * 1024 * 1024)   // The stack may grow down to TOP - MAX
+#define USER_STACK_LIMIT (USER_STACK_TOP - USER_STACK_MAX)
 #define PROCESS_MAX_ARGS 32
 #define PROCESS_ARG_BYTES 2048                  // Total size of all argv strings
 
@@ -47,6 +49,13 @@ int process_exec(struct registers *regs, const char *path, char *const argv[]);
  * @return Child PID to the parent; the child sees 0 from its own syscall return.
  */
 pid_t process_fork(struct registers *regs);
+
+/**
+ * @brief Demand paging for the stack: if `addr` lies in the calling process's
+ *        stack region and has no page yet, give it a zeroed one.
+ * @return true if a page was mapped and the faulting access can be retried.
+ */
+bool process_grow_stack(uint64_t addr);
 
 /**
  * @brief Wait for a child to exit and collect its status.
