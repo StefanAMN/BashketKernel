@@ -39,7 +39,7 @@ that gap.
 | 22 | Priority scheduling | real | Round robin with weighted time slices: high, normal and low priority tasks run for 4, 2 and 1 ticks per turn, so priority sets the CPU share and nothing is starved. Per-task CPU ticks are in `/proc/tasks`. |
 | 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
 | 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks` and `cpuinfo` are generated from live kernel state on every read. |
-| 25 | TTY | stub | A ring buffer. No line discipline. |
+| 25 | TTY | real | Console reads go through a line discipline in the kernel: echo, backspace, Ctrl-U, Ctrl-D for end-of-file, and whole lines delivered on Enter. One terminal; no raw mode. |
 | 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
 | 28 | ELF dynamic relocation | stub | Recognises relocation types and returns 0. |

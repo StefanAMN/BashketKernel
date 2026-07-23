@@ -140,6 +140,21 @@ would change how the next problem is approached.
 - A side effect worth knowing: `kill()` returning does not mean the target is
   gone yet. Wait for it before testing for the consequences.
 
+### Terminal
+
+- **Echo and line editing belong in the kernel, once.** While each program
+  echoed its own input, `sh < script` echoed the script and `cat` showed
+  nothing while typing. With a line discipline, the user library's `readline`
+  is a ten-line loop that behaves the same on a terminal, a file or a pipe.
+- **Build the line discipline as a function of one input character**
+  (`tty_input`), with the blocking read on top. The tests then type at it
+  directly, with no keyboard, no second task and no timing.
+- **No lock around the terminal state, on purpose.** A reader killed while
+  holding a sleeping lock would leave the terminal locked for ever. The read
+  path keeps interrupts off instead and only sleeps inside `keyboard_getchar`.
+- `tools/qemu_shell.py`: a line typed *into a program* (not at a prompt) needs
+  the `!` prefix, or the driver waits for a prompt that will not come.
+
 ### Demand paging
 
 - **The page fault handler is a dispatcher.** Order matters: copy-on-write

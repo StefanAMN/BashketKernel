@@ -7,11 +7,7 @@
 #include "heap.h"
 #include "kstring.h"
 #include "kerrno.h"
-#include "keyboard.h"
-#include "serial.h"
-#include "console.h"
-
-#define CTRL_D 0x04 // Typed at the start of a read, means end-of-file
+#include "tty.h"
 
 static file_t *file_alloc(file_kind_t kind, bool readable, bool writable) {
     file_t *file = (file_t *)kmalloc(sizeof(file_t));
@@ -113,37 +109,13 @@ int fd_install(file_t *fds[TASK_MAX_FDS], file_t *file) {
     return -EMFILE;
 }
 
-// Sleep until at least one character is typed, then return what is there.
-int64_t console_read(char *out, size_t count) {
-    size_t n = 0;
-
-    char first = keyboard_getchar();
-    if (first == CTRL_D) return 0;
-    out[n++] = first;
-
-    while (n < count && keyboard_has_char()) {
-        char c = keyboard_getchar();
-        if (c == CTRL_D) break;
-        out[n++] = c;
-    }
-    return (int64_t)n;
-}
-
-int64_t console_write_bytes(const char *in, size_t count) {
-    for (size_t i = 0; i < count; i++) {
-        serial_putchar(in[i]);
-        console_putchar(in[i]);
-    }
-    return (int64_t)count;
-}
-
 int64_t file_read(file_t *file, void *buf, size_t count) {
     if (!file || !file->readable) return -EBADF;
     if (count == 0) return 0;
 
     switch (file->kind) {
         case FILE_CONSOLE:
-            return console_read(buf, count);
+            return tty_read(buf, count);
         case FILE_PIPE:
             return pipe_read(file->pipe, buf, count);
         case FILE_VNODE: {
@@ -168,7 +140,7 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
 
     switch (file->kind) {
         case FILE_CONSOLE:
-            return console_write_bytes(buf, count);
+            return tty_write(buf, count);
         case FILE_PIPE:
             return pipe_write(file->pipe, buf, count);
         case FILE_VNODE: {

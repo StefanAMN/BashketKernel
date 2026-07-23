@@ -264,9 +264,10 @@ void fprintf(int fd, const char *fmt, ...) {
     va_end(args);
 }
 
-/* Read one line from standard input into buf, without the newline. When
- * input is the console this echoes what is typed and handles backspace.
- * Returns the length, or -1 at end of input with nothing read. */
+/* Read one line from standard input into buf, without the newline. Works
+ * the same for the terminal, a file or a pipe; echo and line editing are the
+ * terminal's job, not ours. Returns the length, or -1 at end of input with
+ * nothing read. A line longer than the buffer is cut. */
 long readline(char *buf, size_t size) {
     size_t len = 0;
     for (;;) {
@@ -276,19 +277,10 @@ long readline(char *buf, size_t size) {
             buf[len] = '\0';
             return len > 0 ? (long)len : -1;
         }
-
-        if (c == '\n' || c == '\r') {
-            write(1, "\n", 1);
+        if (c == '\n') {
             buf[len] = '\0';
             return (long)len;
         }
-        if (c == '\b' || c == 127) {
-            if (len > 0) { len--; write(1, "\b \b", 3); }
-            continue;
-        }
-        if (len < size - 1) {
-            buf[len++] = c;
-            write(1, &c, 1);
-        }
+        if (len < size - 1) buf[len++] = c;
     }
 }

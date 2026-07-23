@@ -8,7 +8,7 @@
 
 #include "dev.h"
 #include "vfs.h"
-#include "file.h"
+#include "tty.h"
 #include "kprintf.h"
 #include "kstring.h"
 #include "spinlock.h"
@@ -72,15 +72,15 @@ static int64_t random_read(vnode_t *node, size_t offset, void *buf, size_t count
     return (int64_t)count;
 }
 
-// /dev/console: the keyboard and screen, whatever standard I/O was redirected to
+// /dev/console: the terminal, whatever standard I/O was redirected to
 static int64_t dev_console_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     (void)node; (void)offset;
-    return console_read(buf, count);
+    return tty_read(buf, count);
 }
 
 static int64_t dev_console_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
     (void)node; (void)offset;
-    return console_write_bytes(buf, count);
+    return tty_write(buf, count);
 }
 
 static const vnode_ops_t null_ops    = { .read = NULL,             .write = null_write };

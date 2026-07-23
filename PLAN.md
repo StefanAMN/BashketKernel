@@ -342,7 +342,7 @@ and its README entry. Suggested calls, in the order worth doing:
 | Priority scheduling | **Done.** Weighted time slices; nothing starves. |
 | FPU/SSE | **Done.** FXSAVE area per task, switched eagerly. |
 | `/dev`, `/proc` | **Done.** Device nodes with their own read/write; `/proc` generated on read. |
-| TTY | Open. Implement a line discipline between the keyboard and `read` (today each program does its own echo and backspace in `readline`). Delete `src/drivers/tty/tty.c` when it lands. |
+| TTY | **Done.** Canonical-mode line discipline in `src/drivers/tty/tty.c`. No raw mode, so a full-screen program (an editor) is not possible yet. |
 | virtio-blk | Open. Implement against a real `-drive if=virtio` disk. A good first real driver. |
 | FAT32 | Open. Read-only on top of real virtio-blk. Parse the BPB and follow cluster chains. |
 | SMP | Defer. Needs per-CPU data, `swapgs` and real locks: today "interrupts off" is the lock in the scheduler, pipes, semaphores and the wait path. |
