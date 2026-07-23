@@ -225,6 +225,13 @@ machine never gets near these paths.
   a workload must match once tasks are reaped. This caught nothing here only
   because the destroy paths were written against that test.
 
+### Verifying
+
+- **Check `make`'s exit status, not a grep for `error:`.** A linker failure
+  says "undefined reference", matches nothing, and leaves the previous ISO in
+  place. I then "tested" the old kernel and got confusing results.
+- **QEMU's default CPU has no SMEP/UMIP.** Use `-cpu max` to exercise them.
+
 ### Compiler traps in freestanding code
 
 - **`1 / zero` does not divide.** With a constant dividend of 1, GCC emits a

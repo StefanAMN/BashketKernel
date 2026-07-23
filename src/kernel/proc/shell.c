@@ -50,8 +50,13 @@ static void shell_crash(const char *kind) {
         *unmapped = 1;
     } else if (strcmp(kind, "stack") == 0) {
         crash_recurse(0);
+    } else if (strcmp(kind, "wtext") == 0) {
+        // Kernel code is mapped read-only: writing to it must fault
+        volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)shell_run_cmd;
+        *code = 0x90;
+        kprintf("crash wtext: the write to kernel code was NOT stopped\n");
     } else {
-        kprintf("usage: crash div0|pf|stack\n");
+        kprintf("usage: crash div0|pf|stack|wtext\n");
     }
 }
 
@@ -124,7 +129,7 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("  exec <path> [args] - Run a user program and wait for it\n");
         kprintf("  kill <pid>      - Send SIGKILL signal to process\n");
         kprintf("  clear           - Clear screen\n");
-        kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack)\n");
+        kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack, wtext)\n");
     } else if (strcmp(cmdline, "ls") == 0) {
         vnode_t *root = vfs_get_root();
         if (!root || !root->children) {

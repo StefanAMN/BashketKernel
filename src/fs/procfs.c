@@ -17,6 +17,7 @@
 #include "sched.h"
 #include "spinlock.h"
 #include "kerrno.h"
+#include "cpu.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -80,25 +81,19 @@ static size_t gen_tasks(char *buf, size_t size) {
     return len;
 }
 
-static void cpuid(uint32_t leaf, uint32_t regs[4]) {
-    asm volatile("cpuid"
-                 : "=a"(regs[0]), "=b"(regs[1]), "=c"(regs[2]), "=d"(regs[3])
-                 : "a"(leaf), "c"(0));
-}
-
 static size_t gen_cpuinfo(char *buf, size_t size) {
     uint32_t r[4];
 
     // Leaf 0: the vendor string is in EBX, EDX, ECX (in that order)
     char vendor[13];
-    cpuid(0, r);
+    cpuid(0, 0, r);
     memcpy(vendor + 0, &r[1], 4);
     memcpy(vendor + 4, &r[3], 4);
     memcpy(vendor + 8, &r[2], 4);
     vendor[12] = '\0';
 
     // Leaf 1: family and model, each with an "extended" part
-    cpuid(1, r);
+    cpuid(1, 0, r);
     uint32_t family = (r[0] >> 8) & 0xF;
     uint32_t model = (r[0] >> 4) & 0xF;
     if (family == 0xF) family += (r[0] >> 20) & 0xFF;
@@ -106,10 +101,10 @@ static size_t gen_cpuinfo(char *buf, size_t size) {
 
     // Leaves 0x80000002..4: the 48-character brand string, if supported
     char brand[49] = "unknown";
-    cpuid(0x80000000, r);
+    cpuid(0x80000000, 0, r);
     if (r[0] >= 0x80000004) {
         for (uint32_t i = 0; i < 3; i++) {
-            cpuid(0x80000002 + i, r);
+            cpuid(0x80000002 + i, 0, r);
             memcpy(brand + i * 16, r, 16);
         }
         brand[48] = '\0';
@@ -120,8 +115,9 @@ static size_t gen_cpuinfo(char *buf, size_t size) {
                      "model name: %s\n"
                      "family:     %u\n"
                      "model:      %u\n"
-                     "cpus used:  1\n",
-                     vendor, brand, family, model);
+                     "cpus used:  1\n"
+                     "protection: %s\n",
+                     vendor, brand, family, model, cpu_protection_summary());
 }
 
 // One read function and one ops table per file
