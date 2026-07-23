@@ -18,6 +18,7 @@ long kill(long pid, int sig);
 void yield(void);
 void sleep_ms(unsigned long ms);
 long uptime_ticks(void);
+long set_priority(int priority);    /* 0 high, 1 normal, 2 low */
 void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 
 /* Memory */

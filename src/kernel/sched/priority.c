@@ -1,19 +1,28 @@
 /**
  * @file priority.c
- * @brief Implementation of Task Priority Level Management
+ * @brief Task priorities (see priority.h for the scheduling policy)
  */
 
 #include "priority.h"
 
-static uint8_t task_priorities[256] = {1}; // Default PRIO_NORMAL
+// Timer ticks per turn, indexed by priority. At 100 Hz: 40, 20 and 10 ms.
+static const uint8_t time_slices[] = {
+    [PRIO_HIGH]   = 4,
+    [PRIO_NORMAL] = 2,
+    [PRIO_LOW]    = 1,
+};
 
 void task_set_priority(task_t *task, uint8_t priority) {
-    if (!task || task->pid >= 256) return;
+    if (!task) return;
     if (priority > PRIO_LOW) priority = PRIO_LOW;
-    task_priorities[task->pid] = priority;
+    task->priority = priority;
 }
 
 uint8_t task_get_priority(const task_t *task) {
-    if (!task || task->pid >= 256) return PRIO_NORMAL;
-    return task_priorities[task->pid];
+    return task ? task->priority : PRIO_NORMAL;
+}
+
+uint8_t priority_time_slice(uint8_t priority) {
+    if (priority > PRIO_LOW) priority = PRIO_LOW;
+    return time_slices[priority];
 }

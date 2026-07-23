@@ -23,6 +23,7 @@
 #include "gdt.h"
 #include "heap.h"
 #include "file.h"
+#include "priority.h"
 
 extern void syscall_entry(void);
 
@@ -367,6 +368,11 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi);
         case SYS_KILL:
             return process_kill((pid_t)regs->rdi, (int)regs->rsi) == 0 ? 0 : -ESRCH;
+
+        case SYS_SETPRIORITY:
+            if (regs->rdi > PRIO_LOW) return -EINVAL;
+            task_set_priority(task, (uint8_t)regs->rdi);
+            return 0;
 
         case SYS_IGNORE_INTERRUPT:
             task->ignore_interrupt = (regs->rdi != 0);

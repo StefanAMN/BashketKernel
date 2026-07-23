@@ -44,6 +44,7 @@
 #define SYS_GETPPID     110
 #define SYS_CLEAR       100
 #define SYS_TIME        201  // Timer ticks since boot
+#define SYS_SETPRIORITY 301 // (priority): 0 high, 1 normal, 2 low; for the caller itself
 #define SYS_IGNORE_INTERRUPT 300 // (flag): whether Ctrl-C leaves this process alone
 
 struct utsname {

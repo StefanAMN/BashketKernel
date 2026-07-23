@@ -330,7 +330,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 22. Multi-Level Priority Scheduler (Phase 22)
-**Status: stub.** Priorities are stored; the scheduler ignores them.
+**Status: real.** Round robin with weighted time slices: high, normal and low priority tasks run for 4, 2 and 1 ticks per turn, so priority sets the CPU share and nothing is starved. Per-task CPU ticks are in `/proc/tasks`.
 
 **Goal:** Priority-based task scheduling (Real-Time, High, Normal, Low priority queues).
 

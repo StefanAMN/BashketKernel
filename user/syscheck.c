@@ -35,6 +35,9 @@ static void check_basics(void) {
     CHECK(execve("/bin/does-not-exist", NULL) == -ENOENT);
     CHECK(waitpid(-1, NULL) == -ECHILD);
 
+    CHECK(set_priority(2) == 0 && set_priority(0) == 0 && set_priority(1) == 0);
+    CHECK(set_priority(3) == -EINVAL && set_priority(-1) == -EINVAL);
+
     char cwd[8];
     CHECK(syscall2(SYS_GETCWD, cwd, sizeof(cwd)) > 0 && strcmp(cwd, "/") == 0);
 }

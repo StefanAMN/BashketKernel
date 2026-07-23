@@ -17,6 +17,12 @@
 
 struct file;
 
+// Priorities. Every runnable task gets a turn (round robin), so none can be
+// starved; a higher priority gets a longer turn.
+#define PRIO_HIGH   0
+#define PRIO_NORMAL 1
+#define PRIO_LOW    2
+
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
@@ -32,6 +38,11 @@ typedef struct task {
     uint64_t *pml4_phys;     // Physical address of PML4, loaded into CR3 when this task runs
     void *kernel_stack;      // Virtual base pointer of 16 KiB kernel stack
     struct task *next;       // Next task link in scheduler queue
+
+    // --- CPU time ---
+    uint8_t priority;        // PRIO_HIGH, PRIO_NORMAL or PRIO_LOW: sets the time slice length
+    uint8_t slice_left;      // Timer ticks left before it is preempted
+    uint64_t cpu_ticks;      // Timer ticks that found this task running
 
     // --- Blocking (valid while state is TASK_BLOCKED) ---
     void *wait_channel;      // What it is waiting for; sched_wakeup(channel) wakes it
