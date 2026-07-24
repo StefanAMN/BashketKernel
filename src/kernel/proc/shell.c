@@ -4,6 +4,8 @@
  */
 
 #include "shell.h"
+#include "spinlock.h"
+#include "vmm.h"
 #include "kprintf.h"
 #include "vfs.h"
 #include "pmm.h"
@@ -55,8 +57,24 @@ static void shell_crash(const char *kind) {
         volatile uint8_t *code = (volatile uint8_t *)(uintptr_t)shell_run_cmd;
         *code = 0x90;
         kprintf("crash wtext: the write to kernel code was NOT stopped\n");
+    } else if (strcmp(kind, "smap") == 0) {
+        // Put a user page in front of the kernel and read it without opening
+        // a user access window. With SMAP this must fault.
+        uint64_t *space = vmm_create_address_space();
+        volatile uint8_t *user_page = (volatile uint8_t *)0x400000;
+        if (!space || !vmm_alloc_user_page(space, 0x400000, VMM_WRITABLE)) {
+            kprintf("crash smap: out of memory\n");
+            return;
+        }
+        uint64_t flags = irq_save();
+        vmm_switch_pml4((uint64_t *)((uint64_t)space - pmm_get_hhdm_offset()));
+        uint8_t value = *user_page;
+        vmm_switch_pml4((uint64_t *)vmm_get_kernel_pml4_phys());
+        irq_restore(flags);
+        vmm_destroy_address_space(space);
+        kprintf("crash smap: the kernel read user memory (value %u) and was NOT stopped\n", value);
     } else {
-        kprintf("usage: crash div0|pf|stack|wtext\n");
+        kprintf("usage: crash div0|pf|stack|wtext|smap\n");
     }
 }
 
@@ -129,7 +147,7 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("  exec <path> [args] - Run a user program and wait for it\n");
         kprintf("  kill <pid>      - Send SIGKILL signal to process\n");
         kprintf("  clear           - Clear screen\n");
-        kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack, wtext)\n");
+        kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack, wtext, smap)\n");
     } else if (strcmp(cmdline, "ls") == 0) {
         vnode_t *root = vfs_get_root();
         if (!root || !root->children) {

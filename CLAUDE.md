@@ -155,6 +155,18 @@ would change how the next problem is approached.
 - `tools/qemu_shell.py`: a line typed *into a program* (not at a prompt) needs
   the `!` prefix, or the driver waits for a prompt that will not come.
 
+### SMAP
+
+- **Close the window in every interrupt and exception handler** (`clac` first
+  thing): ring 3 can set RFLAGS.AC itself, and an interrupt can arrive inside
+  a system call's window. `iretq` restores the interrupted flags afterwards,
+  so nothing needs reopening. Mask AC in `SFMASK` for the same reason.
+- **AC is per task for free**, because `ctx_switch` saves RFLAGS. A task may
+  sleep with its window open without opening one for anyone else.
+- The existing rule "the kernel writes other address spaces through the
+  direct map" meant the ELF loader, argv setup, COW copies and stack growth
+  needed no changes at all.
+
 ### Demand paging
 
 - **The page fault handler is a dispatcher.** Order matters: copy-on-write
@@ -254,9 +266,17 @@ machine never gets near these paths.
 - **Check `make`'s exit status, not a grep for `error:`.** A linker failure
   says "undefined reference", matches nothing, and leaves the previous ISO in
   place. I then "tested" the old kernel and got confusing results.
-- **QEMU's default CPU has no SMEP/UMIP.** Use `-cpu max` to exercise them.
+- **QEMU's default CPU has no SMEP/SMAP/UMIP.** `make test CPU=max` (also
+  `test-lowmem`, `fuzz`) exercises them. Run both models before committing
+  anything that touches system calls or fault handling.
 
 ### Compiler traps in freestanding code
+
+- **An inline-asm instruction that changes how memory may be accessed needs a
+  `"memory"` clobber.** `stac; x = *user_ptr; clac` was compiled with the load
+  outside the window, because nothing told GCC that `stac` and `clac` relate
+  to memory. SMAP caught it on the first run under `-cpu max`; on the default
+  CPU model the bug was invisible.
 
 - **`1 / zero` does not divide.** With a constant dividend of 1, GCC emits a
   compare instead of `idiv`, so no `#DE` is raised. Make both operands volatile.

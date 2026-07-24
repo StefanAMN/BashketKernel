@@ -4,7 +4,9 @@
  *
  * Every pointer argument comes from a user program and is untrusted. Nothing
  * here dereferences one before user_range_ok() has confirmed it lies in the
- * caller's own mapped memory with the right permission.
+ * caller's own mapped memory with the right permission, and every access is
+ * made between user_access_begin() and user_access_end() (see cpu.h): on a
+ * CPU with SMAP, touching user memory anywhere else is a fault.
  */
 
 #include "syscall.h"
@@ -24,6 +26,7 @@
 #include "heap.h"
 #include "file.h"
 #include "priority.h"
+#include "cpu.h"
 
 extern void syscall_entry(void);
 
@@ -34,6 +37,7 @@ extern void syscall_entry(void);
 
 #define RFLAGS_IF (1ULL << 9)
 #define RFLAGS_DF (1ULL << 10)
+#define RFLAGS_AC (1ULL << 18)
 
 #define PATH_MAX 128
 
@@ -67,7 +71,9 @@ void syscall_init(void) {
     // 4. SFMASK: RFLAGS bits cleared on entry. IF, because the entry stub runs
     //    on the user's stack until it switches; DF, because compiled C code
     //    assumes the direction flag is clear.
-    wrmsr(MSR_SFMASK, RFLAGS_IF | RFLAGS_DF);
+    //    AC, so a system call starts with the user access window closed even
+    //    if the program set the flag itself (see cpu.h).
+    wrmsr(MSR_SFMASK, RFLAGS_IF | RFLAGS_DF | RFLAGS_AC);
 
     kprintf("Syscall Init: MSRs configured for syscall/sysret (LSTAR: %p)\n", syscall_entry);
 }
@@ -91,7 +97,9 @@ static int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t dst_si
         if (i == 0 || ((user_src + i) & (PAGE_SIZE - 1)) == 0) {
             if (!user_range_ok(user_src + i, 1, false)) return -EFAULT;
         }
+        user_access_begin();
         dst[i] = *(const char *)(user_src + i);
+        user_access_end();
         if (dst[i] == '\0') return (int64_t)i;
     }
     return -EFAULT; // No terminator within dst_size
@@ -114,7 +122,10 @@ static int64_t sys_read(int fd, uint64_t buf, size_t count) {
 
     // May sleep (console, pipe). The caller's address space is loaded again
     // whenever it runs, so writing to its buffer afterwards is fine.
-    return file_read(file, (void *)buf, count);
+    user_access_begin();
+    int64_t result = file_read(file, (void *)buf, count);
+    user_access_end();
+    return result;
 }
 
 static int64_t sys_write(int fd, uint64_t buf, size_t count) {
@@ -123,7 +134,10 @@ static int64_t sys_write(int fd, uint64_t buf, size_t count) {
     if (count == 0) return 0;
     if (!user_range_ok(buf, count, false)) return -EFAULT;
 
-    return file_write(file, (const void *)buf, count);
+    user_access_begin();
+    int64_t result = file_write(file, (const void *)buf, count);
+    user_access_end();
+    return result;
 }
 
 static int64_t sys_open(uint64_t user_path, int flags) {
@@ -166,8 +180,10 @@ static int64_t sys_pipe(uint64_t user_fds) {
     }
 
     int *out = (int *)user_fds;
+    user_access_begin();
     out[0] = read_fd;
     out[1] = write_fd;
+    user_access_end();
     return 0;
 }
 
@@ -188,7 +204,10 @@ static int64_t sys_readdir(int fd, uint64_t user_entry) {
     if (!file) return -EBADF;
     if (!user_range_ok(user_entry, sizeof(struct dirent_info), true)) return -EFAULT;
 
-    return file_readdir(file, (struct dirent_info *)user_entry);
+    user_access_begin();
+    int result = file_readdir(file, (struct dirent_info *)user_entry);
+    user_access_end();
+    return result;
 }
 
 static int64_t sys_mkdir(uint64_t user_path) {
@@ -265,7 +284,9 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
             uint64_t slot = user_argv + argc * sizeof(uint64_t);
             if (!user_range_ok(slot, sizeof(uint64_t), false)) { result = -EFAULT; break; }
 
+            user_access_begin();
             uint64_t user_arg = *(const uint64_t *)slot;
+            user_access_end();
             if (user_arg == 0) break;
 
             int64_t len = copy_string_from_user(arg_storage + used, user_arg, PROCESS_ARG_BYTES - used);
@@ -293,7 +314,11 @@ static int64_t sys_waitpid(int pid, uint64_t user_status) {
     pid_t child = process_wait(pid, &status);
     if (child < 0) return -ECHILD;
 
-    if (user_status != 0) *(int *)user_status = status;
+    if (user_status != 0) {
+        user_access_begin();
+        *(int *)user_status = status;
+        user_access_end();
+    }
     return child;
 }
 
@@ -301,12 +326,14 @@ static int64_t sys_uname(uint64_t user_buf) {
     if (!user_range_ok(user_buf, sizeof(struct utsname), true)) return -EFAULT;
 
     struct utsname *buf = (struct utsname *)user_buf;
+    user_access_begin();
     memset(buf, 0, sizeof(*buf));
     strncpy(buf->sysname, "BashketOS", 64);
     strncpy(buf->nodename, "bashket", 64);
     strncpy(buf->release, "0.1.0", 64);
     strncpy(buf->version, "BashketKernel", 64);
     strncpy(buf->machine, "x86_64", 64);
+    user_access_end();
     return 0;
 }
 
@@ -315,8 +342,10 @@ static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
     if (!user_range_ok(user_buf, 2, true)) return -EFAULT;
 
     char *buf = (char *)user_buf;
+    user_access_begin();
     buf[0] = '/';
     buf[1] = '\0';
+    user_access_end();
     return (int64_t)user_buf;
 }
 

@@ -12,6 +12,7 @@
 #include "sched.h"
 #include "vmm.h"
 #include "process.h"
+#include "cpu.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -112,6 +113,11 @@ static bool try_grow_stack(struct registers *regs) {
 }
 
 void isr_handler(struct registers *regs) {
+    // Handlers never touch user memory. The interrupted code may have had a
+    // user access window open (and ring 3 can set RFLAGS.AC itself): close it
+    // for the handler. iretq restores the interrupted code's own flags.
+    user_access_end();
+
     if (try_copy_on_write(regs)) return;
     if (try_grow_stack(regs)) return;
 

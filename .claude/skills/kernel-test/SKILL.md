@@ -61,8 +61,21 @@ tools/qemu_shell.py --mem 512M --quiet 'mem'
 
 The shell's `crash div0|pf|stack|wtext` command triggers each fault on purpose.
 
-To run with the CPU protections QEMU's default CPU model lacks (SMEP, UMIP):
-`tools/qemu_shell.py --quiet --qemu-arg=-cpu --qemu-arg=max 'exec /bin/syscheck'`.
+QEMU's default CPU model lacks SMEP, SMAP and UMIP, so on it a kernel access
+to user memory outside a `user_access_begin/end` window goes unnoticed. After
+any change to system calls, fault handling or anything that touches user
+buffers, run the targets on both models:
+
+```
+make test && make test CPU=max
+make test-lowmem CPU=max
+make fuzz CPU=max FUZZ_SEEDS="1 5 7"
+tools/qemu_shell.py --quiet --qemu-arg=-cpu --qemu-arg=max 'exec /bin/syscheck'
+```
+
+A missed window shows up as `CPU EXCEPTION: Page Fault ... Page-protection
+violation, ... Kernel mode` with CR2 a user address; `tools/symbolize.sh <RIP>`
+names the line.
 
 ### User programs
 

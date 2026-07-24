@@ -23,7 +23,8 @@ that file.
   implemented. The rest of the table below is open, and deleting code is a
   decision left to the project owners.
 - **Added beyond the original plan:** safe-point kill and Ctrl-C, CPU
-  protections (SMEP, UMIP), low-memory and fuzz test targets. See "What is
+  protections (SMEP, SMAP, UMIP), on-demand stack growth, a terminal line
+  discipline, low-memory and fuzz test targets. See "What is
   still wrong" at the end for the known gaps.
 
 ## Where things stand
@@ -378,9 +379,11 @@ Known gaps in the parts that are otherwise real, most important first.
 
 1. **One CPU only, by construction.** Disabling interrupts is used as the
    lock in many places. Starting a second CPU would break them all.
-2. **No SMAP.** System calls read and write user buffers directly after
-   `vmm_user_range_ok`. Enabling SMAP needs every such access wrapped
-   (`stac`/`clac`) or moved into copy-in/copy-out helpers.
+2. **SMAP windows are coarse for `read` and `write`.** The user access
+   window is open for the whole of `file_read`/`file_write`, including while
+   the task sleeps in a pipe or the terminal, rather than only around the
+   final copy. Narrowing it means passing "this is a user buffer" down to the
+   copy sites.
 3. **No permissions.** Any program can delete or overwrite any file, and kill
    any user process.
 4. **No signal handlers.** A signal can only end a process (or, for Ctrl-C, be
