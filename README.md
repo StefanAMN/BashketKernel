@@ -20,7 +20,7 @@ that gap.
 | 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap, per-process address spaces. |
 | 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. Tasks block (sleep, input, wait, semaphores) instead of polling. 100 Hz PIT tick. |
 | 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader, per-process file descriptors. |
-| 6 | VFS and initrd | real | In-memory VFS tree, readable and writable (contents live in RAM and are lost at power-off). A USTAR initrd with the user programs is loaded as a Limine module. |
+| 6 | VFS and initrd | real | In-memory VFS tree, readable and writable (contents live in RAM and are lost at power-off), with per-process working directories and relative paths. A USTAR initrd with the user programs is loaded as a Limine module. |
 | 7 | Shell | real | Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines and redirection, built only on system calls. |
 | 8 | Slab, COW, mmap | partial | Slab allocator works. Anonymous `mmap`, `munmap` and `brk` work per process. `fork` shares pages copy-on-write. The user stack grows on demand up to 8 MiB. `mmap` and `brk` memory is still allocated at once, and nothing is file-backed. |
 | 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |

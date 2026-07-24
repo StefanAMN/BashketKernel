@@ -21,16 +21,20 @@ static file_t *file_alloc(file_kind_t kind, bool readable, bool writable) {
 }
 
 int file_open(const char *path, int flags, file_t **out) {
+    return file_open_at(NULL, path, flags, out);
+}
+
+int file_open_at(vnode_t *base, const char *path, int flags, file_t **out) {
     if (!path || !out) return -EINVAL;
 
     int access = flags & O_ACCMODE;
     if (access == O_ACCMODE) return -EINVAL;
     bool writable = (access != O_RDONLY);
 
-    vnode_t *node = vfs_find(NULL, path);
+    vnode_t *node = vfs_find(base, path);
     if (!node && (flags & O_CREAT)) {
         const char *leaf = NULL;
-        vnode_t *parent = vfs_find_parent(path, &leaf);
+        vnode_t *parent = vfs_find_parent_at(base, path, &leaf);
         if (!parent) return -ENOENT;
         node = vfs_create_file(parent, leaf, NULL, 0);
         if (!node) return -ENOMEM;

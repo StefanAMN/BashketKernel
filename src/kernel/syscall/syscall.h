@@ -38,7 +38,8 @@
 #define SYS_KILL        62
 #define SYS_UNAME       63
 #define SYS_READDIR     78   // (fd, struct dirent_info *): next entry of an open directory
-#define SYS_GETCWD      79
+#define SYS_GETCWD      79   // (buf, size): returns the length of the path
+#define SYS_CHDIR       80
 #define SYS_MKDIR       83
 #define SYS_UNLINK      87
 #define SYS_GETPPID     110

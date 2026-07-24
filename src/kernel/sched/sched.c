@@ -136,9 +136,20 @@ task_t *task_create(const char *name, void (*entry)(void)) {
     return t;
 }
 
+void task_set_cwd(task_t *task, vnode_t *dir) {
+    // A directory in use as someone's working directory counts as open, so
+    // it can not be removed from under them
+    uint64_t flags = irq_save();
+    if (dir) dir->open_count++;
+    if (task->cwd) task->cwd->open_count--;
+    task->cwd = dir;
+    irq_restore(flags);
+}
+
 void task_free(task_t *t) {
     if (!t) return;
     file_close_all(t->fds); // Normally already empty: closed when it died
+    task_set_cwd(t, NULL);
     if (t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
         vmm_destroy_address_space(vmm_space_from_phys((uint64_t)t->pml4_phys));
     }
@@ -319,6 +330,7 @@ void sched_make_zombie(task_t *task, int status) {
     // Close its files now rather than when it is reaped: a reader at the
     // other end of a pipe must see end-of-file as soon as the writer dies.
     file_close_all(task->fds);
+    task_set_cwd(task, NULL);
 
     // Children of a dead task have nobody left to wait for them
     task_t *parent = NULL;

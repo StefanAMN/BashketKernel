@@ -65,6 +65,11 @@ struct dirent_info {
 int file_open(const char *path, int flags, file_t **out);
 
 /**
+ * @brief As file_open, with relative paths starting at `base` (NULL: the root).
+ */
+int file_open_at(vnode_t *base, const char *path, int flags, file_t **out);
+
+/**
  * @brief A new open file for the console (readable and writable).
  */
 file_t *file_open_console(void);

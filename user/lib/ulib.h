@@ -38,6 +38,8 @@ long pipe(int fds[2]);
 long dup2(int old_fd, int new_fd);
 long readdir(int fd, struct dirent *entry);   /* 1 = entry filled, 0 = end */
 long mkdir(const char *path);
+long chdir(const char *path);
+long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
 long unlink(const char *path);
 
 /* Formatted output */

@@ -87,6 +87,33 @@ TEST(vfs_paths) {
     EXPECT_TRUE(vfs_find_parent("/", &leaf) == NULL);
     EXPECT_TRUE(vfs_find_parent("", &leaf) == NULL);
 
+    // "." and "..", repeated and trailing slashes, relative lookups
+    vnode_t *bin = vfs_find(NULL, "/bin");
+    vnode_t *hello = vfs_find(NULL, "/bin/hello");
+    EXPECT_TRUE(bin != NULL && hello != NULL);
+    EXPECT_TRUE(vfs_find(NULL, "/bin/./hello") == hello);
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/../bin//hello") == hello);
+    EXPECT_TRUE(vfs_find(NULL, "/../../bin") == bin);          // ".." stops at the root
+    EXPECT_TRUE(vfs_find(bin, "hello") == hello);
+    EXPECT_TRUE(vfs_find(bin, "../bin/hello") == hello);
+    EXPECT_TRUE(vfs_find(bin, ".") == bin);
+    EXPECT_TRUE(vfs_find(bin, "") == bin);
+    EXPECT_TRUE(vfs_find(bin, "/etc") == vfs_find(NULL, "/etc")); // Absolute ignores the base
+    EXPECT_TRUE(vfs_find(NULL, "/bin/hello/.") == NULL);        // A file has no "."
+    EXPECT_TRUE(vfs_find(NULL, "/bin/hello/..") == NULL);
+    EXPECT_TRUE(vfs_find_parent_at(bin, "new", &leaf) == bin);
+    EXPECT_TRUE(vfs_find_parent_at(bin, "../tmp/new", &leaf) == vfs_find(NULL, "/tmp"));
+    EXPECT_TRUE(vfs_find_parent("/tmp/.", &leaf) == NULL);
+    EXPECT_TRUE(vfs_find_parent("/tmp/..", &leaf) == NULL);
+
+    // A node's absolute path
+    char path[32];
+    EXPECT_EQ(vfs_path_of(hello, path, sizeof(path)), 10u);
+    EXPECT_EQ(strcmp(path, "/bin/hello"), 0);
+    EXPECT_EQ(vfs_path_of(vfs_get_root(), path, sizeof(path)), 1u);
+    EXPECT_EQ(strcmp(path, "/"), 0);
+    EXPECT_EQ(vfs_path_of(hello, path, 10), 0u);                // One byte too small
+
     // A directory with something in it can not be removed
     EXPECT_EQ(vfs_unlink(vfs_get_root(), "bin"), -ENOTEMPTY);
     EXPECT_TRUE(vfs_find(NULL, "/bin/hello") != NULL);

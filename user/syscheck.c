@@ -38,8 +38,8 @@ static void check_basics(void) {
     CHECK(set_priority(2) == 0 && set_priority(0) == 0 && set_priority(1) == 0);
     CHECK(set_priority(3) == -EINVAL && set_priority(-1) == -EINVAL);
 
-    char cwd[8];
-    CHECK(syscall2(SYS_GETCWD, cwd, sizeof(cwd)) > 0 && strcmp(cwd, "/") == 0);
+    char cwd[64];
+    CHECK(getcwd(cwd, sizeof(cwd)) == 1 && strcmp(cwd, "/") == 0);
 }
 
 static void check_memory(void) {
@@ -226,6 +226,64 @@ static void check_files(void) {
     while (count > 0) CHECK(close(opened[--count]) == 0);
 }
 
+static void check_directories(void) {
+    char cwd[64], buf[8];
+
+    CHECK(mkdir("/tmp/cwd-test") == 0);
+    CHECK(chdir("/tmp/cwd-test") == 0);
+    CHECK(getcwd(cwd, sizeof(cwd)) == 13 && strcmp(cwd, "/tmp/cwd-test") == 0);
+    CHECK(getcwd(cwd, 5) == -EINVAL);                      /* Buffer too small */
+    CHECK(getcwd((char *)0xffffffff80000000, 64) == -EFAULT);
+
+    /* Relative paths start here; absolute ones do not */
+    long fd = open("note", O_WRONLY | O_CREAT);
+    CHECK(fd >= 0);
+    CHECK(write((int)fd, "hi", 2) == 2);
+    close((int)fd);
+    fd = open("/tmp/cwd-test/note", O_RDONLY);
+    CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 2);
+    close((int)fd);
+    CHECK(open("/note", O_RDONLY) == -ENOENT);
+
+    /* "." and ".." */
+    CHECK(mkdir("sub") == 0);
+    CHECK(chdir("./sub/../sub") == 0);
+    CHECK(getcwd(cwd, sizeof(cwd)) > 0 && strcmp(cwd, "/tmp/cwd-test/sub") == 0);
+    fd = open("../note", O_RDONLY);
+    CHECK(fd >= 0);
+    close((int)fd);
+    CHECK(chdir("../../../../..") == 0);                   /* ".." stops at the root */
+    CHECK(getcwd(cwd, sizeof(cwd)) == 1 && strcmp(cwd, "/") == 0);
+    CHECK(mkdir("/tmp/.") == -ENOENT && mkdir("/tmp/..") == -ENOENT);
+    CHECK(unlink("/tmp/cwd-test/sub/..") == -ENOENT);
+
+    CHECK(chdir("/no/such") == -ENOENT);
+    CHECK(chdir("/etc/motd") == -ENOTDIR);
+    CHECK(chdir("/etc/motd/x") == -ENOENT);
+    CHECK(chdir((const char *)0xffffffff80000000) == -EFAULT);
+
+    /* A child starts in its parent's directory, and changing it there does
+     * not move the parent */
+    CHECK(chdir("/tmp/cwd-test/sub") == 0);
+    long pid = fork();
+    if (pid == 0) {
+        char child_cwd[64];
+        int ok = getcwd(child_cwd, sizeof(child_cwd)) > 0 && strcmp(child_cwd, "/tmp/cwd-test/sub") == 0;
+        chdir("/");
+        exit(ok ? 0 : 1);
+    }
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(getcwd(cwd, sizeof(cwd)) > 0 && strcmp(cwd, "/tmp/cwd-test/sub") == 0);
+
+    /* A directory someone is standing in can not be removed */
+    CHECK(unlink("/tmp/cwd-test/sub") == -EBUSY);
+    CHECK(chdir("/") == 0);
+    CHECK(unlink("/tmp/cwd-test/sub") == 0);
+    CHECK(unlink("/tmp/cwd-test/note") == 0);
+    CHECK(unlink("/tmp/cwd-test") == 0);
+}
+
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -398,6 +456,7 @@ int main(void) {
     check_copy_on_write();
     check_stack_growth();
     check_files();
+    check_directories();
     check_pipes();
 
     if (failures == 0) {

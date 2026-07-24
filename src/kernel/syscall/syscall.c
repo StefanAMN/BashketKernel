@@ -145,7 +145,7 @@ static int64_t sys_open(uint64_t user_path, int flags) {
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
 
     file_t *file = NULL;
-    int err = file_open(path, flags, &file);
+    int err = file_open_at(sched_get_current_task()->cwd, path, flags, &file);
     if (err != 0) return err;
 
     int fd = fd_install(sched_get_current_task()->fds, file);
@@ -215,7 +215,7 @@ static int64_t sys_mkdir(uint64_t user_path) {
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
 
     const char *leaf = NULL;
-    vnode_t *parent = vfs_find_parent(path, &leaf);
+    vnode_t *parent = vfs_find_parent_at(sched_get_current_task()->cwd, path, &leaf);
     if (!parent) return -ENOENT;
 
     // Copy the leaf without a trailing slash ("mkdir /tmp/dir/")
@@ -233,7 +233,7 @@ static int64_t sys_unlink(uint64_t user_path) {
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
 
     const char *leaf = NULL;
-    vnode_t *parent = vfs_find_parent(path, &leaf);
+    vnode_t *parent = vfs_find_parent_at(sched_get_current_task()->cwd, path, &leaf);
     if (!parent) return -ENOENT;
     return vfs_unlink(parent, leaf);
 }
@@ -338,15 +338,31 @@ static int64_t sys_uname(uint64_t user_buf) {
 }
 
 static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
-    if (size < 2) return -EINVAL;
-    if (!user_range_ok(user_buf, 2, true)) return -EFAULT;
+    char path[PATH_MAX];
+    task_t *task = sched_get_current_task();
+    size_t len = vfs_path_of(task->cwd ? task->cwd : vfs_get_root(), path, sizeof(path));
+    if (len == 0) return -EINVAL;
 
-    char *buf = (char *)user_buf;
+    if (size < len + 1) return -EINVAL; // The caller's buffer is too small
+    if (!user_range_ok(user_buf, len + 1, true)) return -EFAULT;
+
     user_access_begin();
-    buf[0] = '/';
-    buf[1] = '\0';
+    memcpy((void *)user_buf, path, len + 1);
     user_access_end();
-    return (int64_t)user_buf;
+    return (int64_t)len;
+}
+
+static int64_t sys_chdir(uint64_t user_path) {
+    char path[PATH_MAX];
+    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+
+    task_t *task = sched_get_current_task();
+    vnode_t *dir = vfs_find(task->cwd, path);
+    if (!dir) return -ENOENT;
+    if (dir->type != VFS_DIRECTORY) return -ENOTDIR;
+
+    task_set_cwd(task, dir == vfs_get_root() ? NULL : dir);
+    return 0;
 }
 
 // --- Dispatcher --------------------------------------------------------------
@@ -409,6 +425,7 @@ static int64_t dispatch(struct registers *regs) {
 
         case SYS_UNAME:   return sys_uname(regs->rdi);
         case SYS_GETCWD:  return sys_getcwd(regs->rdi, (size_t)regs->rsi);
+        case SYS_CHDIR:   return sys_chdir(regs->rdi);
 
         case SYS_CLEAR:
             kprintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");

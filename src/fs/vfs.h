@@ -112,6 +112,18 @@ void vfs_truncate(vnode_t *file, size_t size);
 vnode_t *vfs_find_parent(const char *path, const char **out_leaf);
 
 /**
+ * @brief As vfs_find_parent, with relative paths starting at `base`
+ *        (NULL: the root).
+ */
+vnode_t *vfs_find_parent_at(vnode_t *base, const char *path, const char **out_leaf);
+
+/**
+ * @brief Write the absolute path of a node into buf.
+ * @return Its length, or 0 if it does not fit.
+ */
+size_t vfs_path_of(vnode_t *node, char *buf, size_t size);
+
+/**
  * @brief Find a direct child of a directory by name.
  */
 vnode_t *vfs_find_child(vnode_t *dir, const char *name);
