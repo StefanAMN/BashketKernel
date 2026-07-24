@@ -9,7 +9,7 @@
 #include "kprintf.h"
 
 void hrtimer_init(void) {
-    kprintf("HRTimer Init: High-resolution nanosecond timer queue ready.\n");
+    kprintf("hrtimer: nanosleep available at timer-tick (10 ms) resolution\n");
 }
 
 void nanosleep(uint64_t nanoseconds) {

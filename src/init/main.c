@@ -160,7 +160,6 @@ void _start(void) {
     kprintf("We are in 64-bit long mode.\n");
     kprintf("Framebuffer address: %p\n", fb->address);
     kprintf("Resolution: %dx%d\n", fb->width, fb->height);
-    kprintf("Phase 1 initialization complete.\n");
 
     // Phase 2: CPU Tables & Interrupts
     gdt_init();
@@ -188,16 +187,13 @@ void _start(void) {
     vmm_init();
     kheap_init();
     console_enable_backbuffer();
-    kprintf("Phase 3 Memory Management initialization complete.\n");
 
     // Phase 4: Multitasking & Scheduler
     sched_init();
     pit_init(TIMER_HZ);
-    kprintf("Phase 4 Multitasking initialization complete.\n");
 
     // Phase 5: Userspace & System Calls
     syscall_init();
-    kprintf("Phase 5 Syscalls & ELF Loader initialization complete.\n");
 
     // Phase 6: Filesystem & Initrd
     vfs_init();
@@ -209,16 +205,13 @@ void _start(void) {
     } else {
         kprintf("WARNING: no initrd module; /bin will be empty\n");
     }
-    kprintf("Phase 6 Virtual Filesystem initialization complete.\n");
 
     // Phase 7: Keyboard & Shell
     keyboard_init();
     shell_init();
-    kprintf("Phase 7 Keyboard & Shell initialization complete.\n");
 
     // Phase 8: Advanced Memory Management (Slab, Refcounting, mmap)
     cow_init();
-    kprintf("Phase 8 Slab Allocator, Refcounting & mmap initialization complete.\n");
 
     // Phase 9: Modern Interrupt Architecture (LAPIC & IOAPIC)
     // The PIT stays the only tick source. The LAPIC timer is left off until
@@ -226,75 +219,55 @@ void _start(void) {
     lapic_init();
     acpi_init(rsdp_request.response ? (void *)rsdp_request.response->address : NULL);
     ioapic_init();
-    kprintf("Phase 9 Local APIC & I/O APIC initialization complete.\n");
 
     // Phase 10: Symmetric Multiprocessing (SMP & Spinlocks)
     smp_init();
-    kprintf("Phase 10 SMP & Atomic Spinlocks initialization complete.\n");
 
     // Phase 11: Real Block Storage & Persistent Filesystem (VirtIO-Blk & FAT32)
     fat32_init();
-    kprintf("Phase 11 Block Storage & FAT32 initialization complete.\n");
-
-    // Phase 12: UNIX Process Lifecycle & Signals (fork, execve, waitpid, signals)
-    kprintf("Phase 12 UNIX Process Subsystem initialization complete.\n");
 
     // Phase 13: PCI Bus & VirtIO Network Stack
     virtio_net_init();
-    kprintf("Phase 13 PCI & VirtIO Network Stack initialization complete.\n");
 
     // Phase 14: Custom x86_64 Bare-Metal Bootloader Transition
     boot_loader_init();
-    kprintf("Phase 14 Custom x86_64 Bootloader verification complete.\n");
 
     // Phase 15: PS/2 Mouse Driver & Framebuffer Canvas
     mouse_init();
     cursor_init();
-    kprintf("Phase 15 PS/2 Mouse Driver & Canvas initialization complete.\n");
 
     // Phase 17: Real-Time Clock & CMOS Driver
     rtc_init();
-    kprintf("Phase 17 RTC CMOS Driver initialization complete.\n");
 
     // Phase 18: Process Environment Variables
     env_init();
-    kprintf("Phase 18 Environment Variables initialization complete.\n");
 
     // Phase 21: Dynamic RAM Filesystem (RamFS)
     ramfs_init();
-    kprintf("Phase 21 Dynamic RamFS initialization complete.\n");
 
     // Phase 24: Pseudo-Filesystem ProcFS
     procfs_init();
-    kprintf("Phase 24 ProcFS initialization complete.\n");
 
     // Phase 25: Virtual Terminal TTY
     tty_init();
-    kprintf("Phase 25 TTY Subsystem initialization complete.\n");
 
     // Phase 26: Hardware FPU & SSE State Management
     fpu_init();
-    kprintf("Phase 26 FPU/SSE initialization complete.\n");
 
     // Phase 27: Virtual Memory Swap Manager
     swap_init(1024);
-    kprintf("Phase 27 Swap Manager initialization complete.\n");
 
     // Phase 31: User Accounts & Authentication
     auth_init();
-    kprintf("Phase 31 Auth Subsystem initialization complete.\n");
 
     // Phase 32: Kernel Logging Ring Buffer
     klog_init();
-    kprintf("Phase 32 Kernel Logger initialization complete.\n");
 
     // Phase 33: High-Resolution Timers
     hrtimer_init();
-    kprintf("Phase 33 High-Resolution Timers initialization complete.\n");
 
     // Phase 37: Virtual Devices (/dev)
     dev_init();
-    kprintf("Phase 37 Virtual Hardware Devices initialization complete.\n");
 
 #ifdef KERNEL_TESTS
     // Test build (`make test`): run the unit tests, report the verdict to

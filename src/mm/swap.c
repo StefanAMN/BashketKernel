@@ -20,7 +20,7 @@ void swap_init(size_t max_swap_frames) {
     total_slots = max_swap_frames;
     free_slots = max_swap_frames;
     memset(swap_bitmap, 0, sizeof(swap_bitmap));
-    kprintf("Swap Init: Virtual memory swap space initialized (%zu slots / %zu MB)\n", total_slots, (total_slots * 4) / 1024);
+    kprintf("swap: STUB, a bitmap of %zu slots (%zu MB); no page is ever swapped\n", total_slots, (total_slots * 4) / 1024);
 }
 
 uint32_t swap_out_frame(uint64_t phys_addr) {

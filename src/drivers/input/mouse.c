@@ -71,7 +71,7 @@ void mouse_init(void) {
     mouse_write(0xF4); // Enable packet reporting
     mouse_read();
 
-    kprintf("PS/2 Mouse Init: Auxiliary mouse driver initialized (IRQ 12)\n");
+    kprintf("mouse: STUB, IRQ 12 enabled and its bytes discarded\n");
 }
 
 void mouse_get_state(mouse_state_t *out_state) {

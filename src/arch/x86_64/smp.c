@@ -22,7 +22,7 @@ void smp_init(void) {
 
     spinlock_release(&smp_lock);
 
-    kprintf("SMP Init: Primary BSP CPU %u initialized (Total Active Cores: %zu)\n", cpus[0].cpu_id, active_cpu_count);
+    kprintf("SMP: STUB, only boot CPU %u runs (%zu active); other CPUs are never started\n", cpus[0].cpu_id, active_cpu_count);
 }
 
 size_t smp_get_cpu_count(void) {

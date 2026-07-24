@@ -10,7 +10,7 @@ static int32_t cursor_x = 640;
 static int32_t cursor_y = 400;
 
 void cursor_init(void) {
-    kprintf("Cursor Init: Graphical mouse cursor subsystem ready (Pos: %d, %d)\n", cursor_x, cursor_y);
+    kprintf("cursor: STUB, position tracked at (%d, %d) but nothing is drawn\n", cursor_x, cursor_y);
 }
 
 void cursor_update(int32_t x, int32_t y) {

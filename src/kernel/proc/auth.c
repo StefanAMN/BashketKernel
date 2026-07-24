@@ -12,7 +12,7 @@ static user_t current_user;
 
 void auth_init(void) {
     current_user = root_user;
-    kprintf("Auth Init: Registered default accounts (root:0).\n");
+    kprintf("auth: STUB, accepts root with any password\n");
 }
 
 const user_t *auth_login(const char *user, const char *pass) {
