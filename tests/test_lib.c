@@ -72,6 +72,13 @@ TEST(ksnprintf_formats_and_truncates) {
     ksnprintf(buf, sizeof(buf), "%d|%s|%p", 0, (const char *)NULL, (void *)0x1000);
     EXPECT_EQ(strcmp(buf, "0|(null)|0x1000"), 0);
 
+    // Field widths and zero padding
+    ksnprintf(buf, sizeof(buf), "%02d:%02d|%5d|%05d|%3d", 7, 42, 123, -42, 12345);
+    EXPECT_EQ(strcmp(buf, "07:42|  123|-0042|12345"), 0);   // A wide value is never cut
+    ksnprintf(buf, sizeof(buf), "%08x|%4x|%6s|%2s|%04lu", 0xBEEFu, 0xFu, "ab", "long", (uint64_t)7);
+    EXPECT_EQ(strcmp(buf, "0000beef|   f|    ab|long|0007"), 0);
+    EXPECT_EQ(ksnprintf(buf, sizeof(buf), "%999999d", 1), 63u); // Width is bounded; output fits the buffer
+
     // Too long: cut off, still terminated, and nothing written past the end
     char small[8];
     memset(small, 'X', sizeof(small));
