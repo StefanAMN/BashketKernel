@@ -55,20 +55,17 @@ static void scroll(void) {
     uint32_t offset = pixels_per_row * 8; // 8 rows of pixels
     
     if (backbuffer) {
-        // Fast in-RAM buffer shift (reads & writes cached system RAM, <0.1 ms)
+        // Shift the text up one line in the RAM copy of the screen
         memmove(backbuffer, backbuffer + offset, (total_pixels - offset) * sizeof(uint32_t));
         // Clear bottom 8 rows in RAM
         for (uint32_t i = total_pixels - offset; i < total_pixels; i++) {
             backbuffer[i] = BG_COLOR;
         }
 
-        // Fast streaming 64-bit writes to MMIO (zero MMIO reads!)
-        uint64_t *dst = (uint64_t *)fb_ptr;
-        const uint64_t *src = (const uint64_t *)backbuffer;
-        size_t qwords = (total_pixels * sizeof(uint32_t)) / sizeof(uint64_t);
-        for (size_t i = 0; i < qwords; i++) {
-            dst[i] = src[i];
-        }
+        // Then send the whole picture to video memory in one pass. Scrolling
+        // inside video memory itself would mean reading it back, which is
+        // far slower than reading ordinary RAM.
+        memcpy(fb_ptr, backbuffer, (size_t)total_pixels * sizeof(uint32_t));
     } else {
         // Fallback before PMM is initialized
         for (uint32_t i = 0; i < total_pixels - offset; i++) {

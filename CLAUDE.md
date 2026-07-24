@@ -83,6 +83,10 @@ would change how the next problem is approached.
   reports them as executable/modules and bootloader-reclaimable, so the frame
   allocator needs no special case for them. Guessing their physical address
   from the virtual one (`virt & 0x7FFFFFFF`) is wrong.
+- **Interrupt entry does not clear the direction flag.** `syscall` can mask
+  it (SFMASK), but for interrupts and exceptions the stub must `cld` itself.
+  Otherwise a user program that runs `std` makes every compiler-generated
+  `rep movs` in the handlers run backwards.
 - **`sysretq` picks selectors by arithmetic:** CS = `STAR[63:48] + 16`,
   SS = `STAR[63:48] + 8`. The GDT must therefore hold user data *before* user
   code. Getting this wrong loads whatever descriptor sits 16 bytes on.
@@ -260,6 +264,16 @@ machine never gets near these paths.
 - **Check for leaks by counting.** Free frames and heap bytes before and after
   a workload must match once tasks are reaped. This caught nothing here only
   because the destroy paths were written against that test.
+
+### Performance
+
+- **Byte-loop `memcpy`/`memset`/`memmove` were the slowest code in the
+  kernel.** Switching to `rep movsq`/`rep stosq` made an output-heavy shell
+  session 3.5x faster under QEMU. It was found only because a 200-command
+  measurement took 209 s; short tests never fill the screen, and scrolling is
+  what copies megabytes.
+- **Long runs find what short tests cannot.** That same measurement also
+  showed `date` printing a literal `%02d`.
 
 ### Verifying
 
