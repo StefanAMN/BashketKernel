@@ -9,8 +9,10 @@
 #include "gdt.h"
 #include "idt.h"
 #include "pic.h"
+#include "pmm.h"
+#include "vmm.h"
+#include "heap.h"
 
-// Set the base revision to 2 or 1. Let's use 2 as it's the latest in v8.x/v12.x
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
 
@@ -20,7 +22,18 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
     .revision = 0
 };
 
-// Halt and catch fire function.
+__attribute__((used, section(".requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST,
+    .revision = 0
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST,
+    .revision = 0
+};
+
 static void hcf(void) {
     asm("cli");
     while (1) {
@@ -28,25 +41,20 @@ static void hcf(void) {
     }
 }
 
-// The following will be our kernel's entry point.
-// If renaming _start() to something else, make sure to change the
-// linker script accordingly.
 void _start(void) {
-    // Ensure the bootloader actually understands our base revision (see spec).
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
         hcf();
     }
 
     serial_init();
-    
-    if (framebuffer_request.response == NULL
-     || framebuffer_request.response->framebuffer_count < 1) {
+
+    if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
         hcf();
     }
-    
+
     struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
     console_init(fb);
-    
+
     kprintf("Hello, BashketKernel!\n");
     kprintf("We are in 64-bit long mode.\n");
     kprintf("Framebuffer address: %p\n", fb->address);
@@ -63,21 +71,24 @@ void _start(void) {
     pic_remap(32, 40);
     kprintf("PIC remapped.\n");
 
-    // Unmask hardware interrupts
     asm volatile("sti");
     kprintf("Interrupts enabled (STI).\n");
 
-    // Run Kernel Unit Tests
+    // Phase 3: Memory Management
+    if (memmap_request.response == NULL || hhdm_request.response == NULL) {
+        kprintf("FATAL: Limine memory map or HHDM response missing!\n");
+        hcf();
+    }
+
+    pmm_init(memmap_request.response, hhdm_request.response->offset);
+    vmm_init();
+    kheap_init();
+    kprintf("Phase 3 Memory Management initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phase 1, 2 & 3)
     run_all_tests();
 
-    // Trigger a Divide-by-Zero to test our new exception handler
-    kprintf("Triggering Divide-by-Zero Exception...\n");
-    volatile int a = 1;
-    volatile int b = 0;
-    volatile int c = a / b;
-    (void)c; // Prevent unused variable warning
-
-    // Phase 1: Halt
+    // Idle loop
     while (1) {
         asm("hlt");
     }

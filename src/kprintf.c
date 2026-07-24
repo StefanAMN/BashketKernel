@@ -3,8 +3,9 @@
 #include "console.h"
 #include <stdarg.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 
-// A simple function to print an unsigned integer in a given base
 static void print_uint(uint64_t val, int base) {
     char buf[32];
     int i = 0;
@@ -28,7 +29,6 @@ static void print_uint(uint64_t val, int base) {
     }
 }
 
-// A simple function to print a signed integer
 static void print_int(int64_t val) {
     if (val < 0) {
         serial_putchar('-');
@@ -50,15 +50,33 @@ void kprintf(const char* fmt, ...) {
         }
         
         p++; // Skip '%'
+        bool is_size_t = false;
+        if (*p == 'z') {
+            is_size_t = true;
+            p++;
+        }
+
         switch (*p) {
             case 'd':
-                print_int(va_arg(args, int));
+                if (is_size_t) {
+                    print_int((int64_t)va_arg(args, size_t));
+                } else {
+                    print_int(va_arg(args, int));
+                }
                 break;
             case 'u':
-                print_uint(va_arg(args, unsigned int), 10);
+                if (is_size_t) {
+                    print_uint(va_arg(args, size_t), 10);
+                } else {
+                    print_uint(va_arg(args, unsigned int), 10);
+                }
                 break;
             case 'x':
-                print_uint(va_arg(args, unsigned int), 16);
+                if (is_size_t) {
+                    print_uint(va_arg(args, size_t), 16);
+                } else {
+                    print_uint(va_arg(args, unsigned int), 16);
+                }
                 break;
             case 'p':
                 serial_write("0x");
@@ -98,8 +116,7 @@ void panic(const char* msg) {
     kprintf("\n\n!!! KERNEL PANIC !!!\n");
     kprintf("%s\n", msg);
     kprintf("System halted.\n");
-    asm volatile("cli");
     while (1) {
-        asm volatile("hlt");
+        asm volatile("cli; hlt");
     }
 }
