@@ -5,6 +5,12 @@ description: Build BashketKernel and verify a change in QEMU - run the in-kernel
 
 # Verifying a kernel change
 
+The short version: `make check` runs the unit tests, the low-memory scenarios
+and a few fuzz seeds on both CPU models (about three minutes) and ends with
+`ALL CHECKS PASSED`. Use it before every commit that touches kernel code. The
+sections below are the individual steps, for when one of them fails or a
+quicker, narrower check is enough while iterating.
+
 A change is verified when all three of these hold. Run them in this order.
 
 ## 1. Build with no warnings

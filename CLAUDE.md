@@ -24,6 +24,7 @@ make test         # separate test kernel in build-test/, exit 0 only if all pass
 make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
 
+make check                      # all of the below on both CPU models (~3 min); run before committing
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s)
 make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
