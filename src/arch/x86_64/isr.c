@@ -13,6 +13,7 @@
 #include "vmm.h"
 #include "process.h"
 #include "cpu.h"
+#include "console.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -161,6 +162,7 @@ void isr_handler(struct registers *regs) {
         kprintf("RSI: 0x%zx  RDI: 0x%zx  RBP: 0x%zx\n", regs->rsi, regs->rdi, regs->rbp);
         kprintf("=================================================\n");
 
+        console_refresh(); // Interrupts are off for good: show the report now
         while (1) { asm volatile("cli\nhlt"); }
     } else if (regs->int_no >= 32 && regs->int_no < 48) {
         // Send End of Interrupt (EOI) to Local APIC and 8259 PIC before dispatching

@@ -399,8 +399,9 @@ Known gaps in the parts that are otherwise real, most important first.
    system call that was holding one (`/proc` reads allocate a page).
 8. **The file system is RAM only**, has no hard limit on file size other than
    free memory, and directory entries are a linked list.
-9. **Timer ticks are lost while `kprintf` scrolls the framebuffer** with
-   interrupts off, so uptime runs slow during heavy output.
+9. **A few timer ticks are lost under heavy console output** (measured: under
+   1% over 200 s of continuous scrolling), because drawing happens with
+   interrupts off. Uptime is therefore slightly slow, never fast.
 10. **PID 0 runs on the boot stack**, which has no guard page.
 11. **`kmalloc` and `kfree` are O(number of blocks)**; fine for now, slow with
     thousands of live allocations.

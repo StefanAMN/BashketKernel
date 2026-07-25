@@ -104,6 +104,7 @@ static volatile struct limine_stack_size_request stack_size_request = {
 
 static void hcf(void) {
     asm("cli");
+    console_refresh();
     while (1) {
         asm("hlt");
     }

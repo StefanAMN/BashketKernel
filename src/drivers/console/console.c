@@ -2,12 +2,23 @@
 #include "font.h"
 #include "pmm.h"
 #include "kstring.h"
+#include "spinlock.h"
+#include <stdbool.h>
 #include <stddef.h>
 
 static struct limine_framebuffer *g_fb = NULL;
 static uint32_t cursor_x = 0;
 static uint32_t cursor_y = 0;
 static uint32_t *backbuffer = NULL;
+
+// Deferred refresh. Scrolling changes every pixel on the screen, and sending
+// the whole picture to video memory for each scrolled line made output crawl.
+// Once the timer is running, a scroll only changes the RAM copy and marks the
+// screen stale; console_refresh (called from the timer) sends the picture at
+// most once per call. While the screen is stale, new characters are drawn in
+// the RAM copy only, since the next refresh will show them.
+static bool deferred_refresh = false;
+static bool screen_stale = false;
 
 static const uint32_t FG_COLOR = 0xFFFFFFFF; // White
 static const uint32_t BG_COLOR = 0x00000000; // Black
@@ -38,11 +49,29 @@ void console_enable_backbuffer(void) {
     }
 }
 
+void console_set_deferred_refresh(bool enabled) {
+    deferred_refresh = enabled && backbuffer != NULL;
+    if (!deferred_refresh) console_refresh();
+}
+
+void console_refresh(void) {
+    if (!g_fb || !backbuffer) return;
+
+    uint64_t flags = irq_save();
+    if (screen_stale) {
+        size_t total_pixels = (size_t)(g_fb->pitch / 4) * g_fb->height;
+        screen_stale = false; // Cleared first: anything drawn from here on goes to the screen too
+        memcpy(g_fb->address, backbuffer, total_pixels * sizeof(uint32_t));
+    }
+    irq_restore(flags);
+}
+
 static void putpixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= g_fb->width || y >= g_fb->height) return;
     uint32_t idx = y * (g_fb->pitch / 4) + x;
     if (backbuffer) {
         backbuffer[idx] = color;
+        if (screen_stale) return; // The next refresh will show it
     }
     uint32_t *fb_ptr = g_fb->address;
     fb_ptr[idx] = color;
@@ -62,10 +91,14 @@ static void scroll(void) {
             backbuffer[i] = BG_COLOR;
         }
 
-        // Then send the whole picture to video memory in one pass. Scrolling
-        // inside video memory itself would mean reading it back, which is
-        // far slower than reading ordinary RAM.
-        memcpy(fb_ptr, backbuffer, (size_t)total_pixels * sizeof(uint32_t));
+        if (deferred_refresh) {
+            screen_stale = true; // Set after the RAM copy is consistent again
+        } else {
+            // Send the whole picture to video memory. Scrolling inside video
+            // memory itself would mean reading it back, which is far slower
+            // than reading ordinary RAM.
+            memcpy(fb_ptr, backbuffer, (size_t)total_pixels * sizeof(uint32_t));
+        }
     } else {
         // Fallback before PMM is initialized
         for (uint32_t i = 0; i < total_pixels - offset; i++) {
@@ -79,7 +112,7 @@ static void scroll(void) {
     cursor_y -= 8;
 }
 
-void console_putchar(char c) {
+static void putchar_unlocked(char c) {
     if (!g_fb) return;
     
     if (c == '\n') {
@@ -127,6 +160,16 @@ void console_putchar(char c) {
         cursor_y += 8;
         if (cursor_y + 8 > g_fb->height) scroll();
     }
+}
+
+// The cursor and both copies of the screen are shared by every task that
+// prints, and by interrupt handlers. Drawing one character is short, so it is
+// simply done with interrupts off.
+void console_putchar(char c) {
+    if (!g_fb) return;
+    uint64_t flags = irq_save();
+    putchar_unlocked(c);
+    irq_restore(flags);
 }
 
 void console_write(const char *str) {

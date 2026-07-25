@@ -272,6 +272,15 @@ machine never gets near these paths.
   session 3.5x faster under QEMU. It was found only because a 200-command
   measurement took 209 s; short tests never fill the screen, and scrolling is
   what copies megabytes.
+- **Do not redraw the screen per scrolled line.** Scrolling now changes only
+  the RAM copy and marks the screen stale; the timer sends it to video memory
+  at most 50 times a second. Two rules keep that correct: set the stale flag
+  only *after* the RAM copy is consistent, and call `console_refresh()` on
+  every path that halts with interrupts off (panic, fault report), or the last
+  and most important lines never appear.
+- **Look at the screen, not only the serial log**, after changing the
+  console. QEMU's monitor `screendump file.ppm` works with `-display none`;
+  the unix socket path for `-monitor unix:...` must be short (108 bytes).
 - **Long runs find what short tests cannot.** That same measurement also
   showed `date` printing a literal `%02d`.
 

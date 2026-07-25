@@ -9,6 +9,7 @@
 #include "sched.h"
 #include "kprintf.h"
 #include "spinlock.h"
+#include "console.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -17,6 +18,9 @@ static volatile uint64_t ticks = 0;
 static void pit_irq_handler(struct registers *regs) {
     (void)regs;
     ticks++;
+
+    // Show scrolled output at most 50 times a second (see console.c)
+    if (ticks % 2 == 0) console_refresh();
 
     // Wake tasks whose sleep has ended, then let the scheduler preempt
     sched_wake_sleepers(ticks);
@@ -42,6 +46,9 @@ void pit_init(uint32_t frequency_hz) {
     register_irq_handler(0, pit_irq_handler);
 
     kprintf("PIT Init: Timer configured at %u Hz (IRQ 0)\n", frequency_hz);
+
+    // From now on something calls console_refresh regularly
+    console_set_deferred_refresh(true);
 }
 
 void sched_sleep_ticks(uint64_t count) {
