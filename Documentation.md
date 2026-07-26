@@ -528,7 +528,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 38. Kernel Performance Benchmark Suite (Phase 38)
-**Status: real.** Memory copy and CPU loop timing.
+**Status: real.** `bench` times memcpy, memset, heap and frame allocation for 100 ms each and prints rates. Timer resolution limits accuracy to a few percent.
 
 **Goal:** CPU MIPS calculation & memory throughput diagnostic suite.
 

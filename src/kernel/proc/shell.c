@@ -170,11 +170,17 @@ void shell_run_cmd(const char *cmdline) {
             kprintf("cat: file '%s' not found!\n", filename);
             return;
         }
+        if (file->type == VFS_DIRECTORY) {
+            kprintf("cat: '%s' is a directory\n", filename);
+            return;
+        }
 
+        // Stop after 64 KiB: /dev/zero and /dev/random never end, and this
+        // shell has no Ctrl-C of its own
         char buf[256];
         size_t offset = 0;
         size_t read_bytes;
-        while ((read_bytes = vfs_read(file, offset, sizeof(buf) - 1, buf)) > 0) {
+        while (offset < 64 * 1024 && (read_bytes = vfs_read(file, offset, sizeof(buf) - 1, buf)) > 0) {
             buf[read_bytes] = '\0';
             kprintf("%s", buf);
             offset += read_bytes;

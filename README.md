@@ -52,7 +52,7 @@ that gap.
 | 35 | Shared memory | partial | Keyed kernel heap buffers. Not mapped into processes. |
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |
 | 37 | /dev devices | real | `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` is a seeded xorshift generator, not cryptographically secure. |
-| 38 | Benchmarks | real | Memory copy and CPU loop timing. |
+| 38 | Benchmarks | real | `bench` times memcpy, memset, heap and frame allocation for 100 ms each and prints rates. Timer resolution limits accuracy to a few percent. |
 
 ---
 
