@@ -282,6 +282,11 @@ machine never gets near these paths.
 - **Look at the screen, not only the serial log**, after changing the
   console. QEMU's monitor `screendump file.ppm` works with `-display none`;
   the unix socket path for `-monitor unix:...` must be short (108 bytes).
+- **"Real" in the status table has to be checked by using the thing.** The
+  kernel log was listed as real with a passing test; `dmesg` showed one line,
+  because nothing ever wrote to the buffer. The test only checked that calling
+  the functions did not crash (`EXPECT_TRUE(true)`). Any test that ends that
+  way is a stub test: look for the rest.
 - **Long runs find what short tests cannot.** That same measurement also
   showed `date` printing a literal `%02d`.
 
