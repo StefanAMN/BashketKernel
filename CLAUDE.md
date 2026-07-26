@@ -290,6 +290,16 @@ machine never gets near these paths.
   layout and see whether the number moves. (Measured after that:
   `rep movsq` 1200 MiB/s, a 32-byte-per-iteration C loop 1420; kept the
   former.)
+- **Code nothing calls is unverified, whatever its test says.** The slab
+  allocator passed its one test and had four defects (alignment above 8
+  ignored, oversized objects accepted and then leaking a page per attempt,
+  empty pages never returned, wrong-cache and double frees corrupting the
+  free list). Giving it a real user (open files) is what forced the questions.
+- **Allocator caching policy shows up in leak checks.** Returning a slab page
+  the moment it empties made "free frames before == after" fail in an
+  unrelated test, and would thrash on every open/close. Keep one page in
+  reserve, take it at init, and where a test crosses a cache with hysteresis
+  (the heap trim), count what the cache holds as accounted for.
 - **"Real" in the status table has to be checked by using the thing.** The
   kernel log was listed as real with a passing test; `dmesg` showed one line,
   because nothing ever wrote to the buffer. The test only checked that calling

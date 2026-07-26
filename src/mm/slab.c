@@ -11,21 +11,27 @@
 #include "string_util.h"
 #include "spinlock.h"
 
+// A slab is one 4 KiB page: this header at its start, then as many objects
+// as fit. Free objects are chained through their own first 8 bytes.
 typedef struct slab_page {
+    struct kmem_cache *cache;   // The cache this page belongs to
     void *freelist;             // Linked list of free objects in this page
     size_t inuse;               // Count of currently allocated objects
-    struct slab_page *next;     // Link to next slab page in cache
+    struct slab_page *next;     // Next page in the same list (full or partial)
 } slab_page_t;
 
 struct kmem_cache {
-    char name[32];              // Cache description
-    size_t object_size;         // Actual object byte size
-    size_t aligned_size;        // Object size rounded up to alignment
-    size_t objects_per_slab;    // Capacity per 4 KiB page
-    slab_page_t *slabs_full;    // List of fully allocated slab pages
-    slab_page_t *slabs_partial; // List of partially allocated slab pages
-    slab_page_t *slabs_free;    // List of completely free slab pages
-    struct kmem_cache *next;    // Master cache list link
+    char name[32];              // For diagnostics
+    size_t object_size;         // Size the creator asked for
+    size_t aligned_size;        // Distance between objects (size rounded up to the alignment)
+    size_t align;               // Alignment of every object
+    size_t first_offset;        // Offset of the first object in a page
+    size_t objects_per_slab;    // How many objects one page holds
+    size_t pages;               // Pages currently held
+    size_t objects_in_use;      // Objects currently allocated
+    slab_page_t *slabs_full;    // Pages with no free object
+    slab_page_t *slabs_partial; // Pages with at least one free object
+    struct kmem_cache *next;    // All caches, for diagnostics
 };
 
 static kmem_cache_t *cache_chain = NULL;
@@ -33,45 +39,47 @@ static kmem_cache_t *cache_chain = NULL;
 // One lock for all caches. Lock order: slab_lock, then the PMM lock.
 static spinlock_t slab_lock = SPINLOCK_INIT;
 
+static slab_page_t *slab_of(const void *obj) {
+    return (slab_page_t *)((uint64_t)obj & ~(uint64_t)(PAGE_SIZE - 1));
+}
+
 static slab_page_t *slab_page_create(kmem_cache_t *cache) {
     void *phys_frame = pmm_alloc_frame();
     if (!phys_frame) return NULL;
 
-    uint64_t hhdm = pmm_get_hhdm_offset();
-    slab_page_t *slab = (slab_page_t *)((uint64_t)phys_frame + hhdm);
-    memset(slab, 0, PAGE_SIZE);
-
+    slab_page_t *slab = (slab_page_t *)((uint64_t)phys_frame + pmm_get_hhdm_offset());
+    slab->cache = cache;
     slab->inuse = 0;
     slab->next = NULL;
+    slab->freelist = NULL;
 
-    // Build freelist chain inside the page
-    uint8_t *obj_base = (uint8_t *)slab + sizeof(slab_page_t);
-    // Align first object
-    uint64_t addr = (uint64_t)obj_base;
-    uint64_t align_mask = 7; // Default 8-byte alignment
-    if ((addr & align_mask) != 0) {
-        addr = (addr + align_mask) & ~align_mask;
-    }
-    obj_base = (uint8_t *)addr;
-
-    void *prev_obj = NULL;
-    size_t count = 0;
-
-    while (obj_base + cache->aligned_size <= (uint8_t *)slab + PAGE_SIZE) {
-        *(void **)obj_base = prev_obj;
-        prev_obj = obj_base;
-        obj_base += cache->aligned_size;
-        count++;
+    // Chain every object slot into the free list, lowest address first
+    uint8_t *page = (uint8_t *)slab;
+    for (size_t i = cache->objects_per_slab; i > 0; i--) {
+        void *obj = page + cache->first_offset + (i - 1) * cache->aligned_size;
+        *(void **)obj = slab->freelist;
+        slab->freelist = obj;
     }
 
-    cache->objects_per_slab = count;
-    slab->freelist = prev_obj;
+    cache->pages++;
     return slab;
+}
+
+static void unlink_slab(slab_page_t **list, slab_page_t *slab) {
+    while (*list && *list != slab) list = &(*list)->next;
+    if (*list) *list = slab->next;
 }
 
 kmem_cache_t *kmem_cache_create(const char *name, size_t object_size, size_t align) {
     if (object_size == 0) return NULL;
     if (align < 8) align = 8;
+    if (align & (align - 1)) return NULL;      // Must be a power of two
+    if (align > 1024) return NULL;
+
+    size_t aligned_size = (object_size + align - 1) & ~(align - 1);
+    size_t first_offset = (sizeof(slab_page_t) + align - 1) & ~(align - 1);
+    if (aligned_size < object_size) return NULL;                   // Overflowed
+    if (first_offset + aligned_size > PAGE_SIZE) return NULL;      // Not even one object fits in a page
 
     kmem_cache_t *cache = (kmem_cache_t *)kmalloc(sizeof(kmem_cache_t));
     if (!cache) return NULL;
@@ -86,90 +94,105 @@ kmem_cache_t *kmem_cache_create(const char *name, size_t object_size, size_t ali
     }
 
     cache->object_size = object_size;
-    cache->aligned_size = (object_size + align - 1) & ~(align - 1);
-    if (cache->aligned_size < sizeof(void *)) {
-        cache->aligned_size = sizeof(void *);
-    }
+    cache->aligned_size = aligned_size;
+    cache->align = align;
+    cache->first_offset = first_offset;
+    cache->objects_per_slab = (PAGE_SIZE - first_offset) / aligned_size;
 
     uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
     cache->next = cache_chain;
     cache_chain = cache;
     spinlock_release_irqrestore(&slab_lock, flags);
 
-    kprintf("Slab Init: Cache '%s' created (Obj Size: %zu, Aligned: %zu)\n", cache->name, object_size, cache->aligned_size);
     return cache;
-}
-
-// Caller must hold slab_lock.
-static void *kmem_cache_alloc_locked(kmem_cache_t *cache) {
-    slab_page_t *slab = cache->slabs_partial;
-    if (!slab) {
-        slab = cache->slabs_free;
-        if (slab) {
-            cache->slabs_free = slab->next;
-        } else {
-            slab = slab_page_create(cache);
-            if (!slab) return NULL;
-        }
-        slab->next = cache->slabs_partial;
-        cache->slabs_partial = slab;
-    }
-
-    // Allocate first object from freelist
-    void *obj = slab->freelist;
-    if (!obj) return NULL;
-
-    slab->freelist = *(void **)obj;
-    slab->inuse++;
-
-    // If slab page is now full, move to slabs_full
-    if (slab->freelist == NULL) {
-        cache->slabs_partial = slab->next;
-        slab->next = cache->slabs_full;
-        cache->slabs_full = slab;
-    }
-
-    return obj;
 }
 
 void *kmem_cache_alloc(kmem_cache_t *cache) {
     if (!cache) return NULL;
 
     uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
-    void *obj = kmem_cache_alloc_locked(cache);
+
+    slab_page_t *slab = cache->slabs_partial;
+    if (!slab) {
+        slab = slab_page_create(cache);
+        if (!slab) {
+            spinlock_release_irqrestore(&slab_lock, flags);
+            return NULL;
+        }
+        cache->slabs_partial = slab;
+    }
+
+    void *obj = slab->freelist;
+    slab->freelist = *(void **)obj;
+    slab->inuse++;
+    cache->objects_in_use++;
+
+    if (slab->freelist == NULL) { // Page is now full
+        cache->slabs_partial = slab->next;
+        slab->next = cache->slabs_full;
+        cache->slabs_full = slab;
+    }
+
     spinlock_release_irqrestore(&slab_lock, flags);
     return obj;
 }
 
-void kmem_cache_free(kmem_cache_t *cache, void *obj) {
-    if (!cache || !obj) return;
+bool kmem_cache_free(kmem_cache_t *cache, void *obj) {
+    if (!cache || !obj) return false;
 
     uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
+    slab_page_t *slab = slab_of(obj);
+    bool ok = false;
 
-    // Locate slab page header from object virtual address (4 KiB page aligned)
-    uint64_t page_addr = (uint64_t)obj & ~0xFFFULL;
-    slab_page_t *slab = (slab_page_t *)page_addr;
-
-    // Return object to slab freelist
-    *(void **)obj = slab->freelist;
-    slab->freelist = obj;
-    slab->inuse--;
-
-    // Move slab from slabs_full to slabs_partial if it was full
-    if (slab->inuse == cache->objects_per_slab - 1) {
-        // Unlink from slabs_full
-        slab_page_t **curr = &cache->slabs_full;
-        while (*curr && *curr != slab) {
-            curr = &(*curr)->next;
+    // Refuse anything that is not an allocated object of this cache: a
+    // pointer from another cache, one that is not at an object boundary, or
+    // one that is already free. Each of those would corrupt the free list.
+    uint64_t offset = (uint64_t)obj - (uint64_t)slab;
+    bool in_page = slab->cache == cache && offset >= cache->first_offset &&
+                   (offset - cache->first_offset) % cache->aligned_size == 0 &&
+                   (offset - cache->first_offset) / cache->aligned_size < cache->objects_per_slab;
+    bool already_free = false;
+    if (in_page) {
+        for (void *f = slab->freelist; f; f = *(void **)f) {
+            if (f == obj) { already_free = true; break; }
         }
-        if (*curr) {
-            *curr = slab->next;
+    }
+
+    if (in_page && !already_free) {
+        bool was_full = (slab->freelist == NULL);
+        *(void **)obj = slab->freelist;
+        slab->freelist = obj;
+        slab->inuse--;
+        cache->objects_in_use--;
+        ok = true;
+
+        if (was_full) {
+            unlink_slab(&cache->slabs_full, slab);
             slab->next = cache->slabs_partial;
             cache->slabs_partial = slab;
+        }
+
+        // An empty page goes back to the frame allocator, unless it is the
+        // only page with room left. Keeping that one avoids taking and
+        // returning a frame every time the object count moves between 0 and 1.
+        bool only_page_with_room = (cache->slabs_partial == slab && slab->next == NULL);
+        if (slab->inuse == 0 && !only_page_with_room) {
+            unlink_slab(&cache->slabs_partial, slab);
+            slab->cache = NULL; // A stale pointer into this page will now be refused
+            cache->pages--;
+            pmm_free_frame((void *)((uint64_t)slab - pmm_get_hhdm_offset()));
         }
     }
 
     spinlock_release_irqrestore(&slab_lock, flags);
+    return ok;
+}
+
+void kmem_cache_stats(const kmem_cache_t *cache, size_t *objects_in_use, size_t *pages, size_t *objects_per_page) {
+    if (!cache) return;
+    if (objects_in_use) *objects_in_use = cache->objects_in_use;
+    if (pages) *pages = cache->pages;
+    if (objects_per_page) *objects_per_page = cache->objects_per_slab;
 }
 
 void kmem_cache_destroy(kmem_cache_t *cache) {
@@ -177,29 +200,21 @@ void kmem_cache_destroy(kmem_cache_t *cache) {
 
     uint64_t flags = spinlock_acquire_irqsave(&slab_lock);
 
-    // Free all slab pages
-    slab_page_t *lists[3] = {cache->slabs_full, cache->slabs_partial, cache->slabs_free};
-    for (int i = 0; i < 3; i++) {
+    slab_page_t *lists[2] = {cache->slabs_full, cache->slabs_partial};
+    for (int i = 0; i < 2; i++) {
         slab_page_t *curr = lists[i];
         while (curr) {
             slab_page_t *next = curr->next;
-            uint64_t hhdm = pmm_get_hhdm_offset();
-            void *phys_frame = (void *)((uint64_t)curr - hhdm);
-            pmm_free_frame(phys_frame);
+            curr->cache = NULL;
+            pmm_free_frame((void *)((uint64_t)curr - pmm_get_hhdm_offset()));
             curr = next;
         }
     }
 
-    // Unlink cache from chain
-    kmem_cache_t **curr_c = &cache_chain;
-    while (*curr_c && *curr_c != cache) {
-        curr_c = &(*curr_c)->next;
-    }
-    if (*curr_c) {
-        *curr_c = cache->next;
-    }
+    kmem_cache_t **link = &cache_chain;
+    while (*link && *link != cache) link = &(*link)->next;
+    if (*link) *link = cache->next;
 
     spinlock_release_irqrestore(&slab_lock, flags);
-
     kfree(cache);
 }
