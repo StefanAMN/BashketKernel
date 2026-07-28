@@ -1,3 +1,8 @@
+/**
+ * @file heap.c
+ * @brief Implementation of Kernel Block-Based Dynamic Heap Allocator
+ */
+
 #include "heap.h"
 #include "vmm.h"
 #include "pmm.h"
@@ -6,7 +11,7 @@
 typedef struct heap_block {
     size_t size;               // Payload size in bytes
     bool is_free;              // Availability flag
-    struct heap_block *next;   // Next block in list
+    struct heap_block *next;   // Pointer to next heap block
 } heap_block_t;
 
 #define ALIGNMENT 16
@@ -28,7 +33,7 @@ static bool expand_heap(size_t bytes) {
         }
 
         if (!vmm_map_page(NULL, heap_end_virt, (uint64_t)phys, VMM_PRESENT | VMM_WRITABLE)) {
-            kprintf("KHEAP ERROR: Could not map page at 0x%x!\n", heap_end_virt);
+            kprintf("KHEAP ERROR: Could not map page at %p!\n", (void *)heap_end_virt);
             pmm_free_frame(phys);
             return false;
         }
@@ -64,9 +69,10 @@ void *kmalloc(size_t size) {
     size_t aligned_size = ALIGN(size);
     heap_block_t *current = heap_start;
 
+    // Search free list for first fit block
     while (current != NULL) {
         if (current->is_free && current->size >= aligned_size) {
-            // Check if block can be split
+            // Split block if remaining space can hold another block
             if (current->size >= aligned_size + BLOCK_HEADER_SIZE + ALIGNMENT) {
                 heap_block_t *new_block = (heap_block_t *)((uint8_t *)current + BLOCK_HEADER_SIZE + aligned_size);
                 new_block->size = current->size - aligned_size - BLOCK_HEADER_SIZE;
@@ -85,7 +91,7 @@ void *kmalloc(size_t size) {
         current = current->next;
     }
 
-    // Need to expand heap
+    // Expand heap if no existing free block is large enough
     size_t required = aligned_size + BLOCK_HEADER_SIZE;
     heap_block_t *prev_end = heap_start;
     while (prev_end->next != NULL) {
@@ -97,7 +103,6 @@ void *kmalloc(size_t size) {
         return NULL;
     }
 
-    // Add expanded block and allocate
     heap_block_t *expanded = (heap_block_t *)((uint8_t *)prev_end + BLOCK_HEADER_SIZE + prev_end->size);
     expanded->size = (heap_end_virt - (uint64_t)expanded) - BLOCK_HEADER_SIZE;
     expanded->is_free = true;
@@ -116,7 +121,7 @@ void kfree(void *ptr) {
         total_allocated_bytes -= block->size;
     }
 
-    // Coalesce adjacent free blocks
+    // Coalesce adjacent free blocks in heap list
     heap_block_t *current = heap_start;
     while (current != NULL && current->next != NULL) {
         if (current->is_free && current->next->is_free) {

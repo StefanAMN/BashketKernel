@@ -1,3 +1,8 @@
+/**
+ * @file pmm.c
+ * @brief Implementation of Physical Memory Manager Frame Allocator
+ */
+
 #include "pmm.h"
 #include "kprintf.h"
 
@@ -19,26 +24,16 @@ static inline bool bitmap_test(size_t bit) {
     return (bitmap[bit / 8] & (1 << (bit % 8))) != 0;
 }
 
-uint64_t pmm_get_hhdm_offset(void) {
-    return hhdm_off;
-}
-
-size_t pmm_get_total_frames(void) {
-    return total_frames;
-}
-
-size_t pmm_get_free_frames(void) {
-    return free_frames;
-}
-
-size_t pmm_get_used_frames(void) {
-    return used_frames;
-}
+uint64_t pmm_get_hhdm_offset(void) { return hhdm_off; }
+size_t pmm_get_total_frames(void) { return total_frames; }
+size_t pmm_get_free_frames(void)  { return free_frames; }
+size_t pmm_get_used_frames(void)  { return used_frames; }
 
 void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     hhdm_off = hhdm_offset;
     uint64_t highest_addr = 0;
 
+    // Determine highest physical memory address to size the bitmap
     for (size_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
         uint64_t top = entry->base + entry->length;
@@ -50,7 +45,7 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     total_frames = highest_addr / PAGE_SIZE;
     size_t bitmap_size = (total_frames + 7) / 8;
 
-    // Find a usable region to place the bitmap
+    // Find usable RAM region to store the bitmap
     for (size_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE && entry->length >= bitmap_size) {
@@ -64,14 +59,14 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         return;
     }
 
-    // Set all frames to used initially
+    // Set all frames to used initially (0xFF)
     for (size_t i = 0; i < bitmap_size; i++) {
         bitmap[i] = 0xFF;
     }
     used_frames = total_frames;
     free_frames = 0;
 
-    // Mark USABLE memory regions as free in bitmap
+    // Mark USABLE RAM regions as free in bitmap
     for (size_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE) {
@@ -89,7 +84,7 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         }
     }
 
-    // Mark bitmap's own memory frames as used
+    // Mark bitmap's own physical frames as used
     uint64_t bitmap_phys = (uint64_t)bitmap - hhdm_off;
     size_t bitmap_start_frame = bitmap_phys / PAGE_SIZE;
     size_t bitmap_frame_count = (bitmap_size + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -103,7 +98,7 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         }
     }
 
-    // Frame 0 is always reserved
+    // Frame 0 is reserved
     if (!bitmap_test(0)) {
         bitmap_set(0);
         used_frames++;
