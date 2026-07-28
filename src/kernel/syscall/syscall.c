@@ -375,6 +375,22 @@ int64_t syscall_handler(struct registers *regs) {
     // About to return to user code: the system call is complete and nothing
     // is held, so a pending kill can take effect here.
     sched_check_kill();
+
+    // The return to ring 3 uses sysretq, which takes the address from the
+    // frame. If that address is not canonical (a `syscall` in the last two
+    // bytes of user space returns to 0x0000800000000000), an Intel CPU raises
+    // the resulting fault in ring 0 but on the user's stack, which hands
+    // control of the kernel to the program (CVE-2012-0217). AMD CPUs and QEMU
+    // fault after the switch to ring 3 instead, so this cannot be seen under
+    // QEMU; the check is here for real Intel hardware.
+    if (regs->rip >= USER_SPACE_END) {
+        task_t *task = sched_get_current_task();
+        if (task && task->is_user) {
+            kprintf("\n[pid %u %s] killed: system call would return to invalid address 0x%lx\n",
+                    task->pid, task->name, regs->rip);
+            task_exit_status(128 + SIGSEGV);
+        }
+    }
     return result;
 }
 

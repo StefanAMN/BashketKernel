@@ -88,6 +88,11 @@ would change how the next problem is approached.
   it (SFMASK), but for interrupts and exceptions the stub must `cld` itself.
   Otherwise a user program that runs `std` makes every compiler-generated
   `rep movs` in the handlers run backwards.
+- **`sysretq` to a non-canonical address faults in ring 0 on Intel, in ring 3
+  on AMD and in QEMU.** A `syscall` in the last two bytes of user space
+  produces one. `syscall_handler` refuses such a return address. QEMU cannot
+  show the dangerous behaviour, so the test for it passes with or without the
+  check: some defences can only be reasoned about here, not demonstrated.
 - **`sysretq` picks selectors by arithmetic:** CS = `STAR[63:48] + 16`,
   SS = `STAR[63:48] + 8`. The GDT must therefore hold user data *before* user
   code. Getting this wrong loads whatever descriptor sits 16 bytes on.
