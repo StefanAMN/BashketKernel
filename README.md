@@ -168,6 +168,7 @@ waits for it:
 BashketOS> exec /bin/hello one two
 BashketOS> exec /bin/syscheck          # exercises the system call interface
 BashketOS> exec /bin/fault kread       # tries to read kernel memory; gets killed
+BashketOS> exec /bin/sh /etc/demo.sh   # a scripted tour of the system
 BashketOS> exec /bin/sh                # user-space shell
 $ ls /bin | wc > /tmp/count
 $ cat /tmp/count

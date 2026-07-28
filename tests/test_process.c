@@ -108,6 +108,33 @@ TEST(shell_pipelines_and_redirection) {
     char *exit_code[] = { "/bin/sh", "-c", "exit 42", NULL };
     EXPECT_EQ(run("/bin/sh", exit_code), 42);
 
+    // A script: comments, blank lines, variables, and the status of its last command
+    static const char script[] =
+        "# comment line\n"
+        "\n"
+        "export OUT=/tmp/script_out\n"
+        "   echo from script > $OUT\n"
+        "wc < /etc/motd > /dev/null\n"   // A command that reads input must not eat the script
+        "cat /dev/null | cat\n"
+        "fault\n"                        // Exits 2; the script goes on
+        "echo status $? >> $OUT\n"
+        "exit 6\n"
+        "echo never reached >> $OUT\n";
+    EXPECT_TRUE(vfs_create_file(vfs_find(NULL, "/tmp"), "script.sh", script, sizeof(script) - 1) != NULL);
+    char *run_script[] = { "/bin/sh", "/tmp/script.sh", NULL };
+    EXPECT_EQ(run("/bin/sh", run_script), 6);
+    vnode_t *script_out = vfs_find(NULL, "/tmp/script_out");
+    EXPECT_TRUE(script_out != NULL);
+    if (script_out) {
+        size_t n = vfs_read(script_out, 0, sizeof(buf) - 1, buf);
+        buf[n] = '\0';
+        EXPECT_EQ(strcmp(buf, "from script\nstatus 2\n"), 0);
+        EXPECT_EQ(vfs_unlink(vfs_find(NULL, "/tmp"), "script_out"), 0);
+    }
+    EXPECT_EQ(vfs_unlink(vfs_find(NULL, "/tmp"), "script.sh"), 0);
+    char *no_script[] = { "/bin/sh", "/tmp/no-such-script", NULL };
+    EXPECT_EQ(run("/bin/sh", no_script), 127);
+
     // A writer whose reader has already exited gets an error, not a hang
     char *broken[] = { "/bin/sh", "-c", "cat /bin/sh | fault", NULL };
     EXPECT_EQ(run("/bin/sh", broken), 2);

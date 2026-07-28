@@ -334,10 +334,15 @@ void fprintf(int fd, const char *fmt, ...) {
  * terminal's job, not ours. Returns the length, or -1 at end of input with
  * nothing read. A line longer than the buffer is cut. */
 long readline(char *buf, size_t size) {
+    return fdreadline(0, buf, size);
+}
+
+/* The same, from any descriptor */
+long fdreadline(int fd, char *buf, size_t size) {
     size_t len = 0;
     for (;;) {
         char c;
-        long n = read(0, &c, 1);
+        long n = read(fd, &c, 1);
         if (n <= 0) {
             buf[len] = '\0';
             return len > 0 ? (long)len : -1;
