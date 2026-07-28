@@ -39,7 +39,7 @@ static void check_bad_pointers(void) {
     CHECK(write(1, &local, (size_t)-1) == -EFAULT);
     /* ... and writing into read-only memory on our behalf. */
     CHECK(read(0, (void *)(unsigned long)check_bad_pointers, 1) == -EFAULT);
-    CHECK(execve((const char *)0xffffffff80000000, NULL) == -EFAULT);
+    CHECK(execv((const char *)0xffffffff80000000, NULL) == -EFAULT);
 }
 
 static void check_basics(void) {
@@ -48,7 +48,7 @@ static void check_basics(void) {
     CHECK(write(7, "x", 1) == -EBADF);
     CHECK(syscall0(9999) == -ENOSYS);
     CHECK(uptime_ticks() >= 0);
-    CHECK(execve("/bin/does-not-exist", NULL) == -ENOENT);
+    CHECK(execv("/bin/does-not-exist", NULL) == -ENOENT);
     CHECK(waitpid(-1, NULL) == -ECHILD);
 
     CHECK(set_priority(2) == 0 && set_priority(0) == 0 && set_priority(1) == 0);
@@ -117,7 +117,7 @@ static void check_fork(void) {
     pid = fork();
     if (pid == 0) {
         char *args[] = { "/bin/hello", "from", "syscheck", NULL };
-        execve("/bin/hello", args);
+        execv("/bin/hello", args);
         exit(99); /* Only reached if exec failed */
     }
     status = -1;
@@ -300,6 +300,68 @@ static void check_directories(void) {
     CHECK(unlink("/tmp/cwd-test") == 0);
 }
 
+/* Run "sh -c <command>" with the given environment (NULL: ours) and return
+ * its exit status */
+static int shell_status(const char *command, char *const envp[]) {
+    long pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/bin/sh", "-c", (char *)command, NULL };
+        if (envp) execve("/bin/sh", args, envp);
+        else execv("/bin/sh", args);
+        exit(99);
+    }
+    int status = -1;
+    waitpid(pid, &status);
+    return status;
+}
+
+static void check_environment(void) {
+    /* The kernel started us with a small default environment */
+    CHECK(getenv("PATH") != NULL && strcmp(getenv("PATH"), "/bin") == 0);
+    CHECK(getenv("NO_SUCH_VARIABLE") == NULL);
+    CHECK(getenv("PAT") == NULL);                         /* A prefix of a name is not the name */
+
+    /* Variables we set are inherited through fork and exec ... */
+    CHECK(setenv("SYSCHECK_CODE", "42") == 0);
+    CHECK(strcmp(getenv("SYSCHECK_CODE"), "42") == 0);
+    CHECK(shell_status("exit $SYSCHECK_CODE", NULL) == 42);
+    CHECK(setenv("SYSCHECK_CODE", "43") == 0);            /* Replacing a value */
+    CHECK(shell_status("exit $SYSCHECK_CODE", NULL) == 43);
+
+    /* ... but a child's changes do not come back to the parent */
+    CHECK(shell_status("export SYSCHECK_CODE=7", NULL) == 0);
+    CHECK(strcmp(getenv("SYSCHECK_CODE"), "43") == 0);
+
+    /* execve can pass a completely different environment */
+    char *custom[] = { "CODE=9", "PATH=/nowhere:/bin", NULL };
+    CHECK(shell_status("exit $CODE", custom) == 9);
+    CHECK(shell_status("exit $SYSCHECK_CODE", custom) == 0);   /* Not set there: expands to nothing */
+    CHECK(shell_status("hello > /dev/null", custom) == 0);     /* Found through the second PATH entry */
+    char *nowhere[] = { "PATH=/nowhere", NULL };
+    CHECK(shell_status("hello", nowhere) == 127);              /* Not on PATH: command not found */
+    CHECK(shell_status("/bin/hello > /dev/null", nowhere) == 0);
+    char *empty[] = { NULL };
+    CHECK(shell_status("exit 5", empty) == 5);                 /* An empty environment is fine */
+
+    /* The shell's own variables and $? */
+    CHECK(shell_status("export A=3 B=4", NULL) == 0);
+    CHECK(shell_status("fault", NULL) == 2);                   /* fault with no argument exits 2 */
+
+    /* Bad pointers and oversized lists are errors, and we are still here */
+    char *args[] = { "/bin/hello", NULL };
+    CHECK(execve("/bin/hello", args, (char **)0xffffffff80000000) == -EFAULT);
+    char *bad_entry[] = { (char *)0xffffffff80000000, NULL };
+    CHECK(execve("/bin/hello", args, bad_entry) == -EFAULT);
+    static char *too_many[40];
+    for (int i = 0; i < 39; i++) too_many[i] = "X=1";
+    CHECK(execve("/bin/hello", args, too_many) == -E2BIG);
+    CHECK(execve("/bin/hello", too_many, NULL) == -E2BIG);
+    static char huge[5000];
+    memset(huge, 'h', sizeof(huge) - 1);
+    char *one_huge[] = { huge, NULL };
+    CHECK(execve("/bin/hello", args, one_huge) == -E2BIG);
+}
+
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -474,6 +536,7 @@ int main(void) {
     check_stack_growth();
     check_files();
     check_directories();
+    check_environment();
     check_pipes();
 
     if (failures == 0) {

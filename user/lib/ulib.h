@@ -10,7 +10,13 @@
 /* Process */
 __attribute__((noreturn)) void exit(int status);
 long fork(void);
-long execve(const char *path, char *const argv[]);
+long execve(const char *path, char *const argv[], char *const envp[]);
+long execv(const char *path, char *const argv[]);    /* Passes on our own environment */
+
+/* Environment: "NAME=value" strings, inherited across fork and exec */
+extern char **environ;
+const char *getenv(const char *name);
+int setenv(const char *name, const char *value);     /* 0, or -1 if out of memory */
 long waitpid(long pid, int *status);
 long getpid(void);
 long getppid(void);

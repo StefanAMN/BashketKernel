@@ -34,9 +34,9 @@ known gaps in the parts that are real.
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`. |
 | 17 | RTC | real | Reads date and time from CMOS. |
-| 18 | Environment variables | real | One global table, not per process. |
+| 18 | Environment variables | real | Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.) |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
 | 20 | ANSI colors | stub | A lookup from color code to RGB. No escape-sequence parser. |
 | 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |

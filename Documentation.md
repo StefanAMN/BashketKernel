@@ -282,7 +282,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 18. Environment Variables (Phase 18)
-**Status: real.** One global table, not per process.
+**Status: real.** Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.)
 
 **Goal:** Per-process environment variable management (`getenv`, `setenv`, `env`).
 

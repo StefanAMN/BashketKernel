@@ -21,7 +21,7 @@
 #define USER_STACK_MAX   (8ULL * 1024 * 1024)   // The stack may grow down to TOP - MAX
 #define USER_STACK_LIMIT (USER_STACK_TOP - USER_STACK_MAX)
 #define PROCESS_MAX_ARGS 32
-#define PROCESS_ARG_BYTES 2048                  // Total size of all argv strings
+#define PROCESS_ARG_BYTES 4096                  // Total size of all argument and environment strings
 
 typedef int pid_t;
 
@@ -38,10 +38,13 @@ pid_t process_spawn(const char *path, char *const argv[]);
  * @brief Replace the calling process's program with the one at `path`.
  * @param regs The caller's syscall frame; rewritten to start the new program.
  * @param argv NULL-terminated argument vector in kernel memory.
+ * @param envp NULL-terminated environment ("NAME=value" strings), or NULL
+ *        for an empty one. The environment itself lives in user memory; the
+ *        kernel only carries it from the old image to the new one.
  * @return 0 on success (the frame now belongs to the new program), -1 on
  *         failure (the caller's program is untouched).
  */
-int process_exec(struct registers *regs, const char *path, char *const argv[]);
+int process_exec(struct registers *regs, const char *path, char *const argv[], char *const envp[]);
 
 /**
  * @brief Create a copy of the calling process. Memory is shared copy-on-write.
