@@ -10,10 +10,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "interrupts.h"
+#include "signal.h"
 
-#define SIGINT  2
-#define SIGKILL 9
-#define SIGSEGV 11
 
 // User address space layout (see also mmap.h)
 #define USER_STACK_TOP   0x00007FFFFFFFF000ULL
@@ -69,15 +67,16 @@ bool process_grow_stack(uint64_t addr);
 pid_t process_wait(pid_t pid, int *status);
 
 /**
- * @brief Ask for a process to be terminated as if by a signal. It ends at its
- *        next safe point (see sched_request_kill); wait for it to see that.
- * @return 0 on success, -1 if there is no such user process.
+ * @brief Send a signal to a process. What happens depends on the target's
+ *        disposition for it (see signal.h); with the default, the process
+ *        ends at its next safe point, so wait for it to see that.
+ * @return 0 on success, -1 if there is no such user process or signal.
  */
 int process_kill(pid_t pid, int sig);
 
 /**
- * @brief Ctrl-C: interrupt every user process that has not asked to ignore
- *        it. Safe to call from an interrupt handler.
+ * @brief Ctrl-C: send SIGINT to every user process. Safe to call from an
+ *        interrupt handler.
  */
 void process_interrupt_all(void);
 

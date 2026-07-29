@@ -35,8 +35,12 @@ TEST(syscall_rejects_kernel_pointers) {
     regs.rsi = (uint64_t)msg;
     regs.rdx = sizeof(msg) - 1;
     EXPECT_EQ(syscall_handler(&regs), -EBADF);
+    // As after a real system call, the frame's RAX now holds the result, so
+    // the call number has to be set again each time
+    regs.rax = SYS_WRITE;
     regs.rdi = (uint64_t)-1;
     EXPECT_EQ(syscall_handler(&regs), -EBADF);
+    regs.rax = SYS_WRITE;
     regs.rdi = TASK_MAX_FDS;
     EXPECT_EQ(syscall_handler(&regs), -EBADF);
 }

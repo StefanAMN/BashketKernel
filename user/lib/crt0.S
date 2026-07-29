@@ -24,3 +24,15 @@ _start:
     mov edi, eax
     call exit
     ud2                     // exit() does not return
+
+/*
+ * A signal handler is an ordinary function, and the kernel arranges for its
+ * `ret` to come here. The interrupted program's registers are in a frame on
+ * the stack just above; the sigreturn system call restores them and resumes
+ * the program where the signal found it. It does not return.
+ */
+.global __sigreturn
+__sigreturn:
+    mov eax, 302            // SYS_SIGRETURN
+    syscall
+    ud2

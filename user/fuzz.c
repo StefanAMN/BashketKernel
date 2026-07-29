@@ -104,7 +104,7 @@ static void one_call(void) {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
-        SYS_IGNORE_INTERRUPT, SYS_CHDIR, SYS_SETPRIORITY,
+        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -177,6 +177,14 @@ static void one_call(void) {
 
         case SYS_SLEEP:
             a = rnd() % 3; /* Milliseconds */
+            break;
+        case SYS_SIGRETURN:
+            /* With no signal frame on the stack this ends the process, which
+             * is the right answer but also ends the round: keep it rare */
+            if (rnd() % 60 != 0) return;
+            break;
+        case SYS_SIGNAL:
+            if (shaped) { a = 1 + rnd() % 31; b = (rnd() % 3 == 0) ? rnd() % 2 : random_pointer(); c = random_pointer(); }
             break;
         case SYS_KILL:
             /* Only ourselves or nobody: the test harness must survive */
