@@ -47,340 +47,97 @@ Use them rather than improvising QEMU command lines.
 
 ## Findings worth keeping
 
-These each cost real time to discover. Add to this list only when a finding
-would change how the next problem is approached.
+Only what would change how the next problem is approached. Details are in the
+code comments and commit messages; `git log` is the full history.
 
-### Debugging technique
+### How to find things out
 
-- **Ask QEMU, do not theorise.** When interrupt behaviour is wrong, three
-  cheap tools give ground truth:
-  - `-serial mon:stdio`, then send `\001c` to toggle between guest serial and
-    the monitor from a script. `info irq` gives per-IRQ counts to compare
-    against the guest's own counters in the same run; `info pic` and
-    `info lapic` show the I/O APIC redirection table, PIC masks and LVT state.
-  - `-trace 'ioapic_*' -trace 'apic_*' -trace 'pic_*' -D trace.log` shows every
-    line assertion and every delivery in order.
-  - `-d int -no-reboot` for the exception that precedes a triple fault.
-- **Measure rates against wall time.** A clock that runs at 2.5x is invisible
-  until two `uptime` calls are timed with a stopwatch.
-- **A wrong diagnosis can still "fix" things.** The timer bug was first blamed
-  on a double I/O APIC route. Removing it changed nothing; only comparing
-  guest ticks with `info irq` exposed the real cause.
+- **Ask QEMU instead of theorising.** `info irq`, `info pic`, `info lapic`
+  and `info registers` in the monitor, `-trace 'ioapic_*'`, `-d int`, and
+  `screendump` (works with `-display none`) give ground truth. The timer bug
+  was first "fixed" on a wrong theory; comparing guest ticks with `info irq`
+  found the real cause.
+- **Use the feature before believing its status.** `dmesg` showed one line
+  (nothing wrote to the log), `bench` printed PASS without timing anything,
+  `date` printed a literal `%02d`, the slab allocator nothing called had four
+  defects. Each had a passing test. A test ending in `EXPECT_TRUE(true)`, or
+  code with no caller, is unverified.
+- **Prove a new test can fail.** When a test passes first time, break the
+  kernel on purpose once (comment out the line under test) and see it fail.
+  Twice this exposed a test that tested nothing: one calculation overflowed to
+  infinity for every input, another was hoisted out of its loop by the
+  compiler (pure function, constant arguments; fixed with a volatile seed).
+- **Run long, run small, run hostile.** A 200-command session found a 5x
+  console slowdown; a 64 MB machine (`make test-lowmem`) found that a failed
+  heap growth kept all the memory; random system calls (`make fuzz`) and
+  `CPU=max` (SMEP/SMAP/UMIP, absent from QEMU's default CPU) find what unit
+  tests on a 2 GB default machine cannot.
+- **Check `make`'s exit status.** A linker error has no `error:` in it and
+  leaves the previous ISO in place, so the next run tests the old kernel.
+- **Distrust a surprising benchmark number.** `memcpy` measured 15x slower
+  than `memset` because its two buffers were exactly 1 MiB apart and collided
+  in QEMU's software TLB. Change the benchmark's layout before changing code.
+- **Some defences cannot be demonstrated here.** QEMU, like AMD CPUs, faults
+  in ring 3 on `sysretq` to a non-canonical address; Intel faults in ring 0.
+  The check for it rests on the manual, and its test passes either way. Say
+  so rather than claim the test proves it.
 
-### x86 and QEMU facts that bit
+### x86 and QEMU facts that cost time
 
-- **PIT mode 3 double-delivers through QEMU's I/O APIC.** In square-wave mode
-  QEMU re-asserts the PIT output while it is already high, and its I/O APIC
-  delivers an edge-triggered interrupt on every assertion, not on every edge.
-  The 8259 does real edge detection, so the bug only appears after switching to
-  the I/O APIC. Use mode 2 (rate generator, command `0x34`).
-- **ISA IRQ 0 is GSI 2.** Read the MADT interrupt source overrides; never
-  hard-code I/O APIC pins. QEMU maps pin 0 to pin 2 internally, which hides a
-  wrong route.
-- **Size physical memory from usable entries only.** Limine's memory map has
-  reserved entries near 1 TiB on QEMU. Taking the highest address of *any*
-  entry made a 2 GB VM allocate a 32 MB frame bitmap.
-- **The kernel image and boot stack are never in `USABLE` entries.** Limine
-  reports them as executable/modules and bootloader-reclaimable, so the frame
-  allocator needs no special case for them. Guessing their physical address
-  from the virtual one (`virt & 0x7FFFFFFF`) is wrong.
-- **Interrupt entry does not clear the direction flag.** `syscall` can mask
-  it (SFMASK), but for interrupts and exceptions the stub must `cld` itself.
-  Otherwise a user program that runs `std` makes every compiler-generated
-  `rep movs` in the handlers run backwards.
-- **`sysretq` to a non-canonical address faults in ring 0 on Intel, in ring 3
-  on AMD and in QEMU.** A `syscall` in the last two bytes of user space
-  produces one. `syscall_handler` refuses such a return address. QEMU cannot
-  show the dangerous behaviour, so the test for it passes with or without the
-  check: some defences can only be reasoned about here, not demonstrated.
-- **`sysretq` picks selectors by arithmetic:** CS = `STAR[63:48] + 16`,
-  SS = `STAR[63:48] + 8`. The GDT must therefore hold user data *before* user
-  code. Getting this wrong loads whatever descriptor sits 16 bytes on.
-- **A fault inside `kprintf` deadlocks the fault report** if the handler takes
-  the same lock. Fatal paths call `kprintf_force_unlock()` first.
-- **Stack overflow needs two things to be reportable:** an unmapped guard page
-  below the stack (so it faults at all) and an IST stack for the double fault
-  (the page fault cannot be delivered on the overflowed stack).
+- **PIT mode 3 is delivered twice per period by QEMU's I/O APIC** (it
+  re-asserts an already-high line and the APIC delivers on every assertion).
+  Use mode 2 (`0x34`). ISA IRQ 0 is GSI 2: read the MADT, never hard-code pins.
+- **Size physical memory from usable entries only**; Limine reports reserved
+  entries near 1 TiB. The kernel image and boot stack are never in `USABLE`.
+- **`sysretq` picks selectors by arithmetic** (CS = STAR[63:48]+16, SS = +8),
+  so user data must come before user code in the GDT.
+- **Interrupt entry clears neither DF nor AC.** The stub must `cld` (or
+  compiler-generated `rep movs` runs backwards after a user `std`), and the
+  handler must `clac` (ring 3 can set AC and so defeat SMAP).
+- **Inline asm that changes how memory may be accessed needs a `"memory"`
+  clobber.** Without it GCC moved a load of user memory outside the
+  `stac`/`clac` pair. Invisible until SMAP was on.
+- **`1 / zero` does not divide** (GCC emits a compare for a constant
+  dividend); make both operands volatile to raise `#DE`.
+- **Assertion macros must evaluate their arguments once.**
 
-### Blocking
+### Design rules this kernel now depends on
 
-- **Lost wakeups: check the condition and block with interrupts off, in a
-  loop.** `sched_block` is entered with interrupts disabled and uses
-  `sti; hlt` (atomic) when nothing else can run. Every caller follows the
-  pattern in the comment above `sched_block` in `sched.c`.
-- **A round-robin scan must terminate on the current task even when that task
-  is not runnable.** The old loop only stopped at a READY task; the first time
-  the queue head blocked with nothing else runnable it spun forever with
-  interrupts off. Symptom: a hang with `IRR 32` pending and RIP inside
-  `sched_yield`. Found in seconds with the QEMU monitor (`info registers`,
-  `info lapic`) plus `tools/symbolize.sh`.
-- **Channels instead of linked wait queues.** A sleeper records what it waits
-  for; wakeup scans the task list. Killing a sleeper then needs no unlinking,
-  which is where linked wait queues usually go wrong.
-
-### Copy-on-write
-
-- **The kernel takes COW faults too.** With CR0.WP set, ring 0 writing to a
-  user buffer (`waitpid` status, `uname`, `read`) faults on a COW page like
-  ring 3 would. So the fault handler resolves COW before it asks which ring
-  faulted, and syscall pointer checks accept "writable or COW".
-- **Mark the parent's pages read-only as well, then reload CR3.** The parent's
-  TLB still holds writable entries; without the flush its writes silently land
-  in frames the child shares.
-- **Count the new owner before mapping it.** Then a clone that fails half way
-  is cleaned up by the ordinary destroy path, with no special unwinding.
-- **Last owner writes: no copy.** If the frame's count is 1, just restore the
-  writable bit.
-
-### Killing processes
-
-- **Never tear a task down from outside.** The first `kill` marked the target
-  a zombie immediately. But the target may have been preempted half way
-  through a system call (updating a file, a pipe, a page table). Now `kill`
-  only records the request (`kill_pending`) and wakes the target if it sleeps;
-  the target ends itself at a safe point: in `sched_block`, at syscall return,
-  or when an interrupt is about to return to ring 3. The last one is what
-  stops a program stuck in `for(;;)`.
-- **Anything that sleeps is a safe point**, because code that can sleep
-  already holds no lock. That rule let `sched_block` do the check once, for
-  every blocking call in the kernel.
-- **Ctrl-C needs an "ignore" bit before it is usable**, otherwise it kills
-  the shell along with the program. `sh` sets it for itself and clears it in
-  each child before `execve`.
-- A side effect worth knowing: `kill()` returning does not mean the target is
-  gone yet. Wait for it before testing for the consequences.
-
-### Signals
-
-- **`sigreturn` must leave through `iretq`.** A handler can interrupt the
-  program between any two instructions, so every register has to come back,
-  and `sysretq` destroys RCX and R11. The system call frame carries a marker
-  (`int_no`) that sends the exit path to the full restore. The marker is in
-  the frame, not in a global, because the task can be preempted in between.
-- **The frame saved for a handler must show the interrupted system call as
-  finished**, with its result already in RAX; otherwise the program resumes
-  after the handler with a stale RAX.
-- **Save the FPU state in the signal frame too.** Handlers compiled with SSE
-  overwrite XMM registers the interrupted code was using.
-- **A test loop that calls a pure function with constant arguments is not a
-  loop.** GCC computed the result once and hoisted it, so the "computation
-  under a flood of signals" ran no computation, and the test reported that
-  it had hardly been interrupted. Feeding the argument through a volatile
-  fixed it. Then the mutation check (disable the full restore) made it fail
-  as intended.
-- **Every loop around `sched_block` is now a three-way wait:** the event,
-  a kill (handled inside `sched_block`), or a handled signal, for which
-  `sched_block` returns at once and the loop must check `sched_interrupted()`
-  and return `EINTR`. A loop without that check would spin instead of
-  sleeping, so new blocking code has to follow the pattern in `sched.h`.
-- **A fuzzer needs retuning when a new call can end the process.** Random
-  `sigreturn` calls killed every round within a few calls; coverage silently
-  dropped to almost nothing while every seed still reported "ok".
-
-### Environment
-
-- **The environment is not kernel state.** The first version was a global
-  table in the kernel. The Unix design needs almost nothing from the kernel:
-  `execve` copies one more vector of strings onto the new stack, next to
-  `argv`. `getenv`, `setenv`, `export`, `$NAME` and `PATH` lookup are all
-  user-space code. When a feature seems to need a kernel table, first ask
-  whether it is really per-process data the kernel only has to carry.
-
-### Terminal
-
-- **Echo and line editing belong in the kernel, once.** While each program
-  echoed its own input, `sh < script` echoed the script and `cat` showed
-  nothing while typing. With a line discipline, the user library's `readline`
-  is a ten-line loop that behaves the same on a terminal, a file or a pipe.
-- **Build the line discipline as a function of one input character**
-  (`tty_input`), with the blocking read on top. The tests then type at it
-  directly, with no keyboard, no second task and no timing.
-- **No lock around the terminal state, on purpose.** A reader killed while
-  holding a sleeping lock would leave the terminal locked for ever. The read
-  path keeps interrupts off instead and only sleeps inside `keyboard_getchar`.
-- `tools/qemu_shell.py`: a line typed *into a program* (not at a prompt) needs
-  the `!` prefix, or the driver waits for a prompt that will not come.
-
-### SMAP
-
-- **Close the window in every interrupt and exception handler** (`clac` first
-  thing): ring 3 can set RFLAGS.AC itself, and an interrupt can arrive inside
-  a system call's window. `iretq` restores the interrupted flags afterwards,
-  so nothing needs reopening. Mask AC in `SFMASK` for the same reason.
-- **AC is per task for free**, because `ctx_switch` saves RFLAGS. A task may
-  sleep with its window open without opening one for anyone else.
-- The existing rule "the kernel writes other address spaces through the
-  direct map" meant the ELF loader, argv setup, COW copies and stack growth
-  needed no changes at all.
-
-### Demand paging
-
-- **The page fault handler is a dispatcher.** Order matters: copy-on-write
-  (write to a present page), then stack growth (page not present, address in
-  the stack region), and only then "this is a real fault". Each handler must
-  refuse quickly anything that is not its case, or it will hide real bugs.
-- **Leave the lowest page of the stack region unmapped for good.** It is what
-  turns runaway recursion into a fault at a known address.
-
-### Running out of memory
-
-Found by `/bin/stress` on a 64 MB machine (`make test-lowmem`); the 2 GB test
-machine never gets near these paths.
-
-- **Growth must be all-or-nothing.** `kmalloc(32 MB)` with 20 MB free used to
-  map 20 MB into the heap, fail, and keep them: the machine was then out of
-  memory for good. `expand_heap` now rolls back what it mapped.
-- **A heap that never shrinks turns one big temporary allocation into a
-  permanent loss** for user programs. `kfree` trims a large free tail.
-- **Copy-on-write is a promise the kernel may be unable to keep.** If the
-  copy cannot be allocated, the writer is killed (there is no error return
-  from a `mov`). The same when the kernel is the writer, on the process's
-  behalf: kill the process, do not panic.
-- **Do not print on allocation failure.** A user program can cause thousands
-  per second. Count them (`/proc/meminfo`) instead.
-- What already held up without changes: `mmap`, `brk`, and a 1022-process
-  fork bomb all failed cleanly and released everything, because every
-  allocation path was written to undo itself on failure and checked with the
-  free-frame count.
-
-### Fuzzing from ring 3
-
-- `/bin/fuzz` found no kernel crash in about 230,000 calls (20 seeds, also at
-  48 MB). That is evidence for the "validate every user pointer with
-  `vmm_user_range_ok` before touching it" rule, not proof of anything more.
-- **A fuzzer has to be kept from destroying its own test bench.** There are
-  no file permissions, so unrestricted `unlink`/`open(O_TRUNC)` would delete
-  `/bin`; `kill` would hit the harness; `fork` would multiply. The fuzzer
-  restricts exactly those arguments and leaves the rest random.
-- **Logs from fuzzed programs contain NUL bytes.** `grep` then reports
-  "binary file" and prints nothing, which looks like an empty log. Use
-  `grep -a`.
-- It needs a watchdog process per round: some random sequences legitimately
-  block forever (reading a pipe whose write end the reader also holds).
-
-### Files and pipes
-
-- **Close a process's files when it dies, not when it is reaped.** A zombie
-  holding the write end of a pipe keeps the reader waiting for end-of-file,
-  and the reader's parent is often the one that would reap the zombie.
-- **A pipe needs "the other end is gone" in both directions**: read returns 0
-  only when empty *and* the writer closed; write fails with EPIPE when the
-  reader closed. Without the second, `big | exits-early` hangs forever.
-- **The shell must close its own copies of pipe ends after forking**, or no
-  reader ever sees end-of-file. Same in every child before exec.
-- **Never overwrite file data in place if the node does not own it.** Initrd
-  files point into the boot module and test files into string constants; the
-  first write copies into an owned buffer (`owns_data`).
-
-### Testing that a test can fail
-
-- **Mutate the kernel once to prove a new test detects the bug it is for.**
-  `/bin/fptest` passed on the first run; commenting out the `fpu_restore` in
-  `sched_yield` made all four workers fail, which is what shows the test is
-  worth having. Do this for any test that passes first time.
-- **Check test arithmetic on the host first.** The first version of that
-  calculation overflowed to infinity for every seed, so every "result" was
-  equal. Compiling the same function with the host gcc showed it in seconds.
-- `make test | grep FAIL` also matches the compiler command lines
-  (`-DKERNEL_TESTS`). Use `make test 2>&1 | tail -6`, or grep `build-test/test.log`.
-
-### Design choices that paid off
-
-- **One frame layout for interrupts and system calls.** `syscall_entry` builds
-  the same `struct registers` the interrupt stubs build. `fork` is then a copy
-  of that frame onto the child's kernel stack with RAX set to 0, and `execve`
-  is a rewrite of it. No second code path to keep in sync.
-- **Create all 256 kernel-half PML4 entries at boot.** Process PML4s copy
-  those entries once. Because none is ever added later, every address space
-  shares the same kernel page tables without any synchronisation.
-- **Write into another address space through the direct map.** The ELF loader
-  and the argv builder never switch CR3: they look up the frame behind a user
-  address and write to it via the HHDM. This also sidesteps write protection
-  on read-only segments.
-- **Build the new image fully before destroying the old one** in `execve`, so
-  a failed exec returns to a program that still exists.
-- **Test user-facing kernel behaviour from ring 3.** `/bin/syscheck` and
-  `/bin/fault` run as real processes and the kernel tests check their exit
-  status. Calling `syscall_handler` from a kernel test only proved it accepted
-  kernel pointers, which is exactly what it must refuse.
-- **Check for leaks by counting.** Free frames and heap bytes before and after
-  a workload must match once tasks are reaped. This caught nothing here only
-  because the destroy paths were written against that test.
-
-### Performance
-
-- **Byte-loop `memcpy`/`memset`/`memmove` were the slowest code in the
-  kernel.** Switching to `rep movsq`/`rep stosq` made an output-heavy shell
-  session 3.5x faster under QEMU. It was found only because a 200-command
-  measurement took 209 s; short tests never fill the screen, and scrolling is
-  what copies megabytes.
-- **Do not redraw the screen per scrolled line.** Scrolling now changes only
-  the RAM copy and marks the screen stale; the timer sends it to video memory
-  at most 50 times a second. Two rules keep that correct: set the stale flag
-  only *after* the RAM copy is consistent, and call `console_refresh()` on
-  every path that halts with interrupts off (panic, fault report), or the last
-  and most important lines never appear.
-- **Look at the screen, not only the serial log**, after changing the
-  console. QEMU's monitor `screendump file.ppm` works with `-display none`;
-  the unix socket path for `-monitor unix:...` must be short (108 bytes).
-- **Two buffers exactly 1 MiB apart benchmark QEMU's TLB, not the code.**
-  QEMU's software TLB is indexed by low page-number bits, so source and
-  destination pages evicted each other on every access and `memcpy` measured
-  90 MiB/s against 1500 for `memset`. Moving one buffer by 148 KiB gave
-  1200. Before optimising on a benchmark number, change the benchmark's
-  layout and see whether the number moves. (Measured after that:
-  `rep movsq` 1200 MiB/s, a 32-byte-per-iteration C loop 1420; kept the
-  former.)
-- **Code nothing calls is unverified, whatever its test says.** The slab
-  allocator passed its one test and had four defects (alignment above 8
-  ignored, oversized objects accepted and then leaking a page per attempt,
-  empty pages never returned, wrong-cache and double frees corrupting the
-  free list). Giving it a real user (open files) is what forced the questions.
-- **Allocator caching policy shows up in leak checks.** Returning a slab page
-  the moment it empties made "free frames before == after" fail in an
-  unrelated test, and would thrash on every open/close. Keep one page in
-  reserve, take it at init, and where a test crosses a cache with hysteresis
-  (the heap trim), count what the cache holds as accounted for.
-- **"Real" in the status table has to be checked by using the thing.** The
-  kernel log was listed as real with a passing test; `dmesg` showed one line,
-  because nothing ever wrote to the buffer. The test only checked that calling
-  the functions did not crash (`EXPECT_TRUE(true)`). Any test that ends that
-  way is a stub test: look for the rest.
-- **Long runs find what short tests cannot.** That same measurement also
-  showed `date` printing a literal `%02d`.
-
-### Verifying
-
-- **Check `make`'s exit status, not a grep for `error:`.** A linker failure
-  says "undefined reference", matches nothing, and leaves the previous ISO in
-  place. I then "tested" the old kernel and got confusing results.
-- **QEMU's default CPU has no SMEP/SMAP/UMIP.** `make test CPU=max` (also
-  `test-lowmem`, `fuzz`) exercises them. Run both models before committing
-  anything that touches system calls or fault handling.
-
-### Compiler traps in freestanding code
-
-- **An inline-asm instruction that changes how memory may be accessed needs a
-  `"memory"` clobber.** `stac; x = *user_ptr; clac` was compiled with the load
-  outside the window, because nothing told GCC that `stac` and `clac` relate
-  to memory. SMAP caught it on the first run under `-cpu max`; on the default
-  CPU model the bug was invisible.
-
-- **`1 / zero` does not divide.** With a constant dividend of 1, GCC emits a
-  compare instead of `idiv`, so no `#DE` is raised. Make both operands volatile.
-- **Assertion macros must evaluate arguments once.** `EXPECT_EQ(sched_reap(), 4)`
-  called `sched_reap()` a second time to print the failure, and reported
-  "expected 4, got 0" for a call that had returned 2.
-- **Never move RSP inside a C function.** Use Limine's stack size request, or
-  do it in assembly before any C runs.
-
-### Concurrency
-
-- **Locks shared with interrupt context must disable interrupts**
-  (`spinlock_acquire_irqsave`). Lock order: heap or slab, then VMM, then PMM;
-  `kprintf` is a leaf.
-- **Preemption makes "sample, then start tasks" racy.** A task created inside a
-  test may run, allocate and even exit before `task_create` returns. Compare
-  state before creation with state after reaping, not snapshots in between.
-- **A task cannot free its own stack.** Exit marks it a zombie; another context
-  (`sched_reap` in the idle loop) frees the stack and the task struct.
+- **One frame layout for interrupts and system calls.** `fork` is a copy of
+  the frame with RAX set to 0; `execve` and `sigreturn` rewrite it.
+  `sigreturn` must leave through `iretq` (a marker in the frame selects it),
+  because `sysretq` cannot restore RCX and R11.
+- **Never tear a task down from outside.** `kill` records a request; the
+  target ends itself at a safe point (when it would sleep, at system call
+  return, or when an interrupt returns to its user code). Anything that
+  sleeps holds no lock, so sleeping is always a safe point.
+- **Waiting is a loop with three outcomes.** Check the condition and call
+  `sched_block` with interrupts off (or the wakeup is lost); `sched_block`
+  ends a killed task itself; and for a handled signal it returns at once, so
+  the loop must test `sched_interrupted()` and return `EINTR` or it will spin.
+- **Sleep on a channel, not a linked wait queue.** A killed sleeper leaves
+  nothing to unlink. Likewise no sleeping lock around the terminal: a reader
+  killed while holding it would lock the terminal for good.
+- **Close a process's files when it dies, not when it is reaped**, or the
+  reader of its pipe waits for an end-of-file that depends on the reaper.
+- **The kernel takes copy-on-write faults too** (CR0.WP), so the fault
+  handler resolves COW before asking which ring faulted. If the copy cannot
+  be allocated, kill the process even when the kernel was the writer.
+- **Growth is all-or-nothing and every allocation path undoes itself.**
+  Leak checks count free frames and heap bytes before and after; caches with
+  hysteresis (heap trim, slab reserve page) must be counted as accounted for.
+- **Touch user memory only inside `user_access_begin/end`, after
+  `vmm_user_range_ok`.** Write other address spaces through the direct map
+  (ELF loading, argv, COW copies), which needs neither.
+- **Create all 256 kernel PML4 entries at boot** so every address space
+  shares the kernel half with no synchronisation.
+- **Before adding a kernel table, ask whether it is per-process data the
+  kernel only carries.** The environment needed one more vector copied by
+  `execve`; everything else is user-space code.
+- **Echo and line editing belong in the terminal, once**, built as a function
+  of one input character so tests can type at it without a keyboard.
+- **Do not redraw the screen per scrolled line.** Mark it stale and refresh
+  from the timer; set the flag only after the RAM copy is consistent, and
+  refresh explicitly on every path that halts with interrupts off.
+- **Lock order:** heap or slab, then VMM, then PMM; `kprintf` is a leaf and
+  fatal paths force-unlock it. Locks shared with interrupts disable them.
