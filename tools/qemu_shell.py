@@ -66,11 +66,21 @@ def main():
     ap.add_argument("--trace-irq", action="store_true", help="write QEMU interrupt controller trace to irq-trace.log")
     ap.add_argument("--int-log", action="store_true", help="write QEMU -d int exception log to int.log")
     ap.add_argument("--qemu-arg", action="append", default=[], help="extra argument passed to QEMU")
+    ap.add_argument("--disk", help="disk image to attach (default: disk.img next to the ISO)")
+    ap.add_argument("--no-disk", action="store_true", help="boot without a disk")
+    ap.add_argument("--keep-disk-writes", action="store_true", help="let the guest really modify the disk image")
     ap.add_argument("--quiet", action="store_true", help="print only the output after the first prompt")
     args = ap.parse_args()
 
     cmd = ["qemu-system-x86_64", "-m", args.mem, "-cdrom", args.iso, "-boot", "d",
            "-display", "none", "-serial", "stdio", "-no-reboot"]
+    # The disk image next to the ISO, if there is one. Writes are thrown away
+    # when QEMU exits (snapshot=on) unless --keep-disk-writes is given, so
+    # that scripted runs do not affect each other.
+    disk = args.disk or os.path.join(os.path.dirname(args.iso), "disk.img")
+    if not args.no_disk and os.path.exists(disk):
+        snapshot = "" if args.keep_disk_writes else ",snapshot=on"
+        cmd += ["-drive", f"file={disk},if=virtio,format=raw{snapshot}"]
     if args.trace_irq:
         cmd += ["-trace", "ioapic_*", "-trace", "apic_*", "-trace", "pic_*", "-D", "irq-trace.log"]
     if args.int_log:

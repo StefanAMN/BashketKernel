@@ -53,6 +53,16 @@ task_t *sched_find_task(uint32_t pid);
 void sched_block(void *channel, uint64_t wake_tick);
 
 /**
+ * @brief Like sched_block, but a kill or a signal does not cut the sleep
+ *        short and never ends the task here. For waits during which the task
+ *        owns something that must be released in an orderly way, such as a
+ *        disk request in progress. Such waits must be short and certain to
+ *        end. The task may still be woken early; callers loop on their
+ *        condition as usual.
+ */
+void sched_block_uninterruptible(void *channel, uint64_t wake_tick);
+
+/**
  * @brief True if the current task has a signal waiting for its handler. Code
  *        that waits in a loop around sched_block must check this after each
  *        wakeup and give up (EINTR) instead of going back to sleep:

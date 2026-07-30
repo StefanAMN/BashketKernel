@@ -44,7 +44,9 @@ TEST(heap_returns_memory_and_refuses_cleanly) {
     // A large allocation grows the heap ...
     uint8_t *block = kmalloc(big);
     EXPECT_TRUE(block != NULL);
-    EXPECT_TRUE(kheap_get_mapped_bytes() >= mapped_before + big - KHEAP_TRIM_THRESHOLD);
+    // (by the 8 MiB less whatever free space it already had, which is at
+    // most the heap's initial size)
+    EXPECT_TRUE(kheap_get_mapped_bytes() >= mapped_before + big - KHEAP_INITIAL_SIZE);
     block[0] = 1;
     block[big - 1] = 2;                      // Both ends are really backed by memory
 

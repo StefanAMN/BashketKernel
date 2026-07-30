@@ -209,6 +209,8 @@ const char *strerror(long err) {
         case ENOENT:    return "no such file or directory";
         case ESRCH:     return "no such process";
         case EINTR:     return "interrupted by a signal";
+        case EIO:       return "input/output error";
+        case ENODEV:    return "no such device";
         case E2BIG:     return "argument list too long";
         case EBADF:     return "bad file descriptor";
         case ECHILD:    return "no child processes";

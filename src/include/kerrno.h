@@ -12,12 +12,14 @@
 #define ESRCH    3   // No such process
 #define EINTR    4   // A signal handler interrupted the call
 #define E2BIG    7   // Argument list too long
+#define EIO      5   // Input/output error
 #define EBADF    9   // Bad file descriptor
 #define ECHILD  10   // No child processes
 #define ENOMEM  12   // Out of memory
 #define EFAULT  14   // Bad address
 #define EBUSY   16   // In use
 #define EEXIST  17   // File exists
+#define ENODEV  19   // No such device
 #define ENOTDIR 20   // Not a directory
 #define EISDIR  21   // Is a directory
 #define EINVAL  22   // Invalid argument

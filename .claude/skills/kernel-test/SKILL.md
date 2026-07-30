@@ -136,6 +136,17 @@ Run after changing anything a system call can reach. Logs are in
 "killed" and "stopped by watchdog" rounds are normal; a failure is a kernel
 exception, a hang, or `/bin/syscheck` failing afterwards.
 
+### The disk
+
+Every run attaches `disk.img` from the ISO's directory as a virtio disk
+(`/dev/vda`). `tools/qemu_shell.py` and `make test` use `snapshot=on`: the
+guest can write, but the image file is unchanged afterwards, so runs do not
+affect each other. For a test that needs writes to last, use a scratch image:
+`--disk /path/scratch.img --keep-disk-writes`. `--no-disk` boots without one.
+
+`make test-disk` checks persistence across two boots. Raw access from the
+shell: `exec /bin/diskio write 1000 "text"`, `exec /bin/diskio read 1000`.
+
 ### Does the test detect the bug?
 
 When a new test passes on its first run, break the kernel on purpose once

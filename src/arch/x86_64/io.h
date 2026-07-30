@@ -37,6 +37,26 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+static inline void outw(uint16_t port, uint16_t val) {
+    asm volatile("out dx, ax" : : "a"(val), "d"(port));
+}
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    asm volatile("in ax, dx" : "=a"(ret) : "d"(port));
+    return ret;
+}
+
+static inline void outl(uint16_t port, uint32_t val) {
+    asm volatile("out dx, eax" : : "a"(val), "d"(port));
+}
+
+static inline uint32_t inl(uint16_t port) {
+    uint32_t ret;
+    asm volatile("in eax, dx" : "=a"(ret) : "d"(port));
+    return ret;
+}
+
 /**
  * @brief Brief delay for legacy I/O operations.
  * 

@@ -29,12 +29,12 @@ known gaps in the parts that are real.
 | 8 | Slab, COW, mmap | partial | The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects. Anonymous `mmap`, `munmap` and `brk` work per process. `fork` shares pages copy-on-write. The user stack grows on demand up to 8 MiB. `mmap` and `brk` memory is still allocated at once, and nothing is file-backed. |
 | 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |
 | 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
-| 11 | virtio-blk and FAT32 | stub | A RAM buffer and an in-memory file table. No virtqueues, no on-disk format. |
+| 11 | virtio-blk and FAT32 | partial | virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, one request at a time) and `/dev/vda` is the raw disk; data survives a reboot. FAT32 is still a stub: an in-memory file table. |
 | 12 | fork, exec, wait, kill | real | `fork` (copy-on-write), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. Signals can end a process, be ignored, or run a handler in the program (`signal`), with the interrupted state saved on the user stack and restored by `sigreturn`. They take effect at safe points; a process asleep in a system call is woken, and for a handler the call returns `EINTR`. There is no signal masking and no automatic restart of an interrupted call. |
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.) |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -69,7 +69,7 @@ src/
 ├── arch/x86_64/         # CPU architecture, GDT/IDT/ISRs, APIC, SMP, FPU, low-level assembly
 ├── boot/                # Limine bootloader protocol handover & headers
 ├── drivers/
-│   ├── block/           # virtio-blk (stub)
+│   ├── block/           # virtio-blk disk driver
 │   ├── bus/             # PCI Bus enumerator & config space
 │   ├── char/            # Serial (COM1 UART), RTC, /dev virtual devices
 │   ├── console/         # Framebuffer console & bitmap font blitter
@@ -110,6 +110,8 @@ BashketKernel has a built-in unit test framework (`tests/`). `make test` builds 
 `make test-lowmem` boots the normal kernel with 64 MB of RAM and runs `/bin/stress`, which exhausts memory in different ways (mappings, `brk`, a fork bomb, copy-on-write, a growing file) and checks that the kernel refuses cleanly and keeps working.
 
 `make fuzz` runs `/bin/fuzz`, which makes random system calls with hostile arguments (kernel addresses, pointers at the edge of a mapping, huge lengths, closed descriptors) from ring 3. The kernel must survive every seed and pass `/bin/syscheck` afterwards. Seeds are fixed, so a failure can be reproduced with `make fuzz FUZZ_SEEDS=<n>`.
+
+`make test-disk` writes a disk sector in one boot, reads it back in a second boot, and checks the image file from the host.
 
 `make check` runs all of these on both CPU models.
 

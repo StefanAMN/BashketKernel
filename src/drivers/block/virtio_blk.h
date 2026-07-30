@@ -1,6 +1,10 @@
 /**
  * @file virtio_blk.h
- * @brief VirtIO Block Device Driver Interface
+ * @brief virtio block device (disk) driver
+ *
+ * Drives the disk QEMU provides with `-drive file=...,if=virtio`, through the
+ * legacy (I/O port) virtio PCI interface. One request is in flight at a
+ * time; the caller sleeps until the device signals completion.
  */
 
 #ifndef VIRTIO_BLK_H
@@ -13,25 +17,31 @@
 #define VIRTIO_BLK_SECTOR_SIZE 512
 
 /**
- * @brief Initialize VirtIO Block device.
- * @return 0 on success, negative error code on failure.
+ * @brief Find and initialise the disk.
+ * @return 0 if a disk is ready, -1 if there is none or it could not be set up.
  */
 int virtio_blk_init(void);
 
-/**
- * @brief Read a single 512-byte sector from block device.
- * @param lba Logical Block Address sector number.
- * @param buf Output buffer of at least 512 bytes.
- * @return 0 on success, negative error code on failure.
- */
-int virtio_blk_read_sector(uint64_t lba, uint8_t *buf);
+bool virtio_blk_present(void);
 
 /**
- * @brief Write a single 512-byte sector to block device.
- * @param lba Logical Block Address sector number.
- * @param buf Input buffer of 512 bytes.
- * @return 0 on success, negative error code on failure.
+ * @brief Size of the disk in 512-byte sectors (0 if there is no disk).
  */
-int virtio_blk_write_sector(uint64_t lba, const uint8_t *buf);
+uint64_t virtio_blk_capacity(void);
+
+/**
+ * @brief Read or write whole sectors. `buf` is kernel memory of
+ *        count * 512 bytes. May sleep.
+ * @return 0 on success, -1 on a device error, an out-of-range request, or
+ *         if there is no disk.
+ */
+int virtio_blk_read(uint64_t lba, void *buf, size_t count);
+int virtio_blk_write(uint64_t lba, const void *buf, size_t count);
+
+/**
+ * @brief Number of requests completed, and of interrupts taken, since boot.
+ */
+uint64_t virtio_blk_requests(void);
+uint64_t virtio_blk_interrupts(void);
 
 #endif // VIRTIO_BLK_H

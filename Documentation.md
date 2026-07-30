@@ -186,7 +186,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 11. Storage Subsystem & FAT32 Filesystem (Phase 11)
-**Status: stub.** A RAM buffer and an in-memory file table. No virtqueues, no on-disk format.
+**Status: partial.** virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, one request at a time) and `/dev/vda` is the raw disk; data survives a reboot. FAT32 is still a stub: an in-memory file table. See `src/drivers/block/virtio_blk.c`.
 
 **Goal:** VirtIO Block device driver, FAT32 directory and file reading/writing.
 
