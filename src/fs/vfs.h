@@ -32,7 +32,9 @@ typedef struct vnode {
                                 // (false: it points into the initrd or a constant)
     size_t capacity;            // Size of that buffer when owns_data
     uint32_t open_count;        // Open file descriptions referring to this node
-    const vnode_ops_t *ops;     // Non-NULL for a device node (/dev, /proc)
+    const vnode_ops_t *ops;     // Non-NULL for a node whose contents come from functions (/dev, /proc, files on disk)
+    uint64_t private_data;      // For whoever provides ops (the FAT driver keeps the first cluster here)
+    bool read_only;             // Nothing may be created, removed or opened for writing here
     struct vnode *parent;       // Pointer to parent directory node
     struct vnode *children;     // Pointer to first child node if directory
     struct vnode *next;         // Pointer to next sibling in directory listing

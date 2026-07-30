@@ -113,6 +113,8 @@ vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
         curr = curr->next;
     }
 
+    if (parent->read_only) return NULL;
+
     vnode_t *dir = (vnode_t *)kmalloc(sizeof(vnode_t));
     if (!dir) return NULL;
     memset(dir, 0, sizeof(vnode_t));
@@ -136,6 +138,7 @@ vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, si
     if (!name || parent->type != VFS_DIRECTORY) return NULL;
 
     if (name[0] == '\0' || vfs_find_child(parent, name)) return NULL; // Empty or taken
+    if (parent->read_only) return NULL;
 
     vnode_t *file = (vnode_t *)kmalloc(sizeof(vnode_t));
     if (!file) return NULL;
@@ -261,6 +264,7 @@ void vfs_truncate(vnode_t *file, size_t size) {
 int vfs_unlink(vnode_t *parent, const char *name) {
     if (!parent) parent = vfs_root;
     if (!name || parent->type != VFS_DIRECTORY) return -ENOTDIR;
+    if (parent->read_only) return -EROFS;
 
     vnode_t *prev = NULL;
     for (vnode_t *curr = parent->children; curr; prev = curr, curr = curr->next) {

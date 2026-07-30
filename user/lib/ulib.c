@@ -224,6 +224,7 @@ const char *strerror(long err) {
         case EMFILE:    return "too many open files";
         case ENOSPC:    return "no space left";
         case ESPIPE:    return "cannot seek";
+        case EROFS:     return "read-only filesystem";
         case EPIPE:     return "broken pipe";
         case ENOSYS:    return "not implemented";
         case ENOTEMPTY: return "directory not empty";

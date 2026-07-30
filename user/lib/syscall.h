@@ -54,6 +54,7 @@
 #define EMFILE  24
 #define ENOSPC  28
 #define ESPIPE  29
+#define EROFS   30
 #define EPIPE   32
 #define ENOSYS  38
 #define ENOTEMPTY 39

@@ -81,6 +81,11 @@ code comments and commit messages; `git log` is the full history.
 - **Distrust a surprising benchmark number.** `memcpy` measured 15x slower
   than `memset` because its two buffers were exactly 1 MiB apart and collided
   in QEMU's software TLB. Change the benchmark's layout before changing code.
+- **Check a format against someone else's implementation.** The FAT32 image
+  builder and the FAT32 reader are both mine, so they could agree on a
+  mistake; `fsck.fat` checks every image the build produces. For the other
+  direction, `tools/corrupt_fat.py` damages images on purpose: loops in
+  chains, a directory containing itself, garbage in the FAT, absurd sizes.
 - **Some defences cannot be demonstrated here.** QEMU, like AMD CPUs, faults
   in ring 3 on `sysretq` to a non-canonical address; Intel faults in ring 0.
   The check for it rests on the manual, and its test passes either way. Say
@@ -101,6 +106,10 @@ code comments and commit messages; `git log` is the full history.
 - **Inline asm that changes how memory may be accessed needs a `"memory"`
   clobber.** Without it GCC moved a load of user memory outside the
   `stac`/`clac` pair. Invisible until SMAP was on.
+- **With `-masm=intel`, a C identifier that is also a register name breaks
+  the build.** A static variable called `fs` produced "invalid use of
+  register" from the assembler, with no hint at the C source. Avoid `fs`,
+  `gs`, `cs`, `ax`, `sp`, `cr3` and friends as global or static names.
 - **`1 / zero` does not divide** (GCC emits a compare for a constant
   dividend); make both operands volatile to raise `#DE`.
 - **Assertion macros must evaluate their arguments once.**

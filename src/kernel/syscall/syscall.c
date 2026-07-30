@@ -225,6 +225,7 @@ static int64_t sys_mkdir(uint64_t user_path) {
     name[len] = '\0';
 
     if (vfs_find_child(parent, name)) return -EEXIST;
+    if (parent->read_only) return -EROFS;
     return vfs_create_dir(parent, name) ? 0 : -ENOMEM;
 }
 

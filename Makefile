@@ -118,9 +118,14 @@ $(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
 		$(ISO_ROOT) -o $(ISO) 2>/dev/null
 	./limine/limine bios-install $(ISO) 2>/dev/null
 
-$(DISK):
+# A FAT32 image holding the files under disk/ plus one program, so that
+# something can be executed straight from the disk. fsck.fat (if installed)
+# checks the image: it is an independent implementation of the format.
+DISK_FILES = $(shell find disk -type f)
+$(DISK): tools/mkfat.py $(DISK_FILES) $(BUILD)/initrd/bin/hello
 	@mkdir -p $(BUILD)
-	truncate -s 64M $@
+	tools/mkfat.py $@ 64 disk $(BUILD)/initrd/bin/hello=bin/hello
+	@if command -v fsck.fat >/dev/null; then fsck.fat -n $@ >/dev/null || { echo "fsck.fat rejects $@"; rm -f $@; exit 1; }; fi
 
 run: iso $(DISK)
 	$(QEMU) $(QEMU_FLAGS) -serial mon:stdio
@@ -178,7 +183,9 @@ fuzz: iso
 
 # The disk keeps its contents across reboots: write a sector in one boot of
 # the kernel, read it in a second boot, and look for it in the image file
-# from the host as well. Uses its own scratch image.
+# from the host as well. Uses its own scratch image. Then boot against
+# deliberately damaged copies of the FAT32 image (tools/corrupt_fat.py): the
+# kernel must neither fault nor hang, whatever the disk says.
 test-disk: iso
 	@rm -f $(BUILD)/persist.img && truncate -s 64M $(BUILD)/persist.img
 	@tools/qemu_shell.py --quiet --disk $(BUILD)/persist.img --keep-disk-writes $(SHELL_CPU) \
@@ -190,6 +197,16 @@ test-disk: iso
 	@dd if=$(BUILD)/persist.img bs=512 skip=1000 count=1 2>/dev/null | grep -aq 'written in boot one' \
 		|| { echo "disk: FAILED, the data is not in the image file"; exit 1; }
 	@echo "disk persistence: ok"
+	@for kind in file-loop dir-loop dir-cycle fat-garbage huge-size bad-cluster; do \
+		tools/corrupt_fat.py $(DISK) $$kind $(BUILD)/damaged.img && \
+		tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/damaged.img $(SHELL_CPU) \
+			--expect 'Hello from ring 3' \
+			'exec /bin/ls /disk' 'exec /bin/sh -c "wc /disk/pattern.bin"' \
+			'exec /bin/sh -c "cat /disk/readme.txt | wc"' 'exec /bin/sh -c "ls /disk/notes | wc"' \
+			'exec /bin/hello' > $(BUILD)/damaged-$$kind.log 2>&1 \
+			&& echo "damaged disk ($$kind): survived" \
+			|| { echo "damaged disk ($$kind): FAILED (see $(BUILD)/damaged-$$kind.log)"; exit 1; }; \
+	done
 
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
