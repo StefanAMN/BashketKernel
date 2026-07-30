@@ -201,7 +201,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 12. Process Life Cycle & Signal Handling (Phase 12)
-**Status: real.** `fork` (copy-on-write), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. Signals can end a process, be ignored, or run a handler in the program (`signal`), with the interrupted state saved on the user stack and restored by `sigreturn`. They take effect at safe points; a process asleep in a system call is not interrupted for a handler (no `EINTR`), and there is no signal masking. See `src/kernel/proc/signal.c`.
+**Status: real.** `fork` (copy-on-write), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. Signals can end a process, be ignored, or run a handler in the program (`signal`), with the interrupted state saved on the user stack and restored by `sigreturn`. They take effect at safe points; a process asleep in a system call is woken, and for a handler the call returns `EINTR`. There is no signal masking and no automatic restart of an interrupted call. See `src/kernel/proc/signal.c`.
 
 **Goal:** Process hierarchy (`fork`, `exec`, `waitpid`, `exit`), UNIX signal dispatching.
 

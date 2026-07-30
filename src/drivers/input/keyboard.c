@@ -204,6 +204,10 @@ char keyboard_getchar(void) {
             if (c != 0) break;
         }
 
+        if (sched_interrupted()) {
+            c = 0; // No character: a signal handler has to run first
+            break;
+        }
         sched_block(&input_channel, 0);
     }
 

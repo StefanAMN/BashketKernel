@@ -36,7 +36,8 @@ bool tty_input(char c);
  * @brief Read from the terminal. Sleeps until a whole line has been typed,
  *        then returns up to `count` bytes of it; the rest of the line is
  *        kept for the next read.
- * @return Bytes read, or 0 for end-of-file (Ctrl-D on an empty line).
+ * @return Bytes read, 0 for end-of-file (Ctrl-D on an empty line), or -EINTR
+ *         if a signal handler has to run before a line was complete.
  */
 int64_t tty_read(char *out, size_t count);
 

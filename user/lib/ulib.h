@@ -39,8 +39,9 @@ typedef void (*sighandler_t)(int);
 #define SIG_IGN ((sighandler_t)1)   /* Do nothing */
 #define SIG_ERR ((sighandler_t)-1)
 /* Choose what a signal does; returns the previous choice or SIG_ERR.
- * A handler runs when the process next returns from the kernel; a process
- * asleep in a system call is not interrupted for it. */
+ * If the process is asleep in a system call when a handled signal arrives,
+ * that call returns -EINTR after the handler has run; call it again if the
+ * work still needs doing. */
 sighandler_t signal(int sig, sighandler_t handler);
 
 /* Memory */

@@ -168,6 +168,11 @@ would change how the next problem is approached.
   it had hardly been interrupted. Feeding the argument through a volatile
   fixed it. Then the mutation check (disable the full restore) made it fail
   as intended.
+- **Every loop around `sched_block` is now a three-way wait:** the event,
+  a kill (handled inside `sched_block`), or a handled signal, for which
+  `sched_block` returns at once and the loop must check `sched_interrupted()`
+  and return `EINTR`. A loop without that check would spin instead of
+  sleeping, so new blocking code has to follow the pattern in `sched.h`.
 - **A fuzzer needs retuning when a new call can end the process.** Random
   `sigreturn` calls killed every round within a few calls; coverage silently
   dropped to almost nothing while every seed still reported "ok".

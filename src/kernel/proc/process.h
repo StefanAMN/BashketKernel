@@ -23,6 +23,8 @@
 
 typedef int pid_t;
 
+#define PROCESS_WAIT_INTERRUPTED (-2)
+
 /**
  * @brief Start a new process running the ELF executable at `path`.
  * @param argv NULL-terminated argument vector (kernel memory), or NULL for
@@ -62,7 +64,8 @@ bool process_grow_stack(uint64_t addr);
  * @brief Wait for a child to exit and collect its status.
  * @param pid Child to wait for, or -1 for any child.
  * @param status If non-NULL, receives the exit status.
- * @return PID of the child collected, or -1 if there is no such child.
+ * @return PID of the child collected, -1 if there is no such child, or
+ *         PROCESS_WAIT_INTERRUPTED if a signal handler has to run first.
  */
 pid_t process_wait(pid_t pid, int *status);
 

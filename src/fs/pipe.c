@@ -32,6 +32,10 @@ int64_t pipe_read(pipe_t *pipe, void *buf, size_t count) {
 
     uint64_t flags = irq_save();
     while (pipe->count == 0 && pipe->writer_open) {
+        if (sched_interrupted()) {
+            irq_restore(flags);
+            return -EINTR;
+        }
         sched_block(pipe, 0);
     }
 
@@ -58,6 +62,11 @@ int64_t pipe_write(pipe_t *pipe, const void *buf, size_t count) {
         if (!pipe->reader_open) break; // Nobody will ever read this
 
         if (pipe->count == PIPE_BUFFER_SIZE) {
+            if (sched_interrupted()) {
+                // Report what did go through; EINTR only if nothing did
+                irq_restore(flags);
+                return done > 0 ? (int64_t)done : -EINTR;
+            }
             sched_block(pipe, 0);
             continue;
         }

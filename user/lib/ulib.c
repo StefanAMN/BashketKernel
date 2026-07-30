@@ -208,6 +208,7 @@ const char *strerror(long err) {
         case 0:         return "success";
         case ENOENT:    return "no such file or directory";
         case ESRCH:     return "no such process";
+        case EINTR:     return "interrupted by a signal";
         case E2BIG:     return "argument list too long";
         case EBADF:     return "bad file descriptor";
         case ECHILD:    return "no child processes";
@@ -352,6 +353,7 @@ long fdreadline(int fd, char *buf, size_t size) {
     for (;;) {
         char c;
         long n = read(fd, &c, 1);
+        if (n == -EINTR) continue;  /* A signal handler ran: carry on reading */
         if (n <= 0) {
             buf[len] = '\0';
             return len > 0 ? (long)len : -1;

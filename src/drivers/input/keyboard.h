@@ -30,6 +30,8 @@ void keyboard_input_arrived(void);
  * @brief Retrieve next character from keyboard buffer (blocking if empty).
  * @return ASCII character byte.
  */
+// Returns 0 if the calling process was interrupted by a signal before any
+// character arrived (kernel threads are never interrupted).
 char keyboard_getchar(void);
 
 #endif // KEYBOARD_H

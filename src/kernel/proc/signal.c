@@ -72,6 +72,7 @@ void signal_send(task_t *task, int sig) {
         sched_request_kill(task, sig);      // Ends it at its next safe point
     } else if (handler != SIG_IGN && task->state != TASK_ZOMBIE) {
         task->sig_pending |= (1u << sig);   // Delivered when it next returns to user mode
+        sched_interrupt_sleep(task);        // If it is asleep in a system call, that call ends with EINTR
     }
     irq_restore(flags);
 }
