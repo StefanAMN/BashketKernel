@@ -306,7 +306,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 20. Terminal ANSI Escape Sequence Parser (Phase 20)
-**Status: stub.** A lookup from color code to RGB. No escape-sequence parser.
+**Status: real.** The console interprets ANSI escape sequences: 16 text and background colours, bold, cursor positioning and relative movement, erasing the screen or a line. `/bin/clear` and `/bin/colors` use them. Unsupported sequences are swallowed. See `src/gui/compositor/ansi.c` (parser) and `src/drivers/console/console.c` (what the screen does with it).
 
 **Goal:** ANSI escape sequence handling for text coloring and cursor movement.
 

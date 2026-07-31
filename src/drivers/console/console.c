@@ -2,6 +2,7 @@
 #include "font.h"
 #include "pmm.h"
 #include "kstring.h"
+#include "ansi.h"
 #include "spinlock.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -20,13 +21,24 @@ static uint32_t *backbuffer = NULL;
 static bool deferred_refresh = false;
 static bool screen_stale = false;
 
-static const uint32_t FG_COLOR = 0xFFFFFFFF; // White
-static const uint32_t BG_COLOR = 0x00000000; // Black
+#define DEFAULT_FG 15 // Bright white, as an index into the ANSI palette
+#define DEFAULT_BG 0  // Black
+#define CELL 8        // Characters are 8 x 8 pixels
+
+// Current colours, changed by ANSI "SGR" sequences
+static int fg_index = DEFAULT_FG;
+static int bg_index = DEFAULT_BG;
+static uint32_t FG_COLOR = 0x00FFFFFF;
+static uint32_t BG_COLOR = 0x00000000;
+static ansi_parser_t parser;
 
 void console_init(struct limine_framebuffer *fb) {
     g_fb = fb;
     cursor_x = 0;
     cursor_y = 0;
+    ansi_init(&parser);
+    FG_COLOR = ansi_color(fg_index);
+    BG_COLOR = ansi_color(bg_index);
 }
 
 void console_enable_backbuffer(void) {
@@ -112,9 +124,94 @@ static void scroll(void) {
     cursor_y -= 8;
 }
 
+// Fill a rectangle of whole pixels with the background colour
+static void clear_rect(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) {
+    if (x1 > g_fb->width) x1 = g_fb->width;
+    if (y1 > g_fb->height) y1 = g_fb->height;
+    for (uint32_t y = y0; y < y1; y++) {
+        for (uint32_t x = x0; x < x1; x++) putpixel(x, y, BG_COLOR);
+    }
+}
+
+// Colours and attributes: ESC [ n ; n ... m
+static void apply_sgr(const ansi_action_t *action) {
+    // "ESC [ m" with no number means reset, the same as 0
+    int count = action->param_count ? action->param_count : 1;
+    for (int i = 0; i < count; i++) {
+        int n = action->param_count ? action->params[i] : 0;
+        if (n == 0) { fg_index = DEFAULT_FG; bg_index = DEFAULT_BG; }
+        else if (n == 1) { if (fg_index < 8) fg_index += 8; }           // Bold: shown as the bright colour
+        else if (n == 22) { if (fg_index >= 8) fg_index -= 8; }         // Normal intensity
+        else if (n >= 30 && n <= 37) fg_index = n - 30;
+        else if (n == 39) fg_index = DEFAULT_FG;
+        else if (n >= 40 && n <= 47) bg_index = n - 40;
+        else if (n == 49) bg_index = DEFAULT_BG;
+        else if (n >= 90 && n <= 97) fg_index = n - 90 + 8;
+        else if (n >= 100 && n <= 107) bg_index = n - 100 + 8;
+        // Anything else (underline, blink, ...) is not drawn: ignored
+    }
+    FG_COLOR = ansi_color(fg_index);
+    BG_COLOR = ansi_color(bg_index);
+}
+
+static void draw_char(char c);
+
+// One character of output, which may be text or part of an escape sequence
 static void putchar_unlocked(char c) {
     if (!g_fb) return;
-    
+
+    ansi_action_t action = ansi_feed(&parser, c);
+    uint32_t columns = g_fb->width / CELL, rows = g_fb->height / CELL;
+    uint32_t col = cursor_x / CELL, row = cursor_y / CELL;
+    // A count of 0 or none means 1 for the movement commands
+    uint32_t n = (action.param_count && action.params[0] > 0) ? (uint32_t)action.params[0] : 1;
+
+    switch (action.kind) {
+        case ANSI_NOTHING:
+            return;
+        case ANSI_PRINT:
+            draw_char(action.ch);
+            return;
+        case ANSI_SGR:
+            apply_sgr(&action);
+            return;
+        case ANSI_CURSOR_TO: {
+            uint32_t to_row = (action.param_count >= 1 && action.params[0] > 0) ? (uint32_t)action.params[0] : 1;
+            uint32_t to_col = (action.param_count >= 2 && action.params[1] > 0) ? (uint32_t)action.params[1] : 1;
+            if (to_row > rows) to_row = rows;
+            if (to_col > columns) to_col = columns;
+            cursor_y = (to_row - 1) * CELL;
+            cursor_x = (to_col - 1) * CELL;
+            return;
+        }
+        case ANSI_CURSOR_UP:    cursor_y = (row > n ? row - n : 0) * CELL; return;
+        case ANSI_CURSOR_DOWN:  cursor_y = (row + n < rows ? row + n : rows - 1) * CELL; return;
+        case ANSI_CURSOR_RIGHT: cursor_x = (col + n < columns ? col + n : columns - 1) * CELL; return;
+        case ANSI_CURSOR_LEFT:  cursor_x = (col > n ? col - n : 0) * CELL; return;
+        case ANSI_ERASE_LINE: {
+            int mode = action.param_count ? action.params[0] : 0;
+            uint32_t from = (mode == 0) ? cursor_x : 0;
+            uint32_t to = (mode == 1) ? cursor_x + CELL : g_fb->width;
+            clear_rect(from, cursor_y, to, cursor_y + CELL);
+            return;
+        }
+        case ANSI_ERASE_DISPLAY: {
+            int mode = action.param_count ? action.params[0] : 0;
+            if (mode == 2) {
+                clear_rect(0, 0, g_fb->width, g_fb->height);
+            } else if (mode == 0) {         // From the cursor to the end of the screen
+                clear_rect(cursor_x, cursor_y, g_fb->width, cursor_y + CELL);
+                clear_rect(0, cursor_y + CELL, g_fb->width, g_fb->height);
+            } else if (mode == 1) {         // From the start of the screen to the cursor
+                clear_rect(0, 0, g_fb->width, cursor_y);
+                clear_rect(0, cursor_y, cursor_x + CELL, cursor_y + CELL);
+            }
+            return;
+        }
+    }
+}
+
+static void draw_char(char c) {
     if (c == '\n') {
         cursor_x = 0;
         cursor_y += 8;
@@ -170,6 +267,16 @@ void console_putchar(char c) {
     uint64_t flags = irq_save();
     putchar_unlocked(c);
     irq_restore(flags);
+}
+
+void console_get_cursor(uint32_t *column, uint32_t *row) {
+    if (column) *column = cursor_x / CELL;
+    if (row) *row = cursor_y / CELL;
+}
+
+uint32_t console_get_pixel(uint32_t x, uint32_t y) {
+    if (!g_fb || !backbuffer || x >= g_fb->width || y >= g_fb->height) return 0;
+    return backbuffer[y * (g_fb->pitch / 4) + x] & 0x00FFFFFF;
 }
 
 void console_write(const char *str) {

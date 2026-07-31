@@ -20,4 +20,9 @@ void console_set_deferred_refresh(bool enabled);
 void console_refresh(void);
 void console_write(const char *str);
 
+// For tests and diagnostics: where the next character will go (in character
+// cells, from 0), and the colour (0x00RRGGBB) of a pixel as last drawn.
+void console_get_cursor(uint32_t *column, uint32_t *row);
+uint32_t console_get_pixel(uint32_t x, uint32_t y);
+
 #endif
