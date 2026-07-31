@@ -30,6 +30,7 @@ make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
+tools/qemu_shell.py --quiet '!exec /bin/edit /tmp/f' '~hi\r^S^Q'   # '~' = raw keys into a full-screen program
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 
 # A 64 MiB disk image (build/disk.img) is attached to every run as a virtio
@@ -86,6 +87,11 @@ code comments and commit messages; `git log` is the full history.
   mistake; `fsck.fat` checks every image the build produces. For the other
   direction, `tools/corrupt_fat.py` damages images on purpose: loops in
   chains, a directory containing itself, garbage in the FAT, absurd sizes.
+- **Judge a fuzz run by exit statuses, not by its output.** A fuzzed
+  `write()` dumped a megabyte of the fuzzer's own memory to the console,
+  including the string constant my check treated as the failure marker (and
+  the one it treated as success). Text a hostile program can print proves
+  nothing either way.
 - **Some defences cannot be demonstrated here.** QEMU, like AMD CPUs, faults
   in ring 3 on `sysretq` to a non-canonical address; Intel faults in ring 0.
   The check for it rests on the manual, and its test passes either way. Say
@@ -147,6 +153,13 @@ code comments and commit messages; `git log` is the full history.
 - **Before adding a kernel table, ask whether it is per-process data the
   kernel only carries.** The environment needed one more vector copied by
   `execve`; everything else is user-space code.
+- **A mode a program sets on shared hardware must die with the program.**
+  Raw terminal mode records its owner and `sched_make_zombie` gives the
+  terminal back, so a killed editor cannot leave the shell unusable. The
+  same hook closes files and releases the working directory.
+- **Draw the cursor from the timer, not per character.** It is removed
+  before any character is drawn and put back by the next refresh tick, so a
+  burst of output pays for it once.
 - **Echo and line editing belong in the terminal, once**, built as a function
   of one input character so tests can type at it without a keyboard.
 - **Do not redraw the screen per scrolled line.** Mark it stale and refresh

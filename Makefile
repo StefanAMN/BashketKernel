@@ -75,7 +75,7 @@ DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw
 
 QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS)
 
-.PHONY: all clean iso run run-gdb test test-lowmem test-disk fuzz check
+.PHONY: all clean iso run run-gdb test test-lowmem test-disk test-edit fuzz check
 
 all: $(KERNEL)
 
@@ -169,13 +169,17 @@ test-lowmem: iso
 
 # Random system calls with hostile arguments (user/fuzz.c). The kernel must
 # survive every seed and still pass the system call checks afterwards.
+# Success is judged by exit statuses, not by text the fuzzer prints: a fuzzed
+# write() can dump the fuzzer's own memory, string constants included, to the
+# console. The fuzzer is the first process (pid 2); the shell reports any
+# process that exits with a non-zero status.
 # Seeds are fixed so that a failure can be reproduced: make fuzz FUZZ_SEEDS="7"
 FUZZ_SEEDS ?= 1 2 3 4 5 6 7 8
 FUZZ_ROUNDS ?= 40
 fuzz: iso
 	@for seed in $(FUZZ_SEEDS); do \
 		tools/qemu_shell.py --quiet --timeout 300 $(SHELL_CPU) \
-			--expect 'fuzz: done' --expect 'syscheck: all checks passed' --forbid 'FAILED' \
+			--expect 'syscheck: all checks passed' --forbid '\[pid 2 exited with status' \
 			"exec /bin/fuzz $$seed $(FUZZ_ROUNDS)" 'exec /bin/syscheck' > $(BUILD)/fuzz-$$seed.log 2>&1 \
 			&& echo "fuzz seed $$seed: ok ($$(grep -a -o '[0-9]* ended normally.*' $(BUILD)/fuzz-$$seed.log))" \
 			|| { echo "fuzz seed $$seed: FAILED (see $(BUILD)/fuzz-$$seed.log)"; exit 1; }; \
@@ -229,6 +233,18 @@ test-disk: iso
 			|| { echo "damaged disk ($$kind): FAILED (see $(BUILD)/damaged-$$kind.log)"; exit 1; }; \
 	done
 
+# The full-screen editor, driven by scripted keystrokes: type, move with the
+# arrow keys, insert in three places, save, quit; then check the file. Also
+# that Ctrl-C does not kill it and that the terminal is back in line mode
+# afterwards (the shell prompt echoes what is typed).
+test-edit: iso
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'first line tail\nX-second line\nthird!\n' --expect '\n2 6 36\n' --expect 'still-in-line-mode' \
+		'!exec /bin/edit /tmp/t.txt' '~first line\rsecond line\rthird' '~\e[A\e[HX-\e[B\e[F!' \
+		'~\e[A\e[A\e[F tail' '~^C' '~^S^Q' 'cat tmp/t.txt' 'exec /bin/sh -c "wc /tmp/t.txt"' \
+		'echo still-in-line-mode' > $(BUILD)/edit.log 2>&1 \
+		&& echo "editor: ok" || { echo "editor: FAILED (see $(BUILD)/edit.log)"; exit 1; }
+
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
 check:
@@ -237,6 +253,7 @@ check:
 	@$(MAKE) --no-print-directory test-lowmem
 	@$(MAKE) --no-print-directory test-lowmem CPU=max
 	@$(MAKE) --no-print-directory test-disk
+	@$(MAKE) --no-print-directory test-edit
 	@$(MAKE) --no-print-directory fuzz FUZZ_SEEDS="1 2 3"
 	@$(MAKE) --no-print-directory fuzz CPU=max FUZZ_SEEDS="4 5"
 	@echo "ALL CHECKS PASSED"

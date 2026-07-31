@@ -48,6 +48,8 @@
 #define SYS_SETPRIORITY 301 // (priority): 0 high, 1 normal, 2 low; for the caller itself
 #define SYS_SIGNAL      300  // (sig, handler, restorer): returns the previous handler
 #define SYS_SIGRETURN   302  // Only for the C library's handler-return stub
+#define SYS_TTY_RAW     303  // (flag): 1 delivers every key at once without echo; 0 goes back to lines
+#define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen
 
 struct utsname {
     char sysname[65];

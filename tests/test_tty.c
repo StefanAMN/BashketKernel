@@ -71,9 +71,61 @@ TEST(tty_line_length_is_bounded) {
     kprintf("\n");
 }
 
+TEST(tty_line_mode_drops_arrow_keys_and_control_characters) {
+    char buf[32];
+    tty_init();
+
+    // Up arrow (ESC [ A), Delete (ESC [ 3 ~) and a stray Ctrl-G in a line
+    EXPECT_TRUE(type("ab\033[Ac\033[3~d\x07" "e\n"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 6);
+    EXPECT_EQ(memcmp(buf, "abcde\n", 6), 0);
+
+    // ESC followed by something that does not start a sequence: both dropped
+    EXPECT_TRUE(type("x\033Yz\n"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 3);
+    EXPECT_EQ(memcmp(buf, "xz\n", 3), 0);
+
+    // A tab is text
+    EXPECT_TRUE(type("a\tb\n"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 4);
+    EXPECT_EQ(memcmp(buf, "a\tb\n", 4), 0);
+}
+
+TEST(tty_raw_mode_belongs_to_a_process) {
+    tty_init();
+    EXPECT_TRUE(!tty_is_raw());
+
+    // Half a line typed, then a process switches to raw mode: the half line
+    // is discarded, not delivered later
+    type("stale");
+    tty_set_raw(true, 4242);
+    EXPECT_TRUE(tty_is_raw());
+
+    // Some other process ending changes nothing; the owner ending restores
+    // line mode, however it ended
+    tty_process_exited(4241);
+    EXPECT_TRUE(tty_is_raw());
+    tty_process_exited(4242);
+    EXPECT_TRUE(!tty_is_raw());
+
+    char buf[16];
+    EXPECT_TRUE(type("fresh\n"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 6);
+    EXPECT_EQ(memcmp(buf, "fresh\n", 6), 0);
+
+    // Leaving raw mode explicitly works too
+    tty_set_raw(true, 7);
+    tty_set_raw(false, 7);
+    EXPECT_TRUE(!tty_is_raw());
+    tty_process_exited(7);
+    EXPECT_TRUE(!tty_is_raw());
+}
+
 void test_suite_tty(void) {
     kprintf("Suite: Terminal Line Discipline\n");
     RUN_TEST(tty_delivers_whole_edited_lines);
     RUN_TEST(tty_short_reads_and_end_of_file);
     RUN_TEST(tty_line_length_is_bounded);
+    RUN_TEST(tty_line_mode_drops_arrow_keys_and_control_characters);
+    RUN_TEST(tty_raw_mode_belongs_to_a_process);
 }

@@ -366,7 +366,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 25. Teletype Subsystem (TTY) (Phase 25)
-**Status: real.** Console reads go through a line discipline in the kernel: echo, backspace, Ctrl-U, Ctrl-D for end-of-file, and whole lines delivered on Enter. One terminal; no raw mode.
+**Status: real.** Console reads go through a terminal layer in the kernel. Line mode (the default) echoes, handles backspace, Ctrl-U and Ctrl-D, and delivers whole lines; raw mode gives a program every key at once and is released automatically when that program ends. The PS/2 driver reports arrow keys, Home, End and Delete. One terminal only.
 
 **Goal:** TTY line discipline, raw vs canonical mode, echo control.
 

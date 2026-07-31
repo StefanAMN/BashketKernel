@@ -34,7 +34,7 @@ known gaps in the parts that are real.
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`, and `edit`, a full-screen text editor. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.) |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -43,7 +43,7 @@ known gaps in the parts that are real.
 | 22 | Priority scheduling | real | Round robin with weighted time slices: high, normal and low priority tasks run for 4, 2 and 1 ticks per turn, so priority sets the CPU share and nothing is starved. Per-task CPU ticks are in `/proc/tasks`. |
 | 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
 | 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks`, `cpuinfo` and `kmsg` are generated from live kernel state on every read. |
-| 25 | TTY | real | Console reads go through a line discipline in the kernel: echo, backspace, Ctrl-U, Ctrl-D for end-of-file, and whole lines delivered on Enter. One terminal; no raw mode. |
+| 25 | TTY | real | Console reads go through a terminal layer in the kernel. Line mode (the default) echoes, handles backspace, Ctrl-U and Ctrl-D, and delivers whole lines; raw mode gives a program every key at once and is released automatically when that program ends. The PS/2 driver reports arrow keys, Home, End and Delete. One terminal only. |
 | 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
 | 28 | ELF dynamic relocation | stub | Recognises relocation types and returns 0. |
@@ -114,6 +114,8 @@ BashketKernel has a built-in unit test framework (`tests/`). `make test` builds 
 
 `make test-disk` checks persistence across two boots, first for a raw sector and then for files (created, appended, copied, removed and overwritten in the first boot, checked by `fsck.fat` on the host, read back in the second). It then boots against six deliberately damaged FAT32 images, reads and writes on them, and requires the kernel to carry on.
 
+`make test-edit` drives the full-screen editor with scripted keystrokes and checks the saved file.
+
 `make check` runs all of these on both CPU models.
 
 All three targets accept `CPU=max` (for example `make test CPU=max`) to run on QEMU's fullest CPU model, where SMEP, SMAP and UMIP are active.
@@ -177,6 +179,7 @@ BashketOS> exec /disk/bin/hello        # a program loaded from the disk
 BashketOS> exec /bin/sh                # user-space shell
 $ ls /bin | wc > /tmp/count
 $ cat /tmp/count
+$ edit /disk/todo.txt                  # full-screen editor: arrows, Ctrl-S save, Ctrl-Q quit
 $ spin                                 # loops forever; Ctrl-C stops it
 $ exit
 ```

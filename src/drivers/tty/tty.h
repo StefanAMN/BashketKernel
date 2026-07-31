@@ -42,6 +42,20 @@ bool tty_input(char c);
 int64_t tty_read(char *out, size_t count);
 
 /**
+ * @brief Switch between line mode (the default, described above) and raw
+ *        mode, in which every key is delivered at once with no echo and no
+ *        editing. Raw mode ends by itself when `owner_pid` exits.
+ */
+void tty_set_raw(bool raw, uint32_t owner_pid);
+bool tty_is_raw(void);
+
+/**
+ * @brief Called when any process ends: gives the terminal back to line mode
+ *        if that process had put it in raw mode.
+ */
+void tty_process_exited(uint32_t pid);
+
+/**
  * @brief Write to the screen and the serial port.
  */
 int64_t tty_write(const char *in, size_t count);
