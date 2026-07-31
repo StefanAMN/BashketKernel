@@ -19,8 +19,8 @@ that file.
 - **Milestone 3:** done. Programs run in ring 3.
 - **Milestone 4:** done. Blocking, copy-on-write fork, exec, wait, kill, file
   descriptors, pipes and a user-space shell all work.
-- **Milestone 5:** pipes, priority scheduling, FPU/SSE, `/dev` and `/proc` are
-  implemented. The rest of the table below is open, and deleting code is a
+- **Milestone 5:** pipes, priority scheduling, FPU/SSE, `/dev` and `/proc`, the
+  terminal, the virtio disk and FAT32 are implemented. The rest of the table below is open, and deleting code is a
   decision left to the project owners.
 - **Added beyond the original plan:** safe-point kill and Ctrl-C, CPU
   protections (SMEP, SMAP, UMIP), on-demand stack growth, a terminal line
@@ -345,7 +345,7 @@ and its README entry. Suggested calls, in the order worth doing:
 | `/dev`, `/proc` | **Done.** Device nodes with their own read/write; `/proc` generated on read. |
 | TTY | **Done.** Canonical-mode line discipline in `src/drivers/tty/tty.c`. No raw mode, so a full-screen program (an editor) is not possible yet. |
 | virtio-blk | **Done.** Legacy PCI transport, interrupt-driven, `/dev/vda`. One request in flight at a time; no modern (MMIO capability) transport. |
-| FAT32 | **Read-only done**: mounted at `/disk`, 8.3 names, validated against damaged images. Open: writing (cluster allocation, directory updates), long file names, and reading directories on demand instead of all at mount time. |
+| FAT32 | **Done**, read and write, mounted at `/disk`, checked against `fsck.fat` and damaged images. Open: long file names, rename, timestamps, reading directories on demand instead of all at mount time, and any crash consistency beyond write ordering. |
 | SMP | Defer. Needs per-CPU data, `swapgs` and real locks: today "interrupts off" is the lock in the scheduler, pipes, semaphores and the wait path. |
 | virtio-net, sockets | Defer or delete. |
 | Swap | Delete until a real block device and page reclaim exist. |
@@ -403,8 +403,11 @@ Known gaps in the parts that are otherwise real, most important first.
    below the mapped part of the stack returns `EFAULT`.
 8. **A killed process can leak a small kernel buffer** if it dies inside a
    system call that was holding one (`/proc` reads allocate a page).
-9. **The file system is RAM only**, has no hard limit on file size other than
-   free memory, and directory entries are a linked list.
+9. **Files outside `/disk` are RAM only** and limited only by free memory.
+   On `/disk`, a crash in the middle of a change can leave lost clusters
+   (there is no journal), reads take no lock and can see a concurrent write
+   half done, and a killed process can leak the kernel buffer of a write in
+   progress.
 10. **A few timer ticks are lost under heavy console output** (measured: under
    1% over 200 s of continuous scrolling), because drawing happens with
    interrupts off. Uptime is therefore slightly slow, never fast.

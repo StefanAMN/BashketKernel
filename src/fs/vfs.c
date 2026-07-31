@@ -100,64 +100,71 @@ size_t vfs_path_of(vnode_t *node, char *buf, size_t size) {
     return len;
 }
 
-vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
-    if (!parent) parent = vfs_root;
-    if (!name || parent->type != VFS_DIRECTORY) return NULL;
+vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type) {
+    if (!parent || parent->type != VFS_DIRECTORY || !name || name[0] == '\0') return NULL;
 
-    // Check if directory already exists
-    vnode_t *curr = parent->children;
-    while (curr) {
-        if (strcmp(curr->name, name) == 0) {
-            return curr;
-        }
-        curr = curr->next;
-    }
-
-    if (parent->read_only) return NULL;
-
-    vnode_t *dir = (vnode_t *)kmalloc(sizeof(vnode_t));
-    if (!dir) return NULL;
-    memset(dir, 0, sizeof(vnode_t));
+    vnode_t *node = (vnode_t *)kmalloc(sizeof(vnode_t));
+    if (!node) return NULL;
+    memset(node, 0, sizeof(vnode_t));
 
     size_t i = 0;
-    for (; name[i] != '\0' && i < sizeof(dir->name) - 1; i++) {
-        dir->name[i] = name[i];
+    for (; name[i] != '\0' && i < sizeof(node->name) - 1; i++) {
+        node->name[i] = name[i];
     }
-    dir->name[i] = '\0';
+    node->name[i] = '\0';
 
-    dir->type = VFS_DIRECTORY;
-    dir->parent = parent;
-    dir->next = parent->children;
-    parent->children = dir;
+    node->type = type;
+    node->parent = parent;
+    node->next = parent->children;
+    parent->children = node;
+    return node;
+}
 
-    return dir;
+int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out) {
+    if (!parent) parent = vfs_root;
+    if (!name || parent->type != VFS_DIRECTORY) return -ENOTDIR;
+    if (name[0] == '\0') return -EINVAL;
+    if (vfs_find_child(parent, name)) return -EEXIST;
+    if (parent->read_only) return -EROFS;
+
+    vnode_t *node = NULL;
+    if (parent->ops && parent->ops->create) {
+        // The directory belongs to a filesystem that stores its entries
+        // somewhere (a disk): it creates the entry there and attaches the node
+        int err = parent->ops->create(parent, name, type == VFS_DIRECTORY, &node);
+        if (err != 0) return err;
+    } else {
+        node = vfs_attach(parent, name, type);
+    }
+    if (!node) return -ENOMEM;
+
+    if (out) *out = node;
+    return 0;
+}
+
+vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
+    if (!parent) parent = vfs_root;
+
+    // An existing directory of that name is returned as it is
+    vnode_t *existing = vfs_find_child(parent, name);
+    if (existing) return existing->type == VFS_DIRECTORY ? existing : NULL;
+
+    vnode_t *dir = NULL;
+    return vfs_create(parent, name, VFS_DIRECTORY, &dir) == 0 ? dir : NULL;
 }
 
 vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, size_t size) {
     if (!parent) parent = vfs_root;
-    if (!name || parent->type != VFS_DIRECTORY) return NULL;
 
-    if (name[0] == '\0' || vfs_find_child(parent, name)) return NULL; // Empty or taken
-    if (parent->read_only) return NULL;
+    // Initial contents by pointer only make sense for a file kept in memory
+    if (data && parent->ops && parent->ops->create) return NULL;
 
-    vnode_t *file = (vnode_t *)kmalloc(sizeof(vnode_t));
-    if (!file) return NULL;
-    memset(file, 0, sizeof(vnode_t));
-
-    size_t i = 0;
-    for (; name[i] != '\0' && i < sizeof(file->name) - 1; i++) {
-        file->name[i] = name[i];
+    vnode_t *file = NULL;
+    if (vfs_create(parent, name, VFS_FILE, &file) != 0) return NULL;
+    if (data) {
+        file->size = size;
+        file->data = data;
     }
-    file->name[i] = '\0';
-
-    file->type = VFS_FILE;
-    file->size = size;
-    file->data = data;
-    file->parent = parent;
-
-    file->next = parent->children;
-    parent->children = file;
-
     return file;
 }
 
@@ -258,6 +265,12 @@ size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf) {
 
 void vfs_truncate(vnode_t *file, size_t size) {
     if (!file || file->type != VFS_FILE) return;
+
+    if (file->ops) {
+        // Only cutting to nothing is offered to filesystems
+        if (size == 0 && file->ops->truncate) file->ops->truncate(file);
+        return;
+    }
     if (size < file->size) file->size = size;
 }
 
@@ -273,7 +286,20 @@ int vfs_unlink(vnode_t *parent, const char *name) {
         if (curr->children) return -ENOTEMPTY;
         if (curr->open_count > 0) return -EBUSY; // Someone holds it open
 
-        if (prev) prev->next = curr->next; else parent->children = curr->next;
+        // Let the owning filesystem remove it from its storage first; if that
+        // fails the node stays
+        if (parent->ops && parent->ops->remove) {
+            int err = parent->ops->remove(parent, curr);
+            if (err != 0) return err;
+        }
+
+        // The filesystem's call may have slept: find the node's place in the
+        // list again rather than trusting `prev`
+        vnode_t **link = &parent->children;
+        while (*link && *link != curr) link = &(*link)->next;
+        if (*link) *link = curr->next;
+        (void)prev;
+
         if (curr->owns_data) kfree((void *)curr->data);
         kfree(curr);
         return 0;

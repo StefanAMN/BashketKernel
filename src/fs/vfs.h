@@ -19,8 +19,17 @@ struct vnode;
 // Either may be NULL (reads then return end-of-file, writes fail).
 // Both return bytes transferred or a negative error number, and may sleep.
 typedef struct vnode_ops {
+    // Files
     int64_t (*read)(struct vnode *node, size_t offset, void *buf, size_t count);
     int64_t (*write)(struct vnode *node, size_t offset, const void *buf, size_t count);
+    int (*truncate)(struct vnode *node);   // Cut the file to zero length
+
+    // Directories whose entries are stored somewhere (a disk). create makes
+    // the entry and attaches the new node with vfs_attach; remove deletes
+    // the entry (the VFS then frees the node). Both return 0 or a negative
+    // error number.
+    int (*create)(struct vnode *dir, const char *name, bool directory, struct vnode **out);
+    int (*remove)(struct vnode *dir, struct vnode *child);
 } vnode_ops_t;
 
 typedef struct vnode {
@@ -67,6 +76,20 @@ vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, si
 /**
  * @brief Create a new directory vnode under specified parent directory.
  */
+/**
+ * @brief Create a file or directory in `parent` (NULL: the root).
+ * @param type VFS_FILE or VFS_DIRECTORY.
+ * @return 0 and the new node in *out, or a negative error number
+ *         (EEXIST, EROFS, EINVAL, ENOSPC, ...).
+ */
+int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out);
+
+/**
+ * @brief For filesystem drivers: add a node to the tree without asking any
+ *        filesystem to store it and without permission checks.
+ */
+vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type);
+
 vnode_t *vfs_create_dir(vnode_t *parent, const char *name);
 
 /**
