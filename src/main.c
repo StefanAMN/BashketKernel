@@ -12,6 +12,8 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "heap.h"
+#include "sched.h"
+#include "pit.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -39,6 +41,15 @@ static void hcf(void) {
     while (1) {
         asm("hlt");
     }
+}
+
+static void background_worker_task(void) {
+    kprintf("[Task 1] Background worker thread started!\n");
+    for (int i = 0; i < 3; i++) {
+        kprintf("[Task 1] Working... (step %d)\n", i + 1);
+        sched_yield();
+    }
+    kprintf("[Task 1] Background worker thread finished.\n");
 }
 
 void _start(void) {
@@ -85,11 +96,20 @@ void _start(void) {
     kheap_init();
     kprintf("Phase 3 Memory Management initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phase 1, 2 & 3)
+    // Phase 4: Multitasking & Scheduler
+    sched_init();
+    pit_init(100); // 100 Hz timer tick
+    kprintf("Phase 4 Multitasking initialization complete.\n");
+
+    // Create a demo kernel thread
+    task_create("worker1", background_worker_task);
+
+    // Run Kernel Unit Tests
     run_all_tests();
 
-    // Idle loop
+    // Idle loop yielding to background tasks
     while (1) {
+        sched_yield();
         asm("hlt");
     }
 }

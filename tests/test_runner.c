@@ -10,6 +10,7 @@ extern void test_suite_example(void);
 extern void test_suite_pmm(void);
 extern void test_suite_vmm(void);
 extern void test_suite_heap(void);
+extern void test_suite_sched(void);
 
 void run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -18,6 +19,7 @@ void run_all_tests(void) {
     test_suite_pmm();
     test_suite_vmm();
     test_suite_heap();
+    test_suite_sched();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);
