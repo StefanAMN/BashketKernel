@@ -49,6 +49,7 @@ bool fat32_parse_boot_sector(const uint8_t *sector, uint64_t disk_sectors, fat32
 
 /**
  * @brief Mount the disk's FAT32 volume at `mount_point` (created if needed).
+ *        `mount_point` must be a string that stays valid (a constant).
  * @return Number of files found, or -1 if there is no disk, it does not
  *         hold a FAT32 volume, or the mount point cannot be used.
  */

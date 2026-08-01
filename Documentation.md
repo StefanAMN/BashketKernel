@@ -474,7 +474,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 34. VFS Mount Manager (Phase 34)
-**Status: partial.** Records mount points; path lookup does not use them.
+**Status: real.** A record of which source provides which part of the tree (`/` memory, `/bin` initrd, `/proc`, `/dev`, `/disk` FAT32), shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Nothing can be unmounted.
 
 **Goal:** Path mount points (`vfs_mount`), mount table management, shell `mount` command.
 

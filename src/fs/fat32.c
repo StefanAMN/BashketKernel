@@ -38,6 +38,7 @@
 #include "kerrno.h"
 #include "heap.h"
 #include "sched.h"
+#include "mount.h"
 
 #define SECTOR VIRTIO_BLK_SECTOR_SIZE
 
@@ -754,6 +755,7 @@ int fat32_mount(const char *mount_point) {
     root->private_data = (uint64_t)root_info;
 
     mounted = true;
+    mount_register(mount_point, "fat32", "/dev/vda");
     int files = read_directory(volume.root_cluster, root, 0);
 
     kprintf("fat32: mounted at %s: %d files, %u clusters of %u bytes\n",

@@ -200,8 +200,10 @@ void _start(void) {
     // Phase 6: Filesystem & Initrd
     vfs_init();
     file_init();
+    mount_register("/", "ramfs", "memory");
     if (module_request.response && module_request.response->module_count > 0) {
         struct limine_file *initrd = module_request.response->modules[0];
+        mount_register("/bin", "initrd", "boot-module");
         if (!initrd_mount(initrd->address, initrd->size)) {
             kprintf("WARNING: initrd is corrupt; continuing with what was loaded\n");
         }

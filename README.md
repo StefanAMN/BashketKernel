@@ -42,7 +42,7 @@ known gaps in the parts that are real.
 | 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |
 | 22 | Priority scheduling | real | Round robin with weighted time slices: high, normal and low priority tasks run for 4, 2 and 1 ticks per turn, so priority sets the CPU share and nothing is starved. Per-task CPU ticks are in `/proc/tasks`. |
 | 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
-| 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks`, `cpuinfo` and `kmsg` are generated from live kernel state on every read. |
+| 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks`, `cpuinfo`, `kmsg` and `mounts` are generated from live kernel state on every read. |
 | 25 | TTY | real | Console reads go through a terminal layer in the kernel. Line mode (the default) echoes, handles backspace, Ctrl-U and Ctrl-D, and delivers whole lines; raw mode gives a program every key at once and is released automatically when that program ends. The PS/2 driver reports arrow keys, Home, End and Delete. One terminal only. |
 | 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
@@ -52,7 +52,7 @@ known gaps in the parts that are real.
 | 31 | User authentication | stub | Accepts `root` with any password. |
 | 32 | Kernel log, `dmesg` | real | Everything `kprintf` prints is kept in a 64 KiB ring buffer from the first boot message; `dmesg` (both shells) and `/proc/kmsg` read it. |
 | 33 | High-resolution timers | partial | `nanosleep` blocks without using CPU, but its resolution is the 10 ms tick. |
-| 34 | Mount table | partial | Records mount points; path lookup does not use them. |
+| 34 | Mount table | real | A record of which source provides which part of the tree (`/` memory, `/bin` initrd, `/proc`, `/dev`, `/disk` FAT32), shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Nothing can be unmounted. |
 | 35 | Shared memory | partial | Keyed kernel heap buffers. Not mapped into processes. |
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |
 | 37 | /dev devices | real | `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` is a seeded xorshift generator, not cryptographically secure. |
