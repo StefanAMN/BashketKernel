@@ -1,6 +1,17 @@
 /**
  * @file virtio_net.h
- * @brief VirtIO Network Card Driver Interface
+ * @brief virtio network card driver
+ *
+ * Drives the network card QEMU provides with `-device virtio-net-pci`,
+ * through the legacy virtio PCI interface. The driver moves whole Ethernet
+ * frames; what is inside them is the business of the network stack (net.h).
+ *
+ * Receiving: a set of buffers is kept posted on the receive queue. The card
+ * fills one per frame and raises an interrupt; virtio_net_poll hands the
+ * frame over and posts the buffer again.
+ *
+ * Sending: the frame is copied into a free transmit buffer and queued.
+ * Buffers are reclaimed the next time something is sent.
  */
 
 #ifndef VIRTIO_NET_H
@@ -10,18 +21,50 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#define ETH_FRAME_MAX 1514 // 14-byte header + 1500 bytes of payload
+#define ETH_FRAME_MIN 60   // Shorter frames are padded with zeros
+
 /**
- * @brief Initialize VirtIO Network adapter.
- * @return 0 on success, negative error code on failure.
+ * @brief Find and initialise the card.
+ * @return 0 if a card is ready, -1 if there is none or it could not be set up.
  */
 int virtio_net_init(void);
 
+bool virtio_net_present(void);
+
 /**
- * @brief Send Ethernet packet over VirtIO network interface.
- * @param packet Packet bytes.
- * @param len Packet length.
- * @return 0 on success, negative error code on failure.
+ * @brief The card's hardware (MAC) address.
  */
-int virtio_net_send_packet(const uint8_t *packet, size_t len);
+void virtio_net_get_mac(uint8_t mac[6]);
+
+/**
+ * @brief Queue one Ethernet frame for sending.
+ * @return 0, or -1 if there is no card, the length is not a valid frame
+ *         length, or every transmit buffer is in use (the frame is dropped,
+ *         as a busy network would drop it).
+ */
+int virtio_net_send(const void *frame, size_t len);
+
+/**
+ * @brief Take one received frame, if there is one.
+ * @return Its length, or 0 if nothing has arrived. Never sleeps.
+ */
+size_t virtio_net_poll(void *frame, size_t max);
+
+/**
+ * @brief True if virtio_net_poll would return a frame.
+ */
+bool virtio_net_rx_pending(void);
+
+/**
+ * @brief The channel (see sched_block) woken when frames arrive.
+ */
+void *virtio_net_rx_channel(void);
+
+/**
+ * @brief Frames received and sent since boot.
+ */
+uint64_t virtio_net_rx_count(void);
+uint64_t virtio_net_tx_count(void);
 
 #endif // VIRTIO_NET_H
