@@ -7,10 +7,10 @@ BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed f
 The kernel boots under QEMU into a kernel-mode shell that can run user
 programs in ring 3, including a user-space shell (`exec /bin/sh`) with
 pipelines, redirection and job interruption. Processes, memory management,
-the file layer, the terminal, the scheduler, a virtio disk driver and a
-FAT32 filesystem are real and tested. Networking, the mouse, the window
-manager and several later phases are still placeholders, and the table
-below says which. `PLAN.md` tracks the work and ends with a list of
+the file layer, the terminal, the scheduler, virtio disk and network
+drivers, a FAT32 filesystem and a small UDP/IP stack are real and tested.
+SMP, swap, the mouse, the window manager and a few other later phases are
+still placeholders, and the table below says which. `PLAN.md` tracks the work and ends with a list of
 known gaps in the parts that are real.
 
 - **real**: implemented and exercised at runtime.
@@ -31,10 +31,10 @@ known gaps in the parts that are real.
 | 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
 | 11 | virtio-blk and FAT32 | real | virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, one request at a time); `/dev/vda` is the raw disk. The FAT32 volume on it is mounted at `/disk`, readable and writable: files and directories can be created, written, appended, truncated and removed, programs can be run from it, and everything survives a reboot. Limits: 8.3 names only (no long names, no mixed case), no rename, no journal, and the directory tree is read once at boot. |
 | 12 | fork, exec, wait, kill | real | `fork` (copy-on-write), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. Signals can end a process, be ignored, or run a handler in the program (`signal`), with the interrupted state saved on the user stack and restored by `sigreturn`. They take effect at safe points; a process asleep in a system call is woken, and for a handler the call returns `EINTR`. There is no signal masking and no automatic restart of an interrupted call. |
-| 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
+| 13 | PCI and virtio-net | real | PCI scan (function 0 of each device), configuration space access, shared interrupt lines. virtio-net is a real driver: receive and transmit virtqueues, interrupt-driven, MAC address from the device. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`, and `edit`, a full-screen text editor. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`, `ping`, `udpecho`, `udpsend`, and `edit`, a full-screen text editor. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.) |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -47,7 +47,7 @@ known gaps in the parts that are real.
 | 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
 | 28 | ELF dynamic relocation | stub | Recognises relocation types and returns 0. |
-| 29 | UDP/IP sockets | stub | Internet checksum works. No packets are built or sent. |
+| 29 | UDP/IP sockets | real | Ethernet, ARP, IPv4, ICMP echo and UDP, with sockets as file descriptors (`socket`, `bind`, `sendto`, `recvfrom`) and a `ping` call. Static configuration for QEMU's user-mode network (10.0.2.15, gateway 10.0.2.2). No TCP, no DHCP, no DNS, no IPv6, no fragmentation. |
 | 30 | Window manager | stub | Allocates a pixel buffer. Nothing is composited. |
 | 31 | User authentication | stub | Accepts `root` with any password. |
 | 32 | Kernel log, `dmesg` | real | Everything `kprintf` prints is kept in a 64 KiB ring buffer from the first boot message; `dmesg` (both shells) and `/proc/kmsg` read it. |
@@ -74,7 +74,8 @@ src/
 │   ├── char/            # Serial (COM1 UART), RTC, /dev virtual devices
 │   ├── console/         # Framebuffer console & bitmap font blitter
 │   ├── input/           # PS/2 keyboard; mouse and cursor (stubs)
-│   ├── net/             # virtio-net (stub)
+│   ├── net/             # virtio-net network card driver
+│   ├── virtio/          # Virtqueues, shared by the virtio drivers
 │   └── tty/             # Terminal line discipline
 ├── fs/                  # VFS, open files and descriptors, pipes, initrd, /proc, ELF loader, FAT32
 ├── gui/
@@ -92,7 +93,7 @@ src/
 │   └── bench.{c,h}      # Timed benchmarks
 ├── lib/                 # Kernel utility functions (kprintf, kstring, string_util)
 ├── mm/                  # Frames, paging and address spaces, heap, slab, copy-on-write, mmap/brk; swap (stub)
-└── net/                 # Sockets (stub)
+└── net/                 # Network stack: Ethernet, ARP, IPv4, ICMP, UDP
 
 user/                    # Programs that run in ring 3, built into /bin of the initrd
 ├── lib/                 # Their C library, crt0 and system call wrappers
@@ -113,6 +114,8 @@ BashketKernel has a built-in unit test framework (`tests/`). `make test` builds 
 `make fuzz` runs `/bin/fuzz`, which makes random system calls with hostile arguments (kernel addresses, pointers at the edge of a mapping, huge lengths, closed descriptors) from ring 3. The kernel must survive every seed and pass `/bin/syscheck` afterwards. Seeds are fixed, so a failure can be reproduced with `make fuzz FUZZ_SEEDS=<n>`.
 
 `make test-disk` checks persistence across two boots, first for a raw sector and then for files (created, appended, copied, removed and overwritten in the first boot, checked by `fsck.fat` on the host, read back in the second). It then boots against six deliberately damaged FAT32 images, reads and writes on them, and requires the kernel to carry on.
+
+`make test-net` exchanges real UDP datagrams between the host and the kernel, in both directions, over the host's loopback interface.
 
 `make test-edit` drives the full-screen editor with scripted keystrokes and checks the saved file.
 
@@ -179,6 +182,7 @@ BashketOS> exec /disk/bin/hello        # a program loaded from the disk
 BashketOS> exec /bin/sh                # user-space shell
 $ ls /bin | wc > /tmp/count
 $ cat /tmp/count
+$ ping 10.0.2.2                        # QEMU's gateway answers
 $ edit /disk/todo.txt                  # full-screen editor: arrows, Ctrl-S save, Ctrl-Q quit
 $ spin                                 # loops forever; Ctrl-C stops it
 $ exit

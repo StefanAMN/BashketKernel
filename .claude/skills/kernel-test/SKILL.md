@@ -148,6 +148,23 @@ really redrawn. After changing the console, look at it: start QEMU with
 `-monitor unix:m.sock,server,nowait` (a short relative path: unix socket
 paths are limited to 108 bytes), send `screendump out.ppm`, convert and view.
 
+### The network
+
+Every run attaches a virtio network card on QEMU's user-mode network: the
+guest is 10.0.2.15, and 10.0.2.2 is a simulated gateway that answers ARP and
+ping and passes UDP on to the host's 127.0.0.1. Nothing needs configuring on
+the host and no outside network is used.
+
+```
+tools/qemu_shell.py --quiet 'exec /bin/ping 10.0.2.2 2'
+make test-net          # UDP between host and guest, both directions (tools/test_net.py)
+```
+
+`--net-forward udp:127.0.0.1:5555-:7` forwards a host port to the guest;
+`@wait:5` as a command lets the guest run while something outside talks to
+it; `--no-net` boots without a card. Malformed-packet handling is tested in
+the kernel (`tests/test_net.c` hands frames straight to `net_handle_frame`).
+
 ### The disk
 
 Every run attaches `disk.img` from the ISO's directory as a virtio disk

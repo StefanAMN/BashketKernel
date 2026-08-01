@@ -203,6 +203,51 @@ long chdir(const char *path)                       { return syscall1(SYS_CHDIR, 
 long getcwd(char *buf, size_t size)                { return syscall2(SYS_GETCWD, buf, size); }
 long unlink(const char *path)                      { return syscall1(SYS_UNLINK, path); }
 
+/* --- Network ---------------------------------------------------------------- */
+
+long socket(void)                                   { return syscall0(SYS_SOCKET); }
+long bind(int fd, unsigned port)                    { return syscall2(SYS_BIND, fd, port); }
+long ping(uint32_t ip, unsigned long timeout_ms)    { return syscall2(SYS_PING, ip, timeout_ms); }
+
+long sendto(int fd, const void *buf, size_t len, uint32_t ip, unsigned port) {
+    return syscall5(SYS_SENDTO, fd, buf, len, ip, port);
+}
+
+long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned long timeout_ms) {
+    return syscall5(SYS_RECVFROM, fd, buf, len, from, timeout_ms);
+}
+
+uint32_t parse_ip(const char *text) {
+    uint32_t ip = 0;
+    for (int part = 0; part < 4; part++) {
+        if (*text < '0' || *text > '9') return 0;
+        unsigned value = 0;
+        int digits = 0;
+        while (*text >= '0' && *text <= '9') {
+            value = value * 10 + (unsigned)(*text++ - '0');
+            if (++digits > 3 || value > 255) return 0;
+        }
+        ip = (ip << 8) | value;
+        if (part < 3) {
+            if (*text != '.') return 0;
+            text++;
+        }
+    }
+    return *text == '\0' ? ip : 0;
+}
+
+void format_ip(uint32_t ip, char out[16]) {
+    size_t len = 0;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        unsigned part = (ip >> shift) & 0xFF;
+        if (part >= 100) out[len++] = (char)('0' + part / 100);
+        if (part >= 10) out[len++] = (char)('0' + part / 10 % 10);
+        out[len++] = (char)('0' + part % 10);
+        if (shift > 0) out[len++] = '.';
+    }
+    out[len] = '\0';
+}
+
 void tty_raw(int raw) { syscall1(SYS_TTY_RAW, raw); }
 
 void tty_size(unsigned *columns, unsigned *rows) {
@@ -236,6 +281,11 @@ const char *strerror(long err) {
         case EROFS:     return "read-only filesystem";
         case EPIPE:     return "broken pipe";
         case ENOSYS:    return "not implemented";
+        case EMSGSIZE:  return "message too long";
+        case EADDRINUSE: return "port already in use";
+        case ENETDOWN:  return "no network";
+        case ETIMEDOUT: return "timed out";
+        case EHOSTUNREACH: return "host unreachable";
         case ENOTEMPTY: return "directory not empty";
         default:        return "unknown error";
     }

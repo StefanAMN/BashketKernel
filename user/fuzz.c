@@ -104,11 +104,11 @@ static void one_call(void) {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
-        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE,
+        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_BIND, SYS_SENDTO, SYS_RECVFROM, SYS_PING,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
-    unsigned long a = random_any(), b = random_any(), c = random_any(), d = random_any();
+    unsigned long a = random_any(), b = random_any(), c = random_any(), d = random_any(), e = random_any();
 
     /* Steer the arguments so calls often get past the first check. Half the
      * time, leave them completely random. */
@@ -178,6 +178,17 @@ static void one_call(void) {
         case SYS_SLEEP:
             a = rnd() % 3; /* Milliseconds */
             break;
+        case SYS_RECVFROM:
+            e = rnd() % 20 + 1;   /* A timeout in ms: never wait for ever on a socket nobody writes to */
+            if (shaped) { a = 3 + rnd() % 14; b = random_pointer(); c = random_length(); d = (rnd() % 2) ? 0 : random_pointer(); }
+            break;
+        case SYS_SENDTO:
+            if (shaped) { a = 3 + rnd() % 14; b = random_pointer(); c = rnd() % 1600; d = 0x0A00020F; e = 1 + rnd() % 65535; }
+            break;
+        case SYS_PING:
+            /* Only our own address: pinging random ones would wait for ARP timeouts */
+            a = 0x0A00020F; b = rnd() % 20;
+            break;
         case SYS_SIGRETURN:
             /* With no signal frame on the stack this ends the process, which
              * is the right answer but also ends the round: keep it rare */
@@ -197,7 +208,7 @@ static void one_call(void) {
             break;
     }
 
-    long result = syscall6(num, (long)a, (long)b, (long)c, (long)d, (long)random_any(), (long)random_any());
+    long result = syscall6(num, (long)a, (long)b, (long)c, (long)d, (long)e, (long)random_any());
 
     /* A forked copy must not start a fuzzing dynasty */
     if (num == SYS_FORK && result == 0) exit(0);
@@ -214,6 +225,8 @@ static void fuzz_child(unsigned long seed) {
     open("/proc/tasks", O_RDONLY);
     open("/tmp", O_RDONLY);
     if (pipe(fds) == 0) write(fds[1], "seed data", 9);
+    long sock = socket();
+    if (sock >= 0) bind((int)sock, 20000 + (unsigned)(seed % 1000));
 
     for (int i = 0; i < CALLS_PER_ROUND; i++) one_call();
     exit(0);

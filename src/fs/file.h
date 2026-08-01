@@ -36,7 +36,8 @@
 typedef enum {
     FILE_CONSOLE, // Keyboard/serial in, screen/serial out
     FILE_VNODE,   // A file or directory in the VFS
-    FILE_PIPE     // One end of a pipe (which end: readable or writable)
+    FILE_PIPE,    // One end of a pipe (which end: readable or writable)
+    FILE_SOCKET   // A UDP socket: used with sendto/recvfrom, not read/write
 } file_kind_t;
 
 typedef struct file {
@@ -48,6 +49,7 @@ typedef struct file {
     vnode_t *node;     // FILE_VNODE
     size_t offset;     // FILE_VNODE: position; for a directory, the entry index
     pipe_t *pipe;      // FILE_PIPE
+    struct udp_socket *socket; // FILE_SOCKET
 } file_t;
 
 // One directory entry, as returned to user programs by readdir
@@ -84,6 +86,11 @@ file_t *file_open_console(void);
  * @return 0 or a negative error number.
  */
 int file_open_pipe(file_t **out_read, file_t **out_write);
+
+/**
+ * @brief A new open file for a new UDP socket (NULL if none can be made).
+ */
+file_t *file_open_socket(void);
 
 /**
  * @brief Take another reference to an open file (fork, dup2).

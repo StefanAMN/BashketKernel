@@ -36,6 +36,11 @@
 #define SYS_SIGRETURN 302
 #define SYS_TTY_RAW  303
 #define SYS_TTY_SIZE 304
+#define SYS_PING     305
+#define SYS_SOCKET   41
+#define SYS_SENDTO   44
+#define SYS_RECVFROM 45
+#define SYS_BIND     49
 #define SYS_SETPRIORITY 301
 
 #define ENOENT   2
@@ -59,6 +64,11 @@
 #define EROFS   30
 #define EPIPE   32
 #define ENOSYS  38
+#define EMSGSIZE     90
+#define EADDRINUSE   98
+#define ENETDOWN    100
+#define ETIMEDOUT   110
+#define EHOSTUNREACH 113
 #define ENOTEMPTY 39
 
 #define O_RDONLY 0x000
@@ -74,6 +84,13 @@
 
 #define DT_FILE 1
 #define DT_DIR  2
+
+/* Where a datagram came from. 10.0.2.2 is the number 0x0A000202. */
+struct net_address {
+    uint32_t ip;
+    uint16_t port;
+    uint16_t reserved;
+};
 
 /* One directory entry, filled in by readdir() */
 struct dirent {
@@ -108,5 +125,6 @@ static inline long syscall6(long num, long a1, long a2, long a3, long a4, long a
 #define syscall2(n, a, b)       syscall6((n), (long)(a), (long)(b), 0, 0, 0, 0)
 #define syscall3(n, a, b, c)    syscall6((n), (long)(a), (long)(b), (long)(c), 0, 0, 0)
 #define syscall4(n, a, b, c, d) syscall6((n), (long)(a), (long)(b), (long)(c), (long)(d), 0, 0)
+#define syscall5(n, a, b, c, d, e) syscall6((n), (long)(a), (long)(b), (long)(c), (long)(d), (long)(e), 0)
 
 #endif

@@ -80,7 +80,7 @@ NET_FLAGS = -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 
 QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
-.PHONY: all clean iso run run-gdb test test-lowmem test-disk test-edit fuzz check
+.PHONY: all clean iso run run-gdb test test-lowmem test-disk test-edit test-net fuzz check
 
 all: $(KERNEL)
 
@@ -250,6 +250,12 @@ test-edit: iso
 		'echo still-in-line-mode' > $(BUILD)/edit.log 2>&1 \
 		&& echo "editor: ok" || { echo "editor: FAILED (see $(BUILD)/edit.log)"; exit 1; }
 
+# Real UDP datagrams between the host and the kernel, in both directions
+# (see tools/test_net.py). Uses only the loopback interface of the host.
+test-net: iso
+	@tools/test_net.py $(SHELL_CPU) > $(BUILD)/net.log 2>&1 \
+		&& tail -1 $(BUILD)/net.log || { echo "network: FAILED (see $(BUILD)/net.log)"; exit 1; }
+
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
 check:
@@ -259,6 +265,8 @@ check:
 	@$(MAKE) --no-print-directory test-lowmem CPU=max
 	@$(MAKE) --no-print-directory test-disk
 	@$(MAKE) --no-print-directory test-edit
+	@$(MAKE) --no-print-directory test-net
+	@$(MAKE) --no-print-directory test-net CPU=max
 	@$(MAKE) --no-print-directory fuzz FUZZ_SEEDS="1 2 3"
 	@$(MAKE) --no-print-directory fuzz CPU=max FUZZ_SEEDS="4 5"
 	@echo "ALL CHECKS PASSED"

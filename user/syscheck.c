@@ -558,6 +558,87 @@ static void check_interrupted_calls(void) {
     CHECK(waitpid(pid, &status) == pid && status == 0);
 }
 
+#define OUR_IP 0x0A00020FUL    /* 10.0.2.15 */
+
+static void check_network(void) {
+    char buf[64];
+    struct net_address from;
+
+    /* Address parsing in the library */
+    CHECK(parse_ip("10.0.2.15") == OUR_IP);
+    CHECK(parse_ip("255.255.255.255") == 0xFFFFFFFFUL);
+    CHECK(parse_ip("10.0.2") == 0 && parse_ip("10.0.2.256") == 0 && parse_ip("10.0.2.15x") == 0);
+    CHECK(parse_ip("") == 0 && parse_ip("a.b.c.d") == 0 && parse_ip("1..2.3") == 0);
+    format_ip(OUR_IP, buf);
+    CHECK(strcmp(buf, "10.0.2.15") == 0);
+
+    CHECK(ping(OUR_IP, 500) >= 0);                        /* Ourselves: always answers */
+
+    /* A server in a child process, a client here, talking over UDP */
+    long server = socket();
+    CHECK(server >= 3);
+    CHECK(bind((int)server, 9000) == 0);
+    CHECK(bind((int)server, 9001) == -EINVAL);            /* Already bound */
+
+    long pid = fork();
+    if (pid == 0) {
+        /* The child inherited the socket: it answers one datagram, upper-cased */
+        long n = recvfrom((int)server, buf, sizeof(buf), &from, 3000);
+        if (n <= 0) exit(1);
+        for (long i = 0; i < n; i++) if (buf[i] >= 'a' && buf[i] <= 'z') buf[i] -= 32;
+        exit(sendto((int)server, buf, (size_t)n, from.ip, from.port) == n ? 0 : 2);
+    }
+
+    long client = socket();
+    CHECK(client >= 3 && client != server);
+    CHECK(bind((int)client, 9000) == -EADDRINUSE);        /* The server has it */
+    CHECK(sendto((int)client, "shout", 5, OUR_IP, 9000) == 5);
+    memset(buf, 0, sizeof(buf));
+    memset(&from, 0, sizeof(from));
+    CHECK(recvfrom((int)client, buf, sizeof(buf), &from, 3000) == 5);
+    CHECK(memcmp(buf, "SHOUT", 5) == 0);
+    CHECK(from.ip == OUR_IP && from.port == 9000);
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+
+    /* Timeouts, limits and bad arguments */
+    CHECK(recvfrom((int)client, buf, sizeof(buf), NULL, 30) == -ETIMEDOUT);
+    static char big[1500];
+    CHECK(sendto((int)client, big, 1472, OUR_IP, 9000) == 1472);   /* The largest datagram */
+    CHECK(sendto((int)client, big, 1473, OUR_IP, 9000) == -EMSGSIZE);
+    CHECK(sendto((int)client, big, 10, OUR_IP, 0) == -EINVAL);     /* Port 0 */
+    CHECK(sendto((int)client, (void *)0xffffffff80000000, 10, OUR_IP, 9000) == -EFAULT);
+    CHECK(recvfrom((int)server, (void *)0xffffffff80000000, 10, NULL, 30) == -EFAULT);
+    CHECK(recvfrom((int)server, buf, 10, (struct net_address *)0xffffffff80000000, 30) == -EFAULT);
+    CHECK(recvfrom((int)server, buf, sizeof(buf), NULL, 500) == 64);   /* The big datagram, cut to our buffer */
+
+    /* Socket calls on things that are not sockets, and file calls on sockets */
+    CHECK(sendto(1, "x", 1, OUR_IP, 9000) == -EBADF);
+    CHECK(bind(0, 9100) == -EBADF);
+    CHECK(recvfrom(99, buf, 1, NULL, 10) == -EBADF);
+    CHECK(read((int)client, buf, 1) == -EINVAL);
+    CHECK(write((int)client, "x", 1) == -EINVAL);
+
+    /* Closing a socket frees its port */
+    CHECK(close((int)server) == 0);
+    CHECK(close((int)client) == 0);
+    long again = socket();
+    CHECK(bind((int)again, 9000) == 0);
+    close((int)again);
+
+    /* A receive that would wait for ever is cut short by a handled signal */
+    long waiting = fork();
+    if (waiting == 0) {
+        long s = socket();
+        bind((int)s, 9200);
+        signal(SIGUSR1, counting_handler);
+        exit(recvfrom((int)s, buf, sizeof(buf), NULL, 0) == -EINTR ? 0 : 1);
+    }
+    sleep_ms(50);
+    kill(waiting, SIGUSR1);
+    CHECK(waitpid(waiting, &status) == waiting && status == 0);
+}
+
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -735,6 +816,7 @@ int main(void) {
     check_environment();
     check_signals();
     check_interrupted_calls();
+    check_network();
     check_pipes();
 
     if (failures == 0) {

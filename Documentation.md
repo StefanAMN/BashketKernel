@@ -216,7 +216,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 13. PCI Bus & VirtIO Network Driver (Phase 13)
-**Status: partial.** PCI scan works (function 0 only). virtio-net only logs.
+**Status: real.** PCI scan (function 0 of each device), configuration space access, shared interrupt lines. virtio-net is a real driver: receive and transmit virtqueues, interrupt-driven, MAC address from the device.
 
 **Goal:** PCI bus enumeration, VirtIO Net driver (Ethernet frame transmit/receive).
 
@@ -414,7 +414,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 29. UDP/IP Network Socket Stack (Phase 29)
-**Status: stub.** Internet checksum works. No packets are built or sent.
+**Status: real.** Ethernet, ARP, IPv4, ICMP echo and UDP, with sockets as file descriptors (`socket`, `bind`, `sendto`, `recvfrom`) and a `ping` call. Static configuration for QEMU's user-mode network (10.0.2.15, gateway 10.0.2.2). No TCP, no DHCP, no DNS, no IPv6, no fragmentation.
 
 **Goal:** Network socket layer (`socket`, `bind`, `sendto`, `recvfrom`), IPv4/UDP packet handling.
 

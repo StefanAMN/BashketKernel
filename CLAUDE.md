@@ -33,6 +33,9 @@ tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do no
 tools/qemu_shell.py --quiet '!exec /bin/edit /tmp/f' '~hi\r^S^Q'   # '~' = raw keys into a full-screen program
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 
+# A virtio network card on QEMU's user-mode network is attached too: the
+# guest is 10.0.2.15, the gateway 10.0.2.2 answers ping and reaches the host's
+# 127.0.0.1. tools/test_net.py exchanges UDP with the host in both directions.
 # A 64 MiB disk image (build/disk.img) is attached to every run as a virtio
 # disk. Scripted runs and tests discard their writes (snapshot=on);
 # `make run` and qemu_shell.py --keep-disk-writes really modify it.
@@ -173,6 +176,15 @@ code comments and commit messages; `git log` is the full history.
 - **A VFS that keeps the whole tree in memory needs hooks, not a rewrite, to
   sit on a real filesystem**: `create`, `remove` and `truncate` on the
   directory's owner, next to the per-file `read`/`write`.
+- **The thread that processes incoming packets must never wait for one.**
+  The receive thread answers pings and ARP requests; if its reply needed an
+  ARP answer it would wait for a packet only it can deliver. Replies sent
+  from it use the sender's hardware address, learned from the packet being
+  answered, and fail rather than block if that is missing.
+- **PCI interrupt lines are shared.** The disk and the network card got the
+  same IRQ, and a one-handler-per-IRQ table silently replaced the disk's
+  handler. (The disk kept working only because of its timeout fallback: a
+  safety net can hide the bug it catches.)
 - **A wait during which the task owns a device must be uninterruptible**
   (`sched_block_uninterruptible`). A disk request in flight cannot be
   abandoned half way: a task killed there would leave the virtqueue mid-

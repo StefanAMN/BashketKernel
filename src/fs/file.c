@@ -9,6 +9,7 @@
 #include "kerrno.h"
 #include "tty.h"
 #include "slab.h"
+#include "net.h"
 
 // Open files are small, all the same size, and created and destroyed
 // constantly (every open, pipe and exit), which is what a slab cache is for.
@@ -96,6 +97,19 @@ int file_open_pipe(file_t **out_read, file_t **out_write) {
     return 0;
 }
 
+file_t *file_open_socket(void) {
+    udp_socket_t *socket = udp_open();
+    if (!socket) return NULL;
+
+    file_t *file = file_alloc(FILE_SOCKET, true, true);
+    if (!file) {
+        udp_close(socket);
+        return NULL;
+    }
+    file->socket = socket;
+    return file;
+}
+
 file_t *file_dup(file_t *file) {
     if (file) file->refs++;
     return file;
@@ -110,6 +124,8 @@ void file_close(file_t *file) {
     } else if (file->kind == FILE_PIPE) {
         if (file->readable) pipe_close_reader(file->pipe);
         else pipe_close_writer(file->pipe);
+    } else if (file->kind == FILE_SOCKET) {
+        udp_close(file->socket);
     }
     file_free(file);
 }
@@ -141,6 +157,8 @@ int64_t file_read(file_t *file, void *buf, size_t count) {
             return tty_read(buf, count);
         case FILE_PIPE:
             return pipe_read(file->pipe, buf, count);
+        case FILE_SOCKET:
+            return -EINVAL; // Datagrams have addresses: use recvfrom
         case FILE_VNODE: {
             if (file->node->type == VFS_DIRECTORY) return -EISDIR;
             if (file->node->ops) {
@@ -166,6 +184,8 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
             return tty_write(buf, count);
         case FILE_PIPE:
             return pipe_write(file->pipe, buf, count);
+        case FILE_SOCKET:
+            return -EINVAL; // ... and sendto
         case FILE_VNODE: {
             if (file->node->ops) {
                 if (!file->node->ops->write) return -EINVAL; // Read-only device
