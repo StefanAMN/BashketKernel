@@ -47,6 +47,12 @@ sighandler_t signal(int sig, sighandler_t handler);
 /* Memory */
 void *sbrk(long increment);
 void *mmap_anon(size_t length);
+void *mmap_shared(size_t length);            /* Stays shared with children created by fork */
+
+/* Shared memory between any processes that agree on a key */
+long shmget(unsigned key, size_t size);      /* Find or create; returns an id */
+void *shmat(long id);                        /* Map it here; NULL on failure. munmap() to detach. */
+long shmrm(long id);                         /* Release the key; memory goes with the last mapping */
 long munmap(void *addr, size_t length);
 void *malloc(size_t size);
 void free(void *ptr);

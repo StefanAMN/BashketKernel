@@ -166,14 +166,16 @@ bool vmm_clone_user_space(uint64_t *dst, uint64_t *src) {
                     // A writable page becomes read-only + COW in the parent
                     // too: whichever side writes first gets the copy.
                     // Read-only pages (program text) are simply shared.
-                    if (pte & VMM_WRITABLE) {
+                    // Shared memory is the exception: it stays writable and
+                    // both processes keep seeing each other's writes.
+                    if ((pte & VMM_WRITABLE) && !(pte & VMM_SHARED)) {
                         pte = (pte & ~VMM_WRITABLE) | VMM_COW;
                     }
 
                     uint64_t virt = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
                                     ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
                     uint64_t phys = pte & PTE_ADDR_MASK;
-                    uint64_t flags = pte & (VMM_USER | VMM_COW | VMM_NO_EXECUTE);
+                    uint64_t flags = pte & (VMM_USER | VMM_COW | VMM_NO_EXECUTE | VMM_SHARED | VMM_WRITABLE);
 
                     // Count the new owner before it exists, so a failure
                     // below is undone by destroying dst like any other space.

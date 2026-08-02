@@ -89,7 +89,20 @@ void *mmap_anon(size_t length) {
     return ret < 0 ? NULL : (void *)ret;
 }
 
+void *mmap_shared(size_t length) {
+    long ret = syscall4(SYS_MMAP, 0, length, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS);
+    return ret < 0 ? NULL : (void *)ret;
+}
+
 long munmap(void *addr, size_t length) { return syscall2(SYS_MUNMAP, addr, length); }
+
+long shmget(unsigned key, size_t size)  { return syscall2(SYS_SHMGET, key, size); }
+long shmrm(long id)                     { return syscall1(SYS_SHMRM, id); }
+
+void *shmat(long id) {
+    long ret = syscall1(SYS_SHMAT, id);
+    return ret < 0 ? NULL : (void *)ret;
+}
 
 /* First-fit free list on top of sbrk. Each block has a header; freed blocks
  * are reused but never returned to the kernel or merged. Enough for small

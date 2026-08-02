@@ -53,7 +53,7 @@ known gaps in the parts that are real.
 | 32 | Kernel log, `dmesg` | real | Everything `kprintf` prints is kept in a 64 KiB ring buffer from the first boot message; `dmesg` (both shells) and `/proc/kmsg` read it. |
 | 33 | High-resolution timers | partial | `nanosleep` blocks without using CPU, but its resolution is the 10 ms tick. |
 | 34 | Mount table | real | A record of which source provides which part of the tree (`/` memory, `/bin` initrd, `/proc`, `/dev`, `/disk` FAT32), shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Nothing can be unmounted. |
-| 35 | Shared memory | partial | Keyed kernel heap buffers. Not mapped into processes. |
+| 35 | Shared memory | real | Two kinds, both real: `mmap(MAP_SHARED)` memory stays shared between a process and the children it forks, and keyed segments (`shmget`, `shmat`, `shmrm`) are shared between any processes. Frames are reference counted and freed with the last mapping. No permissions. |
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |
 | 37 | /dev devices | real | `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` is a seeded xorshift generator, not cryptographically secure. |
 | 38 | Benchmarks | real | `bench` times memcpy, memset, heap and frame allocation for 100 ms each and prints rates. Timer resolution limits accuracy to a few percent. |
@@ -83,7 +83,7 @@ src/
 ├── include/             # Global test & subsystem headers
 ├── init/                # Kernel entry point (kmain in main.c)
 ├── kernel/
-│   ├── ipc/             # Shared memory (partial)
+│   ├── ipc/             # Shared memory segments
 │   ├── log/             # Kernel message log (dmesg, /proc/kmsg)
 │   ├── proc/            # Processes (spawn, fork, exec, wait, kill), kernel shell, environment, auth (stub)
 │   ├── sched/           # Scheduler, task struct, blocking and wakeup, priorities

@@ -639,6 +639,73 @@ static void check_network(void) {
     CHECK(waitpid(waiting, &status) == waiting && status == 0);
 }
 
+static void check_shared_memory(void) {
+    int status;
+
+    /* mmap(MAP_SHARED): parent and child see each other's writes, unlike
+     * ordinary (private) memory, which fork separates */
+    volatile int *shared = mmap_shared(4096);
+    volatile int *private = mmap_anon(4096);
+    CHECK(shared != NULL && private != NULL);
+    shared[0] = 1;
+    private[0] = 1;
+    long pid = fork();
+    if (pid == 0) {
+        shared[0] = 42;
+        shared[1] = (int)getpid();
+        private[0] = 42;
+        exit(0);
+    }
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(shared[0] == 42 && shared[1] == (int)pid);      /* The child's writes arrived */
+    CHECK(private[0] == 1);                               /* ... but not in private memory */
+    shared[0] = 7;                                        /* And we can still write it */
+    CHECK(shared[0] == 7);
+    CHECK(munmap((void *)shared, 4096) == 0 && munmap((void *)private, 4096) == 0);
+    CHECK(syscall4(SYS_MMAP, 0, 4096, PROT_READ, MAP_SHARED | MAP_PRIVATE | MAP_ANONYMOUS) == -EINVAL);
+
+    /* A keyed segment: two processes that attach separately share it */
+    long id = shmget(0xB45C, 8192);
+    CHECK(id >= 0);
+    CHECK(shmget(0xB45C, 100) == id);                     /* The same key finds the same segment */
+    CHECK(shmget(0xB45C, 1 << 20) == -EINVAL);            /* Larger than it is */
+    CHECK(shmget(0xB45D, 0) == -EINVAL);
+    volatile char *mine = shmat(id);
+    CHECK(mine != NULL);
+    CHECK(mine[0] == 0 && mine[8191] == 0);               /* Starts zeroed */
+    mine[0] = 'p';
+
+    pid = fork();
+    if (pid == 0) {
+        /* Attach again in the child, at a different address, and answer */
+        long same = shmget(0xB45C, 8192);
+        volatile char *theirs = shmat(same);
+        int ok = theirs != NULL && theirs != mine && theirs[0] == 'p';
+        if (ok) theirs[8191] = 'c';
+        exit(ok ? 0 : 1);
+    }
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(mine[8191] == 'c');
+
+    /* Removing the key does not pull the memory out from under us */
+    CHECK(shmrm(id) == 0);
+    CHECK(shmrm(id) == -EINVAL);
+    CHECK(shmat(id) == NULL);
+    mine[1] = 'x';
+    CHECK(mine[0] == 'p' && mine[1] == 'x');
+    CHECK(munmap((void *)mine, 8192) == 0);
+    CHECK(write(1, (void *)mine, 1) == -EFAULT);          /* Unmapped now */
+
+    /* The key is free for a new, empty segment */
+    long fresh = shmget(0xB45C, 4096);
+    CHECK(fresh >= 0);
+    volatile char *empty = shmat(fresh);
+    CHECK(empty != NULL && empty[0] == 0);
+    CHECK(shmrm(fresh) == 0);
+    munmap((void *)empty, 4096);
+    CHECK(shmat(-1) == NULL && shmat(9999) == NULL);
+}
+
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -817,6 +884,7 @@ int main(void) {
     check_signals();
     check_interrupted_calls();
     check_network();
+    check_shared_memory();
     check_pipes();
 
     if (failures == 0) {

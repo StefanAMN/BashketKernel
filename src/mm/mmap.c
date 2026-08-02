@@ -55,6 +55,10 @@ int user_map_range(uint64_t *pml4, uint64_t addr, size_t length, int prot) {
 }
 
 uint64_t user_mmap_anon(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot) {
+    return user_mmap_anon_flags(pml4, next_addr, length, prot, false);
+}
+
+uint64_t user_mmap_anon_flags(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot, bool shared) {
     if (!pml4 || !next_addr || length == 0) return 0;
 
     uint64_t size = page_align_up(length);
@@ -64,6 +68,16 @@ uint64_t user_mmap_anon(uint64_t *pml4, uint64_t *next_addr, size_t length, int 
     if (addr >= USER_MMAP_END || size > USER_MMAP_END - addr) return 0;
 
     if (user_map_range(pml4, addr, size, prot) != 0) return 0;
+
+    // Shared: mark every page, so that fork hands the same frames to the
+    // child instead of making them copy-on-write
+    if (shared) {
+        for (uint64_t page = addr; page < addr + size; page += PAGE_SIZE) {
+            uint64_t pte = vmm_get_pte(pml4, page);
+            vmm_map_page(pml4, page, pte & PTE_ADDR_MASK,
+                         (pte & (VMM_PRESENT | VMM_USER | VMM_WRITABLE | VMM_NO_EXECUTE)) | VMM_SHARED);
+        }
+    }
 
     *next_addr = addr + size;
     return addr;
