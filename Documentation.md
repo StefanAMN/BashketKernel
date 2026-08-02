@@ -92,7 +92,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 5. Userspace & System Calls (Phase 5)
-**Status: real.** Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader, per-process file descriptors.
+**Status: real.** Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, per-process file descriptors, and a hardened ELF64 loader. User programs are position-independent and loaded at a random address, with a randomised stack and mmap region (ASLR).
 
 **Goal:** Syscall/sysret MSR setup, user privilege transition (Ring 3), ELF64 loader.
 
@@ -402,7 +402,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 28. Dynamic Executable Linking (Phase 28)
-**Status: stub.** Recognises relocation types and returns 0.
+**Status: real.** Static position-independent executables: the loader places them at a chosen or random address and applies their relative relocations, refusing any that would write outside the image. No shared libraries, no symbol resolution, no dynamic linker.
 
 **Goal:** Parsing dynamic ELF section headers (`.dynamic`, `.got`, `.plt`), runtime symbol resolution.
 

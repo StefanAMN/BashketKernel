@@ -23,7 +23,7 @@ known gaps in the parts that are real.
 | 2 | GDT, TSS, IDT, interrupts | real | Double faults run on their own stack (IST1). Kernel code is read-only; NX, WP, and (where the CPU has them) SMEP, SMAP and UMIP are on. QEMU's default CPU has none of the last three: use `CPU=max`. |
 | 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap, per-process address spaces. |
 | 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. Tasks block (sleep, input, wait, semaphores) instead of polling. 100 Hz PIT tick. |
-| 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader, per-process file descriptors. |
+| 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, per-process file descriptors, and a hardened ELF64 loader. User programs are position-independent and loaded at a random address, with a randomised stack and mmap region (ASLR). |
 | 6 | VFS and initrd | real | In-memory VFS tree, readable and writable (contents live in RAM and are lost at power-off), with per-process working directories and relative paths. A USTAR initrd with the user programs is loaded as a Limine module. |
 | 7 | Shell | real | Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines and redirection, built only on system calls. |
 | 8 | Slab, COW, mmap | partial | The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects. Anonymous `mmap`, `munmap` and `brk` work per process. `fork` shares pages copy-on-write. The user stack grows on demand up to 8 MiB. `mmap` and `brk` memory is still allocated at once, and nothing is file-backed. |
@@ -34,7 +34,7 @@ known gaps in the parts that are real.
 | 13 | PCI and virtio-net | real | PCI scan (function 0 of each device), configuration space access, shared interrupt lines. virtio-net is a real driver: receive and transmit virtqueues, interrupt-driven, MAC address from the device. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`, `ping`, `udpecho`, `udpsend`, and `edit`, a full-screen text editor. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`, `ping`, `udpecho`, `udpsend`, `aslr`, and `edit`, a full-screen text editor. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.) |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -46,7 +46,7 @@ known gaps in the parts that are real.
 | 25 | TTY | real | Console reads go through a terminal layer in the kernel. Line mode (the default) echoes, handles backspace, Ctrl-U and Ctrl-D, and delivers whole lines; raw mode gives a program every key at once and is released automatically when that program ends. The PS/2 driver reports arrow keys, Home, End and Delete. One terminal only. |
 | 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
-| 28 | ELF dynamic relocation | stub | Recognises relocation types and returns 0. |
+| 28 | ELF dynamic relocation | real | Static position-independent executables: the loader places them at a chosen or random address and applies their relative relocations, refusing any that would write outside the image. No shared libraries, no symbol resolution, no dynamic linker. |
 | 29 | UDP/IP sockets | real | Ethernet, ARP, IPv4, ICMP echo and UDP, with sockets as file descriptors (`socket`, `bind`, `sendto`, `recvfrom`) and a `ping` call. Static configuration for QEMU's user-mode network (10.0.2.15, gateway 10.0.2.2). No TCP, no DHCP, no DNS, no IPv6, no fragmentation. |
 | 30 | Window manager | stub | Allocates a pixel buffer. Nothing is composited. |
 | 31 | User authentication | stub | Accepts `root` with any password. |

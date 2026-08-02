@@ -16,6 +16,7 @@
 #include "spinlock.h"
 #include "file.h"
 #include "fpu.h"
+#include "dev.h"
 #include "heap.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
@@ -27,6 +28,7 @@ typedef struct {
     uint64_t entry;
     uint64_t rsp;
     uint64_t image_end;
+    uint64_t stack_top;    // Randomised per program
     char name[32];
 } user_image_t;
 
@@ -67,8 +69,8 @@ static int push_strings(uint64_t *pml4, char *const strings[], uint64_t *sp, siz
     return count;
 }
 
-static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[], char *const envp[], uint64_t *out_rsp) {
-    uint64_t stack_bottom = USER_STACK_TOP - (uint64_t)USER_STACK_PAGES * PAGE_SIZE;
+static bool build_user_stack(uint64_t *pml4, uint64_t stack_top, const char *path, char *const argv[], char *const envp[], uint64_t *out_rsp) {
+    uint64_t stack_bottom = stack_top - (uint64_t)USER_STACK_PAGES * PAGE_SIZE;
     if (user_map_range(pml4, stack_bottom, USER_STACK_PAGES * PAGE_SIZE, PROT_READ | PROT_WRITE) != 0) {
         return false;
     }
@@ -78,7 +80,7 @@ static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[
 
     uint64_t arg_addrs[PROCESS_MAX_ARGS], env_addrs[PROCESS_MAX_ARGS];
     size_t string_bytes = 0;
-    uint64_t sp = USER_STACK_TOP;
+    uint64_t sp = stack_top;
 
     int argc = push_strings(pml4, argv, &sp, &string_bytes, arg_addrs);
     int envc = push_strings(pml4, envp, &sp, &string_bytes, env_addrs);
@@ -128,10 +130,15 @@ static bool load_user_image(const char *path, char *const argv[], char *const en
     }
     if (!contents) return false;
 
+    // Address-space layout randomisation: the stack starts up to 16 MiB
+    // below its highest possible position (the program itself is placed by
+    // the loader, the mmap region by apply_image)
+    image->stack_top = USER_STACK_TOP - ((uint64_t)(get_random_u32() & 0xFFF) << 12);
+
     image->pml4 = vmm_create_address_space();
     bool ok = image->pml4 != NULL &&
               elf_load(image->pml4, contents, file->size, &image->entry, &image->image_end) &&
-              build_user_stack(image->pml4, path, argv, envp, &image->rsp);
+              build_user_stack(image->pml4, image->stack_top, path, argv, envp, &image->rsp);
     kfree(loaded);
 
     if (!ok) {
@@ -152,7 +159,8 @@ static void apply_image(task_t *task, const user_image_t *image) {
     task->user_rsp = image->rsp;
     task->brk_start = page_align_up(image->image_end);
     task->brk_end = task->brk_start;
-    task->mmap_next = USER_MMAP_BASE;
+    task->mmap_next = USER_MMAP_BASE + ((uint64_t)(get_random_u32() & 0xFFFFF) << 12); // Up to 4 GiB in
+    task->stack_top = image->stack_top;
     fpu_state_init(task->fpu_state); // A new program starts with clean FPU registers
     strncpy(task->name, image->name, sizeof(task->name) - 1);
     task->name[sizeof(task->name) - 1] = '\0';
@@ -173,7 +181,9 @@ static void user_task_start(void) {
 bool process_grow_stack(uint64_t addr) {
     task_t *self = sched_get_current_task();
     if (!self || !self->is_user) return false;
-    if (addr < USER_STACK_LIMIT + PAGE_SIZE || addr >= USER_STACK_TOP) return false;
+    if (self->stack_top < USER_STACK_MAX) return false;
+    uint64_t limit = self->stack_top - USER_STACK_MAX;
+    if (addr < limit + PAGE_SIZE || addr >= self->stack_top) return false;
 
     uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
     uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
@@ -272,6 +282,7 @@ pid_t process_fork(struct registers *regs) {
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
     child->mmap_next = parent->mmap_next;
+    child->stack_top = parent->stack_top;
     memcpy(child->sig_handlers, parent->sig_handlers, sizeof(child->sig_handlers));
     child->sig_restorer = parent->sig_restorer;
     task_set_cwd(child, parent->cwd);

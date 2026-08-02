@@ -39,20 +39,24 @@ ISO_ROOT = $(BUILD)/iso_root
 # library in user/lib. User code may use floating point and SSE: the kernel
 # saves that state per task.
 USER_CFLAGS = -Wall -Wextra -O2 -g -pipe -Iuser/lib \
-              -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
+              -ffreestanding -fno-stack-protector -fpie \
               -masm=intel -MMD -MP
-USER_LDFLAGS = -nostdlib -static -T user/linker.ld -z max-page-size=0x1000
+# Static position-independent executables: no dynamic linker, and no
+# relocations in the code itself (-z text makes that an error)
+USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker.ld -z max-page-size=0x1000
 
 USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
 
-$(BUILD)/user/%.o: user/%.c
+# (User objects also depend on this Makefile: a change of compiler flags, such
+# as switching to position-independent code, must rebuild them.)
+$(BUILD)/user/%.o: user/%.c Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD)/user/%.o: user/%.S
+$(BUILD)/user/%.o: user/%.S Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
