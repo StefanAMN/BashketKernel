@@ -48,4 +48,9 @@ void idt_init(void);
  */
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t selector, uint8_t flags);
 
+/**
+ * @brief Load the (shared) IDT on a CPU other than the boot CPU.
+ */
+void idt_load_on_this_cpu(void);
+
 #endif // IDT_H

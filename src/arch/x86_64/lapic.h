@@ -33,4 +33,10 @@ uint32_t lapic_get_id(void);
  */
 void lapic_timer_init(uint32_t quantum);
 
+/**
+ * @brief Enable the local APIC of the CPU this runs on (for CPUs other than
+ *        the boot CPU, after lapic_init has mapped the registers).
+ */
+void lapic_enable_on_this_cpu(void);
+
 #endif // LAPIC_H

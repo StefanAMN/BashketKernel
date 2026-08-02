@@ -34,6 +34,11 @@ void lapic_init(void) {
     kprintf("LAPIC Init: Local APIC enabled (ID: %u, Base MMIO: %p)\n", lapic_get_id(), (void *)lapic_virt);
 }
 
+void lapic_enable_on_this_cpu(void) {
+    // Each CPU has its own local APIC at the same address
+    if (lapic_base != NULL) lapic_write(0x0F0, 0x1FF);
+}
+
 void lapic_eoi(void) {
     if (lapic_base) {
         lapic_write(0x0B0, 0); // EOI Register 0x0B0

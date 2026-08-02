@@ -80,7 +80,7 @@ NET_FLAGS = -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 
 QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
-.PHONY: all clean iso run run-gdb test test-lowmem test-disk test-edit test-net fuzz check
+.PHONY: all clean iso run run-gdb test test-smp test-lowmem test-disk test-edit test-net fuzz check
 
 all: $(KERNEL)
 
@@ -256,11 +256,26 @@ test-net: iso
 	@tools/test_net.py $(SHELL_CPU) > $(BUILD)/net.log 2>&1 \
 		&& tail -1 $(BUILD)/net.log || { echo "network: FAILED (see $(BUILD)/net.log)"; exit 1; }
 
+# A machine with four CPUs: all four must start and report in (they are then
+# parked), and everything else must work exactly as with one.
+test-smp:
+	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso build-test/disk.img
+	@timeout 120 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel.iso -boot d \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(NET_FLAGS) \
+		-display none -serial stdio -no-reboot \
+		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
+	status=$$?; \
+	if [ $$status -eq 33 ] && grep -aq 'SMP: 4 of 4 CPUs started' build-test/test-smp.log; then \
+		echo "four CPUs: all started, unit tests pass"; \
+	else echo "four CPUs: FAILED (qemu exit $$status, see build-test/test-smp.log)"; \
+		grep -aE '^\s+\[FAIL\]|CPU EXCEPTION|SMP:' build-test/test-smp.log | head -5; exit 1; fi
+
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
 check:
 	@$(MAKE) --no-print-directory test
 	@$(MAKE) --no-print-directory test CPU=max
+	@$(MAKE) --no-print-directory test-smp
 	@$(MAKE) --no-print-directory test-lowmem
 	@$(MAKE) --no-print-directory test-lowmem CPU=max
 	@$(MAKE) --no-print-directory test-disk

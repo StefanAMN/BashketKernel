@@ -95,4 +95,10 @@ void gdt_init(void);
  */
 void tss_set_rsp0(uint64_t rsp);
 
+/**
+ * @brief Load the kernel's GDT on a CPU other than the boot CPU (segments
+ *        only, no task state segment).
+ */
+void gdt_load_on_this_cpu(void);
+
 #endif // GDT_H
