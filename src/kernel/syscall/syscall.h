@@ -52,7 +52,9 @@
 #define SYS_SHMGET      29   // (key, size): id of the segment with that key, created if new
 #define SYS_SHMAT       30   // (id): map the segment into the caller; returns its address
 #define SYS_SHMRM       31   // (id): the key is released; memory goes when the last mapping does
-#define SYS_PING        305  // (ip, timeout_ms): round-trip time in ms, or a negative error
+#define SYS_PING        305  // (ip, timeout_ms): round-trip time in microseconds, or a negative error
+#define SYS_CLOCK_NS    228  // (): nanoseconds since boot
+#define SYS_NANOSLEEP   230  // (nanoseconds): sleep with sub-tick precision
 #define SYS_SOCKET      41   // (): a new UDP socket, as a file descriptor
 #define SYS_SENDTO      44   // (fd, buf, len, ip, port)
 #define SYS_RECVFROM    45   // (fd, buf, len, struct net_address *from, timeout_ms); 0 ms waits for ever

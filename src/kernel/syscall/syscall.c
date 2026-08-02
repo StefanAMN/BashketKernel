@@ -30,6 +30,7 @@
 #include "tty.h"
 #include "net.h"
 #include "shm.h"
+#include "hrtimer.h"
 
 extern void syscall_entry(void);
 
@@ -455,10 +456,11 @@ static int64_t sys_recvfrom(int fd, uint64_t user_buf, size_t len, uint64_t user
     return n;
 }
 
+// Returns the round-trip time in microseconds
 static int64_t sys_ping(uint32_t ip, uint64_t timeout_ms) {
-    uint64_t rtt_ticks = 0;
-    int err = net_ping(ip, ms_to_ticks(timeout_ms), &rtt_ticks);
-    return err != 0 ? err : (int64_t)(rtt_ticks * 1000 / TIMER_HZ);
+    uint64_t start = clock_ns();
+    int err = net_ping(ip, ms_to_ticks(timeout_ms), NULL);
+    return err != 0 ? err : (int64_t)((clock_ns() - start) / 1000);
 }
 
 // --- Dispatcher --------------------------------------------------------------
@@ -523,6 +525,10 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_MUNMAP:  return sys_munmap(regs->rdi, (size_t)regs->rsi);
         case SYS_SLEEP:   return sys_sleep(regs->rdi);
         case SYS_TIME:    return (int64_t)pit_get_ticks();
+        case SYS_CLOCK_NS: return (int64_t)clock_ns();
+        case SYS_NANOSLEEP:
+            if (regs->rdi > 3600ULL * 1000000000ULL) return -EINVAL;
+            return nanosleep(regs->rdi) ? 0 : -EINTR;
 
         case SYS_FORK: {
             pid_t child = process_fork(regs);

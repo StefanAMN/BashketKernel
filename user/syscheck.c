@@ -48,6 +48,41 @@ static void check_basics(void) {
     CHECK(write(7, "x", 1) == -EBADF);
     CHECK(syscall0(9999) == -ENOSYS);
     CHECK(uptime_ticks() >= 0);
+
+    /* The fine clock moves forward, and agrees with the tick count.
+     *
+     * Ticks and the fine clock are compared here, and in a virtual machine
+     * neither is exact against the other for one measurement: if the host
+     * stalls the machine for a moment, real time jumps ahead, and afterwards
+     * the emulated timer delivers its missed ticks in a burst, so ten ticks
+     * pass in less than 100 ms. One measurement in the expected window out
+     * of several shows the two clocks agree; none at all would be a bug. */
+    unsigned long t0 = clock_ns(), t1 = clock_ns();
+    CHECK(t1 >= t0);
+
+    int in_window = 0;
+    for (int attempt = 0; attempt < 6 && !in_window; attempt++) {
+        t0 = clock_ns();
+        sleep_ms(100);
+        unsigned long elapsed = clock_ns() - t0;
+        in_window = (elapsed >= 95UL * 1000000 && elapsed <= 125UL * 1000000);
+    }
+    CHECK(in_window);
+
+    /* A 2 ms sleep takes about 2 ms, not until the next 10 ms tick or two.
+     * (This one is measured and timed by the same clock, so it can never
+     * come out short; only "not too long" needs the best of several.) */
+    unsigned long best = ~0UL;
+    for (int attempt = 0; attempt < 6; attempt++) {
+        t0 = clock_ns();
+        CHECK(sleep_ns(2000000) == 0);
+        unsigned long elapsed = clock_ns() - t0;
+        CHECK(elapsed >= 2000000);
+        if (elapsed < best) best = elapsed;
+    }
+    CHECK(best < 5000000);
+    CHECK(sleep_ns(0) == 0);
+    CHECK(sleep_ns(~0UL) == -EINVAL);
     CHECK(execv("/bin/does-not-exist", NULL) == -ENOENT);
     CHECK(waitpid(-1, NULL) == -ECHILD);
 

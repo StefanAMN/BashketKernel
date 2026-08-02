@@ -353,7 +353,7 @@ and its README entry. Suggested calls, in the order worth doing:
 | ANSI | **Done.** Escape sequence parser, acted on by the console. |
 | Window manager, auth, mouse | Delete or leave clearly marked as stubs. |
 | `boot_loader.c` | Delete. It is a CPUID check, and Limine boots the kernel. |
-| hrtimer | `nanosleep` now blocks properly but has tick resolution. Rebuild on a calibrated LAPIC timer or fold into `sched_sleep_ticks`. |
+| hrtimer | **Done** as a calibrated TSC clock and sub-tick sleeps. A one-shot timer (LAPIC or HPET) for tickless wake-ups is open. |
 | Environment | **Done** as a per-process, user-memory environment passed through `execve`. `src/kernel/proc/env.c` (the kernel shell's global table) can now be deleted or reduced to that shell's private use. |
 | Shared memory, mount table | **Done.** Shared mappings and keyed segments are mapped into processes; the mount table records what is attached where. |
 | Crypto library | Keep in `lib/` as a separate library. Nothing in the kernel calls it and it has not been audited. |

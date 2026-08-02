@@ -18,6 +18,8 @@ long kill(long pid, int sig)                       { return syscall2(SYS_KILL, p
 void yield(void)                                   { syscall0(SYS_YIELD); }
 void sleep_ms(unsigned long ms)                    { syscall1(SYS_SLEEP, ms); }
 long uptime_ticks(void)                            { return syscall0(SYS_TIME); }
+unsigned long clock_ns(void)                       { return (unsigned long)syscall0(SYS_CLOCK_NS); }
+long sleep_ns(unsigned long nanoseconds)           { return syscall1(SYS_NANOSLEEP, nanoseconds); }
 long set_priority(int priority)                    { return syscall1(SYS_SETPRIORITY, priority); }
 void ignore_interrupt(int ignore)                  { signal(SIGINT, ignore ? SIG_IGN : SIG_DFL); }
 

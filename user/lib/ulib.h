@@ -23,7 +23,9 @@ long getppid(void);
 long kill(long pid, int sig);
 void yield(void);
 void sleep_ms(unsigned long ms);
-long uptime_ticks(void);
+long uptime_ticks(void);                     /* Timer ticks (10 ms each) since boot */
+unsigned long clock_ns(void);                /* Nanoseconds since boot */
+long sleep_ns(unsigned long nanoseconds);    /* Sleeps to within microseconds; -EINTR if a signal cut it short */
 long set_priority(int priority);    /* 0 high, 1 normal, 2 low */
 void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 
@@ -77,7 +79,7 @@ long socket(void);                                /* A new UDP socket, as a file
 long bind(int fd, unsigned port);                 /* Receive datagrams sent to this port */
 long sendto(int fd, const void *buf, size_t len, uint32_t ip, unsigned port);
 long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned long timeout_ms); /* 0: wait for ever */
-long ping(uint32_t ip, unsigned long timeout_ms); /* Round-trip time in ms, or a negative error */
+long ping(uint32_t ip, unsigned long timeout_ms); /* Round-trip time in microseconds, or a negative error */
 uint32_t parse_ip(const char *text);              /* "10.0.2.2" -> number; 0 if it is not an address */
 void format_ip(uint32_t ip, char out[16]);
 
