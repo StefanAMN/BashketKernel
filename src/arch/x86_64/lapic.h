@@ -27,11 +27,6 @@ void lapic_eoi(void);
  */
 uint32_t lapic_get_id(void);
 
-/**
- * @brief Configure LAPIC Timer for high-precision microsecond interrupts.
- * @param quantum Microsecond count or initial countdown.
- */
-void lapic_timer_init(uint32_t quantum);
 
 /**
  * @brief Enable the local APIC of the CPU this runs on (for CPUs other than

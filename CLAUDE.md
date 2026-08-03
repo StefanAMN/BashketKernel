@@ -1,20 +1,82 @@
 # BashketKernel — notes for Claude
 
 x86_64 higher-half learning kernel in C, booted by Limine, developed against
-QEMU. `PLAN.md` is the current work plan and tracks what is done. The README
-status table says which subsystems are real, partial or stub; keep it true.
+QEMU. It is a learning-first project: the kernel is the excuse, the
+understanding is the deliverable. `PLAN.md` proposes what to build next and
+lists the known limits; the README status table says what exists. Keep both
+true.
+
+This file is the only rule set for agents working here (it absorbed the
+former `.agents/AGENTS.md`).
 
 ## Working rules
 
-- Commit every verified change directly to `main` (conventional commits:
-  `fix(mm): ...`, `feat(sched): ...`). Do not push.
-- A change is verified when the kernel builds with no new warnings **and** a
-  headless QEMU boot passes the tests. "It boots" is not the bar.
-- Intel syntax everywhere (`-masm=intel`), in `.S` files and inline asm.
-- Never describe placeholder code as implemented. Real, labelled stub, or deleted.
-- New code gets a test in `tests/`. Tests must clean up after themselves.
+- **Commit** every verified change directly to `main`, in conventional-commit
+  style (`fix(mm): ...`, `feat(sched): ...`), one commit per finished piece
+  of work rather than many tiny ones. **Push** only when asked
+  (`origin` is `git@github.com:StefanAMN/BashketKernel.git`).
+- **Verified** means `make check` passes (it builds, runs the unit tests and
+  the scenario targets on both QEMU CPU models). "It boots" is not the bar:
+  kernels routinely run while subtly broken. State the check that proves a
+  change and confirm it passed.
+- **No stubs.** Code is implemented and tested, or it is not in the tree.
+  Never describe placeholder behaviour as a feature. The earlier stubs were
+  deleted on purpose; do not reintroduce the pattern.
+- **Plan before large work.** New subsystems go into `PLAN.md` first. Do not
+  build later-plan infrastructure ahead of time because it is convenient;
+  flag it and ask.
+- **Tests.** Every new feature gets a test: in `tests/` with the in-kernel
+  framework, and from ring 3 (`user/syscheck.c` or a dedicated program) when
+  the feature is visible to programs. Tests clean up after themselves.
+- **Docs travel with the code.** Update the README status table, and the
+  matching section of `Documentation.md` (the ordered guide of what to learn
+  and where to read it), in the same commit as the feature.
 - `docs/NN-*.md` lesson docs and `docs/ai-was-wrong.md` are written by the
-  humans, not by an agent.
+  humans. If a claim of yours is corrected against a primary source, say that
+  it belongs in `ai-was-wrong.md`; do not write the entry.
+- The human developers learn independently: do not block work on
+  explain-back or delete-and-rederive gates.
+
+## Project constraints
+
+- C plus small amounts of assembly; x86_64 long mode only; Intel syntax
+  everywhere (`-masm=intel`), in `.S` files and inline asm.
+- Bootloader is **Limine** (pinned release fetched by the Makefile; check
+  `limine.conf` and the vendored `src/boot/limine.h` rather than assuming a
+  protocol version). No custom bootloader.
+- Kernel build flags each guard against a class of bug; do not remove or
+  "simplify" them: `-ffreestanding`, `-fno-stack-protector`,
+  `-fno-pie -fno-pic`, `-mno-red-zone`, `-mcmodel=kernel`,
+  `-mno-mmx -mno-sse -mno-sse2`, `-nostdlib`, and the higher-half linker
+  script (`0xffffffff80000000`). User programs are different on purpose:
+  position-independent (`-fpie`, static PIE) and free to use SSE.
+- Toolchain is the host `gcc`/`ld` (see `docs/00-toolchain.md`); do not
+  switch silently.
+- Test in QEMU, with the Makefile targets and `tools/qemu_shell.py`, not
+  hand-rolled command lines. Use GDB on `make run-gdb` for boot and crash
+  debugging rather than guessing from symptoms. Serial is the debug log; the
+  framebuffer is what the user sees.
+- Favour clarity over cleverness. Comment the *why*: magic numbers, bit
+  layouts, hardware and ABI quirks.
+
+## Review checklist for your own output
+
+- Genuinely 64-bit? (register widths, `syscall`/`sysret`, 4-level paging,
+  GDT layout)
+- Page-table bits, I/O ports and MSR numbers taken from the Intel SDM or the
+  device specification, not recalled from tutorials?
+- No assumption of identity mapping: the kernel is higher-half and reaches
+  physical memory through the HHDM.
+- Red zone off where required; interrupts off where they must be; user
+  memory touched only after validation and inside an access window?
+- Table sizes exact (IDT 256 entries, GDT entry count)?
+- Everything read from outside (user pointers, executables, disk, network)
+  treated as untrusted and bounds-checked?
+- If a well-known OSDev tutorial is the likely source of a pattern, check it
+  is not reproducing one of that tutorial's known bugs.
+
+When unsure, say so and name where to verify (Intel SDM, OSDev Wiki, Limine's
+`PROTOCOL.md`, the virtio specification) instead of presenting a guess.
 
 ## Build and run
 
@@ -24,7 +86,7 @@ make test         # separate test kernel in build-test/, exit 0 only if all pass
 make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
 
-make check                      # all of the below on both CPU models (~3 min); run before committing
+make check                      # everything below, on both CPU models (~5 min); run before committing
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s)
 make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)

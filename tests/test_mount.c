@@ -10,7 +10,7 @@ TEST(mount_table_reflects_the_tree) {
     EXPECT_TRUE(len > 0 && len == strlen(text));
 
     // Every source that attached part of the tree is listed where it is
-    EXPECT_TRUE(strstr(text, "memory / ramfs\n") != NULL);
+    EXPECT_TRUE(strstr(text, "memory / memfs\n") != NULL);
     EXPECT_TRUE(strstr(text, "boot-module /bin initrd\n") != NULL);
     EXPECT_TRUE(strstr(text, "kernel /proc proc\n") != NULL);
     EXPECT_TRUE(strstr(text, "kernel /dev dev\n") != NULL);
