@@ -37,7 +37,7 @@ struct kmem_cache {
 static kmem_cache_t *cache_chain = NULL;
 
 // One lock for all caches. Lock order: slab_lock, then the PMM lock.
-static spinlock_t slab_lock = SPINLOCK_INIT;
+static spinlock_t slab_lock = SPINLOCK_RANKED("slab", LOCK_RANK_HEAP);
 
 static slab_page_t *slab_of(const void *obj) {
     return (slab_page_t *)((uint64_t)obj & ~(uint64_t)(PAGE_SIZE - 1));

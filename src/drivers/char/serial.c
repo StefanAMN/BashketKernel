@@ -21,7 +21,7 @@ static volatile size_t serial_tail = 0;
 
 // Guards the receive ring buffer and reads of the UART data register, which
 // the IRQ handler and the polling path both perform.
-static spinlock_t serial_rx_lock = SPINLOCK_INIT;
+static spinlock_t serial_rx_lock = SPINLOCK_RANKED("serial_rx", LOCK_RANK_INPUT);
 
 // Move every byte the UART is holding into the ring buffer.
 // Caller must hold serial_rx_lock.

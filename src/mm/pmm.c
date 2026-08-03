@@ -18,7 +18,7 @@ static uint64_t hhdm_off = 0;
 static size_t next_free_hint = 1;
 
 // The bitmap is shared by every task and by interrupt context.
-static spinlock_t pmm_lock = SPINLOCK_INIT;
+static spinlock_t pmm_lock = SPINLOCK_RANKED("pmm", LOCK_RANK_PMM);
 
 static inline void bitmap_set(size_t bit) {
     bitmap[bit / 8] |= (1 << (bit % 8));

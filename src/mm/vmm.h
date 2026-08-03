@@ -90,7 +90,9 @@ void *vmm_alloc_user_page(uint64_t *pml4, uint64_t virt, uint64_t flags);
  * @brief Check that [addr, addr+len) lies in user space and that every page
  * is mapped user-accessible (and writable or copy-on-write, if `write`; the
  * kernel's own write to a COW page faults and is resolved like a user's). Syscalls must call
- * this before touching any pointer a user program passed in.
+ * this before touching any pointer a user program passed in. With `write`, copy-on-write
+ * pages in the range are given their private copy here, so the write that follows can not
+ * fault (it usually happens under a lock); false if memory for a copy runs out.
  */
 bool vmm_user_range_ok(uint64_t *pml4, uint64_t addr, size_t len, bool write);
 

@@ -155,12 +155,17 @@ TEST(copy_on_write_clone) {
     // The read-only page is shared but is not COW: writing it stays an error
     EXPECT_TRUE(!(vmm_get_pte(child, text_va) & (VMM_COW | VMM_WRITABLE)));
     EXPECT_TRUE(!vmm_handle_cow_fault(child, text_va));
-    // A COW page still counts as writable memory for syscall arguments
-    EXPECT_TRUE(vmm_user_range_ok(child, data_va, 8, true));
+    // A COW page counts as readable memory for syscall arguments as it is
+    EXPECT_TRUE(vmm_user_range_ok(child, data_va, 8, false));
+    EXPECT_TRUE(vmm_get_phys(child, data_va) == data_phys);
     EXPECT_TRUE(!vmm_user_range_ok(child, text_va, 8, true));
 
-    // Child writes first: it gets a private copy with the same contents
-    EXPECT_TRUE(vmm_handle_cow_fault(child, data_va + 123));
+    // Child writes first: it gets a private copy with the same contents.
+    // Checking a range the kernel is about to write into does exactly what
+    // the fault would do, ahead of time, so that the kernel's copy can not
+    // fault while it holds a lock.
+    EXPECT_TRUE(vmm_user_range_ok(child, data_va + 123, 8, true));
+    EXPECT_TRUE(!vmm_handle_cow_fault(child, data_va));   // Nothing left to resolve
     uint64_t child_phys = vmm_get_phys(child, data_va);
     EXPECT_TRUE(child_phys != data_phys);
     EXPECT_EQ(((uint8_t *)(child_phys + hhdm))[0], 0x11);

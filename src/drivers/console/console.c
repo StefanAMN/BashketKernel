@@ -102,17 +102,21 @@ void console_set_deferred_refresh(bool enabled) {
     if (!deferred_refresh) console_refresh();
 }
 
+// The cursor and both copies of the screen are shared by every task that
+// prints, on any CPU, and by interrupt handlers: one lock for all of it.
+static spinlock_t console_lock = SPINLOCK_RANKED("console", LOCK_RANK_CONSOLE);
+
 void console_refresh(void) {
     if (!g_fb || !backbuffer) return;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&console_lock);
     if (screen_stale) {
         size_t total_pixels = (size_t)(g_fb->pitch / 4) * g_fb->height;
         screen_stale = false; // Cleared first: anything drawn from here on goes to the screen too
         memcpy(g_fb->address, backbuffer, total_pixels * sizeof(uint32_t));
     }
     if (deferred_refresh) show_cursor(); // Output has paused for at least a tick: show where we are
-    irq_restore(flags);
+    spinlock_release_irqrestore(&console_lock, flags);
 }
 
 static void putpixel(uint32_t x, uint32_t y, uint32_t color) {
@@ -296,15 +300,16 @@ static void draw_char(char c) {
     }
 }
 
-// The cursor and both copies of the screen are shared by every task that
-// prints, and by interrupt handlers. Drawing one character is short, so it is
-// simply done with interrupts off.
+void console_force_unlock(void) {
+    spinlock_force_release(&console_lock);
+}
+
 void console_putchar(char c) {
     if (!g_fb) return;
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&console_lock);
     hide_cursor(); // It must not be scrolled, overwritten or left behind
     putchar_unlocked(c);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&console_lock, flags);
 }
 
 void console_get_size(uint32_t *columns, uint32_t *rows) {
@@ -320,10 +325,10 @@ void console_get_cursor(uint32_t *column, uint32_t *row) {
 uint32_t console_get_pixel(uint32_t x, uint32_t y) {
     if (!g_fb || !backbuffer || x >= g_fb->width || y >= g_fb->height) return 0;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&console_lock);
     hide_cursor(); // Report the text as drawn, without the cursor on top
     uint32_t color = backbuffer[y * (g_fb->pitch / 4) + x] & 0x00FFFFFF;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&console_lock, flags);
     return color;
 }
 

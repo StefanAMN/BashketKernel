@@ -172,7 +172,7 @@ so the numbering has gaps.
 ---
 
 ### 10. SMP Multiprocessing & Spinlocks (Phase 10)
-**Status: partial.** Every CPU the bootloader reports is started with its own per-CPU structure (reached through GS, with `swapgs` on every crossing between ring 3 and the kernel), task state segment and double-fault stack; it takes a breakpoint exception to prove it, reports in, and is parked. Only the boot CPU runs tasks so far, because many locks still assume one CPU. Spinlocks are real. See `src/arch/x86_64/percpu.h` and `smp.h`.
+**Status: partial.** Every CPU the bootloader reports is started with its own per-CPU structure (reached through GS, with `swapgs` on every crossing between ring 3 and the kernel), task state segment and double-fault stack. Shared kernel structures are protected by ranked spinlocks and mutexes rather than by masking interrupts, and the lock order is checked at run time; a test runs the allocators, page tables, semaphores and wakeups on all CPUs at once. Only the boot CPU runs tasks so far: the others sleep until asked to run a function. See `src/arch/x86_64/percpu.h`, `smp.h`, and `src/kernel/sync/spinlock.h` (the lock order), `mutex.h`.
 
 **Goal:** Multi-core CPU initialization via Limine SMP, kernel spinlocks.
 

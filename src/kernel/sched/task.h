@@ -25,6 +25,9 @@ struct vnode;
 #define PRIO_NORMAL 1
 #define PRIO_LOW    2
 
+// PID of the idle tasks, which are not on the task list
+#define IDLE_PID 0xFFFFFFFFu
+
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
@@ -64,6 +67,7 @@ typedef struct task {
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
     uint32_t uid;            // The user this process runs as (0: root, may do anything)
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
+    bool exiting;            // Has begun to exit: can no longer be killed or signalled
     int kill_pending;        // Signal that will end this process at its next safe point (0: none)
     uint64_t sig_handlers[TASK_NSIG]; // Per signal: 0 default (terminate), 1 ignore, else handler address
     uint64_t sig_restorer;   // Where handlers return to: the C library's sigreturn stub

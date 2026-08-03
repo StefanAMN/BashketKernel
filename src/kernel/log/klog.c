@@ -15,11 +15,17 @@ void klog_init(void) {
     // the first kprintf. Kept so the boot sequence has one place to say so.
 }
 
+static spinlock_t klog_lock = SPINLOCK_RANKED("klog", LOCK_RANK_KLOG);
+
+void klog_force_unlock(void) {
+    spinlock_force_release(&klog_lock);
+}
+
 void klog_putchar(char c) {
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&klog_lock);
     ring[total_written % KLOG_SIZE] = c;
     total_written++;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&klog_lock, flags);
 }
 
 void klog_write(const char *msg) {
@@ -34,7 +40,7 @@ size_t klog_length(void) {
 size_t klog_read(size_t offset, char *buf, size_t count) {
     if (!buf) return 0;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&klog_lock);
     size_t held = klog_length();
     size_t oldest = total_written - held; // Position of the oldest byte still held
     size_t n = 0;
@@ -42,7 +48,7 @@ size_t klog_read(size_t offset, char *buf, size_t count) {
         buf[n] = ring[(oldest + offset + n) % KLOG_SIZE];
         n++;
     }
-    irq_restore(flags);
+    spinlock_release_irqrestore(&klog_lock, flags);
     return n;
 }
 

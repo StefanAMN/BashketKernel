@@ -13,37 +13,37 @@
 void sem_init(sem_t *sem, int initial_value) {
     if (!sem) return;
     sem->value = initial_value;
-    spinlock_init(&sem->lock);
+    spinlock_init_ranked(&sem->lock, "sem", LOCK_RANK_SEM);
 }
 
 void sem_wait(sem_t *sem) {
     if (!sem) return;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&sem->lock);
     while (sem->value <= 0) {
-        sched_block(sem, 0);
+        sched_sleep(sem, &sem->lock, 0);
     }
     sem->value--;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&sem->lock, flags);
 }
 
 bool sem_trywait(sem_t *sem) {
     if (!sem) return false;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&sem->lock);
     bool taken = sem->value > 0;
     if (taken) sem->value--;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&sem->lock, flags);
     return taken;
 }
 
 void sem_post(sem_t *sem) {
     if (!sem) return;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&sem->lock);
     sem->value++;
     sched_wakeup(sem);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&sem->lock, flags);
 }
 
 int sem_getvalue(sem_t *sem) {

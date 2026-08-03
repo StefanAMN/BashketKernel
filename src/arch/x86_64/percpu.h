@@ -33,8 +33,10 @@
 #include "gdt.h"
 
 #define MAX_CPUS 32
+#define LOCK_HELD_MAX 8
 
 struct task;
+struct spinlock;
 
 // The first three fields are used from assembly (syscall_entry.S) by offset:
 // do not move them.
@@ -43,6 +45,11 @@ typedef struct cpu {
     uint64_t kernel_rsp;       // gs:[8]   Kernel stack for a system call arriving on this CPU
     uint64_t user_rsp;         // gs:[16]  Scratch: the user's RSP during the first instructions of a system call
     struct task *current;      // Task running on this CPU
+    struct task *idle;         // What this CPU runs when nothing else is runnable
+
+    // Spinlocks this CPU holds, in the order taken (see spinlock.h)
+    struct spinlock *held[LOCK_HELD_MAX];
+    uint32_t held_count;
 
     uint32_t cpu_id;           // Our numbering: 0 is the boot CPU
     uint32_t lapic_id;         // The hardware's identifier
@@ -50,6 +57,12 @@ typedef struct cpu {
 
     struct tss tss;            // This CPU's task state segment
     void *fault_stack;         // Its stack for double faults (TSS IST1)
+
+    // Work another CPU has asked this one to do (smp_call)
+    void (*call_fn)(void *);
+    void *call_arg;
+    volatile uint32_t call_pending;  // 1 from the request until the function has returned
+    volatile uint64_t calls_done;
 
     // Set by the breakpoint exception handler: evidence that this CPU can
     // take exceptions on its own, and that it knows who it is while doing so

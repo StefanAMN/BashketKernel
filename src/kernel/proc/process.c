@@ -22,6 +22,7 @@
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
+extern void task_start_trampoline(void);
 
 // Everything needed to start a program in a fresh address space
 typedef struct {
@@ -110,7 +111,19 @@ static bool build_user_stack(uint64_t *pml4, uint64_t stack_top, const char *pat
 }
 
 // Build a complete user image for `path`. On failure nothing is left allocated.
+static bool load_user_image_locked(const char *path, char *const argv[], char *const envp[], user_image_t *image);
+
 static bool load_user_image(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
+    // The file is used from the moment its name is looked up until its
+    // contents have been copied into the new address space: it must not be
+    // removed or rewritten meanwhile
+    vfs_lock();
+    bool ok = load_user_image_locked(path, argv, envp, image);
+    vfs_unlock();
+    return ok;
+}
+
+static bool load_user_image_locked(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
     task_t *caller = sched_get_current_task();
     vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
     if (!file || file->type != VFS_FILE || file->size == 0) return false;
@@ -310,8 +323,9 @@ pid_t process_fork(struct registers *regs) {
     child_regs->rax = 0;
 
     uint64_t *sp = (uint64_t *)child_regs;
-    *(--sp) = (uint64_t)user_frame_return; // Return address for ctx_switch's ret
-    *(--sp) = 0x002;                       // RFLAGS: interrupts off until iretq
+    *(--sp) = (uint64_t)user_frame_return; // Where the trampoline returns to
+    *(--sp) = (uint64_t)task_start_trampoline; // Return address for ctx_switch's ret: releases the scheduler lock
+    *(--sp) = 0x002;                       // RFLAGS: interrupts off
     *(--sp) = 0;                           // R15
     *(--sp) = 0;                           // R14
     *(--sp) = 0;                           // R13
@@ -329,10 +343,11 @@ pid_t process_wait(pid_t pid, int *status) {
     task_t *self = sched_get_current_task();
     if (!self) return -1;
 
-    // Interrupts stay off between looking for a dead child and going to sleep,
-    // so a child that exits in between cannot be missed (see sched_block).
-    uint64_t flags = irq_save();
+    // The scheduler lock is held from looking for a dead child until we are
+    // asleep, so a child that exits in between cannot be missed.
+    uint64_t flags = sched_lock_irqsave();
     pid_t found = -1;
+    task_t *collected = NULL;
 
     while (1) {
         bool have_child = false;
@@ -345,7 +360,8 @@ pid_t process_wait(pid_t pid, int *status) {
             if (t->state == TASK_ZOMBIE) {
                 if (status) *status = t->exit_status;
                 found = (pid_t)t->pid;
-                sched_free_zombie(t); // Collected: its memory goes back right now
+                sched_unlink_zombie(t);
+                collected = t;
                 break;
             }
         }
@@ -357,30 +373,41 @@ pid_t process_wait(pid_t pid, int *status) {
             break;
         }
 
-        // sched_make_zombie wakes this channel when a child of ours dies
-        sched_block(self, 0);
+        // A dying task wakes this channel if we are its parent
+        sched_sleep_on_task_list(self);
     }
 
-    irq_restore(flags);
+    sched_unlock_irqrestore(flags);
+
+    // Collected: its memory goes back right now (not under the lock: this
+    // frees an address space)
+    if (collected) task_free(collected);
     return found;
 }
 
 int process_kill(pid_t pid, int sig) {
-    task_t *target = sched_find_task((uint32_t)pid);
-    if (!target || !target->is_user || target->state == TASK_ZOMBIE) return -1;
     if (sig <= 0 || sig >= TASK_NSIG) return -1;
 
-    // The target may be half way through a system call, so nothing is done
-    // to it here: the signal is recorded and takes effect at its next safe
-    // point. That is true even when the target is the caller.
-    signal_send(target, sig);
-    return 0;
+    // Found and signalled under one hold of the lock, so the task can not
+    // be reaped in between
+    int result = -1;
+    uint64_t flags = sched_lock_irqsave();
+    task_t *target = sched_find_task((uint32_t)pid);
+    if (target && target->is_user && target->state != TASK_ZOMBIE) {
+        // The target may be half way through a system call, so nothing is
+        // done to it here: the signal is recorded and takes effect at its
+        // next safe point. That is true even when the target is the caller.
+        signal_send_locked(target, sig);
+        result = 0;
+    }
+    sched_unlock_irqrestore(flags);
+    return result;
 }
 
 void process_interrupt_all(void) {
-    uint64_t flags = irq_save();
+    uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (t->is_user) signal_send(t, SIGINT);
+        if (t->is_user) signal_send_locked(t, SIGINT);
     }
-    irq_restore(flags);
+    sched_unlock_irqrestore(flags);
 }

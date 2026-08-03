@@ -5,13 +5,15 @@
  * What is done: every CPU the bootloader found is started, loads the
  * kernel's GDT, IDT and page tables, gets its own per-CPU structure (GS),
  * task state segment and double-fault stack, enables its local APIC, takes
- * a breakpoint exception to prove it can handle one, reports in, and is
- * then parked (halted with interrupts off).
+ * a breakpoint exception to prove it can handle one, reports in, and then
+ * sleeps until asked to run a function (smp_call).
  *
- * What is not done: the other CPUs run no tasks. The scheduler, and every
- * place that uses "interrupts off" as its lock, assumes one CPU. Putting
- * the parked CPUs to work needs real locks in place of interrupt masking, a
- * run queue per CPU, and TLB shootdown (see PLAN.md, A2 and A3).
+ * The kernel's shared structures are protected by real locks (spinlock.h),
+ * so code may run on any CPU at once; tests/test_smp.c does exactly that.
+ *
+ * What is not done: the other CPUs run no tasks. Putting them to work needs
+ * an idle task and a timer interrupt per CPU, a way to make another CPU
+ * reschedule, and TLB shootdown (see PLAN.md, A3).
  */
 
 #ifndef SMP_H
@@ -44,5 +46,21 @@ size_t smp_get_cpu_count(void);
 size_t smp_get_cpu_total(void);
 
 per_cpu_t *smp_get_per_cpu(uint32_t cpu_id);
+
+// Interrupt vector that wakes a sleeping CPU so that it looks for work
+#define IPI_VECTOR_WAKE 0xF0
+
+/**
+ * @brief Run fn(arg) on another CPU, with interrupts off there. The function
+ *        must not sleep: that CPU has no task to switch away from.
+ * @param wait Return only when the function has finished.
+ * @return false if there is no such other CPU.
+ */
+bool smp_call(uint32_t cpu_id, void (*fn)(void *), void *arg, bool wait);
+
+/**
+ * @brief Whether a function started with smp_call is still running there.
+ */
+bool smp_call_busy(uint32_t cpu_id);
 
 #endif // SMP_H

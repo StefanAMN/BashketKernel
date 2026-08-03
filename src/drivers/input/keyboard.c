@@ -40,7 +40,7 @@ static void kbd_buffer_push(char c) {
 
 // Guards the ring buffer, the shift state and the PS/2 data port, which the
 // IRQ handler and the polling path in keyboard_getchar both use.
-static spinlock_t kbd_lock = SPINLOCK_INIT;
+static spinlock_t kbd_lock = SPINLOCK_RANKED("kbd", LOCK_RANK_INPUT);
 
 // PS/2 Set 1 Scancode Mapping Table (Normal)
 static const char scancode_ascii[128] = {
@@ -152,11 +152,18 @@ static void keyboard_irq_handler(struct registers *regs) {
     keyboard_input_arrived();
 }
 
-// Readers sleep on this address; both input interrupts wake it
+// Readers sleep on this address; both input interrupts wake it. Input can
+// arrive in either of two buffers, each with its own lock, so "both are
+// empty" is not something one of those locks can keep true. input_lock does:
+// the reader holds it from checking the buffers until it is asleep, and an
+// interrupt handler takes it to announce what it has just stored.
 static char input_channel;
+static spinlock_t input_lock = SPINLOCK_RANKED("input", LOCK_RANK_INPUT_WAIT);
 
 void keyboard_input_arrived(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&input_lock);
     sched_wakeup(&input_channel);
+    spinlock_release_irqrestore(&input_lock, flags);
 }
 
 void keyboard_init(void) {
@@ -217,9 +224,9 @@ bool keyboard_has_char(void) {
 }
 
 char keyboard_getchar(void) {
-    // Interrupts off between finding both buffers empty and going to sleep,
-    // so a key that arrives in between still wakes us.
-    uint64_t flags = irq_save();
+    // input_lock is held between finding both buffers empty and going to
+    // sleep, so a key that arrives in between still wakes us.
+    uint64_t flags = spinlock_acquire_irqsave(&input_lock);
     char c;
 
     while (1) {
@@ -235,9 +242,9 @@ char keyboard_getchar(void) {
             c = 0; // No character: a signal handler has to run first
             break;
         }
-        sched_block(&input_channel, 0);
+        sched_sleep(&input_channel, &input_lock, 0);
     }
 
-    irq_restore(flags);
+    spinlock_release_irqrestore(&input_lock, flags);
     return c;
 }

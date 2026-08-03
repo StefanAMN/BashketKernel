@@ -13,7 +13,7 @@
 // so the table needs no setup when a frame is allocated.
 static uint16_t *extra_owners = NULL;
 static size_t tracked_frames = 0;
-static spinlock_t cow_lock = SPINLOCK_INIT;
+static spinlock_t cow_lock = SPINLOCK_RANKED("cow", LOCK_RANK_COW);
 
 void cow_init(void) {
     tracked_frames = pmm_get_total_frames();

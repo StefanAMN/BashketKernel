@@ -63,6 +63,15 @@ void vfs_init(void);
 vnode_t *vfs_get_root(void);
 
 /**
+ * @brief Take the lock on the file tree, for a sequence of steps that must
+ *        not be separated: looking a name up and then using what was found.
+ *        A node pointer is only safe to use while this is held, or while the
+ *        node is open (its open_count is not zero). May sleep; nests.
+ */
+void vfs_lock(void);
+void vfs_unlock(void);
+
+/**
  * @brief Find file or directory node by path (e.g. "/bin/hello" or "hello").
  * @param relative_root Directory node to search from (or NULL for VFS root).
  * @param path File path string.

@@ -58,3 +58,23 @@ ctx_switch:
 
     // Return to incoming task's saved RIP
     ret
+
+/*
+ * Where a new task starts: ctx_switch returns here the first time the task
+ * is chosen. The switch was made with the scheduler lock held, and the task
+ * coming in must release it (sched_task_started). Then `ret` continues to
+ * the address the creator put next on the stack: the task's entry function,
+ * or user_frame_return for a fork child.
+ *
+ * The stack is aligned for the call whatever the creator left on it; RBX is
+ * free to use (a new task has no register contents to preserve).
+ */
+.global task_start_trampoline
+.extern sched_task_started
+task_start_trampoline:
+    mov rbx, rsp
+    and rsp, -16
+    call sched_task_started
+    mov rsp, rbx
+    xor ebx, ebx
+    ret

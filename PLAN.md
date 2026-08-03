@@ -64,7 +64,16 @@ written before it is done adds to the work.
 - **Check:** all existing targets pass with one CPU; with four, each CPU can
   take a deliberate breakpoint exception and report its own id.
 
-### A2. Real locks in place of interrupt masking (L)
+### A2. Real locks in place of interrupt masking (L) — done
+
+Done as described, with these differences. The check is in every build, not
+a debug build, and stops the kernel at the next timer tick. The VFS turned
+out to have no protection at all and got a (re-entrant) mutex. The other
+CPUs do not run kernel threads yet (that is A3), so the cross-CPU test runs
+a function on them directly with `smp_call`, which uses a new wake-up
+inter-processor interrupt. That test is known to miss very narrow races
+(see CLAUDE.md, "Check that a concurrency test can fail"). Position and
+flags of an open file shared after `fork` are still not locked.
 
 - Audit every `irq_save` critical section and give each shared structure a
   spinlock taken with interrupts off: the run queue and task list, wait

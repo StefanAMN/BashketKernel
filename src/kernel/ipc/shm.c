@@ -21,6 +21,7 @@ typedef struct {
 } shm_segment_t;
 
 static shm_segment_t segments[SHM_MAX_SEGMENTS];
+static spinlock_t shm_lock = SPINLOCK_RANKED("shm", LOCK_RANK_IPC);
 
 size_t shm_count(void) {
     size_t count = 0;
@@ -33,7 +34,7 @@ int shm_get(uint32_t key, size_t size) {
     if (size == 0 || pages == 0 || pages > SHM_MAX_PAGES) return -EINVAL;
 
     // Allocate before looking, so that the table is searched and filled in
-    // one step with interrupts off (allocation takes locks of its own)
+    // one step under the table's lock (allocation takes locks of its own)
     uint64_t *frames = kmalloc(pages * sizeof(uint64_t));
     if (!frames) return -ENOMEM;
     for (size_t i = 0; i < pages; i++) {
@@ -49,7 +50,7 @@ int shm_get(uint32_t key, size_t size) {
     int result = -ENOSPC;
     bool used_new_frames = false;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&shm_lock);
     int free_slot = -1;
     for (int i = 0; i < SHM_MAX_SEGMENTS; i++) {
         if (segments[i].used && segments[i].key == key) {
@@ -68,7 +69,7 @@ int shm_get(uint32_t key, size_t size) {
         result = free_slot;
     }
 done:
-    irq_restore(flags);
+    spinlock_release_irqrestore(&shm_lock, flags);
 
     if (!used_new_frames) {
         for (size_t i = 0; i < pages; i++) pmm_free_frame((void *)frames[i]);
@@ -84,7 +85,7 @@ uint64_t shm_attach(int id, uint64_t *pml4, uint64_t *mmap_next) {
     // can be removed by someone else at any moment without harm
     uint64_t frames[SHM_MAX_PAGES];
     size_t pages = 0;
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&shm_lock);
     if (segments[id].used) {
         pages = segments[id].pages;
         for (size_t i = 0; i < pages; i++) {
@@ -92,7 +93,7 @@ uint64_t shm_attach(int id, uint64_t *pml4, uint64_t *mmap_next) {
             pmm_ref_frame((void *)frames[i]);
         }
     }
-    irq_restore(flags);
+    spinlock_release_irqrestore(&shm_lock, flags);
     if (pages == 0) return 0;
 
     uint64_t addr = *mmap_next;
@@ -119,14 +120,14 @@ uint64_t shm_attach(int id, uint64_t *pml4, uint64_t *mmap_next) {
 int shm_remove(int id) {
     if (id < 0 || id >= SHM_MAX_SEGMENTS) return -EINVAL;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&shm_lock);
     bool existed = segments[id].used;
     uint64_t *frames = segments[id].frames;
     size_t pages = segments[id].pages;
     segments[id].used = false;
     segments[id].frames = NULL;
     segments[id].pages = 0;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&shm_lock, flags);
     if (!existed) return -EINVAL;
 
     // Drop the table's reference. A frame still mapped somewhere lives on

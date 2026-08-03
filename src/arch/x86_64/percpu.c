@@ -6,6 +6,7 @@
 #include "percpu.h"
 #include "cpu.h"
 #include "kstring.h"
+#include "spinlock.h"
 
 #define MSR_GS_BASE        0xC0000101 // The base GS uses now
 #define MSR_KERNEL_GS_BASE 0xC0000102 // What swapgs exchanges it with
@@ -33,6 +34,8 @@ void cpu_init_this(uint32_t cpu_id, uint64_t fault_stack_top) {
     cpu->tss.iomap_base = sizeof(struct tss);
     cpu->tss.ist1 = fault_stack_top;
     gdt_install_tss(cpu_id, &cpu->tss);
+
+    if (cpu_id == 0) lock_debug_enable(); // this_cpu() works from here on
 }
 
 uint64_t cpu_read_gs_base(void) {

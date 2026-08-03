@@ -1,5 +1,6 @@
 #include "test.h"
 #include "sem.h"
+#include "mutex.h"
 #include "sched.h"
 #include "pit.h"
 
@@ -70,9 +71,60 @@ TEST(semaphore_wait_with_nothing_runnable) {
     EXPECT_TRUE(waited <= 8);
 }
 
+// --- Mutex -------------------------------------------------------------------
+
+static mutex_t door = MUTEX_INIT("test-door");
+static volatile int inside = 0, most_inside = 0, visits = 0;
+
+static void visitor_entry(void) {
+    for (int i = 0; i < 20; i++) {
+        mutex_lock(&door);
+        int now = ++inside;
+        if (now > most_inside) most_inside = now;
+        sched_sleep_ticks(1);          // Holding a mutex across a sleep is what it is for
+        inside--;
+        visits++;
+        mutex_unlock(&door);
+    }
+}
+
+TEST(mutex_admits_one_holder_and_may_sleep) {
+    inside = 0; most_inside = 0; visits = 0;
+
+    EXPECT_TRUE(mutex_trylock(&door));
+    EXPECT_TRUE(mutex_held(&door));
+    mutex_lock(&door);                 // The holder may take it again...
+    mutex_unlock(&door);
+    EXPECT_TRUE(mutex_held(&door));    // ...and still holds it after one unlock
+
+    task_t *a = task_create("visitor-a", visitor_entry);
+    task_t *b = task_create("visitor-b", visitor_entry);
+    task_t *c = task_create("visitor-c", visitor_entry);
+    EXPECT_TRUE(a && b && c);
+
+    // While we hold it, nobody gets in: they sleep on it instead of spinning
+    for (int i = 0; i < 50; i++) sched_yield();
+    EXPECT_EQ(visits, 0);
+    EXPECT_EQ(a->state, TASK_BLOCKED);
+    EXPECT_TRUE(a->wait_channel == &door);
+
+    mutex_unlock(&door);
+    EXPECT_TRUE(!mutex_held(&door));
+
+    for (int i = 0; i < 400 && visits < 60; i++) sched_sleep_ticks(1);
+    EXPECT_EQ(visits, 60);
+    EXPECT_EQ(most_inside, 1);         // Never two at once, although each slept inside
+    EXPECT_TRUE(mutex_trylock(&door));
+    mutex_unlock(&door);
+
+    while (sched_reap() == 0) sched_yield();
+    while (sched_reap() != 0) { }
+}
+
 void test_suite_sem(void) {
     kprintf("Suite: Semaphores and Blocking\n");
     RUN_TEST(semaphore_counts);
     RUN_TEST(semaphore_blocks_until_post);
     RUN_TEST(semaphore_wait_with_nothing_runnable);
+    RUN_TEST(mutex_admits_one_holder_and_may_sleep);
 }

@@ -13,7 +13,7 @@
 static uint64_t *kernel_pml4 = NULL;
 
 // Protects page-table edits. Lock order: vmm_lock, then the PMM lock.
-static spinlock_t vmm_lock = SPINLOCK_INIT;
+static spinlock_t vmm_lock = SPINLOCK_RANKED("vmm", LOCK_RANK_VMM);
 
 static uint64_t *get_next_level(uint64_t *current_table, size_t index, bool allocate, uint64_t flags) {
     if ((current_table[index] & VMM_PRESENT) && (current_table[index] & VMM_HUGE)) {
@@ -207,7 +207,7 @@ bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt) {
     virt &= ~(uint64_t)(PAGE_SIZE - 1);
     uint64_t hhdm = pmm_get_hhdm_offset();
 
-    uint64_t irq_flags = irq_save();
+    uint64_t irq_flags = spinlock_acquire_irqsave(&vmm_lock);
     bool resolved = false;
 
     uint64_t *pte = walk_to_pte(pml4, virt);
@@ -232,7 +232,7 @@ bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt) {
         if (resolved) vmm_invlpg(virt);
     }
 
-    irq_restore(irq_flags);
+    spinlock_release_irqrestore(&vmm_lock, irq_flags);
     return resolved;
 }
 
@@ -274,6 +274,12 @@ bool vmm_user_range_ok(uint64_t *pml4, uint64_t addr, size_t len, bool write) {
         uint64_t pte = vmm_get_pte(pml4, page);
         if (!(pte & VMM_PRESENT) || !(pte & VMM_USER)) return false;
         if (write && !(pte & (VMM_WRITABLE | VMM_COW))) return false;
+
+        // The kernel is about to write here, often while holding a lock
+        // (a pipe's, say), where a fault that could not be resolved would
+        // have to kill the task lock and all. Give the page its private
+        // copy now instead; running out of memory is an ordinary error here.
+        if (write && (pte & VMM_COW) && !vmm_handle_cow_fault(pml4, page)) return false;
     }
     return true;
 }
