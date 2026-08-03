@@ -106,7 +106,15 @@ bool initrd_mount(const void *tar_data, size_t tar_size) {
             if (hdr->typeflag == '5') {
                 vfs_create_dir(parent, leaf);
             } else if (hdr->typeflag == '0' || hdr->typeflag == '\0') {
-                vfs_create_file(parent, leaf, ptr + TAR_BLOCK, size);
+                vnode_t *node = vfs_create_file(parent, leaf, ptr + TAR_BLOCK, size);
+                if (node) {
+                    // Keep "others may read" from the archive, but nothing
+                    // here is writable by anyone but root: these are the
+                    // system's programs and configuration
+                    size_t tar_mode = 0644;
+                    parse_octal(hdr->mode, sizeof(hdr->mode) - 1, &tar_mode);
+                    node->mode = (uint16_t)((tar_mode & 0444) | 0200);
+                }
                 file_count++;
             }
         }

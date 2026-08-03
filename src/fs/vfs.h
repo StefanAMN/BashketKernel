@@ -44,6 +44,8 @@ typedef struct vnode {
     const vnode_ops_t *ops;     // Non-NULL for a node whose contents come from functions (/dev, /proc, files on disk)
     uint64_t private_data;      // For whoever provides ops (the FAT driver keeps the first cluster here)
     bool read_only;             // Nothing may be created, removed or opened for writing here
+    uint32_t uid;               // Owner (see auth.h)
+    uint16_t mode;              // Permission bits: who may read and write
     struct vnode *parent;       // Pointer to parent directory node
     struct vnode *children;     // Pointer to first child node if directory
     struct vnode *next;         // Pointer to next sibling in directory listing

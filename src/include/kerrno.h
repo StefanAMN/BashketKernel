@@ -8,6 +8,7 @@
 #ifndef KERRNO_H
 #define KERRNO_H
 
+#define EPERM    1   // Not allowed, whoever asks (short of root)
 #define ENOENT   2   // No such file or directory
 #define ESRCH    3   // No such process
 #define EINTR    4   // A signal handler interrupted the call
@@ -16,6 +17,7 @@
 #define EBADF    9   // Bad file descriptor
 #define ECHILD  10   // No child processes
 #define ENOMEM  12   // Out of memory
+#define EACCES  13   // The file's permissions do not allow it
 #define EFAULT  14   // Bad address
 #define EBUSY   16   // In use
 #define EEXIST  17   // File exists
