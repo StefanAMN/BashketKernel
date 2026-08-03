@@ -21,23 +21,25 @@
 .global user_frame_return
 .global enter_user_mode
 .extern syscall_handler
-.extern syscall_kernel_rsp
-
-.section .bss
-// User RSP parked here for the few instructions between entry and the push.
-// Interrupts are off (SFMASK), and there is one CPU, so one slot is enough.
-syscall_user_rsp:
-    .quad 0
 
 .section .text
 
+// Offsets into this CPU's cpu_t, reached through GS (see percpu.h)
+.set CPU_KERNEL_RSP, 8
+.set CPU_USER_RSP, 16
+
 syscall_entry:
-    mov [rip + syscall_user_rsp], rsp
-    mov rsp, [rip + syscall_kernel_rsp]
+    // A system call always comes from ring 3, so GS has the user's base:
+    // switch to this CPU's. Then park the user's stack pointer in the per-CPU
+    // scratch slot and move to this CPU's kernel stack. Interrupts are off
+    // (SFMASK), so nothing can use the slot in between.
+    swapgs
+    mov gs:[CPU_USER_RSP], rsp
+    mov rsp, gs:[CPU_KERNEL_RSP]
 
     // Build the part of struct registers that the CPU pushes on an interrupt
     push 0x1B                               // SS  (user data, RPL 3)
-    push qword ptr [rip + syscall_user_rsp] // RSP (user)
+    push qword ptr gs:[CPU_USER_RSP]        // RSP (user)
     push r11                                // RFLAGS (user)
     push 0x23                               // CS  (user code, RPL 3)
     push rcx                                // RIP (user)
@@ -103,6 +105,7 @@ syscall_entry:
     add rsp, 8                  // CS (sysretq supplies it)
     pop r11                     // RFLAGS
     pop rsp                     // User RSP. SS slot is abandoned with the stack.
+    swapgs                      // GS back to the user's base
     sysretq
 
 /*
@@ -131,6 +134,10 @@ user_frame_return:
     pop rbx
     pop rax
     add rsp, 16
+    test qword ptr [rsp + 8], 3 // Returning to ring 3 (it always is, but let the frame decide)
+    jz 1f
+    swapgs
+1:
     iretq
 
 /*
@@ -164,4 +171,5 @@ enter_user_mode:
     xor r13d, r13d
     xor r14d, r14d
     xor r15d, r15d
+    swapgs                      // Leaving for ring 3: GS back to the user's base
     iretq

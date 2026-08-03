@@ -1,8 +1,8 @@
 # BashketKernel — Plan
 
-This document proposes what to build next. **Nothing in it is implemented
-yet**; it is a list of suggestions in a recommended order, for the project
-owners to accept, reorder or reject.
+This document lists what to build next, in three tracks. The tracks are being
+implemented in order (A, then B, then C); items are marked **done** as they
+land. Everything not marked is still a proposal.
 
 The previous plan (the repair plan that took the tree from mostly-mock to
 real) is finished and remains in git: `git show e04ac04:PLAN.md`. The
@@ -52,7 +52,7 @@ CPU 0 runs tasks, because "interrupts off" is used as the lock almost
 everywhere. Nothing else in this plan is blocked by it, but everything
 written before it is done adds to the work.
 
-### A1. Per-CPU data and a task state segment per CPU (M)
+### A1. Per-CPU data and a task state segment per CPU (M) — done
 
 - A `cpu_t` per CPU reached through the GS base (`swapgs` on entry from
   ring 3), holding the current task, the kernel stack pointer for system

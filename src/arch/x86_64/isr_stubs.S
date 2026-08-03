@@ -74,6 +74,14 @@ common_isr_stub:
     // interrupted flags, so this needs no undoing.
     cld
 
+    // If the interrupt arrived in ring 3, GS still has the user's base:
+    // switch to this CPU's (see percpu.h). The saved CS, whose low two bits
+    // are the privilege level that was interrupted, is at [rsp + 24] here:
+    // above the interrupt number, the error code and RIP.
+    test qword ptr [rsp + 24], 3
+    jz 1f
+    swapgs
+1:
     // Push all general purpose registers
     push rax
     push rbx
@@ -117,6 +125,12 @@ common_isr_stub:
     // Remove interrupt number and error code from stack
     add rsp, 16
 
+    // Going back to ring 3: give GS back to the user. (The frame decides,
+    // not how we came in: it may have been rewritten in between.)
+    test qword ptr [rsp + 8], 3
+    jz 2f
+    swapgs
+2:
     // Return from interrupt
     iretq
 

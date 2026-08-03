@@ -25,6 +25,32 @@ static void check_direction_flag(void) {
     CHECK(waitpid(pid, &status) == pid && status == 0);
 }
 
+/* GS belongs to the program in ring 3: the kernel switches to its own base
+ * on entry (swapgs) and back on exit. Segment selector 0 is what programs
+ * start with, and reading through GS must not reach kernel data. */
+static void check_gs_is_ours(void) {
+    unsigned long selector = 99;
+    asm volatile("mov %0, gs" : "=r"(selector));
+    CHECK((selector & 0xFFFF) == 0);
+
+    /* gs:[0] in ring 3 is address 0 (our base is 0), not the kernel's
+     * per-CPU structure: the access must fault, in a child */
+    long pid = fork();
+    if (pid == 0) {
+        volatile unsigned long leaked = 0;
+        asm volatile("mov %0, gs:[0]" : "=r"(leaked));
+        exit(leaked ? 1 : 2);
+    }
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 128 + 11);
+
+    /* Many crossings by every route (system call, timer interrupt, signal,
+     * fork) and the kernel still finds its data: the rest of syscheck
+     * passing is the evidence. A quick burst here for good measure. */
+    for (int i = 0; i < 2000; i++) getpid();
+    CHECK(getpid() > 0);
+}
+
 static void check_bad_pointers(void) {
     /* The kernel must refuse pointers outside our address space ... */
     CHECK(write(1, (void *)0xffffffff80000000, 16) == -EFAULT);
@@ -1018,6 +1044,7 @@ static void check_copy_on_write(void) {
 int main(void) {
     check_basics();
     check_direction_flag();
+    check_gs_is_ours();
     check_bad_pointers();
     check_memory();
     check_fork();

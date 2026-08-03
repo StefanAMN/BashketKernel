@@ -39,7 +39,7 @@ gdt_flush:
     ret
 
 tss_flush:
-    // Load Task Register (TR) with TSS Selector (0x28)
-    mov ax, 0x28
+    // Load the task register with the TSS selector in DI
+    mov ax, di
     ltr ax
     ret

@@ -22,7 +22,7 @@
 #define GDT_KERNEL_DATA 0x10
 #define GDT_USER_DATA   0x18
 #define GDT_USER_CODE   0x20
-#define GDT_TSS         0x28
+#define GDT_TSS         0x28 // The boot CPU's; CPU n uses GDT_TSS + 16 * n
 
 // Selectors as loaded in ring 3 carry RPL 3 in their low two bits
 #define USER_DS (GDT_USER_DATA | 3) // 0x1B
@@ -96,9 +96,15 @@ void gdt_init(void);
 void tss_set_rsp0(uint64_t rsp);
 
 /**
- * @brief Load the kernel's GDT on a CPU other than the boot CPU (segments
- *        only, no task state segment).
+ * @brief Load the kernel's GDT on a CPU other than the boot CPU. Follow it
+ *        with cpu_init_this(), which sets GS and loads that CPU's TSS.
  */
 void gdt_load_on_this_cpu(void);
+
+/**
+ * @brief Describe `tss` in the GDT slot of CPU `cpu_id` and load it into the
+ *        calling CPU's task register. Call on that CPU, once.
+ */
+void gdt_install_tss(uint32_t cpu_id, struct tss *tss);
 
 #endif // GDT_H

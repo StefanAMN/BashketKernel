@@ -6,23 +6,27 @@
 #include "gdt.h"
 #include "string_util.h"
 
-// External assembly routine to load GDTR and perform far jump reload of CS/SS/DS
-extern void gdt_flush(uint64_t gdt_ptr_addr);
-extern void tss_flush(void);
+#include "percpu.h"
 
-// Table containing 7 8-byte entries (Entry 5 & 6 combine for 16-byte TSS)
+// External assembly routines: load GDTR and reload the segment registers;
+// load the task register with a TSS selector
+extern void gdt_flush(uint64_t gdt_ptr_addr);
+extern void tss_flush(uint16_t selector);
+
+// Five 8-byte segment descriptors, then one 16-byte TSS descriptor per CPU.
+// The table is shared by all CPUs; each loads its own TSS from it.
 static struct {
     struct gdt_entry entries[5];
-    struct tss_entry tss_desc;
+    struct tss_entry tss_desc[MAX_CPUS];
 } __attribute__((packed)) gdt_table;
 
 static struct gdt_ptr gdt_pointer;
-static struct tss sys_tss;
 
-// Dedicated stack for the double fault handler (TSS IST1). A double fault is
-// what the CPU raises when it cannot deliver an exception, most often because
-// the kernel stack itself is bad. Running the handler on that same stack would
-// fault again and reset the machine (triple fault).
+// The boot CPU's stack for the double fault handler (TSS IST1). A double
+// fault is what the CPU raises when it cannot deliver an exception, most
+// often because the kernel stack itself is bad. Running the handler on that
+// same stack would fault again and reset the machine (triple fault). The
+// other CPUs get theirs from the stack allocator when they are started.
 static uint8_t double_fault_stack[16 * 1024] __attribute__((aligned(16)));
 
 static void set_gdt_entry(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
@@ -37,19 +41,24 @@ static void set_gdt_entry(int num, uint32_t base, uint32_t limit, uint8_t access
     gdt_table.entries[num].access      = access;
 }
 
-static void set_tss_entry(uint64_t base, uint32_t limit) {
-    gdt_table.tss_desc.base_low      = (base & 0xFFFF);
-    gdt_table.tss_desc.base_middle   = (base >> 16) & 0xFF;
-    gdt_table.tss_desc.base_high     = (base >> 24) & 0xFF;
-    gdt_table.tss_desc.base_highest  = (base >> 32) & 0xFFFFFFFF;
-    gdt_table.tss_desc.reserved      = 0;
+void gdt_install_tss(uint32_t cpu_id, struct tss *tss) {
+    if (cpu_id >= MAX_CPUS) return;
+    struct tss_entry *desc = &gdt_table.tss_desc[cpu_id];
+    uint64_t base = (uint64_t)tss;
+    uint32_t limit = sizeof(struct tss) - 1;
 
-    gdt_table.tss_desc.limit_low     = (limit & 0xFFFF);
-    gdt_table.tss_desc.granularity   = (limit >> 16) & 0x0F;
+    desc->base_low      = (base & 0xFFFF);
+    desc->base_middle   = (base >> 16) & 0xFF;
+    desc->base_high     = (base >> 24) & 0xFF;
+    desc->base_highest  = (base >> 32) & 0xFFFFFFFF;
+    desc->reserved      = 0;
+    desc->limit_low     = (limit & 0xFFFF);
+    desc->granularity   = (limit >> 16) & 0x0F;
+    desc->access        = 0x89; // Present (0x80) | 64-bit TSS, available (0x09)
 
-    // Access 0x89: Present (0x80) | 64-bit TSS Available (0x09)
-    gdt_table.tss_desc.access        = 0x89;
-    gdt_table.tss_desc.granularity  |= 0x00;
+    // Loading it marks the descriptor "busy", which is why each CPU needs
+    // one of its own: a second load of a busy descriptor faults
+    tss_flush((uint16_t)(GDT_TSS + cpu_id * sizeof(struct tss_entry)));
 }
 
 void gdt_init(void) {
@@ -77,25 +86,17 @@ void gdt_init(void) {
     // Access: 0xFA = Present (0x80) | Ring 3 (0x60) | Executable (0x08) | Read (0x02)
     set_gdt_entry(4, 0, 0xFFFFFFFF, 0xFA, 0x20);
 
-    // Setup TSS
-    memset(&sys_tss, 0, sizeof(struct tss));
-    sys_tss.iomap_base = sizeof(struct tss);
-    sys_tss.ist1 = (uint64_t)double_fault_stack + sizeof(double_fault_stack);
-    set_tss_entry((uint64_t)&sys_tss, sizeof(struct tss) - 1);
-
-    // Flush GDT and TSS via assembly
     gdt_flush((uint64_t)&gdt_pointer);
-    tss_flush();
+
+    // Per-CPU data and the task state segment for the boot CPU. (Must come
+    // after gdt_flush: reloading the segment registers resets the GS base.)
+    cpu_init_this(0, (uint64_t)double_fault_stack + sizeof(double_fault_stack));
 }
 
 void gdt_load_on_this_cpu(void) {
-    // Segments only. The task state segment is not loaded: its descriptor is
-    // marked busy by the first CPU that loads it, and a second `ltr` of the
-    // same one faults. A CPU that will run ring 3 code or take interrupts
-    // needs a TSS of its own.
     gdt_flush((uint64_t)&gdt_pointer);
 }
 
 void tss_set_rsp0(uint64_t rsp) {
-    sys_tss.rsp0 = rsp;
+    this_cpu()->tss.rsp0 = rsp;
 }
