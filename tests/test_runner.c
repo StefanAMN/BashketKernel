@@ -14,6 +14,7 @@ extern void test_suite_sched(void);
 extern void test_suite_syscall(void);
 extern void test_suite_elf(void);
 extern void test_suite_vfs(void);
+extern void test_suite_shell(void);
 
 void run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -26,6 +27,7 @@ void run_all_tests(void) {
     test_suite_syscall();
     test_suite_elf();
     test_suite_vfs();
+    test_suite_shell();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);
