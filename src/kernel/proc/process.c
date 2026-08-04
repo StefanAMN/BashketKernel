@@ -255,6 +255,15 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
 
     signal_reset_on_exec(self);
 
+    // Descriptors marked close-on-exec belong to the old program only
+    for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
+        if (!(self->fd_cloexec & (1u << fd))) continue;
+        file_t *file = self->fds[fd];
+        self->fds[fd] = NULL;
+        file_close(file);
+    }
+    self->fd_cloexec = 0;
+
     // The old program's floating point registers are still live in the CPU
     fpu_restore(self->fpu_state);
 
@@ -291,6 +300,17 @@ pid_t process_fork(struct registers *regs) {
         return -1;
     }
 
+    // Sharing instead of copying postpones the cost of fork: every page
+    // either side writes to afterwards needs a frame then, and a process
+    // that cannot get one is killed in the middle of whatever it was doing.
+    // So refuse now, while the caller can still be told, rather than
+    // succeed with nothing left over for those copies.
+    if (pmm_get_free_frames() < PROCESS_FORK_RESERVE_FRAMES) {
+        task_free(child);
+        vmm_destroy_address_space(child_pml4);
+        return -1;
+    }
+
     child->is_user = true;
     child->detached = false;
     child->pml4_phys = (uint64_t *)((uint64_t)child_pml4 - pmm_get_hhdm_offset());
@@ -300,6 +320,9 @@ pid_t process_fork(struct registers *regs) {
     child->mmap_next = parent->mmap_next;
     child->stack_top = parent->stack_top;
     memcpy(child->sig_handlers, parent->sig_handlers, sizeof(child->sig_handlers));
+    memcpy(child->sig_masks, parent->sig_masks, sizeof(child->sig_masks));
+    memcpy(child->sig_flags, parent->sig_flags, sizeof(child->sig_flags));
+    child->sig_blocked = parent->sig_blocked; // What is pending for the parent is the parent's alone
     child->sig_restorer = parent->sig_restorer;
     task_set_cwd(child, parent->cwd);
 
@@ -311,6 +334,7 @@ pid_t process_fork(struct registers *regs) {
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
         child->fds[fd] = file_dup(parent->fds[fd]);
     }
+    child->fd_cloexec = parent->fd_cloexec;
 
     // The child's kernel stack starts with a copy of the parent's syscall
     // frame, except that its syscall "returns" 0. Below the frame goes the
@@ -340,6 +364,10 @@ pid_t process_fork(struct registers *regs) {
 }
 
 pid_t process_wait(pid_t pid, int *status) {
+    return process_wait_options(pid, status, 0);
+}
+
+pid_t process_wait_options(pid_t pid, int *status, int options) {
     task_t *self = sched_get_current_task();
     if (!self) return -1;
 
@@ -367,6 +395,11 @@ pid_t process_wait(pid_t pid, int *status) {
         }
 
         if (found != -1 || !have_child) break;
+
+        if (options & PROCESS_WNOHANG) {
+            found = 0; // There are children, none of them dead: say so instead of waiting
+            break;
+        }
 
         if (sched_interrupted()) {
             found = PROCESS_WAIT_INTERRUPTED;

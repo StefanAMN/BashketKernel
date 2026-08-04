@@ -17,6 +17,7 @@
 #include "priority.h"
 #include "tty.h"
 #include "percpu.h"
+#include "signal.h"
 #include "smp.h"
 #include "lapic.h"
 
@@ -454,7 +455,7 @@ static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, bool i
 
         // A signal with a handler is waiting: do not sleep on it. The caller
         // sees sched_interrupted() and abandons its wait with EINTR.
-        if (self->sig_pending) {
+        if (signal_deliverable(self)) {
             if (!caller_has_sched_lock) sched_unlock_irqrestore(flags);
             return;
         }
@@ -494,7 +495,8 @@ void sched_sleep_on_task_list(void *channel) {
 }
 
 bool sched_interrupted(void) {
-    return current_task && current_task->sig_pending != 0;
+    task_t *self = current_task;
+    return self && signal_deliverable(self);
 }
 
 void sched_interrupt_sleep(task_t *task) {
@@ -640,8 +642,12 @@ void task_exit_status(int status) {
         if (t->pid == self->parent_pid && t != self) parent = t;
     }
 
-    // A parent blocked in process_wait sleeps on its own task struct
-    if (parent) wakeup_locked(parent);
+    // A parent blocked in process_wait sleeps on its own task struct; one
+    // that would rather be told gets SIGCHLD
+    if (parent) {
+        wakeup_locked(parent);
+        signal_send_locked(parent, SIGCHLD);
+    }
 
     // A zombie is never chosen again. Whoever sees its state from now on
     // may free it, stack included, as soon as this switch is complete.

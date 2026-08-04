@@ -69,6 +69,7 @@ typedef struct task {
     uint64_t mmap_next;      // Next free address in the mmap region
     uint64_t stack_top;      // Highest address of the user stack (randomised per program)
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
+    uint32_t fd_cloexec;     // Bit n set: descriptor n is closed when the process execs a new program
     void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
     uint32_t uid;            // The user this process runs as (0: root, may do anything)
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
@@ -76,7 +77,11 @@ typedef struct task {
     int kill_pending;        // Signal that will end this process at its next safe point (0: none)
     uint64_t sig_handlers[TASK_NSIG]; // Per signal: 0 default (terminate), 1 ignore, else handler address
     uint64_t sig_restorer;   // Where handlers return to: the C library's sigreturn stub
-    uint32_t sig_pending;    // Bit n set: signal n is waiting for its handler to run
+    uint32_t sig_pending;    // Bit n set: signal n has arrived and not yet been acted on
+    uint32_t sig_blocked;    // Bit n set: signal n is held back (stays pending) until unblocked
+    uint32_t sig_masks[TASK_NSIG]; // Per signal: what else to block while its handler runs
+    uint8_t sig_flags[TASK_NSIG];  // Per signal: SA_RESTART
+    uint32_t restart_syscall;      // Number + 1 of the system call a signal has just cut short, if it can be made again
 
     // FPU/SSE registers while the task is not running (FXSAVE format).
     // FXSAVE needs 16-byte alignment: kmalloc guarantees it for the struct,

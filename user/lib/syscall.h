@@ -36,6 +36,8 @@
 #define SYS_SETUID   105
 #define SYS_GETPPID  110
 #define SYS_TIME     201
+#define SYS_SIGACTION 13
+#define SYS_SIGPROCMASK 14
 #define SYS_SIGNAL   300
 #define SYS_SIGRETURN 302
 #define SYS_TTY_RAW  303
@@ -47,6 +49,9 @@
 #define SYS_SHMAT    30
 #define SYS_SHMRM    31
 #define SYS_NETCONFIG 306
+#define SYS_DUP      32
+#define SYS_FCNTL    72
+#define SYS_PIPE2    293
 #define SYS_SOCKET   41
 #define SYS_CONNECT  42
 #define SYS_ACCEPT   43
@@ -100,6 +105,13 @@
 #define O_CREAT  0x040
 #define O_TRUNC  0x200
 #define O_APPEND 0x400
+#define O_CLOEXEC 0x80000  /* Close the descriptor when the process execs a new program */
+
+#define WNOHANG 1          /* waitpid: do not wait; 0 if no child has exited yet */
+
+#define F_GETFD 1          /* fcntl: read the descriptor's flags */
+#define F_SETFD 2          /* fcntl: set them */
+#define FD_CLOEXEC 1
 
 #define SEEK_SET 0
 #define SEEK_CUR 1

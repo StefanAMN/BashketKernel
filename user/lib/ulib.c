@@ -11,7 +11,7 @@ void exit(int status) {
 long fork(void)                                    { return syscall0(SYS_FORK); }
 long execve(const char *path, char *const argv[], char *const envp[]) { return syscall3(SYS_EXECVE, path, argv, envp); }
 long execv(const char *path, char *const argv[])   { return execve(path, argv, environ); }
-long waitpid(long pid, int *status)                { return syscall2(SYS_WAITPID, pid, status); }
+long waitpid(long pid, int *status, int options)   { return syscall3(SYS_WAITPID, pid, status, options); }
 long getpid(void)                                  { return syscall0(SYS_GETPID); }
 long getppid(void)                                 { return syscall0(SYS_GETPPID); }
 long kill(long pid, int sig)                       { return syscall2(SYS_KILL, pid, sig); }
@@ -30,6 +30,14 @@ extern void __sigreturn(void);
 sighandler_t signal(int sig, sighandler_t handler) {
     long previous = syscall3(SYS_SIGNAL, sig, handler, __sigreturn);
     return previous < 0 ? SIG_ERR : (sighandler_t)previous;
+}
+
+long sigaction(int sig, const struct sigaction *action, struct sigaction *old) {
+    return syscall4(SYS_SIGACTION, sig, action, old, __sigreturn);
+}
+
+long sigprocmask(int how, const uint32_t *set, uint32_t *old) {
+    return syscall3(SYS_SIGPROCMASK, how, set, old);
 }
 
 /* --- Users and permissions ------------------------------------------------- */
@@ -219,6 +227,9 @@ long write(int fd, const void *buf, size_t count)  { return syscall3(SYS_WRITE, 
 long lseek(int fd, long offset, int whence)        { return syscall3(SYS_LSEEK, fd, offset, whence); }
 long pipe(int fds[2])                              { return syscall1(SYS_PIPE, fds); }
 long dup2(int old_fd, int new_fd)                  { return syscall2(SYS_DUP2, old_fd, new_fd); }
+long dup(int fd)                                   { return syscall1(SYS_DUP, fd); }
+long pipe2(int fds[2], int flags)                  { return syscall2(SYS_PIPE2, fds, flags); }
+long fcntl(int fd, int command, long arg)          { return syscall3(SYS_FCNTL, fd, command, arg); }
 long readdir(int fd, struct dirent *entry)         { return syscall2(SYS_READDIR, fd, entry); }
 long mkdir(const char *path)                       { return syscall1(SYS_MKDIR, path); }
 long chdir(const char *path)                       { return syscall1(SYS_CHDIR, path); }
