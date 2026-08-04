@@ -18,7 +18,7 @@
 
 static uint8_t clean_state[FPU_STATE_SIZE] __attribute__((aligned(16)));
 
-void fpu_init(void) {
+void fpu_enable_on_this_cpu(void) {
     uint64_t cr0, cr4;
 
     asm volatile("mov %0, cr0" : "=r"(cr0));
@@ -30,11 +30,16 @@ void fpu_init(void) {
     cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
     asm volatile("mov cr4, %0" : : "r"(cr4));
 
-    // Put the hardware in its reset state and keep a copy: it is what every
-    // new program starts with, so nothing leaks from one program to the next.
+    // Put the hardware in its reset state
     uint32_t mxcsr = MXCSR_DEFAULT;
     asm volatile("fninit");
     asm volatile("ldmxcsr [%0]" : : "r"(&mxcsr));
+}
+
+void fpu_init(void) {
+    // Keep a copy of the reset state: it is what every new program starts
+    // with, so nothing leaks from one program to the next.
+    fpu_enable_on_this_cpu();
     fpu_save(clean_state);
 
     kprintf("FPU Init: x87 and SSE enabled; state is saved per user task.\n");

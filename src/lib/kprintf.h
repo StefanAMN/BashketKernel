@@ -2,6 +2,7 @@
 #define KPRINTF_H
 
 #include <stdarg.h>
+#include <stdbool.h>
 
 #include <stddef.h>
 
@@ -15,5 +16,11 @@ size_t ksnprintf(char *buf, size_t size, const char *fmt, ...);
 // exception) that must print even if the fault happened inside kprintf.
 void kprintf_force_unlock(void);
 __attribute__((noreturn)) void panic(const char* msg);
+
+// Set when a CPU stops the kernel for good (a panic or a fatal exception).
+// The other CPUs stop at their next timer tick or wait loop instead of
+// carrying on with a kernel that has declared itself broken.
+extern volatile bool kernel_halted;
+void kernel_halt_other_cpus(void);
 
 #endif

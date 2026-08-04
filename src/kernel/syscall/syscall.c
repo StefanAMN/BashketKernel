@@ -46,7 +46,7 @@ extern void syscall_entry(void);
 
 #define PATH_MAX 128
 
-void syscall_init(void) {
+void syscall_enable_on_this_cpu(void) {
     // 1. Enable SCE (System Call Extensions), bit 0 of EFER
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1ULL);
 
@@ -67,6 +67,10 @@ void syscall_init(void) {
     //    AC, so a system call starts with the user access window closed even
     //    if the program set the flag itself (see cpu.h).
     wrmsr(MSR_SFMASK, RFLAGS_IF | RFLAGS_DF | RFLAGS_AC);
+}
+
+void syscall_init(void) {
+    syscall_enable_on_this_cpu();
 
     kprintf("Syscall Init: MSRs configured for syscall/sysret (LSTAR: %p)\n", syscall_entry);
 }
@@ -278,8 +282,10 @@ static int64_t sys_kill(int pid, int sig) {
     // other time. (PIDs are never reused, so the kill below can not reach a
     // different process.)
     uint64_t flags = sched_lock_irqsave();
-    task_t *target = sched_find_task((uint32_t)pid);
-    bool exists = target && target->is_user && target->state != TASK_ZOMBIE;
+    task_t *target = sched_find_task_locked((uint32_t)pid);
+    // A process that has died but has not been waited for still exists, as
+    // far as signals go: on another CPU it may die between two kills
+    bool exists = target && target->is_user;
     uint32_t target_uid = exists ? target->uid : 0;
     sched_unlock_irqrestore(flags);
     if (!exists) return -ESRCH;

@@ -31,6 +31,7 @@
 // First address above user space. On x86_64 with 4-level paging the lower
 // canonical half ends at 0x00007FFFFFFFFFFF.
 #define USER_SPACE_END 0x0000800000000000ULL
+#define KERNEL_SPACE_START 0xFFFF800000000000ULL // The half every address space shares
 
 /**
  * @brief Physical address of the kernel PML4, as loaded into CR3.

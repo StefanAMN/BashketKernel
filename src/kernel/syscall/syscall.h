@@ -88,6 +88,11 @@ struct utsname {
 void syscall_init(void);
 
 /**
+ * @brief Set the same MSRs on another CPU: each CPU has its own.
+ */
+void syscall_enable_on_this_cpu(void);
+
+/**
  * @brief C half of the syscall path, called from syscall_entry.S.
  * @param regs The caller's saved registers. Syscalls such as execve rewrite it.
  * @return Value placed in the caller's RAX.

@@ -72,7 +72,7 @@ TEST(pipe_blocks_writer_when_full_and_reader_when_empty) {
     EXPECT_TRUE(writer_task != NULL);
 
     // Let the writer fill the pipe. It can not finish, so it must be asleep.
-    for (int i = 0; i < 50; i++) sched_yield();
+    TEST_WAIT(writer_task->state == TASK_BLOCKED, 100);
     EXPECT_EQ(writer_finished, 0);
     EXPECT_EQ(writer_task->state, TASK_BLOCKED);
     EXPECT_EQ(shared_pipe->count, (size_t)PIPE_BUFFER_SIZE);

@@ -168,10 +168,15 @@ TEST(kill_takes_effect_at_a_safe_point) {
 
     task_t *task = sched_find_task((uint32_t)pid);
     EXPECT_TRUE(task != NULL);
-    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
-    // The request is recorded; the target has not been torn down from outside
+    // The request is recorded; the target has not been torn down from
+    // outside. (Looked at under the scheduler lock: on another CPU the
+    // target could otherwise act on the request before we look.)
+    uint64_t flags = sched_lock_irqsave();
+    signal_send_locked(task, SIGKILL);
     EXPECT_EQ(task->kill_pending, SIGKILL);
     EXPECT_TRUE(task->state != TASK_ZOMBIE);
+    sched_unlock_irqrestore(flags);
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);   // Asking again is harmless
 
     int status = -1;
     EXPECT_EQ(process_wait(pid, &status), pid);

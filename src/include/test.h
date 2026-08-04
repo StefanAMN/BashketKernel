@@ -46,4 +46,14 @@ extern int tests_failed;
 // Returns true if every expectation passed.
 bool run_all_tests(void);
 
+// Let other tasks run until `condition` holds, for at most `max_ticks` timer
+// ticks. "Yield N times" is not a wait: with more than one CPU the other
+// tasks run elsewhere, and N yields here can be over before they have begun.
+#define TEST_WAIT(condition, max_ticks) do { \
+    extern uint64_t pit_get_ticks(void); \
+    extern void sched_yield(void); \
+    uint64_t test_wait_deadline = pit_get_ticks() + (max_ticks); \
+    while (!(condition) && pit_get_ticks() < test_wait_deadline) sched_yield(); \
+} while (0)
+
 #endif // TEST_H

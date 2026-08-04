@@ -5,15 +5,15 @@
  * What is done: every CPU the bootloader found is started, loads the
  * kernel's GDT, IDT and page tables, gets its own per-CPU structure (GS),
  * task state segment and double-fault stack, enables its local APIC, takes
- * a breakpoint exception to prove it can handle one, reports in, and then
- * sleeps until asked to run a function (smp_call).
+ * a breakpoint exception to prove it can handle one, and reports in.
  *
- * The kernel's shared structures are protected by real locks (spinlock.h),
- * so code may run on any CPU at once; tests/test_smp.c does exactly that.
+ * The kernel's shared structures are protected by real locks (spinlock.h).
+ * Once boot is over (smp_start_scheduling) every CPU runs tasks: each has an
+ * idle task and a tick from its own local APIC timer, an idle CPU is woken
+ * when a task becomes runnable, and removing a kernel mapping waits for
+ * every CPU to drop its cached copy.
  *
- * What is not done: the other CPUs run no tasks. Putting them to work needs
- * an idle task and a timer interrupt per CPU, a way to make another CPU
- * reschedule, and TLB shootdown (see PLAN.md, A3).
+ * Device interrupts all still arrive on the boot CPU.
  */
 
 #ifndef SMP_H
@@ -47,12 +47,39 @@ size_t smp_get_cpu_total(void);
 
 per_cpu_t *smp_get_per_cpu(uint32_t cpu_id);
 
-// Interrupt vector that wakes a sleeping CPU so that it looks for work
-#define IPI_VECTOR_WAKE 0xF0
+// Interrupt vectors used between and within CPUs. WAKE is sent by another
+// CPU: there is a function to run, a TLB to flush or a task to pick up.
+// TIMER is each CPU's own local APIC timer, its scheduler tick.
+#define IPI_VECTOR_WAKE  0xF0
+#define IPI_VECTOR_TIMER 0xF1
 
 /**
- * @brief Run fn(arg) on another CPU, with interrupts off there. The function
- *        must not sleep: that CPU has no task to switch away from.
+ * @brief Let the other CPUs run tasks. Called once, at the end of boot.
+ */
+void smp_start_scheduling(void);
+
+/**
+ * @brief Handler for IPI_VECTOR_WAKE.
+ */
+void smp_handle_ipi(void);
+
+/**
+ * @brief Make every other CPU drop its cached page-table lookups, and wait
+ *        until all have. Call after removing or tightening a mapping in the
+ *        kernel half of the address space, before the memory is reused.
+ */
+void smp_tlb_shootdown(void);
+
+/**
+ * @brief Answer a pending request from smp_tlb_shootdown. Called wherever
+ *        this CPU waits with interrupts off.
+ */
+void smp_tlb_service(void);
+
+/**
+ * @brief Run fn(arg) on another CPU, in an interrupt handler there (so with
+ *        interrupts off: it must not sleep). Do not call while holding a
+ *        lock the function, or anything else on that CPU, may need.
  * @param wait Return only when the function has finished.
  * @return false if there is no such other CPU.
  */

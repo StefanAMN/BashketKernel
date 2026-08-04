@@ -143,7 +143,7 @@ TEST(functions_run_on_other_cpus) {
     calls = 0;
     remote_ran_on = 0;
 
-    EXPECT_TRUE(!smp_call(0, remote_hello, (void *)&calls, true));          // Not on ourselves
+    EXPECT_TRUE(!smp_call(0, remote_hello, (void *)&calls, true));          // Not on ourselves (this task stays on CPU 0)
     EXPECT_TRUE(!smp_call(MAX_CPUS, remote_hello, (void *)&calls, true));   // Nor on a CPU that is not there
 
     uint32_t others = smp_get_cpu_total() - 1;
@@ -273,6 +273,170 @@ TEST(cpus_share_the_kernel_safely) {
     EXPECT_TRUE(lock_debug_violations() == 0);
 }
 
+// --- Tasks on every CPU ------------------------------------------------------
+
+static volatile int burners_stop, burners_done;
+static volatile uint64_t burner_cpus_seen;      // Bit n: some burner ran on CPU n
+
+static void burner_entry(void) {
+    while (!burners_stop) {
+        uint64_t flags = irq_save();
+        uint32_t here = this_cpu()->cpu_id;
+        irq_restore(flags);
+        __atomic_or_fetch(&burner_cpus_seen, 1ULL << here, __ATOMIC_SEQ_CST);
+    }
+    __atomic_add_fetch(&burners_done, 1, __ATOMIC_SEQ_CST);
+}
+
+static uint32_t online_cpus(void) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < smp_get_cpu_total(); i++) if (cpu_get(i)->online) n++;
+    return n;
+}
+
+TEST(tasks_run_on_every_cpu_at_once) {
+    uint32_t cpus = online_cpus();
+    EXPECT_TRUE(cpus == smp_get_cpu_total());    // Every CPU that started takes part
+    EXPECT_TRUE(cpu_get(0)->idle != NULL);
+
+    burners_stop = 0; burners_done = 0; burner_cpus_seen = 0;
+    task_t *burners[MAX_CPUS];
+    for (uint32_t i = 0; i < cpus; i++) {
+        burners[i] = task_create("burner", burner_entry);
+        EXPECT_TRUE(burners[i] != NULL);
+    }
+
+    // With more runnable tasks than CPUs (the burners and this test), every
+    // CPU must be running one at the same moment
+    uint32_t most_at_once = 0;
+    for (int i = 0; i < 30; i++) {
+        sched_sleep_ticks(1);
+        uint32_t now = sched_running_count();
+        if (now > most_at_once) most_at_once = now;
+    }
+    EXPECT_TRUE(most_at_once == cpus);
+
+    // ...and between them the burners got onto every CPU
+    for (uint32_t i = 0; i < cpus; i++) EXPECT_TRUE(burner_cpus_seen & (1ULL << i));
+
+    // A task tied to one CPU is seen there and nowhere else from then on
+    if (cpus > 1) {
+        task_set_affinity(burners[0], (int32_t)(cpus - 1));
+        sched_sleep_ticks(10);                   // Long enough to be rescheduled onto it
+        for (int i = 0; i < 20; i++) {
+            sched_sleep_ticks(1);
+            uint64_t flags = sched_lock_irqsave();
+            bool running = burners[0]->state == TASK_RUNNING;
+            uint32_t where = burners[0]->last_cpu;
+            sched_unlock_irqrestore(flags);
+            if (running) EXPECT_TRUE(where == cpus - 1);
+        }
+        task_set_affinity(burners[0], 99);       // No such CPU: free to run anywhere
+        EXPECT_TRUE(burners[0]->affinity == TASK_ANY_CPU);
+    }
+
+    burners_stop = 1;
+    TEST_WAIT(burners_done == (int)cpus, 300);
+    EXPECT_EQ(burners_done, (int)cpus);
+    while (sched_reap() == 0) sched_yield();
+    while (sched_reap() != 0) { }
+
+    // This test itself has not left the boot CPU
+    uint64_t flags = irq_save();
+    EXPECT_TRUE(this_cpu()->cpu_id == 0);
+    irq_restore(flags);
+}
+
+// Work that can be split is done sooner on more CPUs. The amount of work is
+// fixed; the time for it is measured with one worker and with one per CPU.
+#define SUM_TO 30000000ULL
+
+static volatile int workers_done;
+static volatile uint64_t worker_sums;
+
+static void worker_entry(void) {
+    volatile uint64_t sum = 0;
+    for (uint64_t i = 1; i <= SUM_TO; i++) sum += i;
+    __atomic_add_fetch(&worker_sums, sum, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&workers_done, 1, __ATOMIC_SEQ_CST);
+}
+
+static uint64_t time_workers(int count) {
+    workers_done = 0;
+    uint64_t start = clock_ns();
+    for (int i = 0; i < count; i++) task_create("worker", worker_entry);
+    while (workers_done < count) sched_sleep_ticks(1);
+    uint64_t elapsed = clock_ns() - start;
+    while (sched_reap() == 0) sched_yield();
+    while (sched_reap() != 0) { }
+    return elapsed;
+}
+
+TEST(more_cpus_do_more_work) {
+    uint32_t cpus = online_cpus();
+    int workers = cpus > 4 ? 4 : (int)cpus;
+
+    worker_sums = 0;
+    uint64_t one = time_workers(1);
+    uint64_t many = time_workers(workers);
+    EXPECT_TRUE(worker_sums == (uint64_t)(workers + 1) * (SUM_TO * (SUM_TO + 1) / 2)); // Nobody's sum was disturbed
+
+    kprintf("    1 worker: %lu ms; %d workers on %u CPUs: %lu ms\n", one / 1000000, workers, cpus, many / 1000000);
+    if (workers > 1) {
+        // Perfect scaling would take as long as one worker; no scaling,
+        // `workers` times as long. Half way is asked for: the machine under
+        // QEMU may not have that many free cores of its own.
+        EXPECT_TRUE(many * 2 < one * (uint64_t)(workers + 1));
+    }
+}
+
+// --- Stale page-table lookups on other CPUs ----------------------------------
+
+#define PROBE_VA 0xFFFFC90000000000ULL   // An otherwise unused kernel address
+
+static volatile uint64_t probe_value;
+
+static void probe_read(void *arg) {
+    (void)arg;
+    probe_value = *(volatile uint64_t *)PROBE_VA; // Leaves the lookup in this CPU's TLB
+}
+
+TEST(other_cpus_forget_removed_kernel_mappings) {
+    uint64_t hhdm = pmm_get_hhdm_offset();
+    void *first = pmm_alloc_frame();
+    void *second = pmm_alloc_frame();
+    EXPECT_TRUE(first != NULL && second != NULL);
+    *(uint64_t *)((uint64_t)first + hhdm) = 0x1111;
+    *(uint64_t *)((uint64_t)second + hhdm) = 0x2222;
+
+    size_t frames_with_tables = 0;
+    EXPECT_TRUE(vmm_map_page(NULL, PROBE_VA, (uint64_t)first, VMM_PRESENT | VMM_WRITABLE | VMM_NO_EXECUTE));
+    frames_with_tables = pmm_get_free_frames();
+
+    // Every other CPU reads through the mapping, so each has it cached
+    for (uint32_t i = 1; i < smp_get_cpu_total(); i++) {
+        probe_value = 0;
+        EXPECT_TRUE(smp_call(i, probe_read, NULL, true));
+        EXPECT_TRUE(probe_value == 0x1111);
+    }
+
+    // The same address now leads to different memory. A CPU still using
+    // its cached lookup would read the old frame.
+    EXPECT_TRUE(vmm_unmap_page(NULL, PROBE_VA));
+    EXPECT_TRUE(vmm_map_page(NULL, PROBE_VA, (uint64_t)second, VMM_PRESENT | VMM_WRITABLE | VMM_NO_EXECUTE));
+    for (uint32_t i = 1; i < smp_get_cpu_total(); i++) {
+        probe_value = 0;
+        EXPECT_TRUE(smp_call(i, probe_read, NULL, true));
+        EXPECT_TRUE(probe_value == 0x2222);
+    }
+    EXPECT_TRUE(*(volatile uint64_t *)PROBE_VA == 0x2222);
+
+    EXPECT_TRUE(vmm_unmap_page(NULL, PROBE_VA));
+    EXPECT_TRUE(pmm_get_free_frames() == frames_with_tables);
+    pmm_free_frame(first);
+    pmm_free_frame(second);
+}
+
 void test_suite_smp(void) {
     kprintf("Suite: CPUs and Spinlocks\n");
     RUN_TEST(spinlock_basic_test);
@@ -281,4 +445,7 @@ void test_suite_smp(void) {
     RUN_TEST(lock_rules_are_checked);
     RUN_TEST(functions_run_on_other_cpus);
     RUN_TEST(cpus_share_the_kernel_safely);
+    RUN_TEST(tasks_run_on_every_cpu_at_once);
+    RUN_TEST(more_cpus_do_more_work);
+    RUN_TEST(other_cpus_forget_removed_kernel_mappings);
 }

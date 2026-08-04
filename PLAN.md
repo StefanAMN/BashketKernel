@@ -87,7 +87,19 @@ flags of an open file shared after `fork` are still not locked.
   unit tests pass with four CPUs while a second CPU runs a kernel thread
   that hammers each subsystem.
 
-### A3. Scheduling on every CPU (L)
+### A3. Scheduling on every CPU (L) — done
+
+Done, with these differences from the list below. There is one task list
+and one scheduler lock for all CPUs rather than a run queue per CPU: every
+CPU takes the next runnable task it is allowed to run, so load spreads by
+itself, at the price of a contended lock and no cache affinity. The boot CPU
+keeps the PIT as its tick (and as the system's clock); the other CPUs use
+their local APIC timers, calibrated against it, so wake-ups still have 10 ms
+granularity (that is C4's one-shot timer). TLB shootdown is done for the
+kernel half only, where it is needed: a process's own mappings are only ever
+live on the one CPU running it. Device interrupts all still arrive on the
+boot CPU. Measured under QEMU: four CPU-bound tasks on four CPUs finish in
+about 1.3 times the time of one (a threefold speed-up).
 
 - A run queue per CPU, an idle task per CPU, the timer interrupt on each
   CPU's local APIC (which also removes the PIT's 10 ms granularity for

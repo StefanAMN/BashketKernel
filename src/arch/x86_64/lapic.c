@@ -62,3 +62,50 @@ void lapic_send_ipi(uint32_t lapic_id, uint8_t vector) {
     lapic_write(0x310, lapic_id << 24);
     lapic_write(0x300, vector);
 }
+
+// --- Timer -------------------------------------------------------------------
+//
+// Each local APIC has a timer that counts down from a programmed value at
+// some rate derived from the CPU's bus clock, and interrupts its own CPU.
+// The rate is not documented anywhere: it is measured, once, against a
+// clock that is (the PIT).
+
+#define LAPIC_LVT_TIMER      0x320
+#define LAPIC_TIMER_INITIAL  0x380
+#define LAPIC_TIMER_CURRENT  0x390
+#define LAPIC_TIMER_DIVIDE   0x3E0
+#define LAPIC_TIMER_DIV_16   0x3      // Count once every 16 bus clocks
+#define LAPIC_LVT_MASKED     (1u << 16)
+#define LAPIC_LVT_PERIODIC   (1u << 17)
+
+static uint32_t timer_counts_per_tick = 0;
+
+bool lapic_timer_calibrate(uint64_t (*get_ticks)(void), uint32_t ticks) {
+    if (!lapic_base || ticks == 0) return false;
+
+    lapic_write(LAPIC_TIMER_DIVIDE, LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED); // Count, but do not interrupt
+
+    // Start exactly on a tick, then count through `ticks` whole ones
+    uint64_t start = get_ticks();
+    while (get_ticks() == start) asm volatile("pause");
+    lapic_write(LAPIC_TIMER_INITIAL, 0xFFFFFFFF);
+    start = get_ticks();
+    while (get_ticks() < start + ticks) asm volatile("pause");
+    uint32_t elapsed = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CURRENT);
+    lapic_write(LAPIC_TIMER_INITIAL, 0); // Stop
+
+    timer_counts_per_tick = elapsed / ticks;
+    return timer_counts_per_tick > 0;
+}
+
+uint32_t lapic_timer_counts_per_tick(void) {
+    return timer_counts_per_tick;
+}
+
+void lapic_timer_start_on_this_cpu(uint8_t vector) {
+    if (!lapic_base || timer_counts_per_tick == 0) return;
+    lapic_write(LAPIC_TIMER_DIVIDE, LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_LVT_TIMER, vector | LAPIC_LVT_PERIODIC);
+    lapic_write(LAPIC_TIMER_INITIAL, timer_counts_per_tick);
+}

@@ -165,8 +165,15 @@ size_t ksnprintf(char *buf, size_t size, const char *fmt, ...) {
     return target.len < size ? target.len : (size ? size - 1 : 0);
 }
 
+volatile bool kernel_halted = false;
+
+void kernel_halt_other_cpus(void) {
+    kernel_halted = true;
+}
+
 void panic(const char* msg) {
     asm volatile("cli");
+    kernel_halt_other_cpus();
     kprintf_force_unlock();
     kprintf("\n\n!!! KERNEL PANIC !!!\n");
     kprintf("%s\n", msg);

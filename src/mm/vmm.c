@@ -4,6 +4,7 @@
  */
 
 #include "vmm.h"
+#include "smp.h"
 #include "pmm.h"
 #include "kprintf.h"
 #include "string_util.h"
@@ -359,6 +360,13 @@ bool vmm_unmap_page(uint64_t *pml4, uint64_t virt) {
     }
 
     spinlock_release_irqrestore(&vmm_lock, irq_flags);
+
+    // The kernel half is mapped on every CPU, and any of them may have this
+    // translation cached. (A user address space is only ever live on the
+    // one CPU running its process, and a CPU drops those translations when
+    // it switches to another address space.) Done outside the lock: the
+    // other CPUs must be able to take it while we wait for them.
+    if (ok && virt >= KERNEL_SPACE_START) smp_tlb_shootdown();
     return ok;
 }
 

@@ -58,6 +58,13 @@ kill %1
 `rflags` without `IF` in a loop means spinning with interrupts off, usually a
 lock taken twice. A `hlt` with `IF` clear can never wake up.
 
+With more than one CPU (`-smp 4`) look at all of them: `-ex 'info threads'
+-ex 'thread apply all bt'`. One CPU spinning in `spinlock_acquire` and
+another in `smp_tlb_shootdown` or `smp_call` is two CPUs waiting for each
+other. The kernel reports locking mistakes itself where it can: a line
+starting `LOCK RULE VIOLATION` or `DEADLOCK` on the serial log names the
+lock (ranks are in `src/kernel/sync/spinlock.h`).
+
 ## Interrupt controllers: ask QEMU what it sees
 
 Guest counters and QEMU's counters in the same run:
