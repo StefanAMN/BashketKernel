@@ -4,7 +4,7 @@
  */
 
 #include "gdt.h"
-#include <string.h>
+#include "string_util.h"
 
 // External assembly routine to load GDTR and perform far jump reload of CS/SS/DS
 extern void gdt_flush(uint64_t gdt_ptr_addr);

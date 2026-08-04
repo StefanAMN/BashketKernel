@@ -8,7 +8,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "kprintf.h"
-#include <string.h>
+#include "string_util.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 
