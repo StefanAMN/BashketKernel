@@ -308,6 +308,11 @@ code comments and commit messages; `git log` is the full history.
   what lets another CPU free a zombie's stack the moment it sees `ZOMBIE`.
   It also means a task can never halt "in place" waiting to be woken: there
   is an idle task to switch to.
+- **Keep user pointers out of everything below the system call.** `read` and
+  `write` copy through a page owned by the task; the file layer, pipes and
+  drivers only see kernel memory and run with the SMAP window closed. A
+  buffer owned by the task (freed with it) also cannot leak when the task is
+  killed while asleep in the call, which a per-call `kmalloc` would.
 - **Nothing the kernel does under a spinlock may fault.** Kernel writes to
   user buffers happen under locks (a pipe's), so `vmm_user_range_ok(write)`
   resolves copy-on-write up front instead of leaving it to the fault.

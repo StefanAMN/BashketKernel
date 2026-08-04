@@ -69,6 +69,7 @@ typedef struct task {
     uint64_t mmap_next;      // Next free address in the mmap region
     uint64_t stack_top;      // Highest address of the user stack (randomised per program)
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
+    void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
     uint32_t uid;            // The user this process runs as (0: root, may do anything)
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
     bool exiting;            // Has begun to exit: can no longer be killed or signalled
