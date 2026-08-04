@@ -5,7 +5,7 @@
 #include "cow.h"
 
 TEST(address_space_is_isolated_and_freed) {
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
 
     uint64_t *a = vmm_create_address_space();
     uint64_t *b = vmm_create_address_space();
@@ -32,7 +32,7 @@ TEST(address_space_is_isolated_and_freed) {
 
     vmm_destroy_address_space(a);
     vmm_destroy_address_space(b);
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
 }
 
 TEST(user_range_validation) {
@@ -55,9 +55,9 @@ TEST(user_range_validation) {
 }
 
 TEST(mmap_brk_and_unmap) {
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
     uint64_t *space = vmm_create_address_space();
-    size_t free_with_space = pmm_get_free_frames();
+    size_t free_with_space = test_free_frames();
 
     // mmap: zeroed pages at increasing addresses
     uint64_t cursor = USER_MMAP_BASE;
@@ -75,9 +75,9 @@ TEST(mmap_brk_and_unmap) {
     EXPECT_TRUE(zeroed[0] == 0 && zeroed[PAGE_SIZE - 1] == 0);
 
     // Unmapping gives the frames back
-    size_t free_mapped = pmm_get_free_frames();
+    size_t free_mapped = test_free_frames();
     EXPECT_EQ(user_unmap_range(space, first, 3 * PAGE_SIZE), 0);
-    EXPECT_TRUE(pmm_get_free_frames() == free_mapped + 3);
+    EXPECT_TRUE(test_free_frames() == free_mapped + 3);
     EXPECT_TRUE(vmm_get_phys(space, first) == 0);
     EXPECT_TRUE(vmm_get_phys(space, second) != 0);
 
@@ -89,14 +89,14 @@ TEST(mmap_brk_and_unmap) {
 
     // brk: grows and shrinks by whole pages as the break moves
     uint64_t brk_start = 0x800000, brk_end = 0x800000;
-    size_t free_brk = pmm_get_free_frames();
+    size_t free_brk = test_free_frames();
     EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start + 100) == brk_start + 100);
     EXPECT_TRUE(vmm_get_phys(space, brk_start) != 0);
     EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start + 3 * PAGE_SIZE) == brk_start + 3 * PAGE_SIZE);
     EXPECT_TRUE(vmm_get_phys(space, brk_start + 2 * PAGE_SIZE) != 0);
     EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start) == brk_start);
     EXPECT_TRUE(vmm_get_phys(space, brk_start) == 0);
-    EXPECT_TRUE(pmm_get_free_frames() >= free_brk - 3);     // Only page tables remain
+    EXPECT_TRUE(test_free_frames() >= free_brk - 3);     // Only page tables remain
 
     // Below the start or absurdly far: break stays put
     EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start - 1) == brk_start);
@@ -104,27 +104,27 @@ TEST(mmap_brk_and_unmap) {
 
     vmm_destroy_address_space(space);
     EXPECT_TRUE(free_with_space == free_before - 1);
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
 }
 
 TEST(frame_sharing_counts) {
     void *frame = pmm_alloc_frame();
-    size_t free_after_alloc = pmm_get_free_frames();
+    size_t free_after_alloc = test_free_frames();
 
     EXPECT_EQ(pmm_get_frame_ref(frame), 1u);
     pmm_ref_frame(frame);                     // A second owner
     EXPECT_EQ(pmm_get_frame_ref(frame), 2u);
 
     pmm_unref_frame(frame);                   // First owner leaves: still allocated
-    EXPECT_TRUE(pmm_get_free_frames() == free_after_alloc);
+    EXPECT_TRUE(test_free_frames() == free_after_alloc);
     EXPECT_EQ(pmm_get_frame_ref(frame), 1u);
 
     pmm_unref_frame(frame);                   // Last owner leaves: freed
-    EXPECT_TRUE(pmm_get_free_frames() == free_after_alloc + 1);
+    EXPECT_TRUE(test_free_frames() == free_after_alloc + 1);
 }
 
 TEST(copy_on_write_clone) {
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
     uint64_t hhdm = pmm_get_hhdm_offset();
 
     uint64_t *parent = vmm_create_address_space();
@@ -137,11 +137,11 @@ TEST(copy_on_write_clone) {
     uint64_t data_phys = vmm_get_phys(parent, data_va);
     uint64_t text_phys = vmm_get_phys(parent, text_va);
 
-    size_t free_before_clone = pmm_get_free_frames();
+    size_t free_before_clone = test_free_frames();
     EXPECT_TRUE(vmm_clone_user_space(child, parent));
 
     // Cloning copies no page: the child only needs a PDPT, a PD and a PT
-    EXPECT_TRUE(free_before_clone - pmm_get_free_frames() == 3);
+    EXPECT_TRUE(free_before_clone - test_free_frames() == 3);
     EXPECT_TRUE(vmm_get_phys(child, data_va) == data_phys);
     EXPECT_TRUE(vmm_get_phys(child, text_va) == text_phys);
     EXPECT_EQ(pmm_get_frame_ref((void *)data_phys), 2u);
@@ -176,11 +176,11 @@ TEST(copy_on_write_clone) {
     EXPECT_EQ(data[0], 0x11);
 
     // Parent writes next: it is the last owner, so no copy, just write access
-    size_t free_before_fault = pmm_get_free_frames();
+    size_t free_before_fault = test_free_frames();
     EXPECT_TRUE(vmm_handle_cow_fault(parent, data_va));
     EXPECT_TRUE(vmm_get_phys(parent, data_va) == data_phys);
     EXPECT_TRUE(vmm_get_pte(parent, data_va) & VMM_WRITABLE);
-    EXPECT_TRUE(pmm_get_free_frames() == free_before_fault);
+    EXPECT_TRUE(test_free_frames() == free_before_fault);
 
     // Not COW any more, unmapped, and kernel addresses: all refused
     EXPECT_TRUE(!vmm_handle_cow_fault(parent, data_va));
@@ -192,7 +192,7 @@ TEST(copy_on_write_clone) {
     EXPECT_TRUE(vmm_get_phys(child, text_va) == text_phys);
     EXPECT_EQ(pmm_get_frame_ref((void *)text_phys), 1u);
     vmm_destroy_address_space(child);
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
 }
 
 void test_suite_mmap(void) {

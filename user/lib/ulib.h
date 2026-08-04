@@ -79,10 +79,19 @@ long chdir(const char *path);
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
 long unlink(const char *path);
 
-/* Network: UDP datagrams and ping. The machine is 10.0.2.15; QEMU's gateway
- * (which also reaches the host computer) is 10.0.2.2. */
-long socket(void);                                /* A new UDP socket, as a file descriptor */
-long bind(int fd, unsigned port);                 /* Receive datagrams sent to this port */
+/* Network. The machine is 10.0.2.15; QEMU's gateway (which also reaches the
+ * host computer) is 10.0.2.2.
+ *
+ * UDP (SOCK_DGRAM): bind, sendto, recvfrom.
+ * TCP (SOCK_STREAM): a client calls connect; a server calls bind, listen and
+ * then accept for each connection. A connection is read and written like a
+ * file; read returns 0 when the other end has closed. */
+long socket(int type);                            /* A new socket, as a file descriptor */
+long bind(int fd, unsigned port);                 /* The port to receive on (UDP) or to listen on (TCP) */
+long connect(int fd, uint32_t ip, unsigned port); /* TCP: open a connection; waits until it is made */
+long listen(int fd, int backlog);                 /* TCP: take connections on the bound port */
+long shutdown(int fd);                             /* TCP: finished writing; the other end reads end-of-file. Reading goes on */
+long accept(int fd, struct net_address *from);    /* TCP: the next connection, as a new descriptor (from may be NULL) */
 long sendto(int fd, const void *buf, size_t len, uint32_t ip, unsigned port);
 long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned long timeout_ms); /* 0: wait for ever */
 long ping(uint32_t ip, unsigned long timeout_ms); /* Round-trip time in microseconds, or a negative error */

@@ -248,7 +248,7 @@ TEST(cpus_share_the_kernel_safely) {
     hammer_tasks_done = 0;
 
     sched_reap();
-    size_t frames_before = pmm_get_free_frames();
+    size_t frames_before = test_free_frames();
     size_t heap_before = kheap_get_allocated_bytes();
 
     // The other CPUs start and are left running; this CPU joins in with
@@ -268,7 +268,7 @@ TEST(cpus_share_the_kernel_safely) {
     EXPECT_TRUE(hammer_errors == 0);
     EXPECT_TRUE(hammer_counter == (uint64_t)(others + 3) * HAMMER_ROUNDS);
     EXPECT_EQ(sem_getvalue(&hammer_sem), 0);
-    EXPECT_TRUE(pmm_get_free_frames() == frames_before);        // Nothing leaked, nothing freed twice
+    EXPECT_TRUE(test_free_frames() == frames_before);        // Nothing leaked, nothing freed twice
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
     EXPECT_TRUE(lock_debug_violations() == 0);
 }
@@ -411,7 +411,7 @@ TEST(other_cpus_forget_removed_kernel_mappings) {
 
     size_t frames_with_tables = 0;
     EXPECT_TRUE(vmm_map_page(NULL, PROBE_VA, (uint64_t)first, VMM_PRESENT | VMM_WRITABLE | VMM_NO_EXECUTE));
-    frames_with_tables = pmm_get_free_frames();
+    frames_with_tables = test_free_frames();
 
     // Every other CPU reads through the mapping, so each has it cached
     for (uint32_t i = 1; i < smp_get_cpu_total(); i++) {
@@ -432,7 +432,7 @@ TEST(other_cpus_forget_removed_kernel_mappings) {
     EXPECT_TRUE(*(volatile uint64_t *)PROBE_VA == 0x2222);
 
     EXPECT_TRUE(vmm_unmap_page(NULL, PROBE_VA));
-    EXPECT_TRUE(pmm_get_free_frames() == frames_with_tables);
+    EXPECT_TRUE(test_free_frames() == frames_with_tables);
     pmm_free_frame(first);
     pmm_free_frame(second);
 }

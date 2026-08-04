@@ -621,6 +621,86 @@ static void check_interrupted_calls(void) {
 
 #define OUR_IP 0x0A00020FUL    /* 10.0.2.15 */
 
+/* TCP: a server in a child process, a client here, over the loopback
+ * address. The server sends back what it gets in upper case. */
+static void check_tcp(void) {
+    static char out[1000], in[1000];
+    unsigned port = 9100 + (unsigned)(getpid() % 500);
+    uint32_t loopback = parse_ip("127.0.0.1");
+
+    CHECK(socket(99) == -EINVAL);
+
+    /* Nobody listens yet: refused, and the socket is spent */
+    long refused = socket(SOCK_STREAM);
+    CHECK(refused >= 3);
+    CHECK(connect((int)refused, loopback, port) == -ECONNREFUSED);
+    CHECK(connect((int)refused, loopback, port) == -EISCONN);
+    CHECK(close((int)refused) == 0);
+
+    long server = socket(SOCK_STREAM);
+    CHECK(server >= 3);
+    CHECK(listen((int)server, 2) == -EINVAL);             /* No port yet */
+    CHECK(bind((int)server, 0) == -EINVAL);
+    CHECK(bind((int)server, port) == 0);
+    CHECK(listen((int)server, 2) == 0);
+    CHECK(read((int)server, in, 1) == -ENOTCONN);         /* A listening socket carries no data */
+    CHECK(write((int)server, "x", 1) == -ENOTCONN);
+    CHECK(shutdown((int)server) == -ENOTCONN);
+    CHECK(sendto((int)server, "x", 1, loopback, port) == -EBADF);  /* Datagram calls are for datagram sockets */
+    CHECK(accept((int)server, (struct net_address *)0xffffffff80000000UL) == -EFAULT);
+    CHECK(accept(1, NULL) == -EBADF && connect(1, loopback, port) == -EBADF && listen(1, 1) == -EBADF);
+
+    long pid = fork();
+    if (pid == 0) {
+        struct net_address from;
+        long conn = accept((int)server, &from);
+        if (conn < 0 || from.ip != loopback || from.port < 49152) exit(1);
+        long n, total = 0;
+        while ((n = read((int)conn, in, sizeof(in))) > 0) {
+            for (long i = 0; i < n; i++) if (in[i] >= 'a' && in[i] <= 'z') in[i] -= 32;
+            for (long sent = 0; sent < n; ) {
+                long w = write((int)conn, in + sent, (size_t)(n - sent));
+                if (w <= 0) exit(2);
+                sent += w;
+            }
+            total += n;
+        }
+        if (n < 0) exit(3);
+        close((int)conn);                                 /* After the client finished: we close second */
+        exit(total == 20000 ? 0 : 4);
+    }
+
+    long client = socket(SOCK_STREAM);
+    CHECK(client >= 3);
+    CHECK(connect((int)client, loopback, port) == 0);
+
+    /* 20 000 bytes there and back, a piece at a time */
+    int mismatches = 0;
+    for (int round = 0; round < 20; round++) {
+        for (int i = 0; i < 1000; i++) out[i] = (char)('a' + (i + round) % 26);
+        CHECK(write((int)client, out, sizeof(out)) == (long)sizeof(out));
+        long got = 0;
+        while (got < 1000) {
+            long n = read((int)client, in + got, (size_t)(1000 - got));
+            if (n <= 0) break;
+            got += n;
+        }
+        CHECK(got == 1000);
+        for (int i = 0; i < 1000; i++) if (in[i] != out[i] - 32) mismatches++;
+    }
+    CHECK(mismatches == 0);
+
+    /* We finish: the server sees end-of-file and closes, and so do we */
+    CHECK(shutdown((int)client) == 0);
+    CHECK(write((int)client, "late", 4) == -EPIPE);
+    CHECK(read((int)client, in, sizeof(in)) == 0);
+    CHECK(close((int)client) == 0);
+
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(close((int)server) == 0);
+}
+
 static void check_network(void) {
     char buf[64];
     struct net_address from;
@@ -636,7 +716,7 @@ static void check_network(void) {
     CHECK(ping(OUR_IP, 500) >= 0);                        /* Ourselves: always answers */
 
     /* A server in a child process, a client here, talking over UDP */
-    long server = socket();
+    long server = socket(SOCK_DGRAM);
     CHECK(server >= 3);
     CHECK(bind((int)server, 9000) == 0);
     CHECK(bind((int)server, 9001) == -EINVAL);            /* Already bound */
@@ -650,7 +730,7 @@ static void check_network(void) {
         exit(sendto((int)server, buf, (size_t)n, from.ip, from.port) == n ? 0 : 2);
     }
 
-    long client = socket();
+    long client = socket(SOCK_DGRAM);
     CHECK(client >= 3 && client != server);
     CHECK(bind((int)client, 9000) == -EADDRINUSE);        /* The server has it */
     CHECK(sendto((int)client, "shout", 5, OUR_IP, 9000) == 5);
@@ -683,14 +763,14 @@ static void check_network(void) {
     /* Closing a socket frees its port */
     CHECK(close((int)server) == 0);
     CHECK(close((int)client) == 0);
-    long again = socket();
+    long again = socket(SOCK_DGRAM);
     CHECK(bind((int)again, 9000) == 0);
     close((int)again);
 
     /* A receive that would wait for ever is cut short by a handled signal */
     long waiting = fork();
     if (waiting == 0) {
-        long s = socket();
+        long s = socket(SOCK_DGRAM);
         bind((int)s, 9200);
         signal(SIGUSR1, counting_handler);
         exit(recvfrom((int)s, buf, sizeof(buf), NULL, 0) == -EINTR ? 0 : 1);
@@ -836,7 +916,7 @@ static void checks_as_alice(void) {
     waitpid(pid, &status);
 
     /* Low port numbers are reserved for root */
-    long sock = socket();
+    long sock = socket(SOCK_DGRAM);
     CHECK(bind((int)sock, 80) == -EACCES);
     CHECK(bind((int)sock, 8080) == 0);
     close((int)sock);
@@ -1056,6 +1136,7 @@ int main(void) {
     check_signals();
     check_interrupted_calls();
     check_network();
+    check_tcp();
     check_shared_memory();
     check_users();
     check_pipes();

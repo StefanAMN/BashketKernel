@@ -321,7 +321,7 @@ TEST(vfs_read_only_directories) {
 // A program stored on the disk runs like one from the initrd.
 TEST(fat32_program_runs_from_disk) {
     sched_reap();
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
 
     char *args[] = { "/disk/bin/hello", "from", "disk", NULL };
     pid_t pid = process_spawn("/disk/bin/hello", args);
@@ -336,7 +336,7 @@ TEST(fat32_program_runs_from_disk) {
     EXPECT_EQ(process_spawn("/disk/notes", NULL), -1);
 
     sched_reap();
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
 }
 
 // The boot sector comes from the disk and may say anything. Take the real

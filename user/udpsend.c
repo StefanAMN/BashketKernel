@@ -12,7 +12,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    long fd = socket();
+    long fd = socket(SOCK_DGRAM);
     if (fd < 0) {
         fprintf(2, "udpsend: %s\n", strerror(fd));
         return 1;

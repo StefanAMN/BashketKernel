@@ -133,7 +133,14 @@ twice. A test device checks both properties (kernel pointer, window closed).
 
 ## Track B — Make it a more complete Unix
 
-### B1. TCP (L)
+### B1. TCP (L) — done
+
+Done as described (`src/net/tcp.c`; the limits are listed at the top of
+`tcp.h`). In addition to the list below there is `shutdown` for the write
+half, which `nc` needs. Checked over loopback in the kernel (including with
+one segment in seven thrown away, and with a peer that stops answering),
+from ring 3, and against the host: an 88 KB file out through `nc`, 2 MiB
+through `tcpecho` and back.
 
 - Connections over the existing IPv4 layer: three-way handshake, sequence
   and acknowledgement numbers, retransmission with a timer, a fixed receive

@@ -10,6 +10,7 @@
 #include "tty.h"
 #include "slab.h"
 #include "net.h"
+#include "tcp.h"
 #include "auth.h"
 
 // Open files are small, all the same size, and created and destroyed
@@ -132,6 +133,18 @@ file_t *file_open_socket(void) {
 
 // An open file can be shared by processes on different CPUs (fork copies
 // the descriptor table), so the count of holders is changed atomically
+file_t *file_open_tcp(struct tcp_socket *tcp) {
+    if (!tcp) tcp = tcp_open();
+    if (!tcp) return NULL;
+    file_t *file = file_alloc(FILE_TCP, true, true);
+    if (!file) {
+        tcp_close(tcp);
+        return NULL;
+    }
+    file->tcp = tcp;
+    return file;
+}
+
 file_t *file_dup(file_t *file) {
     if (file) __atomic_add_fetch(&file->refs, 1, __ATOMIC_SEQ_CST);
     return file;
@@ -148,6 +161,8 @@ void file_close(file_t *file) {
         else pipe_close_writer(file->pipe);
     } else if (file->kind == FILE_SOCKET) {
         udp_close(file->socket);
+    } else if (file->kind == FILE_TCP) {
+        tcp_close(file->tcp);
     }
     file_free(file);
 }
@@ -181,6 +196,8 @@ int64_t file_read(file_t *file, void *buf, size_t count) {
             return pipe_read(file->pipe, buf, count);
         case FILE_SOCKET:
             return -EINVAL; // Datagrams have addresses: use recvfrom
+        case FILE_TCP:
+            return tcp_read(file->tcp, buf, count);
         case FILE_VNODE: {
             if (file->node->type == VFS_DIRECTORY) return -EISDIR;
             if (file->node->ops) {
@@ -208,6 +225,8 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
             return pipe_write(file->pipe, buf, count);
         case FILE_SOCKET:
             return -EINVAL; // ... and sendto
+        case FILE_TCP:
+            return tcp_write(file->tcp, buf, count);
         case FILE_VNODE: {
             if (file->node->ops) {
                 if (!file->node->ops->write) return -EINVAL; // Read-only device

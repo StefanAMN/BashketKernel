@@ -227,7 +227,11 @@ long unlink(const char *path)                      { return syscall1(SYS_UNLINK,
 
 /* --- Network ---------------------------------------------------------------- */
 
-long socket(void)                                   { return syscall0(SYS_SOCKET); }
+long socket(int type)                               { return syscall1(SYS_SOCKET, type); }
+long connect(int fd, uint32_t ip, unsigned port)    { return syscall3(SYS_CONNECT, fd, ip, port); }
+long listen(int fd, int backlog)                    { return syscall2(SYS_LISTEN, fd, backlog); }
+long shutdown(int fd)                               { return syscall1(SYS_SHUTDOWN, fd); }
+long accept(int fd, struct net_address *from)       { return syscall2(SYS_ACCEPT, fd, from); }
 long bind(int fd, unsigned port)                    { return syscall2(SYS_BIND, fd, port); }
 long ping(uint32_t ip, unsigned long timeout_ms)    { return syscall2(SYS_PING, ip, timeout_ms); }
 
@@ -309,6 +313,10 @@ const char *strerror(long err) {
         case EADDRINUSE: return "port already in use";
         case ENETDOWN:  return "no network";
         case ETIMEDOUT: return "timed out";
+        case ECONNRESET: return "connection reset";
+        case ECONNREFUSED: return "connection refused";
+        case ENOTCONN:  return "not connected";
+        case EISCONN:   return "already connected";
         case EHOSTUNREACH: return "host unreachable";
         case ENOTEMPTY: return "directory not empty";
         default:        return "unknown error";

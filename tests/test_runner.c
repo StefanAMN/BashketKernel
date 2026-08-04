@@ -1,4 +1,7 @@
 #include "test.h"
+#include "sched.h"
+#include "pit.h"
+#include "tcp.h"
 #include "kprintf.h"
 
 int tests_run = 0;
@@ -23,6 +26,7 @@ extern void test_suite_storage(void);
 extern void test_suite_fat32(void);
 extern void test_suite_process(void);
 extern void test_suite_net(void);
+extern void test_suite_tcp(void);
 extern void test_suite_rtc(void);
 extern void test_suite_pipe(void);
 extern void test_suite_ansi(void);
@@ -40,6 +44,12 @@ extern void test_suite_crypto(void);
 extern void test_suite_dev(void);
 extern void test_suite_bench(void);
 extern void test_suite_lib(void);
+
+void test_settle(void) {
+    if (tcp_sockets_in_use() == 0) return;
+    uint64_t deadline = pit_get_ticks() + 500;
+    while (tcp_sockets_in_use() != 0 && pit_get_ticks() < deadline) sched_sleep_ticks(1);
+}
 
 bool run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -61,6 +71,7 @@ bool run_all_tests(void) {
     test_suite_fat32();
     test_suite_process();
     test_suite_net();
+    test_suite_tcp();
     test_suite_rtc();
     test_suite_pipe();
     test_suite_ansi();
