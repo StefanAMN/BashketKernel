@@ -104,7 +104,7 @@ static void one_call(void) {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
-        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_SETUID, SYS_CHMOD, SYS_CHOWN,
+        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_NETCONFIG, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_SETUID, SYS_CHMOD, SYS_CHOWN,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -262,6 +262,11 @@ int main(int argc, char **argv) {
 
     int ended_normally = 0, killed = 0, timed_out = 0;
 
+    /* The children run as root and may hit on a valid way to change the
+     * machine's address: put the network back after every round */
+    struct net_config network;
+    bool have_network = netconfig(&network, NULL) == 0;
+
     for (long round = 0; round < rounds; round++) {
         unsigned long round_seed = seed * 0x9E3779B97F4A7C15UL + (unsigned long)round * 0xBF58476D1CE4E5B9UL + 1;
 
@@ -296,6 +301,7 @@ int main(int argc, char **argv) {
         /* Children the fuzzed process forked are ours to collect now only if
          * they were re-parented; this kernel just detaches them, so nothing
          * to do. Clean up the files the round may have left. */
+        if (have_network) netconfig(NULL, &network);
         unlink("/tmp/fuzz-dir/x");
         unlink("/tmp/fuzz-dir");
         unlink("/tmp/fuzz-a");

@@ -154,7 +154,15 @@ through `tcpecho` and back.
   arrives intact with artificially dropped segments; `/bin/nc`-style client
   and server programs.
 
-### B2. DHCP and DNS (M)
+### B2. DHCP and DNS (M) — done
+
+Done as user programs (`dhcp`, `host`, and name support in `ping`) over a
+kernel whose address is now a setting (`netconfig`) and which can work
+unconfigured: broadcast from 0.0.0.0, accept whatever reaches its card. The
+kernel still boots with QEMU's usual addresses, so nothing depends on a
+DHCP server being there; `dhcp` replaces them. Not done: lease renewal, a
+resolver cache, record types other than A. The DNS check uses a server in
+the test script; against a real resolver it was only tried by hand.
 
 - A DHCP client so that the address is no longer fixed at 10.0.2.15, and a
   resolver for names (`ping example.com`). Both are user programs plus a

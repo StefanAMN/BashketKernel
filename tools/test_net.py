@@ -23,7 +23,12 @@ The same two directions over TCP:
                   /bin/tcpecho runs. Two megabytes sent here must come back
                   unchanged.
 
-Exit status 0 if all four worked.
+Then a second boot, on a network whose addresses are not the ones the kernel
+starts with: /bin/dhcp must obtain an address from QEMU's DHCP server and the
+machine must work with it; /bin/host must get an answer from a DNS server
+(a small one in this script, so that no real name service is needed).
+
+Exit status 0 if all of it worked.
 """
 
 import os
@@ -53,6 +58,79 @@ def free_tcp_port():
 
 
 TCP_ECHO_BYTES = 2 * 1024 * 1024
+
+
+def dns_reply(query, known):
+    """Answer one DNS question: the address in `known`, or "no such name"."""
+    if len(query) < 17:
+        return None
+    labels, pos = [], 12
+    while pos < len(query) and query[pos] != 0:
+        length = query[pos]
+        labels.append(query[pos + 1:pos + 1 + length].decode("ascii", "replace"))
+        pos += 1 + length
+    question = query[12:pos + 5]
+    address = known.get(".".join(labels))
+    header = query[:2] + (b"\x81\x80" if address else b"\x81\x83") + b"\x00\x01" + \
+        (b"\x00\x01" if address else b"\x00\x00") + b"\x00\x00\x00\x00"
+    answer = b""
+    if address:
+        answer = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + bytes(int(part) for part in address.split("."))
+    return header + question + answer
+
+
+def dhcp_and_dns(extra):
+    """The second boot: an address by DHCP, a name by DNS."""
+    dns_port = free_udp_port()
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", dns_port))
+    server.settimeout(0.5)
+    stop = threading.Event()
+    asked = []
+
+    def serve():
+        while not stop.is_set():
+            try:
+                query, address = server.recvfrom(512)
+            except socket.timeout:
+                continue
+            asked.append(query)
+            reply = dns_reply(query, {"kernel.test": "203.0.113.7"})
+            if reply:
+                server.sendto(reply, address)
+
+    threading.Thread(target=serve, daemon=True).start()
+
+    command = [os.path.join(HERE, "qemu_shell.py"), "--quiet", "--timeout", "60",
+               "--net-option", "net=192.168.76.0/24", "--net-option", "dhcpstart=192.168.76.9"] + extra + [
+        "exec /bin/dhcp show",
+        "exec /bin/ping 192.168.76.2 1",        # Not reachable with the address the kernel starts with
+        "exec /bin/dhcp",
+        "exec /bin/dhcp show",
+        "exec /bin/ping 192.168.76.2 1",
+        f"exec /bin/host kernel.test 192.168.76.2 {dns_port}",
+        f"exec /bin/host nowhere.test 192.168.76.2 {dns_port}",
+    ]
+    result = subprocess.run(command, capture_output=True)
+    output = result.stdout.decode("utf-8", errors="replace")
+    stop.set()
+
+    problems = []
+    if "interface: address 10.0.2.15" not in output:
+        problems.append("DHCP: the kernel did not start with its default address")
+    if "dhcp: address 192.168.76.9 netmask 255.255.255.0 gateway 192.168.76.2 dns 192.168.76.3" not in output:
+        problems.append("DHCP: no lease, or not the one QEMU's server gives")
+    if "interface: address 192.168.76.9" not in output:
+        problems.append("DHCP: the lease was not applied to the interface")
+    if output.count("1 sent, 1 answered") != 1 or output.count("1 sent, 0 answered") != 1:
+        problems.append("DHCP: the gateway should answer after the lease and only then")
+    if "kernel.test has address 203.0.113.7" not in output:
+        problems.append("DNS: the name was not resolved")
+    if "nowhere.test: no such name" not in output:
+        problems.append("DNS: a name that does not exist was not reported as such")
+    if len(asked) < 2:
+        problems.append("DNS: the server on the host was never asked")
+    return output, problems
 
 
 def main():
@@ -222,13 +300,17 @@ def main():
     if f"tcpecho: {TCP_ECHO_BYTES} bytes echoed" not in output:
         problems.append("TCP: the guest's echo server did not report the whole transfer")
 
+    second_output, second_problems = dhcp_and_dns(extra)
+    output += second_output
+    problems += second_problems
+
     if problems:
         sys.stdout.write(output)
         for problem in problems:
             print("network: FAILED:", problem)
         return 1
     megabytes = TCP_ECHO_BYTES // (1024 * 1024)
-    print(f"network (UDP both ways; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed): ok")
+    print(f"network (UDP both ways; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed; DHCP lease; DNS lookup): ok")
     return 0
 
 

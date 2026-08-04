@@ -46,6 +46,7 @@
 #define SYS_SHMGET   29
 #define SYS_SHMAT    30
 #define SYS_SHMRM    31
+#define SYS_NETCONFIG 306
 #define SYS_SOCKET   41
 #define SYS_CONNECT  42
 #define SYS_ACCEPT   43
@@ -112,6 +113,17 @@ struct net_address {
     uint32_t ip;
     uint16_t port;
     uint16_t reserved;
+};
+
+/* The network interface's settings (addresses as numbers, like net_address).
+ * An ip of 0 means "not configured". */
+struct net_config {
+    uint32_t ip;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns;           /* Where names are looked up */
+    uint8_t mac[6];         /* The card's address (cannot be set) */
+    uint8_t padding[2];
 };
 
 /* One directory entry, filled in by readdir() */

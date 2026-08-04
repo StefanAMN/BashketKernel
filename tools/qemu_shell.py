@@ -72,6 +72,8 @@ def main():
     ap.add_argument("--no-net", action="store_true", help="boot without a network card")
     ap.add_argument("--net-forward", action="append", default=[], metavar="RULE",
                     help="forward a host port to the guest, e.g. udp:127.0.0.1:5555-:7 (repeatable)")
+    ap.add_argument("--net-option", action="append", default=[], metavar="OPTION",
+                    help="extra option for QEMU's user-mode network, e.g. net=192.168.76.0/24 (repeatable)")
     ap.add_argument("--disk", help="disk image to attach (default: disk.img next to the ISO)")
     ap.add_argument("--no-disk", action="store_true", help="boot without a disk")
     ap.add_argument("--keep-disk-writes", action="store_true", help="let the guest really modify the disk image")
@@ -91,6 +93,7 @@ def main():
     # 10.0.2.2). --net-forward adds host-to-guest port forwards.
     if not args.no_net:
         netdev = "user,id=n0" + "".join(",hostfwd=" + rule for rule in args.net_forward)
+        netdev += "".join("," + option for option in args.net_option)
         cmd += ["-netdev", netdev, "-device", "virtio-net-pci,netdev=n0"]
     if args.trace_irq:
         cmd += ["-trace", "ioapic_*", "-trace", "apic_*", "-trace", "pic_*", "-D", "irq-trace.log"]

@@ -31,9 +31,26 @@
 // An IPv4 address as a number, most significant byte first: NET_IP(10,0,2,15)
 #define NET_IP(a, b, c, d) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | ((uint32_t)(c) << 8) | (uint32_t)(d))
 
+// The configuration the stack starts with: what QEMU's user-mode network
+// expects of its guest. It can be replaced at run time (net_set_config), by
+// hand or with what a DHCP server says (/bin/dhcp).
 #define NET_LOCAL_IP NET_IP(10, 0, 2, 15)
 #define NET_NETMASK  NET_IP(255, 255, 255, 0)
 #define NET_GATEWAY  NET_IP(10, 0, 2, 2)
+#define NET_DNS      NET_IP(10, 0, 2, 3)
+#define NET_BROADCAST 0xFFFFFFFFu
+
+// The interface's settings. An address of 0 means "not configured": then
+// only broadcasts can be sent (from 0.0.0.0), and anything addressed to our
+// card is taken in, which is exactly what asking a DHCP server needs.
+typedef struct {
+    uint32_t ip;
+    uint32_t netmask;
+    uint32_t gateway;
+    uint32_t dns;                // Where the resolver in user space sends its questions
+    uint8_t mac[6];              // Read only: the card's address
+    uint8_t padding[2];
+} net_config_t;
 
 #define UDP_PAYLOAD_MAX 1472   // 1500 (Ethernet payload) - 20 (IPv4 header) - 8 (UDP header)
 #define UDP_QUEUE_LEN 8        // Datagrams a socket holds before new ones are dropped
@@ -58,6 +75,19 @@ void net_init(void);
 
 bool net_up(void);
 const net_stats_t *net_stats(void);
+
+/**
+ * @brief The current settings (always succeeds; zeros if there is no card).
+ */
+void net_get_config(net_config_t *out);
+
+/**
+ * @brief Replace address, netmask, gateway and DNS server (the MAC is
+ *        ignored). What was learned about neighbours is forgotten.
+ * @return 0, or -EINVAL for settings that can not work (a gateway outside
+ *         the network, a netmask with holes).
+ */
+int net_set_config(const net_config_t *config);
 
 /**
  * @brief The Internet checksum (RFC 1071) of a block of bytes.

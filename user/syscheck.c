@@ -701,6 +701,84 @@ static void check_tcp(void) {
     CHECK(close((int)server) == 0);
 }
 
+/* The interface's settings, and the DNS message code in the C library
+ * (checked on messages written out by hand: no server is involved) */
+static void check_netconfig_and_dns(void) {
+    struct net_config config;
+    memset(&config, 0xEE, sizeof(config));
+    CHECK(netconfig(&config, NULL) == 0);
+    CHECK(config.ip == OUR_IP && config.netmask == 0xFFFFFF00u);
+    CHECK(config.gateway == parse_ip("10.0.2.2") && config.dns == parse_ip("10.0.2.3"));
+    CHECK(config.mac[0] != 0xEE || config.mac[1] != 0xEE);
+    CHECK(netconfig(NULL, NULL) == 0);
+    CHECK(netconfig((struct net_config *)0xffffffff80000000UL, NULL) == -EFAULT);
+    CHECK(netconfig(NULL, (struct net_config *)8) == -EFAULT);
+
+    /* Root may set them; nonsense is refused; the same settings again are fine */
+    struct net_config bad = config;
+    bad.netmask = 0xFF00FF00u;
+    CHECK(netconfig(NULL, &bad) == -EINVAL);
+    CHECK(netconfig(NULL, &config) == 0);
+
+    /* A question */
+    static uint8_t query[64];
+    static const uint8_t expected[] = { 0xAB, 0xCD, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0,
+                                        1, 'a', 2, 'b', 'c', 0, 0, 1, 0, 1 };
+    CHECK(dns_build_query(query, sizeof(query), 0xABCD, "a.bc") == (long)sizeof(expected));
+    CHECK(memcmp(query, expected, sizeof(expected)) == 0);
+    CHECK(dns_build_query(query, sizeof(query), 0xABCD, "a.bc.") == (long)sizeof(expected)); /* A final dot changes nothing */
+    CHECK(dns_build_query(query, sizeof(query), 1, "") == -EINVAL);
+    CHECK(dns_build_query(query, sizeof(query), 1, "a..b") == -EINVAL);
+    CHECK(dns_build_query(query, sizeof(query), 1, ".a") == -EINVAL);
+    CHECK(dns_build_query(query, 20, 1, "a.bc") == -EINVAL);                      /* Does not fit */
+    CHECK(dns_build_query(query, sizeof(query), 1,
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b") == -EINVAL); /* A 64-character label */
+
+    /* An answer: the name asked about is an alias, whose address follows.
+     * Names in the answers are pointers back into the question. */
+    static const uint8_t reply[] = {
+        0x12, 0x34, 0x81, 0x80, 0, 1, 0, 2, 0, 0, 0, 0,
+        3, 'w', 'w', 'w', 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1,
+        0xC0, 0x0C, 0, 5, 0, 1, 0, 0, 0, 60, 0, 2, 0xC0, 0x10,                    /* www is an alias of example.com */
+        0xC0, 0x10, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34,              /* whose address is this */
+    };
+    static uint8_t copy[sizeof(reply)];
+    uint32_t ip = 0;
+    CHECK(dns_parse_reply(reply, sizeof(reply), 0x1234, &ip) == 0);
+    CHECK(ip == parse_ip("93.184.216.34"));
+
+    CHECK(dns_parse_reply(reply, sizeof(reply), 0x1235, &ip) == -EINVAL);         /* Someone else's answer */
+    CHECK(dns_parse_reply(reply, 11, 0x1234, &ip) == -EINVAL);                    /* Not even a header */
+    for (size_t cut = 12; cut < sizeof(reply); cut++) {                           /* Cut short anywhere: never read past the end */
+        long r = dns_parse_reply(reply, cut, 0x1234, &ip);
+        CHECK(r == -EINVAL || (r == -ENOENT && cut >= 47));
+    }
+
+    memcpy(copy, reply, sizeof(reply));
+    copy[2] = 0x01;                                                               /* A question, not an answer */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) == -EINVAL);
+    copy[2] = 0x81; copy[3] = 0x83;                                               /* "No such name" */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) == -ENOENT);
+    copy[3] = 0x82;                                                               /* "Server failure" */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) == -EINVAL);
+
+    memcpy(copy, reply, sizeof(reply));
+    copy[7] = 1;                                                                  /* Only the alias: no address */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) == -ENOENT);
+    copy[7] = 9;                                                                  /* Promises more answers than there are */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) == 0);                 /* ...but the address comes first */
+    copy[50] = 28;                                                                /* The address record is some other type */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) == -EINVAL);
+    memcpy(copy, reply, sizeof(reply));
+    copy[12] = 0x40;                                                              /* A label type that does not exist */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) == -EINVAL);
+    copy[12] = 0xC0; copy[13] = 0x0C;                                             /* A name that points at itself */
+    CHECK(dns_parse_reply(copy, sizeof(copy), 0x1234, &ip) != 0);
+
+    /* An address needs no server */
+    CHECK(resolve("10.1.2.3", &ip) == 0 && ip == parse_ip("10.1.2.3"));
+}
+
 static void check_network(void) {
     char buf[64];
     struct net_address from;
@@ -868,6 +946,9 @@ static void checks_as_alice(void) {
     char buf[16];
 
     CHECK(getuid() == 1000);
+    struct net_config net;
+    CHECK(netconfig(&net, NULL) == 0 && net.ip != 0);   /* Anyone may look at the network settings */
+    CHECK(netconfig(NULL, &net) == -EPERM);             /* Only root may change them */
     CHECK(setuid(0) == -EPERM);                         /* No way back to root */
     CHECK(setuid(1001) == -EPERM);                      /* Nor sideways */
     CHECK(setuid(1000) == 0);                           /* "Becoming" yourself is allowed */
@@ -1137,6 +1218,7 @@ int main(void) {
     check_interrupted_calls();
     check_network();
     check_tcp();
+    check_netconfig_and_dns();
     check_shared_memory();
     check_users();
     check_pipes();

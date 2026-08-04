@@ -95,6 +95,15 @@ long accept(int fd, struct net_address *from);    /* TCP: the next connection, a
 long sendto(int fd, const void *buf, size_t len, uint32_t ip, unsigned port);
 long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned long timeout_ms); /* 0: wait for ever */
 long ping(uint32_t ip, unsigned long timeout_ms); /* Round-trip time in microseconds, or a negative error */
+long netconfig(struct net_config *get, const struct net_config *set); /* Read the settings, then (root) replace them; either may be NULL */
+
+/* Names (DNS). resolve() takes an address as it is, and asks the configured
+ * server about anything else. Returns 0 and the address, -ENOENT if there
+ * is no such name, or another negative error. */
+long resolve(const char *name, uint32_t *ip);
+long dns_lookup(uint32_t server, unsigned port, const char *name, uint32_t *ip);
+long dns_build_query(uint8_t *buf, size_t size, unsigned id, const char *name);   /* Returns the length */
+long dns_parse_reply(const uint8_t *buf, size_t len, unsigned id, uint32_t *ip);
 uint32_t parse_ip(const char *text);              /* "10.0.2.2" -> number; 0 if it is not an address */
 void format_ip(uint32_t ip, char out[16]);
 
