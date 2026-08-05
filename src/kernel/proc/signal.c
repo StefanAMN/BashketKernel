@@ -46,12 +46,19 @@ static bool valid_signal(int sig) {
 }
 
 // Signals that can never be caught, ignored or blocked
-#define UNBLOCKABLE (1u << SIGKILL)
+#define UNBLOCKABLE ((1u << SIGKILL) | (1u << SIGSTOP))
+#define STOP_SIGNALS ((1u << SIGSTOP) | (1u << SIGTSTP))
 
 // What a signal does when the program has not said: nearly all end the
 // process; a few are only of interest to a program that asks for them
+// (SIGCONT has already had its effect by the time this is asked), and the
+// stop signals suspend it
 static bool default_is_ignore(int sig) {
-    return sig == SIGCHLD;
+    return sig == SIGCHLD || sig == SIGCONT;
+}
+
+static bool default_is_stop(int sig) {
+    return sig == SIGSTOP || sig == SIGTSTP;
 }
 
 bool signal_deliverable(const task_t *task) {
@@ -69,7 +76,8 @@ static void act_on_pending(task_t *task) {
         uint64_t handler = task->sig_handlers[sig];
         if (handler == SIG_DFL) {
             task->sig_pending &= ~(1u << sig);
-            if (!default_is_ignore(sig)) sched_request_kill(task, sig);
+            if (default_is_stop(sig)) sched_request_stop(task, sig);
+            else if (!default_is_ignore(sig)) sched_request_kill(task, sig);
         } else if (handler == SIG_IGN) {
             task->sig_pending &= ~(1u << sig);
         } else {
@@ -79,7 +87,7 @@ static void act_on_pending(task_t *task) {
 }
 
 int signal_set_action(task_t *task, int sig, const struct signal_action *action, uint64_t restorer, struct signal_action *old) {
-    if (!valid_signal(sig) || sig == SIGKILL) return -EINVAL;
+    if (!valid_signal(sig) || sig == SIGKILL || sig == SIGSTOP) return -EINVAL;
 
     if (action) {
         // A handler must be user code. (A bad address inside user space is the
@@ -144,6 +152,19 @@ void signal_send_locked(task_t *task, int sig) {
         return;
     }
 
+    // Stopping and continuing cancel each other, whatever else the program
+    // has arranged for these signals
+    if (sig == SIGCONT) {
+        task->sig_pending &= ~STOP_SIGNALS;
+        sched_continue(task);
+    } else if (default_is_stop(sig)) {
+        task->sig_pending &= ~(1u << SIGCONT);
+    }
+    if (sig == SIGSTOP) {
+        sched_request_stop(task, sig);          // Like SIGKILL: not the program's to refuse
+        return;
+    }
+
     // A signal that would be ignored is dropped at once, blocked or not
     uint64_t handler = task->sig_handlers[sig];
     if (handler == SIG_IGN || (handler == SIG_DFL && default_is_ignore(sig))) return;
@@ -203,7 +224,7 @@ void signal_deliver(struct registers *regs) {
 
     if (handler == SIG_IGN) return;         // Disposition changed since it was sent
     if (handler == SIG_DFL) {
-        if (default_is_ignore(sig)) return;
+        if (default_is_ignore(sig) || default_is_stop(sig)) return;
         task_exit_status(128 + sig);
     }
 

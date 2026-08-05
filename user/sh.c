@@ -14,8 +14,15 @@
  * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
  * empty prompt leaves the shell.
  *
+ * Jobs (only when reading commands from the terminal): a line ending in '&'
+ * runs in the background, and Ctrl-Z stops the running command and returns
+ * to the prompt. "jobs" lists them, "fg [N]" brings one back to the
+ * terminal, "bg [N]" lets a stopped one carry on in the background.
+ *
  * Everything here is done with fork, execve, waitpid, pipe, dup2, open and
- * close: the shell needs no special help from the kernel.
+ * close, plus, for jobs, process groups: each command line runs in a group
+ * of its own, and the shell tells the terminal which group Ctrl-C and
+ * Ctrl-Z are meant for.
  */
 #include "ulib.h"
 
@@ -36,6 +43,130 @@ typedef struct {
 static char word_storage[512];
 static int last_status = 0;   /* Exit status of the previous command, for $? */
 static int script_fd = -1;    /* The script being run, or -1 when reading the terminal */
+
+/* --- Jobs ------------------------------------------------------------------- */
+
+#define MAX_JOBS 8
+
+typedef struct {
+    int used;
+    long pids[8];               /* One per program; the first is also the number of the process group */
+    int alive[8];
+    int count;
+    int stopped;
+    char text[64];              /* The command line, for "jobs" */
+} job_t;
+
+static job_t jobs[MAX_JOBS];
+static int interactive = 0;     /* Reading the terminal: job control is on */
+static long shell_group = 0;
+
+static int job_add(const long *pids, const int *alive, int count, const char *text, int stopped) {
+    for (int n = 0; n < MAX_JOBS; n++) {
+        if (jobs[n].used) continue;
+        memset(&jobs[n], 0, sizeof(jobs[n]));
+        jobs[n].used = 1;
+        jobs[n].count = count;
+        jobs[n].stopped = stopped;
+        for (int i = 0; i < count; i++) {
+            jobs[n].pids[i] = pids[i];
+            jobs[n].alive[i] = alive ? alive[i] : 1;
+        }
+        size_t len = strlen(text);
+        if (len >= sizeof(jobs[n].text)) len = sizeof(jobs[n].text) - 1;
+        memcpy(jobs[n].text, text, len);
+        while (len > 0 && (jobs[n].text[len - 1] == ' ' || jobs[n].text[len - 1] == '\n')) len--;
+        jobs[n].text[len] = '\0';
+        return n + 1;
+    }
+    return 0;
+}
+
+/* Wait for a command that has the terminal: until every process of it has
+ * exited, or it has been stopped. Returns the last program's status. */
+static int wait_foreground(const long *pids, int *alive, int count, int *stopped) {
+    int last = 1;
+    *stopped = 0;
+    for (int i = 0; i < count; i++) {
+        if (!alive[i]) continue;
+        int status = 0;
+        long r;
+        while ((r = waitpid(pids[i], &status, interactive ? WUNTRACED : 0)) == -EINTR) { } /* Interrupted is not finished */
+        if (r == pids[i] && WIFSTOPPED(status)) {
+            *stopped = 1;
+            continue;
+        }
+        alive[i] = 0;
+        if (i == count - 1) last = status;
+    }
+    return last;
+}
+
+/* Before each prompt: see what has become of the background jobs */
+static void check_jobs(void) {
+    for (int n = 0; n < MAX_JOBS; n++) {
+        job_t *job = &jobs[n];
+        if (!job->used) continue;
+        int living = 0;
+        for (int i = 0; i < job->count; i++) {
+            if (!job->alive[i]) continue;
+            int status = 0;
+            long r = waitpid(job->pids[i], &status, WNOHANG | WUNTRACED);
+            if (r == job->pids[i] && WIFSTOPPED(status)) {
+                if (!job->stopped) printf("[%d] Stopped   %s\n", n + 1, job->text);
+                job->stopped = 1;
+            } else if (r != 0) {
+                job->alive[i] = 0;                /* Exited (or no longer ours to wait for) */
+            }
+            living += job->alive[i];
+        }
+        if (living == 0) {
+            printf("[%d] Done      %s\n", n + 1, job->text);
+            job->used = 0;
+        }
+    }
+}
+
+/* The job a "fg" or "bg" means: the one numbered, or the newest */
+static job_t *pick_job(const char *arg, int *number) {
+    int n = arg ? (int)atoi(arg[0] == '%' ? arg + 1 : arg) : 0;
+    if (!arg) {
+        for (int i = MAX_JOBS; i >= 1 && n == 0; i--) if (jobs[i - 1].used) n = i;
+    }
+    if (n < 1 || n > MAX_JOBS || !jobs[n - 1].used) return NULL;
+    *number = n;
+    return &jobs[n - 1];
+}
+
+/* Give a command the terminal and wait for it. If it gets stopped it
+ * becomes (or stays) a job; returns the last program's status. */
+static int run_in_foreground(long *pids, int *alive, int count, const char *text, job_t *existing) {
+    int stopped = 0;
+    if (interactive) tcsetpgrp(pids[0]);
+    int status = wait_foreground(pids, alive, count, &stopped);
+    if (interactive) tcsetpgrp(shell_group);
+
+    if (stopped) {
+        int n;
+        if (existing) {
+            existing->stopped = 1;
+            n = (int)(existing - jobs) + 1;
+        } else {
+            n = job_add(pids, alive, count, text, 1);
+        }
+        if (n > 0) {
+            printf("\n[%d] Stopped   %s\n", n, jobs[n - 1].text);
+        } else {
+            /* No room to remember it: it can not be left stopped for ever */
+            fprintf(2, "\nsh: too many jobs: ending %s\n", text);
+            kill(-pids[0], SIGKILL);
+            wait_foreground(pids, alive, count, &stopped);
+        }
+        return 128 + SIGTSTP;
+    }
+    if (existing) existing->used = 0;
+    return status;
+}
 
 static int is_operator(char c) { return c == '|' || c == '<' || c == '>'; }
 static int is_blank(char c)    { return c == ' ' || c == '\t'; }
@@ -189,8 +320,9 @@ static void exec_stage(stage_t *stage) {
     exit(127);
 }
 
-/* Run a parsed pipeline and return the exit status of its last program. */
-static int run_pipeline(stage_t *stages, int count) {
+/* Run a parsed pipeline and return the exit status of its last program (0
+ * at once for one started in the background). */
+static int run_pipeline(stage_t *stages, int count, int background, const char *text) {
     long pids[MAX_STAGES];
     int input = -1; /* Read end of the pipe from the previous stage */
 
@@ -204,6 +336,13 @@ static int run_pipeline(stage_t *stages, int count) {
 
         pids[i] = fork();
         if (pids[i] == 0) {
+            if (interactive) {
+                /* One process group per command line, named after its first
+                 * process. (Set here and by the shell below: whichever of
+                 * the two runs first, it is done before it matters.) */
+                setpgid(0, i == 0 ? 0 : pids[0]);
+                signal(SIGTSTP, SIG_DFL);   /* The shell ignores Ctrl-Z; its programs must not */
+            }
             if (input != -1) { dup2(input, 0); close(input); }
             if (link[1] != -1) { dup2(link[1], 1); close(link[1]); close(link[0]); }
             exec_stage(&stages[i]);
@@ -220,20 +359,42 @@ static int run_pipeline(stage_t *stages, int count) {
             count = i;
             break;
         }
+        if (interactive) setpgid(pids[i], pids[0]);
     }
     if (input != -1) close(input);
+    if (count == 0) return 1;
 
-    int last_status = 1;
-    for (int i = 0; i < count; i++) {
-        int status = 0;
-        while (waitpid(pids[i], &status, 0) == -EINTR) { } /* Interrupted is not finished */
-        if (i == count - 1) last_status = status;
+    int alive[MAX_STAGES];
+    for (int i = 0; i < count; i++) alive[i] = 1;
+
+    if (background) {
+        int n = job_add(pids, alive, count, text, 0);
+        if (n > 0) {
+            printf("[%d] %ld\n", n, pids[count - 1]);
+            return 0;
+        }
+        fprintf(2, "sh: too many jobs: running %s in the foreground\n", text);
     }
-    return last_status;
+    return run_in_foreground(pids, alive, count, text, NULL);
 }
 
 static int run_line(const char *line, int *should_exit) {
     static stage_t stages[MAX_STAGES];
+    static char text[256];
+
+    /* A line ending in '&' is not waited for */
+    size_t len = strlen(line);
+    if (len >= sizeof(text)) len = sizeof(text) - 1;
+    memcpy(text, line, len);
+    while (len > 0 && (is_blank(text[len - 1]) || text[len - 1] == '\n')) len--;
+    int background = len > 0 && text[len - 1] == '&';
+    if (background) len--;
+    text[len] = '\0';
+    if (background && !interactive) {
+        fprintf(2, "sh: '&' needs job control, which is only on at the terminal\n");
+        return 2;
+    }
+    line = text;
 
     int count = parse(line, stages);
     if (count < 0) {
@@ -273,6 +434,32 @@ static int run_line(const char *line, int *should_exit) {
         }
         return 0;
     }
+    if (count == 1 && strcmp(stages[0].argv[0], "jobs") == 0) {
+        for (int n = 0; n < MAX_JOBS; n++) {
+            if (jobs[n].used) printf("[%d] %s   %s\n", n + 1, jobs[n].stopped ? "Stopped" : "Running", jobs[n].text);
+        }
+        return 0;
+    }
+    if (count == 1 && (strcmp(stages[0].argv[0], "fg") == 0 || strcmp(stages[0].argv[0], "bg") == 0)) {
+        int number = 0;
+        int to_foreground = stages[0].argv[0][0] == 'f';
+        job_t *job = pick_job(stages[0].argc > 1 ? stages[0].argv[1] : NULL, &number);
+        if (!job) {
+            fprintf(2, "sh: %s: no such job\n", stages[0].argv[0]);
+            return 1;
+        }
+        /* Either way it runs again: the whole group is told to continue */
+        job->stopped = 0;
+        if (to_foreground) {
+            printf("%s\n", job->text);
+            tcsetpgrp(job->pids[0]);            /* Before it wakes, so that Ctrl-C already means this job */
+            kill(-job->pids[0], SIGCONT);
+            return run_in_foreground(job->pids, job->alive, job->count, job->text, job);
+        }
+        kill(-job->pids[0], SIGCONT);
+        printf("[%d] %s &\n", number, job->text);
+        return 0;
+    }
     if (count == 1 && strcmp(stages[0].argv[0], "pwd") == 0) {
         char cwd[128];
         if (getcwd(cwd, sizeof(cwd)) < 0) return 1;
@@ -285,11 +472,13 @@ static int run_line(const char *line, int *should_exit) {
                "  prog < in > out        redirect input and output (>> appends)\n"
                "  cd [dir], pwd          change or print the current directory\n"
                "  export NAME=value      set an environment variable; $NAME uses it, $? is the last status\n"
+               "  prog args &            run in the background; Ctrl-Z stops the running command\n"
+               "  jobs, fg [N], bg [N]   list jobs; bring one to the terminal; let a stopped one run on\n"
                "  exit [status]          leave the shell\n");
         return 0;
     }
 
-    return run_pipeline(stages, count);
+    return run_pipeline(stages, count, background, text);
 }
 
 int main(int argc, char **argv) {
@@ -315,8 +504,20 @@ int main(int argc, char **argv) {
         script_fd = (int)fd;
     }
 
+    /* Reading the terminal: take charge of it. The shell gets a process
+     * group of its own, which has the terminal whenever no command does,
+     * and Ctrl-Z, like Ctrl-C, is not meant for the shell itself. */
+    if (script_fd < 0) {
+        interactive = 1;
+        setpgid(0, 0);
+        shell_group = getpgid(0);
+        tcsetpgrp(shell_group);
+        signal(SIGTSTP, SIG_IGN);
+    }
+
     static char line[256];
     while (!should_exit) {
+        if (interactive) check_jobs();
         if (script_fd < 0) printf("$ ");
         if (fdreadline(script_fd < 0 ? 0 : script_fd, line, sizeof(line)) < 0) break; /* End of input */
 

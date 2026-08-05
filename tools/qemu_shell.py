@@ -33,7 +33,7 @@ import sys
 import time
 
 PROMPT = b"BashketOS> "
-CONTROL_KEYS = {"^C": b"\x03", "^D": b"\x04", "^S": b"\x13", "^Q": b"\x11"}
+CONTROL_KEYS = {"^C": b"\x03", "^D": b"\x04", "^S": b"\x13", "^Q": b"\x11", "^Z": b"\x1a"}
 USER_PROMPT = b"\n$ "  # /bin/sh, when a command starts it (e.g. 'exec /bin/sh')
 CRASH_END = b"=================================================\n"
 

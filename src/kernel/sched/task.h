@@ -34,7 +34,8 @@ typedef enum {
     TASK_READY,
     TASK_RUNNING,
     TASK_BLOCKED,
-    TASK_ZOMBIE
+    TASK_ZOMBIE,
+    TASK_STOPPED            // Suspended by a stop signal until SIGCONT (or SIGKILL)
 } task_state_t;
 
 typedef struct task {
@@ -73,6 +74,10 @@ typedef struct task {
     void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
     uint32_t uid;            // The user this process runs as (0: root, may do anything)
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
+    uint32_t pgid;           // Process group: the job it belongs to (signals from the terminal go to a whole group)
+    int stop_pending;        // Stop signal that will suspend this process at its next safe point (0: none)
+    int stop_signal;         // While TASK_STOPPED: the signal that did it
+    bool stop_reported;      // ...and whether waitpid has told the parent yet
     bool exiting;            // Has begun to exit: can no longer be killed or signalled
     int kill_pending;        // Signal that will end this process at its next safe point (0: none)
     uint64_t sig_handlers[TASK_NSIG]; // Per signal: 0 default (terminate), 1 ignore, else handler address

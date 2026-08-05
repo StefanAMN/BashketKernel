@@ -225,6 +225,7 @@ pid_t process_spawn(const char *path, char *const argv[]) {
 
     apply_image(task, &image);
     task->detached = false; // The creator is expected to process_wait() for it
+    task->pgid = task->pid; // A process group of its own
 
     // Standard input, output and error all start as the console
     file_t *console = file_open_console();
@@ -335,6 +336,7 @@ pid_t process_fork(struct registers *regs) {
         child->fds[fd] = file_dup(parent->fds[fd]);
     }
     child->fd_cloexec = parent->fd_cloexec;
+    child->pgid = parent->pgid;
 
     // The child's kernel stack starts with a copy of the parent's syscall
     // frame, except that its syscall "returns" 0. Below the frame goes the
@@ -385,6 +387,13 @@ pid_t process_wait_options(pid_t pid, int *status, int options) {
             if (pid != -1 && (pid_t)t->pid != pid) continue;
 
             have_child = true;
+            if (t->state == TASK_STOPPED && !t->stop_reported && (options & PROCESS_WUNTRACED)) {
+                // Stopped, not dead: reported once, and the child stays
+                t->stop_reported = true;
+                if (status) *status = PROCESS_STATUS_STOPPED | t->stop_signal;
+                found = (pid_t)t->pid;
+                break;
+            }
             if (t->state == TASK_ZOMBIE) {
                 if (status) *status = t->exit_status;
                 found = (pid_t)t->pid;
@@ -439,10 +448,92 @@ int process_kill(pid_t pid, int sig) {
     return result;
 }
 
-void process_interrupt_all(void) {
+// The process group that has the terminal: signals typed at the keyboard go
+// to it. 0: nobody has claimed it, and Ctrl-C goes to every user process
+// (which is what the kernel shell, which knows no groups, relies on). Read
+// from interrupt handlers, so plain words rather than something locked.
+static volatile uint32_t foreground_pgid = 0;
+static volatile uint32_t foreground_owner = 0; // The shell that set it; cleared when that exits
+
+int process_set_foreground(uint32_t pgid) {
+    task_t *self = sched_get_current_task();
+    if (!self) return -1;
+    foreground_owner = pgid ? self->pid : 0;
+    foreground_pgid = pgid;
+    return 0;
+}
+
+uint32_t process_get_foreground(void) {
+    return foreground_pgid;
+}
+
+void process_foreground_owner_exited(uint32_t pid) {
+    // A shell that dies must not leave the keyboard aimed at one of its jobs
+    if (foreground_owner == pid) {
+        foreground_pgid = 0;
+        foreground_owner = 0;
+    }
+}
+
+bool process_signal_foreground(int sig) {
+    uint32_t pgid = foreground_pgid;
+    if (pgid == 0 && sig != SIGINT) return false; // Only Ctrl-C has a meaning without job control
+
     uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (t->is_user) signal_send_locked(t, SIGINT);
+        if (t->is_user && (pgid == 0 || t->pgid == pgid)) signal_send_locked(t, sig);
     }
     sched_unlock_irqrestore(flags);
+    return true;
+}
+
+void process_interrupt_all(void) {
+    process_signal_foreground(SIGINT);
+}
+
+int process_kill_group(uint32_t pgid, int sig, uint32_t sender_uid) {
+    if (pgid == 0 || sig <= 0 || sig >= TASK_NSIG) return -1;
+
+    int sent = 0;
+    uint64_t flags = sched_lock_irqsave();
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (!t->is_user || t->pgid != pgid || t->state == TASK_ZOMBIE) continue;
+        if (!auth_may_signal(sender_uid, t->uid)) continue;
+        signal_send_locked(t, sig);
+        sent++;
+    }
+    sched_unlock_irqrestore(flags);
+    return sent > 0 ? 0 : -1;
+}
+
+int process_set_group(pid_t pid, uint32_t pgid) {
+    task_t *self = sched_get_current_task();
+    if (!self) return -1;
+    if (pid == 0) pid = (pid_t)self->pid;
+    if (pgid == 0) pgid = (uint32_t)pid;
+
+    int result = -1;
+    uint64_t flags = sched_lock_irqsave();
+    task_t *target = sched_find_task_locked((uint32_t)pid);
+    // Only for oneself or one's own child, and only into a group of one's
+    // own making: the target's own, or one that a relative already leads
+    if (target && target->is_user && (target == self || target->parent_pid == self->pid)) {
+        bool exists = pgid == target->pid;
+        for (task_t *t = sched_first_task(); t && !exists; t = t->next) {
+            if (t->pgid == pgid && (t == self || t->parent_pid == self->pid || t->parent_pid == self->parent_pid)) exists = true;
+        }
+        if (exists) {
+            target->pgid = pgid;
+            result = 0;
+        }
+    }
+    sched_unlock_irqrestore(flags);
+    return result;
+}
+
+pid_t process_start_init(const char *path) {
+    pid_t pid = process_spawn(path, NULL);
+    if (pid < 0) return pid;
+    sched_set_init(sched_find_task((uint32_t)pid));
+    return pid;
 }

@@ -88,6 +88,7 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
+make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
 make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one; SMP=4
 tools/qemu_shell.py --qemu-arg=-smp --qemu-arg=4 'exec /bin/ps'   # any scripted boot on more CPUs
@@ -357,6 +358,19 @@ code comments and commit messages; `git log` is the full history.
   to be running then. Every test now starts once the stack is quiet
   (`test_settle`), and leak checks count frames the heap holds as available
   (`test_free_frames`), since the heap grows and never shrinks.
+- **Stopping is a kill that can be undone, and uses the same safe points.**
+  A stop signal records a request; the process suspends itself where it
+  could also have been ended. One asleep in a system call is woken to stop,
+  and when continued it returns to its caller as a spurious wake-up, so the
+  call carries on rather than failing with `EINTR`.
+- **`fork` must leave something over.** With copy-on-write the cost of a
+  fork is paid later, by whoever writes first, and a process that cannot
+  get a frame then is killed mid-instruction. `fork` now fails while free
+  memory is below a reserve. The low-memory test had passed for weeks by
+  where the last allocation happened to land; growing a struct moved it.
+- **Keys that send signals are read in interrupt handlers**, so what they
+  consult (the foreground group, raw mode) is plain words, not something
+  behind a lock ranked below the keyboard's.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

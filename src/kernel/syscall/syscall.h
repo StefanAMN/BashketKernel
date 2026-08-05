@@ -49,7 +49,11 @@
 #define SYS_CHOWN       92   // (path, uid): root only
 #define SYS_GETUID      102
 #define SYS_SETUID      105  // (uid): root may become anyone; nobody else may change
+#define SYS_SETPGID     109  // (pid, pgid): move a process (0: the caller) into a process group (0: its own)
 #define SYS_GETPPID     110
+#define SYS_GETPGID     121  // (pid): the process group of a process (0: the caller)
+#define SYS_TCSETPGRP   307  // (pgid): make this group the terminal's foreground job (0: none)
+#define SYS_TCGETPGRP   308  // (): the terminal's foreground group
 #define SYS_CLEAR       100
 #define SYS_TIME        201  // Timer ticks since boot
 #define SYS_SETPRIORITY 301 // (priority): 0 high, 1 normal, 2 low; for the caller itself

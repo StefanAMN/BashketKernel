@@ -355,6 +355,12 @@ static int64_t sys_chown(uint64_t user_path, uint64_t new_uid) {
 }
 
 static int64_t sys_kill(int pid, int sig) {
+    // A negative number names a process group: every member gets the signal
+    if (pid < 0) {
+        if (sig <= 0 || sig >= TASK_NSIG) return -ESRCH;
+        return process_kill_group((uint32_t)(-(int64_t)pid), sig, sched_get_current_task()->uid) == 0 ? 0 : -ESRCH;
+    }
+
     // Look at the target under the scheduler lock: it may be reaped at any
     // other time. (PIDs are never reused, so the kill below can not reach a
     // different process.)
@@ -461,7 +467,7 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
 }
 
 static int64_t sys_waitpid(int pid, uint64_t user_status, uint64_t options) {
-    if (options & ~(uint64_t)PROCESS_WNOHANG) return -EINVAL;
+    if (options & ~(uint64_t)(PROCESS_WNOHANG | PROCESS_WUNTRACED)) return -EINVAL;
     if (user_status != 0 && !user_range_ok(user_status, sizeof(int), true)) return -EFAULT;
 
     int status = 0;
@@ -780,6 +786,23 @@ static int64_t dispatch(struct registers *regs) {
             return (int64_t)task->pid;
         case SYS_GETPPID:
             return (int64_t)task->parent_pid;
+        case SYS_SETPGID:
+            if (regs->rdi > 0x7FFFFFFF || regs->rsi > 0x7FFFFFFF) return -EINVAL;
+            return process_set_group((pid_t)regs->rdi, (uint32_t)regs->rsi) == 0 ? 0 : -EPERM;
+        case SYS_GETPGID: {
+            if (regs->rdi == 0) return (int64_t)task->pgid;
+            uint64_t irq = sched_lock_irqsave();
+            task_t *other = sched_find_task_locked((uint32_t)regs->rdi);
+            int64_t pgid = (other && other->is_user) ? (int64_t)other->pgid : -ESRCH;
+            sched_unlock_irqrestore(irq);
+            return pgid;
+        }
+        case SYS_TCSETPGRP:
+            // Whoever reads the terminal may say which of its jobs has it
+            if (regs->rdi > 0x7FFFFFFF) return -EINVAL;
+            return process_set_foreground((uint32_t)regs->rdi) == 0 ? 0 : -EINVAL;
+        case SYS_TCGETPGRP:
+            return (int64_t)process_get_foreground();
 
         case SYS_BRK:     return sys_brk(regs->rdi);
         case SYS_MMAP:    return sys_mmap(regs->rdi, (size_t)regs->rsi, (int)regs->rdx, (int)regs->r10);

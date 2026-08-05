@@ -279,6 +279,10 @@ void _start(void) {
     hcf();
 #endif
 
+    // The process that adopts orphans: when a process dies, its children
+    // become init's, and init waits for them
+    if (process_start_init("/bin/init") < 0) kprintf("init: could not start /bin/init; orphans are reaped by the kernel\n");
+
     // Create interactive shell task
     task_create("shell", shell_task_entry);
 

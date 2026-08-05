@@ -69,14 +69,14 @@ static size_t gen_meminfo(char *buf, size_t size) {
 }
 
 static size_t gen_tasks(char *buf, size_t size) {
-    static const char *const state_names[] = { "ready  ", "running", "blocked", "zombie " };
+    static const char *const state_names[] = { "ready  ", "running", "blocked", "zombie ", "stopped" };
     size_t len = ksnprintf(buf, size, "PID\tPPID\tUID\tSTATE\tKIND\tPRIO\tTICKS\tCPU\tNAME\n");
 
     // The task list must not change under us. Formatting into a buffer
     // takes no other lock and cannot sleep.
     uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t && len + 1 < size; t = t->next) {
-        const char *state = (unsigned)t->state < 4 ? state_names[t->state] : "?";
+        const char *state = (unsigned)t->state < 5 ? state_names[t->state] : "?";
         len += ksnprintf(buf + len, size - len, "%u\t%u\t%u\t%s\t%s\t%u\t%lu\t%u\t%s\n",
                          t->pid, t->parent_pid, t->uid, state, t->is_user ? "user" : "kernel",
                          (unsigned)t->priority, t->cpu_ticks, t->last_cpu, t->name);
