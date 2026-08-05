@@ -1,4 +1,6 @@
 #include "test.h"
+#include "region.h"
+#include "virtio_blk.h"
 #include "process.h"
 #include "sched.h"
 #include "pmm.h"
@@ -252,6 +254,40 @@ TEST(orphans_are_adopted_and_collected_by_init) {
     EXPECT_TRUE(test_free_frames() == free_before);
 }
 
+// A file mapped into memory is read page by page as it is touched: a
+// program that maps 100 KiB of a file on disk and looks at one byte causes
+// one page's worth of disk reads, not the file's.
+TEST(mapped_file_pages_are_read_only_when_touched) {
+    if (!virtio_blk_present()) return;
+    sched_reap();
+    size_t free_before = test_free_frames();
+    size_t promised_before = region_promised_pages();
+
+    // Reading the whole file, for comparison (and so that anything read
+    // once and kept, like the FAT, is not counted against either)
+    char *whole[] = { "/bin/wc", "/disk/pattern.bin", NULL };
+    EXPECT_EQ(run("/bin/wc", whole), 0);
+    uint64_t start = virtio_blk_requests();
+    EXPECT_EQ(run("/bin/wc", whole), 0);
+    uint64_t for_whole_file = virtio_blk_requests() - start;
+
+    char *one_byte[] = { "/bin/mapread", "/disk/pattern.bin", "51234", NULL };
+    start = virtio_blk_requests();
+    EXPECT_EQ(run("/bin/mapread", one_byte), 0);
+    uint64_t for_one_page = virtio_blk_requests() - start;
+
+    kprintf("    disk requests: %lu for the whole file, %lu for one mapped page\n", for_whole_file, for_one_page);
+    EXPECT_TRUE(for_one_page > 0);                         // It did come from the disk
+    EXPECT_TRUE(for_one_page * 4 < for_whole_file);        // ...and only a small part of it
+
+    // The mapping, its promise and its hold on the file went with the process
+    sched_reap();
+    EXPECT_TRUE(region_promised_pages() == promised_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
+    vnode_t *node = vfs_find(NULL, "/disk/pattern.bin");
+    EXPECT_TRUE(node != NULL && node->open_count == 0);
+}
+
 // Ctrl-C ends the programs a shell is running but not the shell, which has
 // asked to be left alone.
 TEST(interrupt_spares_processes_that_ignore_it) {
@@ -359,6 +395,7 @@ void test_suite_process(void) {
     RUN_TEST(shell_pipelines_and_redirection);
     RUN_TEST(kill_takes_effect_at_a_safe_point);
     RUN_TEST(orphans_are_adopted_and_collected_by_init);
+    RUN_TEST(mapped_file_pages_are_read_only_when_touched);
     RUN_TEST(interrupt_spares_processes_that_ignore_it);
     RUN_TEST(syscall_at_the_top_of_user_space_is_survived);
     RUN_TEST(address_space_layout_is_randomised);

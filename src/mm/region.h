@@ -1,0 +1,93 @@
+/**
+ * @file region.h
+ * @brief Memory a process has been promised but not yet given
+ *
+ * mmap and brk do not hand out memory any more: they record a region of the
+ * address space ("these addresses are yours, readable and writable") and
+ * return. A page of it gets a frame the first time the program touches it,
+ * through the page fault that touch causes. A program that maps a gigabyte
+ * and uses three pages costs three frames.
+ *
+ * A region may also stand for part of a file: the page then starts out with
+ * the file's contents, read when the page is first touched. Such a mapping
+ * is private: writing to it changes the process's copy, never the file, and
+ * later changes to the file do not show in pages already read.
+ *
+ * Promises have a limit. Each untouched page is counted, and mmap or brk
+ * fails when the pages promised to all processes would exceed the frames
+ * that are free. That makes running out of memory something a program is
+ * told about (a failed call) rather than something that happens to it (a
+ * kill at the first touch). It is not a guarantee: fork, the kernel itself
+ * and copy-on-write also use frames, and none of those is counted here.
+ *
+ * Not done: shared file mappings, writing changes back to a file, and a
+ * cache that would let two processes share the pages of one file (each
+ * reads its own copy).
+ */
+
+#ifndef REGION_H
+#define REGION_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+struct task;
+struct vnode;
+
+#define TASK_MAX_REGIONS 32
+
+typedef struct {
+    uint64_t start, end;        // Page-aligned; end == 0 marks an unused entry
+    int prot;                   // PROT_READ | PROT_WRITE | PROT_EXEC
+    struct vnode *node;         // The file behind it, or NULL for zero-filled memory
+    uint64_t file_offset;       // Where in the file `start` is
+} mem_region_t;
+
+/**
+ * @brief Promise `length` bytes at an address of the kernel's choosing.
+ * @param node   A file to take the contents from (NULL: zeros).
+ * @param offset Page-aligned position in that file.
+ * @param error  Receives a negative errno on failure.
+ * @return The address, or 0.
+ */
+uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *node, uint64_t offset, int *error);
+
+/**
+ * @brief Take back [addr, addr + length): the promise, and whatever frames
+ *        were given. Parts of regions may be removed.
+ * @return 0, or a negative errno.
+ */
+int region_unmap(struct task *task, uint64_t addr, size_t length);
+
+/**
+ * @brief Move the end of the heap. Growing only promises; shrinking gives
+ *        frames back. Returns the new break, or the old one if refused.
+ */
+uint64_t region_set_brk(struct task *task, uint64_t new_brk);
+
+/**
+ * @brief Keep the promise for the page containing `addr`: give it a frame
+ *        (and its file contents). May sleep (reading a file from disk).
+ * @return 1 if the page is now present, 0 if `addr` is not in any promised
+ *         region, -1 if it is but there is no memory left.
+ */
+int region_fault(struct task *task, uint64_t addr);
+
+/**
+ * @brief fork: the child gets the same regions (and the same promises).
+ */
+void region_fork(struct task *child, const struct task *parent);
+
+/**
+ * @brief exit and exec: forget every region. The frames themselves go with
+ *        the address space.
+ */
+void region_release_all(struct task *task);
+
+/**
+ * @brief Pages promised to all processes and not yet touched.
+ */
+size_t region_promised_pages(void);
+
+#endif // REGION_H

@@ -371,6 +371,21 @@ code comments and commit messages; `git log` is the full history.
 - **Keys that send signals are read in interrupt handlers**, so what they
   consult (the foreground group, raw mode) is plain words, not something
   behind a lock ranked below the keyboard's.
+- **Lazy memory moves the fault into the kernel unless the kernel acts
+  first.** Once pages appear on first touch, a system call can be handed a
+  buffer with no frames behind it, and the kernel's own access would fault
+  while it holds a lock (and a file-backed page would have to sleep there).
+  Every user range is populated before it is checked and used
+  (`process_populate`); the fault handler serves ring 3 only.
+- **A test can pin down a limitation.** One check asserted that a buffer in
+  an untouched part of the stack is `EFAULT`. When that became valid the
+  call succeeded and sat reading the keyboard: a hang, not a failure. A
+  check of an error path should use a call that cannot block if it succeeds.
+- **A phony target with no recipe succeeds.** Rewriting one Makefile target
+  with a text splice deleted the next one (`test-login`); `.PHONY` still
+  listed it, so `make check` went on "running" it and reporting success for
+  eight commits. After editing the Makefile, list its targets
+  (`grep -n '^[a-z-]*:' Makefile`) and compare with what `check` calls.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

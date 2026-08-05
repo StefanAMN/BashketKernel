@@ -196,7 +196,19 @@ and stopping a background job that reads the terminal (`SIGTTIN`).
 - **Check:** new sections in `/bin/syscheck`; a scripted shell session with
   background jobs.
 
-### B4. Memory: lazy and file-backed mappings (M)
+### B4. Memory: lazy and file-backed mappings (M) — done, without the page cache
+
+Done: `mmap` and `brk` record a region and give each page its frame on first
+touch; the pages promised and not yet touched are counted, and a call that
+would promise more than is free fails. Private file mappings read each page
+when it is touched (ten disk requests instead of 442 for one byte of a
+100 KiB file). The kernel gives a program's buffer its frames before using
+it, so its own accesses never fault.
+
+Not done: executables are still copied in whole by the loader, because
+sharing their pages between processes needs a page cache, and that is the
+larger half of this item. Shared file mappings and write-back likewise.
+The promise limit does not cover fork or copy-on-write.
 
 - Demand-zero `mmap` and `brk` (pages appear on first touch), with an
   accounting limit so that overcommit is a decision rather than an accident.

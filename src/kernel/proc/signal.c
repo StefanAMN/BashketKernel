@@ -190,9 +190,7 @@ void signal_reset_on_exec(task_t *task) {
 // Make sure [addr, addr+len) of the current process is writable, growing the
 // stack into it if it lies in the stack region.
 static bool prepare_user_stack(uint64_t *space, uint64_t addr, size_t len) {
-    for (uint64_t page = addr & ~0xFFFULL; page < addr + len; page += PAGE_SIZE) {
-        if (!(vmm_get_pte(space, page) & VMM_PRESENT)) process_grow_stack(page);
-    }
+    if (!process_populate(addr, len)) return false;
     return vmm_user_range_ok(space, addr, len, true);
 }
 

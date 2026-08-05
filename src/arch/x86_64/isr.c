@@ -15,6 +15,7 @@
 #include "cpu.h"
 #include "console.h"
 #include "percpu.h"
+#include "region.h"
 #include "smp.h"
 #include <stddef.h>
 
@@ -117,6 +118,32 @@ static bool try_copy_on_write(struct registers *regs) {
 
 // A fault on a page that is not there, inside the stack region of a user
 // process, means the stack needs to grow.
+// A program's first touch of memory that mmap or brk promised it: now is
+// when it gets the frame (see region.h). Only for faults from ring 3: the
+// kernel gives a program's buffers their frames before it uses them
+// (process_populate), because here it could be holding a lock, and reading
+// a file's page from disk sleeps.
+static bool try_promised_page(struct registers *regs) {
+    if (regs->int_no != 14 || (regs->err_code & 1) || (regs->cs & 3) != 3) return false;
+
+    task_t *task = sched_get_current_task();
+    if (!task || !task->is_user) return false;
+    uint64_t cr2;
+    asm volatile("mov %0, cr2" : "=r"(cr2));
+
+    // Reading a file may take a while: let interrupts in, as in a system
+    // call. The frame on this stack is complete, so being preempted is fine.
+    asm volatile("sti");
+    int result = region_fault(task, cr2);
+    asm volatile("cli");
+
+    if (result < 0) {
+        kprintf("\n[pid %u %s] killed: out of memory for a promised page at 0x%zx\n", task->pid, task->name, cr2);
+        task_exit_status(128 + SIGKILL);
+    }
+    return result > 0;
+}
+
 static bool try_grow_stack(struct registers *regs) {
     if (regs->int_no != 14 || (regs->err_code & 1)) return false; // Not "page not present"
 
@@ -133,6 +160,7 @@ void isr_handler(struct registers *regs) {
 
     if (try_copy_on_write(regs)) return;
     if (try_grow_stack(regs)) return;
+    if (try_promised_page(regs)) return;
 
     if (regs->int_no < 32 && (regs->cs & 3) == 3) {
         kill_faulting_process(regs);
