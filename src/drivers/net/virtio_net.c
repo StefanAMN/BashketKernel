@@ -4,6 +4,7 @@
  */
 
 #include "virtio_net.h"
+#include "random.h"
 #include "virtqueue.h"
 #include "pci.h"
 #include "io.h"
@@ -64,6 +65,7 @@ static void virtio_net_irq(struct registers *regs) {
     (void)regs;
     // Reading the ISR register makes the card lower its interrupt line
     uint8_t isr = inb(io_base + VIRTIO_REG_ISR_STATUS);
+    random_add_event(isr); // Packets arrive when the rest of the world sends them
     if (isr & 1) {
         // Under the lock, so that a receiver between "nothing there" and
         // "asleep" (virtio_net_wait_rx) can not miss this

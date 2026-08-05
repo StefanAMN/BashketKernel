@@ -52,7 +52,7 @@ gaps. `PLAN.md` lists the known limits and proposes what to build next.
 | 34 | Mount table | real | A record of which source provides which part of the tree (`/` memory, `/bin` initrd, `/proc`, `/dev`, `/disk` FAT32), shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Nothing can be unmounted. |
 | 35 | Shared memory | real | Two kinds, both real: `mmap(MAP_SHARED)` memory stays shared between a process and the children it forks, and keyed segments (`shmget`, `shmat`, `shmrm`) are shared between any processes. Frames are reference counted and freed with the last mapping. No permissions. |
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |
-| 37 | /dev devices | real | `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` is a seeded xorshift generator, not cryptographically secure. |
+| 37 | /dev devices | real | `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` gives output of the kernel's generator: ChaCha20 with the key replaced after every request, seeded from RDSEED or RDRAND where the CPU has them and otherwise only from interrupt timing, which is weak right after boot (the boot log says which). |
 | 38 | Benchmarks | real | `bench` times memcpy, memset, heap and frame allocation for 100 ms each and prints rates. Timer resolution limits accuracy to a few percent. |
 
 ---

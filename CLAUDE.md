@@ -393,6 +393,12 @@ code comments and commit messages; `git log` is the full history.
   the bit away when the file is written by anyone but root or changes
   owner. Everything else (`passwd` changing only the caller's line) is user
   code, and is where the mistakes would be.
+- **A round trip is not a test of a cipher.** The library's ChaCha20 test
+  encrypted, decrypted and compared: any function that is its own inverse
+  passes. Before building the random generator on it, the keystream was
+  checked against RFC 8439 and against a second implementation written in
+  another language. The same goes for the password hashes: the kernel's
+  PBKDF2 is believed because `/bin/login` accepts lines made by Python's.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

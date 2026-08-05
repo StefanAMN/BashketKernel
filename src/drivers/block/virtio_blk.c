@@ -14,6 +14,7 @@
  */
 
 #include "virtio_blk.h"
+#include "random.h"
 #include "pci.h"
 #include "io.h"
 #include "pmm.h"
@@ -72,6 +73,7 @@ static void virtio_blk_irq(struct registers *regs) {
         // yet" and "asleep" when this arrives
         uint64_t flags = spinlock_acquire_irqsave(&disk_lock);
         interrupt_count++;
+        random_add_event(interrupt_count);
         sched_wakeup(&queue);
         spinlock_release_irqrestore(&disk_lock, flags);
     }
