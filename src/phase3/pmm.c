@@ -105,6 +105,38 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         free_frames--;
     }
 
+    // Reserve physical frames containing the active boot stack pointer
+    uint64_t current_rsp;
+    asm volatile("mov %0, rsp" : "=r"(current_rsp));
+    uint64_t stack_phys = (current_rsp >= hhdm_off) ? (current_rsp - hhdm_off) : (current_rsp & 0x7FFFFFFF);
+    size_t stack_start_frame = (stack_phys / PAGE_SIZE) > 16 ? (stack_phys / PAGE_SIZE) - 16 : 0;
+    size_t stack_end_frame = (stack_phys / PAGE_SIZE) + 16;
+
+    for (size_t f = stack_start_frame; f <= stack_end_frame && f < total_frames; f++) {
+        if (!bitmap_test(f)) {
+            bitmap_set(f);
+            used_frames++;
+            free_frames--;
+        }
+    }
+
+    // Reserve physical frames containing kernel text/rodata/data/bss sections
+    extern char __kernel_start[];
+    extern char __kernel_end[];
+    uint64_t kstart_phys = (uint64_t)__kernel_start >= hhdm_off ? ((uint64_t)__kernel_start - hhdm_off) : ((uint64_t)__kernel_start & 0x7FFFFFFF);
+    uint64_t kend_phys = (uint64_t)__kernel_end >= hhdm_off ? ((uint64_t)__kernel_end - hhdm_off) : ((uint64_t)__kernel_end & 0x7FFFFFFF);
+
+    size_t kstart_frame = kstart_phys / PAGE_SIZE;
+    size_t kend_frame = (kend_phys + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    for (size_t f = kstart_frame; f <= kend_frame && f < total_frames; f++) {
+        if (!bitmap_test(f)) {
+            bitmap_set(f);
+            used_frames++;
+            free_frames--;
+        }
+    }
+
     kprintf("PMM Init: Total Frames: %zu (%zu MB), Free Frames: %zu (%zu MB)\n",
             total_frames, (total_frames * PAGE_SIZE) / (1024 * 1024),
             free_frames, (free_frames * PAGE_SIZE) / (1024 * 1024));

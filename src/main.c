@@ -20,6 +20,9 @@
 #include "initrd.h"
 #include "keyboard.h"
 #include "shell.h"
+#include "slab.h"
+#include "cow.h"
+#include "mmap.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -41,6 +44,8 @@ static volatile struct limine_hhdm_request hhdm_request = {
     .id = LIMINE_HHDM_REQUEST,
     .revision = 0
 };
+
+static uint8_t dedicated_kernel_stack[128 * 1024] __attribute__((aligned(4096)));
 
 static void hcf(void) {
     asm("cli");
@@ -86,6 +91,11 @@ static void shell_task_entry(void) {
 }
 
 void _start(void) {
+    // Switch to dedicated 128 KiB higher-half kernel stack safely
+    uint64_t new_rsp = (uint64_t)dedicated_kernel_stack + sizeof(dedicated_kernel_stack) - 128;
+    new_rsp &= ~0xFULL; // Ensure 16-byte alignment
+    asm volatile("mov rsp, %0" : : "r"(new_rsp));
+
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
         hcf();
     }
@@ -125,6 +135,7 @@ void _start(void) {
     }
 
     pmm_init(memmap_request.response, hhdm_request.response->offset);
+    kprintf("HHDM Offset: %p\n", (void *)pmm_get_hhdm_offset());
     vmm_init();
     kheap_init();
     kprintf("Phase 3 Memory Management initialization complete.\n");
@@ -147,7 +158,11 @@ void _start(void) {
     shell_init();
     kprintf("Phase 7 Keyboard & Shell initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 7)
+    // Phase 8: Advanced Memory Management (Slab, Refcounting, mmap)
+    cow_init();
+    kprintf("Phase 8 Slab Allocator, Refcounting & mmap initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 8)
     run_all_tests();
 
     // Create interactive shell task

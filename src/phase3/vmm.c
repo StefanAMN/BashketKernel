@@ -12,6 +12,9 @@ static uint64_t *kernel_pml4 = NULL;
 
 static uint64_t *get_next_level(uint64_t *current_table, size_t index, bool allocate, uint64_t flags) {
     if ((current_table[index] & VMM_PRESENT) && !(current_table[index] & VMM_HUGE)) {
+        if (flags & VMM_USER) {
+            current_table[index] |= VMM_USER;
+        }
         uint64_t phys = current_table[index] & PTE_ADDR_MASK;
         return (uint64_t *)(phys + pmm_get_hhdm_offset());
     }

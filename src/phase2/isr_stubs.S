@@ -85,25 +85,11 @@ common_isr_stub:
     push r14
     push r15
 
-    // Save the current data segment, then load kernel data segment
-    xor rax, rax
-    mov ax, ds
-    push rax
-
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-
     // Call the C handler. 
     // According to System V AMD64 ABI, the first argument goes in RDI.
     // Our stack pointer (RSP) currently points to the top of our `struct registers`.
     mov rdi, rsp
     call isr_handler
-
-    // Restore data segment
-    pop rax
-    mov ds, ax
-    mov es, ax
 
     // Pop all general purpose registers
     pop r15
