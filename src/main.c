@@ -23,6 +23,8 @@
 #include "slab.h"
 #include "cow.h"
 #include "mmap.h"
+#include "lapic.h"
+#include "ioapic.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -162,7 +164,12 @@ void _start(void) {
     cow_init();
     kprintf("Phase 8 Slab Allocator, Refcounting & mmap initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 8)
+    // Phase 9: Modern Interrupt Architecture (LAPIC & IOAPIC)
+    lapic_init();
+    ioapic_init();
+    kprintf("Phase 9 Local APIC & I/O APIC initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 9)
     run_all_tests();
 
     // Create interactive shell task

@@ -17,6 +17,7 @@ extern void test_suite_vfs(void);
 extern void test_suite_shell(void);
 extern void test_suite_slab(void);
 extern void test_suite_mmap(void);
+extern void test_suite_apic(void);
 
 void run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -32,6 +33,7 @@ void run_all_tests(void) {
     test_suite_shell();
     test_suite_slab();
     test_suite_mmap();
+    test_suite_apic();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);
