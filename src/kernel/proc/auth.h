@@ -1,22 +1,33 @@
 /**
  * @file auth.h
- * @brief Who may do what: user ids and file permissions
+ * @brief Users, groups and file permissions
  *
- * Every process runs as a user, identified by a number (its uid). User 0 is
- * "root" and may do anything. Every file and directory has an owner and four
- * permission bits: may the owner read it, may the owner write it, may
- * everyone else read it, may everyone else write it. For a directory,
- * "write" means creating and removing entries.
+ * The kernel knows users and groups only as numbers. A process has a user
+ * id and a group id; a file has an owner, a group and twelve permission
+ * bits. Names and passwords are the business of programs (/bin/login,
+ * /bin/su, /bin/passwd, and the file /etc/passwd).
  *
- * The kernel knows only numbers. Names and passwords are the business of
- * /bin/login, a program that runs as root, checks a password against
- * /etc/passwd, and then gives up root by switching to the user's uid. A
- * process that is not root cannot change its uid, so that step is one-way.
+ * The permission bits are Unix's, written in octal so that 0754 reads as
+ * three digits: what the owner may do, what members of the file's group
+ * may do, what everyone else may do. In each digit 4 is read, 2 is write
+ * and 1 is execute. Exactly one digit applies to a process: the owner's
+ * if it is the owner, else the group's if it is in the group, else the
+ * last. (So an owner can be denied what others are allowed.)
  *
- * Deliberately left out: groups, the execute bit (any readable file can be
- * run), set-uid programs (so there is no way back up to root, no `su` for
- * ordinary users), and permissions on anything but files (shared memory
- * segments and ports above 1023 are open to all).
+ * User 0, root, may read and write anything, and execute any file that
+ * anyone at all may execute.
+ *
+ * A process really has two user ids. The effective one is what every check
+ * uses. The real one says who started it. They differ only while it runs a
+ * set-uid program: a file with the 04000 bit runs with its *owner's* rights
+ * rather than its caller's. That is how an ordinary user changes a password
+ * in a file only root may write: /bin/passwd belongs to root and has the
+ * bit, and takes care to change only the caller's own line.
+ *
+ * Not done: supplementary groups (a process is in one group), the execute
+ * bit on directories (anyone may look a name up in any directory), set-gid
+ * and the sticky bit (/tmp instead has a rule of its own: see
+ * auth_may_remove).
  */
 
 #ifndef AUTH_H
@@ -27,38 +38,49 @@
 #include "vfs.h"
 
 #define UID_ROOT 0
+#define GID_ROOT 0
+#define GID_NONE 0xFFFFFFFFu     // "In no group": only the owner's or everyone's bits can apply
 
-// Permission bits, numbered as Unix does so that 0644 means what it usually
-// means: owner may read and write, others may read
-#define PERM_OWNER_READ  0400
-#define PERM_OWNER_WRITE 0200
-#define PERM_OTHER_READ  0004
-#define PERM_OTHER_WRITE 0002
-#define PERM_ALL (PERM_OWNER_READ | PERM_OWNER_WRITE | PERM_OTHER_READ | PERM_OTHER_WRITE)
+// What is being asked for
+#define PERM_READ  4
+#define PERM_WRITE 2
+#define PERM_EXEC  1
+
+#define PERM_SETUID 04000        // Run with the file owner's user id
+#define PERM_ALL    04777        // Every bit chmod may set
+
+// New files and directories get these, less the creator's umask
+#define PERM_NEW_FILE 0666
+#define PERM_NEW_DIR  0777
+#define UMASK_DEFAULT 022        // Take away write for group and others
 
 /**
- * @brief May a process running as `uid` read (or, with `write`, change)
- *        this file or directory?
+ * @brief May a process with this user and group do `want` (PERM_READ,
+ *        PERM_WRITE or PERM_EXEC, one of them) to the node?
+ */
+bool auth_permits(uint32_t uid, uint32_t gid, const vnode_t *node, int want);
+
+/**
+ * @brief The same for reading or writing, taking the group from the
+ *        calling process if `uid` is its own (else: no group).
  */
 bool auth_may_access(uint32_t uid, const vnode_t *node, bool write);
+bool auth_may_execute(uint32_t uid, const vnode_t *node);
 
 /**
- * @brief May `uid` remove `child` from `dir`? Needs write permission on the
- *        directory, and, so that a shared directory like /tmp does not let
- *        people delete each other's files, ownership of the file or of the
+ * @brief May `uid` remove `child` from `dir`? Write access to the directory,
+ *        and (so that /tmp can be writable by all) owning the entry or the
  *        directory.
  */
 bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child);
-
-/**
- * @brief May a process running as `uid` send a signal to one running as
- *        `target_uid`?
- */
 bool auth_may_signal(uint32_t uid, uint32_t target_uid);
 
 /**
- * @brief The uid of the calling task (root for kernel threads).
+ * @brief The effective user and group of the calling process (root for
+ *        kernel threads), and its umask.
  */
 uint32_t auth_current_uid(void);
+uint32_t auth_current_gid(void);
+uint16_t auth_current_umask(void);
 
 #endif // AUTH_H

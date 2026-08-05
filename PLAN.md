@@ -220,7 +220,18 @@ The promise limit does not cover fork or copy-on-write.
 - **Check:** `/bin/stress` variants; a program mapped from `/disk` whose
   untouched pages are never read from the disk.
 
-### B5. Permissions: the rest (M)
+### B5. Permissions: the rest (M) — done, with one group per process
+
+Done: a group per process and per file with the group's permission digit,
+the execute bit (checked by `execve`), set-uid programs with real and
+effective user ids, `umask`, `su` and `passwd`, salted PBKDF2 password
+hashes (checked against Python's implementation: `tools/mkpasswd.py` makes
+the lines `/bin/login` accepts), and owners for shared memory segments.
+
+Not done: supplementary groups, the execute ("search") bit on directories,
+set-gid and sticky bits. Owners for files on `/disk` wait for a filesystem
+that can store them (C2), and a password changed with `passwd` is lost at
+reboot for the same reason: `/etc` is in the initrd.
 
 - Groups, the execute bit, set-uid programs (which make `su` and `passwd`
   possible), `umask`.

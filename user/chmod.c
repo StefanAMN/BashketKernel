@@ -1,7 +1,10 @@
-/* chmod: change who may read and write a file.
+/* chmod: change who may read, write and execute a file.
  *
- *   chmod MODE FILE...     MODE is octal: 0600 owner only, 0644 others may
- *                          read, 0666 others may read and write
+ *   chmod MODE FILE...     MODE is octal, a digit each for the owner, the
+ *                          file's group and everyone else: 4 read, 2 write,
+ *                          1 execute. 0644: owner reads and writes, the
+ *                          rest read. 0755: the same, and all may run it.
+ *                          4755: also set-uid (runs with its owner's rights).
  */
 #include "ulib.h"
 

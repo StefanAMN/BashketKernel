@@ -21,7 +21,7 @@ void vfs_init(void) {
     vfs_root->name[0] = '/';
     vfs_root->name[1] = '\0';
     vfs_root->type = VFS_DIRECTORY;
-    vfs_root->mode = 0644;
+    vfs_root->mode = 0755;
     vfs_root->parent = NULL;
     vfs_root->children = NULL;
     vfs_root->next = NULL;
@@ -144,10 +144,12 @@ static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t
 
     node->type = type;
     node->parent = parent;
-    // Owned by root; readable by everyone, writable by the owner. Whoever
-    // creates the node on behalf of a user changes the owner afterwards.
+    // Owned by root; readable by everyone, writable by the owner (and a
+    // directory can be entered). Whoever creates the node on behalf of a
+    // user changes owner and mode afterwards.
     node->uid = 0;
-    node->mode = 0644;
+    node->gid = 0;
+    node->mode = (type == VFS_DIRECTORY) ? 0755 : 0644;
     node->next = parent->children;
     parent->children = node;
     return node;

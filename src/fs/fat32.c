@@ -599,6 +599,7 @@ static int fat_dir_create(vnode_t *dir, const char *name, bool directory, vnode_
     volume_unlock();
 
     vnode_t *node = (err == 0) ? vfs_attach(dir, name, directory ? VFS_DIRECTORY : VFS_FILE) : NULL;
+    if (node) node->mode = 0755; // FAT stores no permissions: see the mount
     if (!node) {
         // (If only the attach failed, the entry exists on disk and will show
         // up at the next mount; that needs the kernel to be out of memory.)
@@ -676,6 +677,9 @@ static vnode_t *attach_entry(vnode_t *dir, const char *name, bool directory, uin
         kfree(info);
         return NULL;
     }
+    // FAT has nowhere to keep an owner or permission bits. Everything on the
+    // volume belongs to root; everyone may read it and run it.
+    node->mode = 0755;
     node->ops = directory ? &fat_dir_ops : &fat_file_ops;
     node->private_data = (uint64_t)info;
     node->size = size;

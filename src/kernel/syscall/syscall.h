@@ -46,9 +46,13 @@
 #define SYS_MKDIR       83
 #define SYS_UNLINK      87
 #define SYS_CHMOD       90   // (path, mode): owner or root
-#define SYS_CHOWN       92   // (path, uid): root only
-#define SYS_GETUID      102
-#define SYS_SETUID      105  // (uid): root may become anyone; nobody else may change
+#define SYS_CHOWN       92   // (path, uid, gid): root only, except an owner moving a file to their own group; 0xFFFFFFFF leaves one as it is
+#define SYS_UMASK       95   // (mask): permission bits removed from files this process creates; returns the previous mask
+#define SYS_GETUID      102  // The real user: who started the process
+#define SYS_GETGID      104
+#define SYS_SETUID      105  // (uid): root may become anyone; anyone else may only return to their real user
+#define SYS_SETGID      106  // (gid): root only
+#define SYS_GETEUID     107  // The effective user: whose rights the process has
 #define SYS_SETPGID     109  // (pid, pgid): move a process (0: the caller) into a process group (0: its own)
 #define SYS_GETPPID     110
 #define SYS_GETPGID     121  // (pid): the process group of a process (0: the caller)

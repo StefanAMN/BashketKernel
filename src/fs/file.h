@@ -61,7 +61,7 @@ struct dirent_info {
     uint32_t mode;     // Permission bits (see auth.h)
     uint64_t size;
     uint32_t uid;      // Owner
-    uint32_t reserved;
+    uint32_t gid;      // Group
     char name[128];
 };
 

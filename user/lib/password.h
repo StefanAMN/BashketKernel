@@ -1,0 +1,55 @@
+/* Accounts and passwords: what /bin/login, /bin/su and /bin/passwd share.
+ *
+ * /etc/passwd holds one line per user:
+ *
+ *     name:uid:gid:iterations:salt:hash
+ *
+ * The password itself is not stored. `hash` is PBKDF2-HMAC-SHA256 (RFC 8018)
+ * of the password, `salt` 16 random bytes, both in hexadecimal:
+ *
+ *  - A hash can be checked against a guess but not turned back into the
+ *    password.
+ *  - The salt is different for every account, so two users with the same
+ *    password have different hashes, and a table of hashes worked out in
+ *    advance is useless.
+ *  - PBKDF2 repeats the hash `iterations` times, on purpose: checking one
+ *    password takes a moment, and trying a billion takes a billion moments.
+ *    (Programs made for this, such as Argon2, also need a lot of memory per
+ *    guess, which this does not.)
+ *
+ * The file is readable by root only: even hashes are better not handed out.
+ */
+#ifndef USER_PASSWORD_H
+#define USER_PASSWORD_H
+
+#include "ulib.h"
+
+#define PASSWORD_FILE "/etc/passwd"
+#define PASSWORD_ITERATIONS 4096
+#define PASSWORD_MIN_LENGTH 4
+
+struct account {
+    char name[32];
+    unsigned uid, gid;
+    unsigned iterations;
+    uint8_t salt[16];
+    uint8_t hash[32];
+};
+
+/* Find an account by name, or by user id. 0, -ENOENT, or another error. */
+long account_by_name(const char *name, struct account *out);
+long account_by_uid(unsigned uid, struct account *out);
+
+/* PBKDF2-HMAC-SHA256, 32 bytes of output */
+void password_hash(const char *password, const uint8_t *salt, size_t salt_len, unsigned iterations, uint8_t out[32]);
+
+/* Does the password belong to the account? */
+int password_matches(const struct account *account, const char *password);
+
+/* Give an account a new password (and a new salt). Needs to be root. */
+long account_set_password(const char *name, const char *password);
+
+/* Print `prompt` and read a line from the terminal without showing it */
+long read_password(const char *prompt, char *buf, size_t size);
+
+#endif

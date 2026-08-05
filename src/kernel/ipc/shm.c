@@ -12,10 +12,12 @@
 #include "kstring.h"
 #include "spinlock.h"
 #include "kerrno.h"
+#include "auth.h"
 
 typedef struct {
     bool used;
     uint32_t key;
+    uint32_t owner;     // The user who created it: only they (and root) may attach or remove it
     size_t pages;
     uint64_t *frames;   // Physical address of each page. The table holds one reference to each.
 } shm_segment_t;
@@ -65,6 +67,7 @@ int shm_get(uint32_t key, size_t size) {
         segments[free_slot].key = key;
         segments[free_slot].pages = pages;
         segments[free_slot].frames = frames;
+        segments[free_slot].owner = auth_current_uid();
         used_new_frames = true;
         result = free_slot;
     }
@@ -76,6 +79,22 @@ done:
         kfree(frames);
     }
     return result;
+}
+
+bool shm_count_valid(int id) {
+    if (id < 0 || id >= SHM_MAX_SEGMENTS) return false;
+    uint64_t flags = spinlock_acquire_irqsave(&shm_lock);
+    bool used = segments[id].used;
+    spinlock_release_irqrestore(&shm_lock, flags);
+    return used;
+}
+
+bool shm_may_use(int id, uint32_t uid) {
+    if (id < 0 || id >= SHM_MAX_SEGMENTS) return false;
+    uint64_t flags = spinlock_acquire_irqsave(&shm_lock);
+    bool ok = segments[id].used && (uid == UID_ROOT || uid == segments[id].owner);
+    spinlock_release_irqrestore(&shm_lock, flags);
+    return ok;
 }
 
 uint64_t shm_attach(int id, uint64_t *pml4, uint64_t *mmap_next) {

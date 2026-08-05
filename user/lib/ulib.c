@@ -50,7 +50,11 @@ long sigprocmask(int how, const uint32_t *set, uint32_t *old) {
 long getuid(void)                                  { return syscall0(SYS_GETUID); }
 long setuid(unsigned uid)                          { return syscall1(SYS_SETUID, uid); }
 long chmod(const char *path, unsigned mode)        { return syscall2(SYS_CHMOD, path, mode); }
-long chown(const char *path, unsigned uid)         { return syscall2(SYS_CHOWN, path, uid); }
+long chown(const char *path, unsigned uid, unsigned gid) { return syscall3(SYS_CHOWN, path, uid, gid); }
+long geteuid(void)                                 { return syscall0(SYS_GETEUID); }
+long getgid(void)                                  { return syscall0(SYS_GETGID); }
+long setgid(unsigned gid)                          { return syscall1(SYS_SETGID, gid); }
+long umask(unsigned mask)                          { return syscall1(SYS_UMASK, mask); }
 
 /* --- Environment ---------------------------------------------------------- */
 

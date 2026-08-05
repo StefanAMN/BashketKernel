@@ -307,7 +307,11 @@ static int64_t sys_mkdir(uint64_t user_path) {
 
     vnode_t *dir = NULL;
     int err = vfs_create(parent, name, VFS_DIRECTORY, &dir);
-    if (err == 0) dir->uid = task->uid;
+    if (err == 0) {
+        dir->uid = task->uid;
+        dir->gid = task->gid;
+        dir->mode = (uint16_t)(PERM_NEW_DIR & ~task->umask);
+    }
     return err;
 }
 
@@ -341,19 +345,30 @@ static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
     uint32_t uid = sched_get_current_task()->uid;
     if (uid != UID_ROOT && uid != node->uid) return -EPERM;
     if (node->read_only) return -EROFS;
-    node->mode = (uint16_t)(mode & PERM_ALL);
+    if (mode & ~(uint64_t)PERM_ALL) return -EINVAL;
+    node->mode = (uint16_t)mode;
     return 0;
 }
 
-static int64_t sys_chown(uint64_t user_path, uint64_t new_uid) {
+#define CHOWN_KEEP 0xFFFFFFFFULL // "Leave this one as it is"
+
+static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid) {
     vnode_t *node = NULL;
     int64_t err = lookup_for_change(user_path, &node);
     if (err != 0) return err;
+    if (new_uid > 0xFFFFFFFFULL || new_gid > 0xFFFFFFFFULL) return -EINVAL;
 
-    // Giving files away (or taking them) is root's privilege
-    if (sched_get_current_task()->uid != UID_ROOT) return -EPERM;
-    if (new_uid > 0xFFFFFFFFULL) return -EINVAL;
-    node->uid = (uint32_t)new_uid;
+    // Giving files away (or taking them) is root's privilege. An owner may
+    // move a file of theirs into their own group.
+    task_t *task = sched_get_current_task();
+    bool owner_to_own_group = task->uid == node->uid && new_uid == CHOWN_KEEP && new_gid == task->gid;
+    if (task->uid != UID_ROOT && !owner_to_own_group) return -EPERM;
+    if (node->read_only) return -EROFS;
+
+    if (new_uid != CHOWN_KEEP) node->uid = (uint32_t)new_uid;
+    if (new_gid != CHOWN_KEEP) node->gid = (uint32_t)new_gid;
+    // Whoever the file belongs to now did not ask for it to be set-uid
+    if (task->uid != UID_ROOT || new_uid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETUID;
     return 0;
 }
 
@@ -484,7 +499,14 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
     } else {
         // On success the frame describes the new program, and the 0 returned
         // here lands in its RAX, which a new program does not look at.
-        result = (process_exec(regs, path, argc ? argv : NULL, envp) == 0) ? 0 : -ENOENT;
+        // (Looked at here only to tell the caller *why*: exec checks again
+        // itself, under the same lock as the loading.)
+        vfs_lock();
+        vnode_t *program = vfs_find(sched_get_current_task()->cwd, path);
+        bool refused = program && program->type == VFS_FILE && !auth_may_execute(auth_current_uid(), program);
+        vfs_unlock();
+        if (refused) result = -EACCES;
+        else result = (process_exec(regs, path, argc ? argv : NULL, envp) == 0) ? 0 : -ENOENT;
     }
 
     kfree(storage);
@@ -847,25 +869,51 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi, regs->rdx);
         case SYS_KILL:    return sys_kill((int)regs->rdi, (int)regs->rsi);
 
-        case SYS_GETUID:  return (int64_t)task->uid;
+        case SYS_GETUID:  return (int64_t)task->ruid;   // Who started this process
+        case SYS_GETEUID: return (int64_t)task->uid;    // Whose rights it has
+        case SYS_GETGID:  return (int64_t)task->gid;
         case SYS_SETUID:
-            // Root may become anyone. Nobody else may become anyone else:
-            // giving up root is permanent.
+            // Root may become anyone, for good: real and effective user both
+            // change. Anyone else may only go back to being themselves, which
+            // is how a set-uid program gives up the rights it was lent.
             if (regs->rdi > 0xFFFFFFFFULL) return -EINVAL;
-            if (task->uid != UID_ROOT && (uint32_t)regs->rdi != task->uid) return -EPERM;
+            if (task->uid == UID_ROOT) {
+                task->ruid = (uint32_t)regs->rdi;
+            } else if ((uint32_t)regs->rdi != task->ruid) {
+                return -EPERM;
+            }
             task->uid = (uint32_t)regs->rdi;
             return 0;
+        case SYS_SETGID:
+            if (regs->rdi > 0xFFFFFFFFULL) return -EINVAL;
+            if (task->uid != UID_ROOT && (uint32_t)regs->rdi != task->gid) return -EPERM;
+            task->gid = (uint32_t)regs->rdi;
+            return 0;
+        case SYS_UMASK: {
+            uint16_t previous = task->umask;
+            task->umask = (uint16_t)(regs->rdi & 0777);
+            return previous;
+        }
         case SYS_CHMOD: { vfs_lock(); int64_t r = sys_chmod(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
-        case SYS_CHOWN: { vfs_lock(); int64_t r = sys_chown(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_CHOWN: { vfs_lock(); int64_t r = sys_chown(regs->rdi, regs->rsi, regs->rdx); vfs_unlock(); return r; } // Look up, then act: one step
 
         case SYS_SETPRIORITY:
             if (regs->rdi > PRIO_LOW) return -EINVAL;
             task_set_priority(task, (uint8_t)regs->rdi);
             return 0;
 
-        case SYS_SHMGET:   return shm_get((uint32_t)regs->rdi, (size_t)regs->rsi);
-        case SYS_SHMAT:    return sys_shmat((int)regs->rdi);
-        case SYS_SHMRM:    return shm_remove((int)regs->rdi);
+        // A segment belongs to the user who created it. Someone else's is
+        // not found by its key, and its number is of no use to them.
+        case SYS_SHMGET: {
+            int id = shm_get((uint32_t)regs->rdi, (size_t)regs->rsi);
+            return (id >= 0 && !shm_may_use(id, task->uid)) ? -EACCES : id;
+        }
+        case SYS_SHMAT:
+            if (shm_count_valid((int)regs->rdi) && !shm_may_use((int)regs->rdi, task->uid)) return -EACCES;
+            return sys_shmat((int)regs->rdi);
+        case SYS_SHMRM:
+            if (shm_count_valid((int)regs->rdi) && !shm_may_use((int)regs->rdi, task->uid)) return -EACCES;
+            return shm_remove((int)regs->rdi);
 
         case SYS_SOCKET:   return sys_socket(regs->rdi);
         case SYS_CONNECT:  return sys_connect((int)regs->rdi, regs->rsi, regs->rdx);

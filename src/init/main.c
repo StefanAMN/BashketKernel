@@ -247,7 +247,7 @@ void _start(void) {
 
     // /tmp: the one place every user may create files (and remove their own)
     vnode_t *tmp_dir = vfs_create_dir(vfs_get_root(), "tmp");
-    if (tmp_dir) tmp_dir->mode = 0666;
+    if (tmp_dir) tmp_dir->mode = 0777;
 
     // Phase 24: Pseudo-Filesystem ProcFS
     procfs_init();

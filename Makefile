@@ -47,7 +47,7 @@ USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker
 
 # sha256.o is the kernel tree's own lib/crypto/sha256.c, compiled again for
 # user programs (login hashes passwords with it)
-USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o
+USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/password.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
@@ -68,11 +68,14 @@ $(BUILD)/user/lib/sha256.o: lib/crypto/sha256.c Makefile
 
 $(BUILD)/initrd/bin/%: $(BUILD)/user/%.o $(USER_LIB_OBJS) user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o -o $@
+	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o -o $@
 
 # USTAR archive of bin/ plus the static files under user/rootfs
 $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
 	cp -r user/rootfs/. $(BUILD)/initrd/
+	# Set-uid root: these two do for an ordinary user what only root may
+	# (see src/kernel/proc/auth.h). The archive carries the bit.
+	chmod 4755 $(BUILD)/initrd/bin/su $(BUILD)/initrd/bin/passwd
 	tar --format=ustar -C $(BUILD)/initrd -cf $@ $$(ls $(BUILD)/initrd)
 
 .PRECIOUS: $(BUILD)/user/%.o
@@ -297,16 +300,26 @@ test-smp:
 # A scripted login: wrong password refused, then a shell as an ordinary user
 # who can use the system but not change it, then back to root.
 test-login: iso
-	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
-		--expect 'incorrect name or password' --expect 'uid 1000\n' \
+	@tools/qemu_shell.py --quiet --timeout 90 $(SHELL_CPU) \
+		--expect 'incorrect name or password' --expect 'uid 1000\ngid 100\n' \
 		--expect 'passwd: permission denied' --expect 'hello: permission denied' \
 		--expect 'motd: permission denied' --expect 'vda: permission denied' \
 		--expect 'Hello from ring 3' --expect 'uid 0 \(root\)' --forbid 'alice:1000' \
+		--expect 'su: incorrect name or password' --expect 'as-root-now\n\$$ id\nuid 0 \(root\)\ngid 0' \
+		--expect 'passwd: password changed for alice' --expect 'you may only change your own password' \
+		--expect 'passwd: the two do not match' --expect 'passwd: incorrect password' \
+		--expect 'old-password[\s\S]*login: incorrect name or password[\s\S]*new-password[\s\S]*uid 1000\ngid 100\n[\s\S]*done-as-alice' \
 		'!exec /bin/login alice' '~wrong\r' '@wait:1' '!exec /bin/login alice' '~alice\r' \
 		'id' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
-		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' 'exit' 'exec /bin/id' \
+		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' \
+		'!su' '~wrong\r' '@wait:1' '!su' '~root\r' 'echo as-root-now' 'id' 'exit' \
+		'!passwd' '~wrong\r' '@wait:1' '!passwd' '~alice\r' '~one-thing\r' '~another\r' '@wait:1' \
+		'!passwd bob' '@wait:1' '!passwd' '~alice\r' '~wonderland\r' '~wonderland\r' '@wait:1' 'exit' \
+		'exec /bin/echo old-password' '!exec /bin/login alice' '~alice\r' '@wait:1' \
+		'exec /bin/echo new-password' '!exec /bin/login alice' '~wonderland\r' 'id' 'echo done-as-alice' 'exit' \
+		'exec /bin/id' \
 		> $(BUILD)/login.log 2>&1 \
-		&& echo "login and permissions: ok" || { echo "login: FAILED (see $(BUILD)/login.log)"; exit 1; }
+		&& echo "login, su, passwd and permissions: ok" || { echo "login: FAILED (see $(BUILD)/login.log)"; exit 1; }
 
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
