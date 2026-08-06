@@ -119,6 +119,7 @@ long mkdir(const char *path);
 long chdir(const char *path);
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
 long unlink(const char *path);
+long rename(const char *from, const char *to);  /* Within one filesystem; fails with -EEXIST rather than replace anything */
 
 /* Network. The machine is 10.0.2.15; QEMU's gateway (which also reaches the
  * host computer) is 10.0.2.2.

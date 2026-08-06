@@ -62,6 +62,8 @@ struct dirent_info {
     uint64_t size;
     uint32_t uid;      // Owner
     uint32_t gid;      // Group
+    uint32_t mtime;    // Last written: FAT's packing, date << 16 | time (0: not known)
+    uint32_t reserved;
     char name[128];
 };
 

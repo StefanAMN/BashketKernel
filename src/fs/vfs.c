@@ -60,8 +60,19 @@ vnode_t *vfs_get_root(void) {
     return vfs_root;
 }
 
+void vfs_load_dir(vnode_t *dir) {
+    // A directory kept on a disk is read the first time anything looks
+    // inside it. (The flag goes first: loading attaches nodes, which looks
+    // inside the directory in turn.) Caller holds the tree lock.
+    if (dir && dir->unloaded) {
+        dir->unloaded = false;
+        if (dir->ops && dir->ops->load) dir->ops->load(dir);
+    }
+}
+
 static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name) {
     if (!dir || dir->type != VFS_DIRECTORY || !name) return NULL;
+    vfs_load_dir(dir);
     for (vnode_t *child = dir->children; child; child = child->next) {
         if (strcmp(child->name, name) == 0) return child;
     }
@@ -314,10 +325,12 @@ static int vfs_unlink_unlocked(vnode_t *parent, const char *name) {
     if (!name || parent->type != VFS_DIRECTORY) return -ENOTDIR;
     if (parent->read_only) return -EROFS;
 
+    vfs_load_dir(parent);
     vnode_t *prev = NULL;
     for (vnode_t *curr = parent->children; curr; prev = curr, curr = curr->next) {
         if (strcmp(curr->name, name) != 0) continue;
 
+        vfs_load_dir(curr); // Whether it is empty is only known once it has been read
         if (curr->children) return -ENOTEMPTY;
         if (curr->open_count > 0) return -EBUSY; // Someone holds it open
 
@@ -348,6 +361,54 @@ static int vfs_stat_unlocked(vnode_t *node, size_t *out_size, uint32_t *out_type
     if (out_size) *out_size = node->size;
     if (out_type) *out_type = node->type;
     return 0;
+}
+
+static int vfs_rename_unlocked(vnode_t *old_parent, const char *old_name, vnode_t *new_parent, const char *new_name) {
+    if (!old_parent) old_parent = vfs_root;
+    if (!new_parent) new_parent = vfs_root;
+    if (!old_name || !new_name || new_name[0] == '\0') return -EINVAL;
+    if (old_parent->type != VFS_DIRECTORY || new_parent->type != VFS_DIRECTORY) return -ENOTDIR;
+    if (strlen(new_name) >= sizeof(old_parent->name) || strchr(new_name, '/')) return -EINVAL;
+    if (strcmp(new_name, ".") == 0 || strcmp(new_name, "..") == 0) return -EINVAL;
+    if (old_parent->read_only || new_parent->read_only) return -EROFS;
+
+    vnode_t *node = vfs_find_child_unlocked(old_parent, old_name);
+    if (!node) return -ENOENT;
+    vnode_t *existing = vfs_find_child_unlocked(new_parent, new_name);
+    if (existing == node) return 0;                     // Onto itself: nothing to do
+    if (existing) return -EEXIST;                       // Nothing is replaced: remove it first
+
+    // A directory can not be moved into itself or anything below itself
+    for (vnode_t *up = new_parent; up; up = up->parent) {
+        if (up == node) return -EINVAL;
+    }
+
+    // Both places must belong to the same filesystem: a move between two
+    // is a copy and a delete, which is a program's job, not the kernel's
+    if (old_parent->ops != new_parent->ops) return -EXDEV;
+    if (old_parent->ops) {
+        if (!old_parent->ops->rename) return -EROFS;
+        int err = old_parent->ops->rename(old_parent, node, new_parent, new_name);
+        if (err != 0) return err;
+    }
+
+    // The node itself: out of one list of children, into the other
+    vnode_t **link = &old_parent->children;
+    while (*link && *link != node) link = &(*link)->next;
+    if (*link) *link = node->next;
+    memset(node->name, 0, sizeof(node->name));
+    strncpy(node->name, new_name, sizeof(node->name) - 1);
+    node->parent = new_parent;
+    node->next = new_parent->children;
+    new_parent->children = node;
+    return 0;
+}
+
+int vfs_rename(vnode_t *old_parent, const char *old_name, vnode_t *new_parent, const char *new_name) {
+    vfs_lock();
+    int result = vfs_rename_unlocked(old_parent, old_name, new_parent, new_name);
+    vfs_unlock();
+    return result;
 }
 
 // --- The public functions: each of the above, under the tree lock ----------

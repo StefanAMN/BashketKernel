@@ -51,6 +51,7 @@ long getuid(void)                                  { return syscall0(SYS_GETUID)
 long setuid(unsigned uid)                          { return syscall1(SYS_SETUID, uid); }
 long chmod(const char *path, unsigned mode)        { return syscall2(SYS_CHMOD, path, mode); }
 long chown(const char *path, unsigned uid, unsigned gid) { return syscall3(SYS_CHOWN, path, uid, gid); }
+long rename(const char *from, const char *to)      { return syscall2(SYS_RENAME, from, to); }
 long geteuid(void)                                 { return syscall0(SYS_GETEUID); }
 long getgid(void)                                  { return syscall0(SYS_GETGID); }
 long setgid(unsigned gid)                          { return syscall1(SYS_SETGID, gid); }
@@ -479,6 +480,7 @@ const char *strerror(long err) {
         case EBUSY:     return "file is in use";
         case EEXIST:    return "file exists";
         case ENOTDIR:   return "not a directory";
+        case EXDEV:     return "not on the same filesystem";
         case EISDIR:    return "is a directory";
         case EINVAL:    return "invalid argument";
         case EMFILE:    return "too many open files";

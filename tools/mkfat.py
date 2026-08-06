@@ -45,10 +45,60 @@ def short_name(name):
     return (base.upper().ljust(8) + ext.upper().ljust(3)).encode(), flags
 
 
+def lfn_checksum(raw):
+    """The checksum of an 11-byte short name that its long-name entries carry."""
+    total = 0
+    for byte in raw:
+        total = (((total & 1) << 7) + (total >> 1) + byte) & 0xFF
+    return total
+
+
+def alias_for(name, used):
+    """An unused short name ('A LONG~1.TXT' style) for a name that needs long-name entries."""
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-!#$%&'()@^`{}")
+    base, dot, ext = name.rpartition(".")
+    if not dot or not base:
+        base, ext = name, ""
+    base = "".join(c for c in base.upper() if c in allowed) or "_"
+    ext = "".join(c for c in ext.upper() if c in allowed)[:3]
+    for n in range(1, 100000):
+        tail = f"~{n}"
+        raw = (base[:8 - len(tail)] + tail).ljust(8).encode() + ext.ljust(3).encode()
+        if raw not in used:
+            return raw
+    raise ValueError(f"no free short name for '{name}'")
+
+
+def dir_entries(name, attr, cluster, size, used):
+    """The 32-byte entries for one name: long-name entries, if it needs them, then the short one.
+
+    `used` is the set of short names taken in this directory; the one chosen is added to it.
+    """
+    flags = 0
+    long_part = b""
+    try:
+        raw, flags = short_name(name)
+    except ValueError:
+        if len(name) > 127 or any(c in '"*/:<>?\\|' or not 32 <= ord(c) < 127 for c in name):
+            raise
+        raw = alias_for(name, used)
+        # 13 UTF-16 characters per entry: the name, a zero, then 0xFFFF padding.
+        # The entry holding the end of the name comes first and is flagged 0x40.
+        units = [ord(c) for c in name] + [0]
+        count = (len(name) + 12) // 13
+        units += [0xFFFF] * (count * 13 - len(units))
+        checksum = lfn_checksum(raw)
+        for ordinal in range(count, 0, -1):
+            part = units[(ordinal - 1) * 13:ordinal * 13]
+            long_part += struct.pack("<B5HBBB6HH2H", ordinal | (0x40 if ordinal == count else 0), *part[0:5],
+                                     0x0F, 0, checksum, *part[5:11], 0, *part[11:13])
+    used.add(raw)
+    return long_part + struct.pack("<11sBBBHHHHHHHI", raw, attr, flags, 0, FAT_TIME, FAT_DATE, FAT_DATE,
+                                   cluster >> 16, FAT_TIME, FAT_DATE, cluster & 0xFFFF, size)
+
+
 def dir_entry(name, attr, cluster, size):
-    raw, flags = short_name(name)
-    return struct.pack("<11sBBBHHHHHHHI", raw, attr, flags, 0, FAT_TIME, FAT_DATE, FAT_DATE,
-                       cluster >> 16, FAT_TIME, FAT_DATE, cluster & 0xFFFF, size)
+    return dir_entries(name, attr, cluster, size, set())
 
 
 class Image:
@@ -88,8 +138,9 @@ class Image:
         if not is_root:
             body += dir_entry(".", ATTR_DIRECTORY, own, 0)
             body += dir_entry("..", ATTR_DIRECTORY, parent_cluster, 0)  # 0 means "the root"
+        used = set()
         for name, attr, cluster, size in entries:
-            body += dir_entry(name, attr, cluster, size)
+            body += dir_entries(name, attr, cluster, size, used)
         body = body or b"\0" * SECTOR            # An empty root still occupies a cluster
         first = self.allocate(body)
         assert first == own

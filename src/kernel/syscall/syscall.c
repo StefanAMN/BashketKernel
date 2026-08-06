@@ -307,7 +307,7 @@ static int64_t sys_mkdir(uint64_t user_path) {
 
     vnode_t *dir = NULL;
     int err = vfs_create(parent, name, VFS_DIRECTORY, &dir);
-    if (err == 0) {
+    if (err == 0 && (!parent->ops || !parent->ops->create)) {
         dir->uid = task->uid;
         dir->gid = task->gid;
         dir->mode = (uint16_t)(PERM_NEW_DIR & ~task->umask);
@@ -326,6 +326,36 @@ static int64_t sys_unlink(uint64_t user_path) {
     vnode_t *child = vfs_find_child(parent, leaf);
     if (child && !auth_may_remove(sched_get_current_task()->uid, parent, child)) return -EACCES;
     return vfs_unlink(parent, leaf);
+}
+
+static int64_t sys_rename(uint64_t user_old, uint64_t user_new) {
+    char old_path[PATH_MAX], new_path[PATH_MAX];
+    if (copy_string_from_user(old_path, user_old, sizeof(old_path)) < 0) return -EFAULT;
+    if (copy_string_from_user(new_path, user_new, sizeof(new_path)) < 0) return -EFAULT;
+
+    task_t *task = sched_get_current_task();
+    const char *old_leaf = NULL, *new_leaf = NULL;
+    vnode_t *old_parent = vfs_find_parent_at(task->cwd, old_path, &old_leaf);
+    vnode_t *new_parent = vfs_find_parent_at(task->cwd, new_path, &new_leaf);
+    if (!old_parent || !new_parent) return -ENOENT;
+
+    // Leaves without a trailing slash ("mv a dir/")
+    char old_name[PATH_MAX], new_name[PATH_MAX];
+    size_t len = 0;
+    while (old_leaf[len] != '\0' && old_leaf[len] != '/') { old_name[len] = old_leaf[len]; len++; }
+    old_name[len] = '\0';
+    for (len = 0; new_leaf[len] != '\0' && new_leaf[len] != '/'; len++) new_name[len] = new_leaf[len];
+    new_name[len] = '\0';
+
+    // Taking the entry out of one directory needs the right to remove it;
+    // putting it into the other needs the right to write there
+    vnode_t *node = vfs_find_child(old_parent, old_name);
+    if (!node) return -ENOENT;
+    if (!auth_may_remove(task->uid, old_parent, node)) return -EACCES;
+    if (!auth_may_access(task->uid, new_parent, true)) return -EACCES;
+    if (node->open_count > 0 && node->type == VFS_DIRECTORY) return -EBUSY; // Someone's working directory
+
+    return vfs_rename(old_parent, old_name, new_parent, new_name);
 }
 
 // Find the node a path names, for the calls that change its owner or mode
@@ -894,6 +924,7 @@ static int64_t dispatch(struct registers *regs) {
             task->umask = (uint16_t)(regs->rdi & 0777);
             return previous;
         }
+        case SYS_RENAME: { vfs_lock(); int64_t r = sys_rename(regs->rdi, regs->rsi); vfs_unlock(); return r; }
         case SYS_CHMOD: { vfs_lock(); int64_t r = sys_chmod(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
         case SYS_CHOWN: { vfs_lock(); int64_t r = sys_chown(regs->rdi, regs->rsi, regs->rdx); vfs_unlock(); return r; } // Look up, then act: one step
 

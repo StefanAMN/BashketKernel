@@ -63,4 +63,9 @@ bool fat32_mounted(void);
  */
 uint32_t fat32_free_clusters(void);
 
+#ifdef KERNEL_TESTS
+struct vnode;
+bool fat32_forget_directory(struct vnode *dir);
+#endif
+
 #endif // FAT32_H

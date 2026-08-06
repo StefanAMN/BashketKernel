@@ -75,9 +75,14 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
         if (!auth_may_access(uid, parent, true)) return -EACCES; // Creating changes the directory
         int err = vfs_create(parent, leaf, VFS_FILE, &node);
         if (err != 0) return err;
-        node->uid = uid; // The new file belongs to whoever made it,
-        node->gid = (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT; // ...and to their group
-        node->mode = (uint16_t)(PERM_NEW_FILE & ~auth_current_umask());
+        // The new file belongs to whoever made it, and to their group, on a
+        // filesystem that can record that. (One that cannot, like FAT, has
+        // set what it shows for every file.)
+        if (!parent->ops || !parent->ops->create) {
+            node->uid = uid;
+            node->gid = (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT;
+            node->mode = (uint16_t)(PERM_NEW_FILE & ~auth_current_umask());
+        }
     }
     if (!node) return -ENOENT;
     if (node->type == VFS_DIRECTORY && writable) return -EISDIR;
@@ -284,6 +289,7 @@ static int readdir_locked(file_t *file, struct dirent_info *out) {
 
     // The position is an entry index. Walking from the start each time keeps
     // this correct if entries are removed between calls.
+    vfs_load_dir(file->node);
     vnode_t *child = file->node->children;
     for (size_t i = 0; child && i < file->offset; i++) child = child->next;
     if (!child) return 0;
@@ -293,6 +299,7 @@ static int readdir_locked(file_t *file, struct dirent_info *out) {
     out->mode = child->mode;
     out->uid = child->uid;
     out->gid = child->gid;
+    out->mtime = child->mtime;
     out->size = child->size;
     strncpy(out->name, child->name, sizeof(out->name) - 1);
     file->offset++;

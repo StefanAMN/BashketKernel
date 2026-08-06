@@ -146,6 +146,9 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack, wtext, smap)\n");
     } else if (strcmp(cmdline, "ls") == 0) {
         vnode_t *root = vfs_get_root();
+        vfs_lock();
+        vfs_load_dir(root);
+        vfs_unlock();
         if (!root || !root->children) {
             kprintf("(empty directory)\n");
             return;

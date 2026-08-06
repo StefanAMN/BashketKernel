@@ -265,7 +265,19 @@ boot is only as unpredictable as the timestamp counter.
 
 ## Track C — Storage and devices
 
-### C1. FAT32: long names and lazy directories (M)
+### C1. FAT32: long names and lazy directories (M) — done
+
+Done: long names read and written, rename and move (a new VFS operation and
+system call, with `mv`), timestamps from the RTC, directories read on first
+use. Checked by unit tests that re-read each directory from the disk, by the
+image builder writing long names the kernel must read, and by `fsck.fat` on
+an image the kernel has created, renamed, moved and removed in.
+
+Different from the check below: the host has `mkfs.fat` and `fsck.fat` but
+no tool to copy files into an image without mounting it, so the long names
+"populated on the host" come from this repository's own `tools/mkfat.py`;
+`fsck.fat` is the independent judge of both writers. Names outside ASCII
+are not decoded (the short alias is shown), and lookup is case-sensitive.
 
 - Long file name entries (read and write), so names are not limited to 8.3
   in one case; rename; real timestamps from the RTC.
