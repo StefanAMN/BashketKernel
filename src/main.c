@@ -31,6 +31,7 @@
 #include "process.h"
 #include "pci.h"
 #include "virtio_net.h"
+#include "boot_loader.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -190,7 +191,11 @@ void _start(void) {
     virtio_net_init();
     kprintf("Phase 13 PCI & VirtIO Network Stack initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 13)
+    // Phase 14: Custom x86_64 Bare-Metal Bootloader Transition
+    boot_loader_init();
+    kprintf("Phase 14 Custom x86_64 Bootloader verification complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 14)
     run_all_tests();
 
     // Create interactive shell task
