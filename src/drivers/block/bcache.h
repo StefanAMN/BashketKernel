@@ -33,6 +33,10 @@
 int bcache_read(uint64_t lba, void *buf, size_t count);
 int bcache_write(uint64_t lba, const void *buf, size_t count);
 
+// The same for disk number `dev` (the two above use disk 0)
+int bcache_read_dev(unsigned dev, uint64_t lba, void *buf, size_t count);
+int bcache_write_dev(unsigned dev, uint64_t lba, const void *buf, size_t count);
+
 /**
  * @brief Forget everything (the next reads all go to the disk).
  */

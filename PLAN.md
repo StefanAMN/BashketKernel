@@ -287,20 +287,23 @@ are not decoded (the short alias is shown), and lookup is case-sensitive.
 - **Check:** images written by `mkfs.fat` and populated on the host with
   long names read correctly; `fsck.fat` accepts what the kernel writes.
 
-### C2. A block cache and a filesystem with owners (L) — cache and queueing done; the filesystem is not
+### C2. A block cache and a filesystem with owners (L) — done, except as the root
 
-Done: a cache of disk sectors between the FAT driver and the disk
-(`src/drivers/block/bcache.c`), and up to eight requests with the device at
-once instead of one. Reading a 100 KiB file took 442 disk requests; it now
-takes 203 the first time and none the second (8.8 ms, then 0.6 ms).
+Done: a cache of disk sectors between the filesystems and the disk
+(`src/drivers/block/bcache.c`), up to eight requests with a device at once,
+more than one disk, and an ext2 driver (`src/fs/ext2.c`) mounted at `/home`
+from the second disk, with owners, groups, modes and times stored on disk.
+Reading a 100 KiB file took 442 disk requests; it now takes 203 the first
+time and none the second. `make test-home` has a user create, change and
+remove files, runs `e2fsck` on the result and boots again to find them.
 
-The cache is write-through, not write-back as proposed: delaying writes
-means keeping the order "data, FAT, directory entry" by other means, which
-belongs with crash consistency (C3).
-
-Not done: the native filesystem with owners, modes and timestamps as the
-root. That is most of this item, and the reason FAT files all belong to
-root and a changed password does not survive a reboot.
+Different from the proposal: the cache is write-through, not write-back
+(delaying writes means keeping their order by other means, which belongs
+with crash consistency, C3). And ext2 is mounted beside the root, not as
+it: `/` is still the in-memory tree filled from the initrd, so `/etc`
+(passwords included) does not persist. Making it the root means building
+the system image onto that disk and booting from it, which is its own
+piece of work.
 
 - A buffer cache between filesystems and the disk driver (today every FAT
   access is a disk request), with write-back.

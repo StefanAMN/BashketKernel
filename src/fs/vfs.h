@@ -39,6 +39,11 @@ typedef struct vnode_ops {
     // a node for each. Called once, the first time something looks inside a
     // directory marked `unloaded`.
     int (*load)(struct vnode *dir);
+
+    // Record the node's owner, group and permission bits (as the vnode has
+    // them now) where the filesystem keeps them. A filesystem without this
+    // cannot store them: what it shows for them is fixed.
+    int (*setattr)(struct vnode *node);
 } vnode_ops_t;
 
 typedef struct vnode {

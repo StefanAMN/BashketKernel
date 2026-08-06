@@ -474,3 +474,21 @@ so the numbering has gaps.
   1. **Benchmark Suite:**
      - **Concepts:** Memory copy benchmark, CPU loop benchmark (`bench_run_all`).
      - Files to inspect: `src/kernel/bench.h`, `src/kernel/bench.c`
+
+### 39. A Filesystem with Owners: ext2
+**Status: partial.** An ext2 volume on a second virtio disk is mounted at `/home`: files there have owners, groups, permission bits and times that are stored on the disk and survive a reboot. Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkhome.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. Not done: links, device files, the triply indirect block, a journal; and it is mounted beside the in-memory root, not as the root, so `/etc` (and with it a changed password) is still not persistent.
+
+**Goal:** see how a Unix filesystem stores what FAT cannot: one record (inode) per file holding owner, mode, times and block numbers, with names kept separately in directories.
+
+1. **Layout**: superblock, group descriptors, bitmaps, inode table.
+     - **Concepts:** block groups; free-space bitmaps; why counts are kept in two places.
+     - Files to inspect: the comment at the top of `src/fs/ext2.c`, `ext2_parse_superblock`, `alloc_block`, `alloc_inode`
+2. **A file's blocks**: direct, indirect and doubly indirect block numbers.
+     - **Concepts:** a tree of block numbers; holes; why a large file costs a few extra blocks.
+     - Files to inspect: `file_block`, `free_tree` in `src/fs/ext2.c`
+3. **Directories**: variable-length records that are split and merged.
+     - Files to inspect: `dir_add`, `dir_change`, `ext2_dir_load`
+4. **Order of writes**: inode before name on creation, name before inode on removal.
+     - **Concepts:** what a crash can leave behind, and why `e2fsck` can repair it.
+     - Files to inspect: `ext2_dir_create`, `ext2_dir_remove`, `ext2_dir_rename`
+5. **Checking against other implementations**: `tools/mkhome.sh` (the image is made by `mke2fs`), `make test-home` (what the kernel writes is judged by `e2fsck`), `tools/corrupt_ext2.py`.

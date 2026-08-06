@@ -54,6 +54,7 @@ gaps. `PLAN.md` lists the known limits and proposes what to build next.
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |
 | 37 | /dev devices | real | `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` gives output of the kernel's generator: ChaCha20 with the key replaced after every request, seeded from RDSEED or RDRAND where the CPU has them and otherwise only from interrupt timing, which is weak right after boot (the boot log says which). |
 | 38 | Benchmarks | real | `bench` times memcpy, memset, heap and frame allocation for 100 ms each and prints rates. Timer resolution limits accuracy to a few percent. |
+| 39 | ext2 filesystem | partial | An ext2 volume on a second virtio disk is mounted at `/home`: files there have owners, groups, permission bits and times that are stored on the disk and survive a reboot. Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkhome.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. Not done: links, device files, the triply indirect block, a journal; and it is mounted beside the in-memory root, not as the root, so `/etc` (and with it a changed password) is still not persistent. |
 
 ---
 
@@ -66,7 +67,7 @@ src/
 ├── arch/x86_64/         # CPU architecture, GDT/IDT/ISRs, APIC, SMP, FPU, low-level assembly
 ├── boot/                # Limine bootloader protocol handover & headers
 ├── drivers/
-│   ├── block/           # virtio-blk disk driver
+│   ├── block/           # virtio-blk disk driver (several disks), sector cache
 │   ├── bus/             # PCI Bus enumerator & config space
 │   ├── char/            # Serial (COM1 UART), RTC, /dev virtual devices
 │   ├── console/         # Framebuffer console, bitmap font, ANSI escape sequence parser
@@ -74,7 +75,7 @@ src/
 │   ├── net/             # virtio-net network card driver
 │   ├── virtio/          # Virtqueues, shared by the virtio drivers
 │   └── tty/             # Terminal line discipline
-├── fs/                  # VFS, open files and descriptors, pipes, initrd, /proc, ELF loader, FAT32
+├── fs/                  # VFS, open files and descriptors, pipes, initrd, /proc, ELF loader, FAT32, ext2
 ├── include/             # Global test & subsystem headers
 ├── init/                # Kernel entry point (kmain in main.c)
 ├── kernel/
@@ -94,6 +95,7 @@ user/                    # Programs that run in ring 3, built into /bin of the i
 ├── lib/                 # Their C library, crt0 and system call wrappers
 └── *.c                  # sh, ls, cat, echo, wc, ps, kill, ... and the test programs
 disk/                    # Files put on the FAT32 disk image (build/disk.img), seen at /disk
+home/                    # Files put on the ext2 disk image (build/home.img), seen at /home
 tests/                   # In-kernel unit tests (make test)
 tools/                   # qemu_shell.py (scripted boots), mkfat.py (disk image), symbolize.sh
 ```

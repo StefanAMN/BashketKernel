@@ -25,6 +25,7 @@ extern void test_suite_smp(void);
 extern void test_suite_storage(void);
 extern void test_suite_fat32(void);
 extern void test_suite_process(void);
+extern void test_suite_ext2(void);
 extern void test_suite_net(void);
 extern void test_suite_tcp(void);
 extern void test_suite_rtc(void);
@@ -70,6 +71,7 @@ bool run_all_tests(void) {
     test_suite_storage();
     test_suite_fat32();
     test_suite_process();
+    test_suite_ext2();
     test_suite_net();
     test_suite_tcp();
     test_suite_rtc();

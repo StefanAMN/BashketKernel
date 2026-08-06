@@ -13,6 +13,7 @@
 
 typedef struct {
     bool valid;
+    uint8_t dev;        // Which disk
     uint64_t lba;
 } entry_t;
 
@@ -42,22 +43,26 @@ static bool ready(void) {
 }
 
 // Caller holds cache_lock
-static void store(uint64_t lba, const uint8_t *sector) {
+static void store(unsigned dev, uint64_t lba, const uint8_t *sector) {
     size_t slot = (size_t)(lba % BCACHE_SECTORS);
     entries[slot].valid = true;
+    entries[slot].dev = (uint8_t)dev;
     entries[slot].lba = lba;
     memcpy(data + slot * SECTOR, sector, SECTOR);
 }
 
-int bcache_read(uint64_t lba, void *buf, size_t count) {
-    if (!ready()) return virtio_blk_read(lba, buf, count); // No memory for a cache: do without
+int bcache_read(uint64_t lba, void *buf, size_t count) { return bcache_read_dev(0, lba, buf, count); }
+int bcache_write(uint64_t lba, const void *buf, size_t count) { return bcache_write_dev(0, lba, buf, count); }
+
+int bcache_read_dev(unsigned dev, uint64_t lba, void *buf, size_t count) {
+    if (!ready()) return virtio_blk_read_dev(dev, lba, buf, count); // No memory for a cache: do without
 
     uint8_t *out = buf;
     for (size_t i = 0; i < count; i++, out += SECTOR) {
         size_t slot = (size_t)((lba + i) % BCACHE_SECTORS);
 
         uint64_t flags = spinlock_acquire_irqsave(&cache_lock);
-        bool hit = entries[slot].valid && entries[slot].lba == lba + i;
+        bool hit = entries[slot].valid && entries[slot].dev == dev && entries[slot].lba == lba + i;
         if (hit) {
             memcpy(out, data + slot * SECTOR, SECTOR);
             stats.hits++;
@@ -68,18 +73,18 @@ int bcache_read(uint64_t lba, void *buf, size_t count) {
         spinlock_release_irqrestore(&cache_lock, flags);
         if (hit) continue;
 
-        if (virtio_blk_read(lba + i, out, 1) != 0) return -1;
+        if (virtio_blk_read_dev(dev, lba + i, out, 1) != 0) return -1;
 
         flags = spinlock_acquire_irqsave(&cache_lock);
-        if (write_count == writes_before) store(lba + i, out);
+        if (write_count == writes_before) store(dev, lba + i, out);
         spinlock_release_irqrestore(&cache_lock, flags);
     }
     return 0;
 }
 
-int bcache_write(uint64_t lba, const void *buf, size_t count) {
+int bcache_write_dev(unsigned dev, uint64_t lba, const void *buf, size_t count) {
     // The disk first: the cache must never hold what the disk does not
-    int result = virtio_blk_write(lba, buf, count);
+    int result = virtio_blk_write_dev(dev, lba, buf, count);
     if (!data) return result;
 
     const uint8_t *in = buf;
@@ -89,8 +94,8 @@ int bcache_write(uint64_t lba, const void *buf, size_t count) {
     for (size_t i = 0; i < count; i++, in += SECTOR) {
         size_t slot = (size_t)((lba + i) % BCACHE_SECTORS);
         if (result == 0) {
-            store(lba + i, in);
-        } else if (entries[slot].valid && entries[slot].lba == lba + i) {
+            store(dev, lba + i, in);
+        } else if (entries[slot].valid && entries[slot].dev == dev && entries[slot].lba == lba + i) {
             entries[slot].valid = false; // What the disk holds now is anyone's guess
         }
     }

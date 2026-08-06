@@ -53,4 +53,10 @@ void pci_enable_io_and_bus_master(const pci_device_t *dev);
  */
 bool pci_find_device(uint16_t vendor_id, uint16_t device_id, pci_device_t *out_dev);
 
+/**
+ * @brief The n-th device (from 0) with these ids, for machines that have
+ *        several of one kind.
+ */
+bool pci_find_nth_device(uint16_t vendor_id, uint16_t device_id, unsigned n, pci_device_t *out_dev);
+
 #endif // PCI_H

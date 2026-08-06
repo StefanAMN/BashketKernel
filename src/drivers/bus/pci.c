@@ -96,3 +96,14 @@ bool pci_find_device(uint16_t vendor_id, uint16_t device_id, pci_device_t *out_d
     }
     return false;
 }
+
+bool pci_find_nth_device(uint16_t vendor_id, uint16_t device_id, unsigned n, pci_device_t *out_dev) {
+    for (size_t i = 0; i < pci_device_count; i++) {
+        if (pci_devices[i].vendor_id != vendor_id || pci_devices[i].device_id != device_id) continue;
+        if (n-- == 0) {
+            if (out_dev) *out_dev = pci_devices[i];
+            return true;
+        }
+    }
+    return false;
+}
