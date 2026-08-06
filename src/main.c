@@ -28,6 +28,7 @@
 #include "smp.h"
 #include "virtio_blk.h"
 #include "fat32.h"
+#include "process.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -180,7 +181,10 @@ void _start(void) {
     fat32_init();
     kprintf("Phase 11 Block Storage & FAT32 initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 11)
+    // Phase 12: UNIX Process Lifecycle & Signals (fork, execve, waitpid, signals)
+    kprintf("Phase 12 UNIX Process Subsystem initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 12)
     run_all_tests();
 
     // Create interactive shell task

@@ -20,6 +20,7 @@ extern void test_suite_mmap(void);
 extern void test_suite_apic(void);
 extern void test_suite_smp(void);
 extern void test_suite_storage(void);
+extern void test_suite_process(void);
 
 void run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -38,6 +39,7 @@ void run_all_tests(void) {
     test_suite_apic();
     test_suite_smp();
     test_suite_storage();
+    test_suite_process();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);
