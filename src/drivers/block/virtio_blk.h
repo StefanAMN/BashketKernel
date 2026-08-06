@@ -44,4 +44,9 @@ int virtio_blk_write(uint64_t lba, const void *buf, size_t count);
 uint64_t virtio_blk_requests(void);
 uint64_t virtio_blk_interrupts(void);
 
+/**
+ * @brief The most requests the device has had at one time since boot.
+ */
+uint32_t virtio_blk_peak_in_flight(void);
+
 #endif // VIRTIO_BLK_H

@@ -14,6 +14,7 @@
 #include "kstring.h"
 #include "spinlock.h"
 #include "virtio_blk.h"
+#include "bcache.h"
 #include "kerrno.h"
 #include "mount.h"
 
@@ -74,11 +75,11 @@ static int64_t disk_transfer(size_t offset, uint8_t *buf, size_t count, bool wri
 
         bool whole_sector = (chunk == VIRTIO_BLK_SECTOR_SIZE);
         if (!write || !whole_sector) {
-            if (virtio_blk_read(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
+            if (bcache_read(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
         }
         if (write) {
             memcpy(sector + within, buf + done, chunk);
-            if (virtio_blk_write(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
+            if (bcache_write(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
         } else {
             memcpy(buf + done, sector + within, chunk);
         }

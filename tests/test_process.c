@@ -1,4 +1,5 @@
 #include "test.h"
+#include "bcache.h"
 #include "region.h"
 #include "virtio_blk.h"
 #include "process.h"
@@ -263,15 +264,16 @@ TEST(mapped_file_pages_are_read_only_when_touched) {
     size_t free_before = test_free_frames();
     size_t promised_before = region_promised_pages();
 
-    // Reading the whole file, for comparison (and so that anything read
-    // once and kept, like the FAT, is not counted against either)
+    // Reading the whole file, for comparison
+    // (Each measurement starts with nothing in the sector cache.)
     char *whole[] = { "/bin/wc", "/disk/pattern.bin", NULL };
-    EXPECT_EQ(run("/bin/wc", whole), 0);
+    bcache_invalidate();
     uint64_t start = virtio_blk_requests();
     EXPECT_EQ(run("/bin/wc", whole), 0);
     uint64_t for_whole_file = virtio_blk_requests() - start;
 
     char *one_byte[] = { "/bin/mapread", "/disk/pattern.bin", "51234", NULL };
+    bcache_invalidate();
     start = virtio_blk_requests();
     EXPECT_EQ(run("/bin/mapread", one_byte), 0);
     uint64_t for_one_page = virtio_blk_requests() - start;
