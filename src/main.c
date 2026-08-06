@@ -29,6 +29,8 @@
 #include "virtio_blk.h"
 #include "fat32.h"
 #include "process.h"
+#include "pci.h"
+#include "virtio_net.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -184,7 +186,11 @@ void _start(void) {
     // Phase 12: UNIX Process Lifecycle & Signals (fork, execve, waitpid, signals)
     kprintf("Phase 12 UNIX Process Subsystem initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 12)
+    // Phase 13: PCI Bus Scanner & VirtIO Network Adapter
+    virtio_net_init();
+    kprintf("Phase 13 PCI & VirtIO Network Stack initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 13)
     run_all_tests();
 
     // Create interactive shell task
