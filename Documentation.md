@@ -90,7 +90,7 @@ This document tracks the recommended order of topics and concepts to learn as fe
 ---
 
 ### 5. Userspace & System Calls (Phase 5)
-**Goal:** Fast fast system calls via `syscall`/`sysret` MSR configuration, assembly entry trampolines, and ELF64 binary executable loading.
+**Goal:** Fast system calls via `syscall`/`sysret` MSR configuration, assembly entry trampolines, and ELF64 binary executable loading.
 
 - **Order of Learning:**
   1. **x86_64 Syscall MSR Configuration:**
@@ -128,3 +128,94 @@ This document tracks the recommended order of topics and concepts to learn as fe
   2. **Interactive Kernel Shell:**
      - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `clear`), terminal prompt rendering, and backspace handling.
      - Files to inspect: `src/phase7/shell.h`, `src/phase7/shell.c`
+
+---
+
+### 8. Advanced Memory Management (Phase 8)
+**Goal:** Slab Object Allocators, Physical Frame Reference Counting (COW), and Virtual Memory Mapping (`mmap`/`munmap`).
+
+- **Order of Learning:**
+  1. **Slab Allocator (`kmem_cache_t`):**
+     - **Concepts:** Cache objects, slab page headers, free object freelists, fixed-size fast allocations.
+     - Files to inspect: `src/phase8/slab.h`, `src/phase8/slab.c`
+  2. **Copy-on-Write Frame Reference Counter:**
+     - **Concepts:** Physical frame reference counting table, `cow_ref_inc`, `cow_ref_dec`, page duplicate on write fault.
+     - Files to inspect: `src/phase8/cow.h`, `src/phase8/cow.c`
+  3. **Virtual Memory Allocation (`mmap` / `munmap`):**
+     - **Concepts:** Anonymous page allocations, page protection flags (`PROT_READ`, `PROT_WRITE`), unmapping pages from PML4.
+     - Files to inspect: `src/phase8/mmap.h`, `src/phase8/mmap.c`
+
+---
+
+### 9. Modern Interrupt Architecture (Phase 9)
+**Goal:** Local APIC (LAPIC) and I/O APIC (IOAPIC) replacing legacy 8259 PIC.
+
+- **Order of Learning:**
+  1. **Local APIC (LAPIC):**
+     - **Concepts:** MMIO register mapping (`0xFEE00000`), Spurious Interrupt Vector (`0x0F0`), End-of-Interrupt (`EOI`), LAPIC Timer.
+     - Files to inspect: `src/phase9/lapic.h`, `src/phase9/lapic.c`
+  2. **I/O APIC (IOAPIC):**
+     - **Concepts:** MMIO register mapping (`0xFEC00000`), Redirection Table entries, routing hardware IRQ lines to target LAPIC cores.
+     - Files to inspect: `src/phase9/ioapic.h`, `src/phase9/ioapic.c`
+
+---
+
+### 10. Symmetric Multiprocessing & Atomic Spinlocks (Phase 10)
+**Goal:** Multi-Core CPU Initialization, Atomic Spinlocks, and Per-CPU Contexts.
+
+- **Order of Learning:**
+  1. **Atomic Spinlocks:**
+     - **Concepts:** `__atomic_test_and_set`, `__atomic_clear`, CPU `pause` instruction.
+     - Files to inspect: `src/phase10/spinlock.h`, `src/phase10/spinlock.c`
+  2. **Per-CPU Data & SMP Manager:**
+     - **Concepts:** `per_cpu_t` structures, tracking CPU ID and LAPIC ID across multiple cores.
+     - Files to inspect: `src/phase10/smp.h`, `src/phase10/smp.c`
+
+---
+
+### 11. Real Block Storage & Persistent FAT32 Filesystem (Phase 11)
+**Goal:** VirtIO Block Device Driver and FAT32 File System.
+
+- **Order of Learning:**
+  1. **VirtIO-Block Driver:**
+     - **Concepts:** 512-byte sector reads and writes, block device interface.
+     - Files to inspect: `src/phase11/virtio_blk.h`, `src/phase11/virtio_blk.c`
+  2. **FAT32 File System Driver:**
+     - **Concepts:** File tables, cluster allocation, reading and writing files to persistent block storage.
+     - Files to inspect: `src/phase11/fat32.h`, `src/phase11/fat32.c`
+
+---
+
+### 12. UNIX Process Lifecycle & Signals (Phase 12)
+**Goal:** `fork()`, `execve()`, `waitpid()`, and UNIX Signals.
+
+- **Order of Learning:**
+  1. **Process Fork & Execve:**
+     - **Concepts:** Process PCB duplication, child entry points, binary loading via `execve`.
+     - Files to inspect: `src/phase12/process.h`, `src/phase12/process.c`
+  2. **Waitpid & Signals:**
+     - **Concepts:** Parent waiting for child exit status, sending signal numbers (`SIGINT`, `SIGKILL`).
+     - Files to inspect: `src/phase12/process.h`, `src/phase12/process.c`
+
+---
+
+### 13. PCI Bus & VirtIO Network Stack (Phase 13)
+**Goal:** PCI Configuration Space Scanner and VirtIO-Net Ethernet Driver.
+
+- **Order of Learning:**
+  1. **PCI Bus Scanner:**
+     - **Concepts:** Reading PCI configuration registers via ports `0xCF8`/`0xCFC`, Vendor ID & Device ID matching.
+     - Files to inspect: `src/phase13/pci.h`, `src/phase13/pci.c`
+  2. **VirtIO Network Adapter:**
+     - **Concepts:** MAC address configuration, Ethernet packet transmission.
+     - Files to inspect: `src/phase13/virtio_net.h`, `src/phase13/virtio_net.c`
+
+---
+
+### 14. Custom Bare-Metal x86_64 Bootloader (Phase 14)
+**Goal:** MBR Bootsector, GDT transition, 64-bit Long Mode CPU verification.
+
+- **Order of Learning:**
+  1. **CPUID 64-Bit Verification & Transition:**
+     - **Concepts:** Checking CPUID bit 29 for Long Mode support, validating PML4 transition layout.
+     - Files to inspect: `src/phase14/boot_loader.h`, `src/phase14/boot_loader.c`
