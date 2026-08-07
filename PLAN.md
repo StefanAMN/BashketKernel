@@ -315,7 +315,23 @@ piece of work.
 - **Check:** `make test-disk` against the new filesystem, checked on the host
   by `e2fsck`; a measured speed-up from the cache.
 
-### C3. Crash consistency (M)
+### C3. Crash consistency (M) — done for ext2, by ordered writes and a check at mount
+
+Done: the first of the two options below. The ext2 driver orders its writes
+so that an interruption can only leave blocks or inodes allocated and
+unreferenced, a link count too high, or an inode whose size and block count
+lag behind blocks already listed in a table of block numbers. `ext2_check`
+runs at every mount (the machine has no orderly shutdown), walks the tree
+from the root and puts those right; damage of any other kind it reports and
+leaves alone. `make test-crash` kills QEMU at random moments while
+`/bin/fsstress` rewrites the volume, boots again and runs `e2fsck -fn`:
+thirty power cuts so far, on one and four CPUs, clean after each. Its third
+round found the size-and-block-count case, which the first version of the
+check did not repair.
+
+Not done: a journal. Data in flight when the power goes is lost or partly
+written; only the structure is guaranteed. The FAT volume has no such check:
+after a crash it may have lost clusters, which `fsck.fat` reclaims.
 
 - Either ordered writes with a consistency check at mount, or a simple
   journal for metadata.

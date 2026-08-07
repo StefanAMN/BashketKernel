@@ -476,7 +476,7 @@ so the numbering has gaps.
      - Files to inspect: `src/kernel/bench.h`, `src/kernel/bench.c`
 
 ### 39. A Filesystem with Owners: ext2
-**Status: partial.** An ext2 volume on a second virtio disk is mounted at `/home`: files there have owners, groups, permission bits and times that are stored on the disk and survive a reboot. Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkhome.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. Not done: links, device files, the triply indirect block, a journal; and it is mounted beside the in-memory root, not as the root, so `/etc` (and with it a changed password) is still not persistent.
+**Status: partial.** An ext2 volume on a second virtio disk is mounted at `/home`: files there have owners, groups, permission bits and times that are stored on the disk and survive a reboot. Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkhome.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. At every mount the whole volume is checked and what an interrupted write can leave behind is put right (`make test-crash`). Not done: links, device files, the triply indirect block, a journal; and it is mounted beside the in-memory root, not as the root, so `/etc` (and with it a changed password) is still not persistent.
 
 **Goal:** see how a Unix filesystem stores what FAT cannot: one record (inode) per file holding owner, mode, times and block numbers, with names kept separately in directories.
 
@@ -491,4 +491,7 @@ so the numbering has gaps.
 4. **Order of writes**: inode before name on creation, name before inode on removal.
      - **Concepts:** what a crash can leave behind, and why `e2fsck` can repair it.
      - Files to inspect: `ext2_dir_create`, `ext2_dir_remove`, `ext2_dir_rename`
-5. **Checking against other implementations**: `tools/mkhome.sh` (the image is made by `mke2fs`), `make test-home` (what the kernel writes is judged by `e2fsck`), `tools/corrupt_ext2.py`.
+5. **After a crash**: what can be wrong, and how the mount-time check puts it right.
+     - **Concepts:** reachability from the root; why "allocated but unreferenced" is the only damage ordered writes allow; what a journal would add (nothing half-written at all).
+     - Files to inspect: `ext2_check` in `src/fs/ext2.c`, `tools/crash_test.py`, `user/fsstress.c`
+6. **Checking against other implementations**: `tools/mkhome.sh` (the image is made by `mke2fs`), `make test-home` (what the kernel writes is judged by `e2fsck`), `tools/corrupt_ext2.py`.
