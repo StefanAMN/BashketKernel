@@ -106,7 +106,27 @@ static void check_basics(void) {
         CHECK(elapsed >= 2000000);
         if (elapsed < best) best = elapsed;
     }
-    CHECK(best < 5000000);
+    /* (On a machine without a timestamp counter the kernel's clock and its
+     * sleeps are only good to a 10 ms tick: /proc/timers says which.) */
+    char timers[160] = {0};
+    long tfd = open("/proc/timers", O_RDONLY);
+    CHECK(tfd >= 0);
+    CHECK(read((int)tfd, timers, sizeof(timers) - 1) > 0);
+    close((int)tfd);
+    int one_shot = strncmp(timers, "mode: one-shot\n", 15) == 0;
+    CHECK(one_shot || strncmp(timers, "mode: periodic\n", 15) == 0);
+    CHECK(best < (one_shot ? 5000000UL : 30000000UL));
+
+    /* And so does sleep(), which is given in milliseconds */
+    best = ~0UL;
+    for (int attempt = 0; attempt < 6; attempt++) {
+        t0 = clock_ns();
+        sleep_ms(3);
+        unsigned long elapsed = clock_ns() - t0;
+        CHECK(elapsed >= 3000000);
+        if (elapsed < best) best = elapsed;
+    }
+    CHECK(best < (one_shot ? 6000000UL : 30000000UL));
     CHECK(sleep_ns(0) == 0);
     CHECK(sleep_ns(~0UL) == -EINVAL);
     CHECK(execv("/bin/does-not-exist", NULL) == -ENOENT);

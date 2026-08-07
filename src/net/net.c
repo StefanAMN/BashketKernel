@@ -216,7 +216,7 @@ static void arp_learn(uint32_t ip, const uint8_t mac[6]) {
     if (!slot) slot = oldest; // Cache full: replace the entry unused for longest
     slot->ip = ip;
     memcpy(slot->mac, mac, 6);
-    slot->last_used = pit_get_ticks();
+    slot->last_used = timer_ticks();
     spinlock_release_irqrestore(&net_lock, flags);
 
     sched_wakeup(arp_cache); // Someone may be waiting for exactly this answer
@@ -228,7 +228,7 @@ static bool arp_lookup_locked(uint32_t ip, uint8_t mac[6]) {
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].ip == ip) {
             memcpy(mac, arp_cache[i].mac, 6);
-            arp_cache[i].last_used = pit_get_ticks();
+            arp_cache[i].last_used = timer_ticks();
             found = true;
             break;
         }
@@ -301,9 +301,9 @@ static int arp_resolve(uint32_t ip, uint8_t mac[6], bool can_block) {
     for (int attempt = 0; attempt < ARP_TRIES; attempt++) {
         arp_send(ARP_REQUEST, broadcast_mac, unknown, ip);
 
-        uint64_t deadline = pit_get_ticks() + ARP_WAIT_TICKS;
+        uint64_t deadline = timer_ticks() + ARP_WAIT_TICKS;
         uint64_t flags = spinlock_acquire_irqsave(&net_lock);
-        while (!arp_lookup_locked(ip, mac) && pit_get_ticks() < deadline) {
+        while (!arp_lookup_locked(ip, mac) && timer_ticks() < deadline) {
             if (sched_interrupted()) {
                 spinlock_release_irqrestore(&net_lock, flags);
                 return -EINTR;
@@ -553,13 +553,13 @@ int net_ping(uint32_t ip, uint64_t timeout_ticks, uint64_t *rtt_ticks) {
     for (size_t i = 0; i < sizeof(request.data); i++) request.data[i] = (uint8_t)('a' + i % 26);
     request.header.checksum = htons(net_checksum(&request, sizeof(request)));
 
-    uint64_t start = pit_get_ticks();
+    uint64_t start = timer_ticks();
     int result = ipv4_send(ip, IP_PROTO_ICMP, &request, sizeof(request), true);
 
     if (result == 0) {
         uint64_t deadline = start + timeout_ticks;
         flags = spinlock_acquire_irqsave(&net_lock);
-        while (!wait->answered && pit_get_ticks() < deadline) {
+        while (!wait->answered && timer_ticks() < deadline) {
             if (sched_interrupted()) { result = -EINTR; break; }
             sched_sleep(pings, &net_lock, deadline);
         }
@@ -567,7 +567,7 @@ int net_ping(uint32_t ip, uint64_t timeout_ticks, uint64_t *rtt_ticks) {
         spinlock_release_irqrestore(&net_lock, flags);
     }
 
-    if (result == 0 && rtt_ticks) *rtt_ticks = pit_get_ticks() - start;
+    if (result == 0 && rtt_ticks) *rtt_ticks = timer_ticks() - start;
     wait->active = false;
     return result;
 }
@@ -663,12 +663,12 @@ int64_t udp_recvfrom(udp_socket_t *sock, void *buf, size_t len, uint32_t *src_ip
     if (!sock || !sock->open || !buf) return -EINVAL;
     if (sock->port == 0) return -EINVAL; // Nothing can arrive on a socket with no port
 
-    uint64_t deadline = timeout_ticks ? pit_get_ticks() + timeout_ticks : 0;
+    uint64_t deadline = timeout_ticks ? timer_ticks() + timeout_ticks : 0;
 
     uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     while (sock->open && sock->count == 0) {
         if (sched_interrupted()) { spinlock_release_irqrestore(&net_lock, flags); return -EINTR; }
-        if (deadline && pit_get_ticks() >= deadline) { spinlock_release_irqrestore(&net_lock, flags); return -ETIMEDOUT; }
+        if (deadline && timer_ticks() >= deadline) { spinlock_release_irqrestore(&net_lock, flags); return -ETIMEDOUT; }
         sched_sleep(sock, &net_lock, deadline);
     }
     if (!sock->open) {

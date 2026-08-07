@@ -277,9 +277,9 @@ TEST(tcp_gives_up_on_a_dead_peer) {
     tcp_test_drop_every(1); // Nothing gets through any more, in either direction
     EXPECT_EQ(tcp_write(client, "anyone?", 7), 7);
     uint8_t buf[8];
-    uint64_t start = pit_get_ticks();
+    uint64_t start = timer_ticks();
     EXPECT_EQ(tcp_read(client, buf, sizeof(buf)), -ETIMEDOUT);
-    EXPECT_TRUE(pit_get_ticks() - start > 100);   // After several tries, not at once
+    EXPECT_TRUE(timer_ticks() - start > 100);   // After several tries, not at once
     EXPECT_EQ(tcp_write(client, "x", 1), -ETIMEDOUT);
     tcp_test_drop_every(0);
     tcp_close(client);

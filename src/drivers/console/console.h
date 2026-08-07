@@ -21,6 +21,11 @@ void console_set_deferred_refresh(bool enabled);
 // Cheap when nothing changed. Also call it before halting, so the last
 // messages are visible.
 void console_refresh(void);
+
+/**
+ * @brief Is there output, or a cursor, that console_refresh would draw?
+ */
+bool console_needs_refresh(void);
 void console_write(const char *str);
 
 // For tests and diagnostics: where the next character will go (in character

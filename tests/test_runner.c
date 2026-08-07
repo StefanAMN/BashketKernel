@@ -48,8 +48,8 @@ extern void test_suite_lib(void);
 
 void test_settle(void) {
     if (tcp_sockets_in_use() == 0) return;
-    uint64_t deadline = pit_get_ticks() + 500;
-    while (tcp_sockets_in_use() != 0 && pit_get_ticks() < deadline) sched_sleep_ticks(1);
+    uint64_t deadline = timer_ticks() + 500;
+    while (tcp_sockets_in_use() != 0 && timer_ticks() < deadline) sched_sleep_ticks(1);
 }
 
 bool run_all_tests(void) {

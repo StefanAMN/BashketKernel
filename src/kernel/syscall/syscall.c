@@ -472,7 +472,7 @@ static int64_t sys_munmap(uint64_t addr, size_t length) {
 
 static int64_t sys_sleep(uint64_t milliseconds) {
     if (milliseconds > 24ULL * 60 * 60 * 1000) return -EINVAL;
-    return sched_sleep_ticks((milliseconds * TIMER_HZ + 999) / 1000) ? 0 : -EINTR;
+    return nanosleep(milliseconds * 1000000ULL) ? 0 : -EINTR; // To the millisecond, not to the next tick
 }
 
 // Copy a NULL-terminated vector of strings (argv or envp) from user memory.
@@ -886,7 +886,7 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_MMAP:    return sys_mmap(regs->rdi, (size_t)regs->rsi, (int)regs->rdx, (int)regs->r10, (int)regs->r8, regs->r9);
         case SYS_MUNMAP:  return sys_munmap(regs->rdi, (size_t)regs->rsi);
         case SYS_SLEEP:   return sys_sleep(regs->rdi);
-        case SYS_TIME:    return (int64_t)pit_get_ticks();
+        case SYS_TIME:    return (int64_t)timer_ticks();
         case SYS_CLOCK_NS: return (int64_t)clock_ns();
         case SYS_NANOSLEEP:
             if (regs->rdi > 3600ULL * 1000000000ULL) return -EINVAL;

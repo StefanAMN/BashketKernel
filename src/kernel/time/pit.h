@@ -7,9 +7,11 @@
 #define PIT_H
 
 #include <stdint.h>
+#include "timer.h"   // timer_ticks(): what used to be read from here
 
-// Scheduler tick rate. The PIT is the only tick source; anything that
-// converts ticks to time must use this constant.
+// Tick rate: the unit the kernel counts time in. The PIT produces the ticks
+// while the kernel boots; after that they are read off the clock (see
+// timer.h). Anything that converts ticks to time must use this constant.
 #define TIMER_HZ 100
 
 /**
@@ -17,11 +19,5 @@
  * @param frequency_hz Frequency in Hertz.
  */
 void pit_init(uint32_t frequency_hz);
-
-/**
- * @brief Get total elapsed PIT timer ticks since boot.
- * @return Tick count.
- */
-uint64_t pit_get_ticks(void);
 
 #endif // PIT_H

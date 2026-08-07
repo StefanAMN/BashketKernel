@@ -54,6 +54,19 @@ void lapic_timer_start_on_this_cpu(uint8_t vector);
 
 
 /**
+ * @brief Set the calling CPU's timer up to interrupt once per arming, with
+ *        `vector`, and leave it stopped.
+ */
+void lapic_timer_one_shot_on_this_cpu(uint8_t vector);
+
+/**
+ * @brief Make the calling CPU's one-shot timer fire after `counts` counts
+ *        (see lapic_timer_counts_per_tick), replacing whatever it was set
+ *        to. 0 stops it.
+ */
+void lapic_timer_arm(uint32_t counts);
+
+/**
  * @brief Enable the local APIC of the CPU this runs on (for CPUs other than
  *        the boot CPU, after lapic_init has mapped the registers).
  */

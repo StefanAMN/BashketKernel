@@ -9,13 +9,13 @@ TEST(benchmarks_measure_something) {
     // The heap grows for the scratch buffers and afterwards keeps a little
     // of that as a reserve, so count frames the heap holds as accounted for
     size_t frames_before = pmm_get_free_frames() + kheap_get_mapped_bytes() / 4096;
-    uint64_t ticks_before = pit_get_ticks();
+    uint64_t ticks_before = timer_ticks();
 
     bench_results_t r = {0};
     EXPECT_TRUE(bench_run(&r));
 
     // Four measurements of 10 ticks each really took that long
-    uint64_t elapsed = pit_get_ticks() - ticks_before;
+    uint64_t elapsed = timer_ticks() - ticks_before;
     EXPECT_TRUE(elapsed >= 40 && elapsed <= 60);
 
     // Loose sanity bounds: slower than this and something is broken (a byte

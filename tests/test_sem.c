@@ -64,9 +64,9 @@ TEST(semaphore_wait_with_nothing_runnable) {
     sem_init(&handoff, 0);
     EXPECT_TRUE(task_create("sem_poster", late_poster_entry) != NULL);
 
-    uint64_t before = pit_get_ticks();
+    uint64_t before = timer_ticks();
     sem_wait(&handoff);
-    uint64_t waited = pit_get_ticks() - before;
+    uint64_t waited = timer_ticks() - before;
 
     EXPECT_TRUE(waited >= 5);
     EXPECT_TRUE(waited <= 8);

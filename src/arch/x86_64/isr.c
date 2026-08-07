@@ -17,6 +17,7 @@
 #include "percpu.h"
 #include "region.h"
 #include "smp.h"
+#include "timer.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -243,7 +244,7 @@ void isr_handler(struct registers *regs) {
         lapic_eoi(); // First, as above: the handler may switch tasks
 
         if (regs->int_no == IPI_VECTOR_WAKE) smp_handle_ipi();
-        else sched_tick();
+        else timer_interrupt();
 
         // The same safe point as after a device interrupt
         if ((regs->cs & 3) == 3) {

@@ -106,6 +106,12 @@ void console_set_deferred_refresh(bool enabled) {
 // prints, on any CPU, and by interrupt handlers: one lock for all of it.
 static spinlock_t console_lock = SPINLOCK_RANKED("console", LOCK_RANK_CONSOLE);
 
+// Would console_refresh change anything? (Read without the lock: the timer
+// asks before every halt, and a stale answer only costs one more look.)
+bool console_needs_refresh(void) {
+    return g_fb && backbuffer && deferred_refresh && (screen_stale || !cursor_drawn);
+}
+
 void console_refresh(void) {
     if (!g_fb || !backbuffer) return;
 

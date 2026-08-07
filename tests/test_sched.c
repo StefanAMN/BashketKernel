@@ -64,7 +64,7 @@ static void heap_stress_task(void) {
     uint8_t *held[8] = {0};
     size_t held_size[8] = {0};
 
-    while (pit_get_ticks() < stress_deadline) {
+    while (timer_ticks() < stress_deadline) {
         seed = seed * 1664525u + 1013904223u;
         size_t slot = (seed >> 8) % 8;
 
@@ -96,7 +96,7 @@ static void heap_stress_task(void) {
 TEST(heap_stress_under_preemption) {
     sched_reap();
     size_t heap_before = kheap_get_allocated_bytes();
-    stress_deadline = pit_get_ticks() + STRESS_TICKS;
+    stress_deadline = timer_ticks() + STRESS_TICKS;
 
     for (int i = 0; i < STRESS_TASKS; i++) {
         EXPECT_TRUE(task_create("heap_stress", heap_stress_task) != NULL);

@@ -103,6 +103,19 @@ uint32_t lapic_timer_counts_per_tick(void) {
     return timer_counts_per_tick;
 }
 
+void lapic_timer_one_shot_on_this_cpu(uint8_t vector) {
+    if (!lapic_base || timer_counts_per_tick == 0) return;
+    lapic_write(LAPIC_TIMER_DIVIDE, LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_LVT_TIMER, vector); // Bits 17 and 18 clear: one shot (Intel SDM Vol. 3A, 11.5.4)
+    lapic_write(LAPIC_TIMER_INITIAL, 0);  // Not counting until armed
+}
+
+void lapic_timer_arm(uint32_t counts) {
+    // Writing the initial count starts the countdown afresh; writing 0
+    // stops the timer
+    lapic_write(LAPIC_TIMER_INITIAL, counts);
+}
+
 void lapic_timer_start_on_this_cpu(uint8_t vector) {
     if (!lapic_base || timer_counts_per_tick == 0) return;
     lapic_write(LAPIC_TIMER_DIVIDE, LAPIC_TIMER_DIV_16);

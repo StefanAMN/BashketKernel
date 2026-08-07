@@ -49,7 +49,7 @@ per_cpu_t *smp_get_per_cpu(uint32_t cpu_id);
 
 // Interrupt vectors used between and within CPUs. WAKE is sent by another
 // CPU: there is a function to run, a TLB to flush or a task to pick up.
-// TIMER is each CPU's own local APIC timer, its scheduler tick.
+// TIMER is each CPU's own local APIC timer (see timer.h).
 #define IPI_VECTOR_WAKE  0xF0
 #define IPI_VECTOR_TIMER 0xF1
 

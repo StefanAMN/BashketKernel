@@ -23,11 +23,11 @@
 // Wait for the tick counter to change, so a measurement starts at the
 // beginning of a tick rather than somewhere inside one.
 static uint64_t wait_for_tick_edge(void) {
-    uint64_t start = pit_get_ticks();
-    while (pit_get_ticks() == start) {
+    uint64_t start = timer_ticks();
+    while (timer_ticks() == start) {
         asm volatile("pause");
     }
-    return pit_get_ticks();
+    return timer_ticks();
 }
 
 static uint64_t per_second(uint64_t count) {
@@ -50,7 +50,7 @@ bool bench_run(bench_results_t *out) {
 
     count = 0;
     start = wait_for_tick_edge();
-    while (pit_get_ticks() - start < BENCH_TICKS) {
+    while (timer_ticks() - start < BENCH_TICKS) {
         memcpy(dst, src, BLOCK_SIZE);
         count++;
     }
@@ -58,7 +58,7 @@ bool bench_run(bench_results_t *out) {
 
     count = 0;
     start = wait_for_tick_edge();
-    while (pit_get_ticks() - start < BENCH_TICKS) {
+    while (timer_ticks() - start < BENCH_TICKS) {
         memset(dst, (int)count, BLOCK_SIZE);
         count++;
     }
@@ -69,7 +69,7 @@ bool bench_run(bench_results_t *out) {
 
     count = 0;
     start = wait_for_tick_edge();
-    while (pit_get_ticks() - start < BENCH_TICKS) {
+    while (timer_ticks() - start < BENCH_TICKS) {
         void *p = kmalloc(64);
         kfree(p);
         count++;
@@ -78,7 +78,7 @@ bool bench_run(bench_results_t *out) {
 
     count = 0;
     start = wait_for_tick_edge();
-    while (pit_get_ticks() - start < BENCH_TICKS) {
+    while (timer_ticks() - start < BENCH_TICKS) {
         void *frame = pmm_alloc_frame();
         if (frame) pmm_free_frame(frame);
         count++;
