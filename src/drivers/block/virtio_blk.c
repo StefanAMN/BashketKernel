@@ -1,6 +1,6 @@
 /**
  * @file virtio_blk.c
- * @brief virtio block device (disk) driver, legacy PCI interface
+ * @brief virtio block device (disk) driver
  *
  * A disk request is a chain of three buffers on the device's one virtqueue
  * (see virtqueue.h for how those work):
@@ -29,10 +29,8 @@
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
-#define VIRTIO_VENDOR          0x1AF4
-#define VIRTIO_BLK_LEGACY_ID   0x1001
 
-#define REG_CAPACITY VIRTIO_REG_DEVICE_CONFIG // 64 bits: disk size in sectors
+#define CONFIG_CAPACITY 0 // Device configuration: 64 bits, the disk size in sectors
 
 #define BLK_T_IN  0 // Read from the disk
 #define BLK_T_OUT 1 // Write to the disk
@@ -65,7 +63,7 @@ typedef struct {
 // I/O ports, queue, slots and lock, and nothing below is shared.
 typedef struct {
     bool present;
-    uint16_t io_base;
+    virtio_device_t virtio;          // Its registers, through whichever interface it has
     uint64_t capacity_sectors;
     virtqueue_t queue;               // The request queue
     blk_slot_t slots[BLK_SLOTS];
@@ -101,7 +99,7 @@ static void virtio_blk_irq(struct registers *regs) {
     // set means its used ring changed.
     for (unsigned i = 0; i < device_count; i++) {
         blk_device_t *d = &devices[i];
-        uint8_t isr = inb(d->io_base + VIRTIO_REG_ISR_STATUS);
+        uint8_t isr = virtio_isr(&d->virtio);
         if (!(isr & 1)) continue;
         // Under the lock, so a requester can not be between "not done yet"
         // and "asleep" when this arrives
@@ -117,26 +115,16 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
     pci_device_t dev = *pci;
     spinlock_init_ranked(&d->lock, "virtio-blk", LOCK_RANK_DEVICE);
 
-    uint32_t bar0 = pci_read32(&dev, PCI_BAR0);
-    if (!(bar0 & 1)) {
-        kprintf("virtio-blk: device has no legacy I/O port interface\n");
+    // Reset, announce a driver, and agree on features: we use none of the
+    // optional ones
+    if (!virtio_open(&d->virtio, &dev) || !virtio_negotiate(&d->virtio, 0, NULL)) {
+        kprintf("virtio-blk: device offers no interface this kernel can use\n");
         return -1;
     }
-    d->io_base = (uint16_t)(bar0 & ~3u);
-    pci_enable_io_and_bus_master(&dev);
-
-    // Handshake: reset, then announce ourselves step by step
-    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, 0);
-    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
-
-    // Feature negotiation: we use none of the optional features
-    (void)inl(d->io_base + VIRTIO_REG_DEVICE_FEATURES);
-    outl(d->io_base + VIRTIO_REG_DRIVER_FEATURES, 0);
 
     // Queue 0 is the request d->queue; each slot needs three descriptors
     // (header, data, status)
-    bool ok = virtqueue_setup(&d->queue, d->io_base, 0) && d->queue.size >= 3 && d->queue.size <= MAX_QUEUE_SIZE;
+    bool ok = virtqueue_setup(&d->queue, &d->virtio, 0) && d->queue.size >= 3 && d->queue.size <= MAX_QUEUE_SIZE;
     uint64_t hhdm = pmm_get_hhdm_offset();
     for (int i = 0; ok && i < BLK_SLOTS; i++) {
         void *header_phys = pmm_alloc_frame();
@@ -161,16 +149,15 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
             if (d->slots[i].data_phys) pmm_free_frame((void *)d->slots[i].data_phys);
         }
         memset(d->slots, 0, sizeof(d->slots));
-        outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_FAILED);
+        virtio_fail(&d->virtio);
         return -1;
     }
 
-    // The capacity is a 64-bit little-endian value in the device-specific area
-    d->capacity_sectors = (uint64_t)inl(d->io_base + REG_CAPACITY) | ((uint64_t)inl(d->io_base + REG_CAPACITY + 4) << 32);
+    d->capacity_sectors = virtio_config64(&d->virtio, CONFIG_CAPACITY);
 
     // The device's interrupt arrives on the ISA IRQ named in its
     // configuration space
-    uint8_t irq = pci_read8(&dev, PCI_INTERRUPT_LINE);
+    uint8_t irq = d->virtio.irq;
     if (irq > 0 && irq < 16 && !(*irq_registered && *registered_irq == irq)) {
         register_irq_handler(irq, virtio_blk_irq); // One handler serves every disk on the line
         ioapic_route_isa_irq(irq);
@@ -178,11 +165,11 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
         *registered_irq = irq;
     }
 
-    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+    virtio_driver_ok(&d->virtio);
     d->present = true;
 
-    kprintf("virtio-blk: disk %u ready, %lu sectors (%lu MiB), queue size %u, IRQ %u\n",
-            number, d->capacity_sectors, d->capacity_sectors / 2048, d->queue.size, irq);
+    kprintf("virtio-blk: disk %u ready, %lu sectors (%lu MiB), queue size %u, IRQ %u, %s interface\n",
+            number, d->capacity_sectors, d->capacity_sectors / 2048, d->queue.size, irq, virtio_interface_name(&d->virtio));
     return 0;
 }
 
@@ -194,7 +181,7 @@ int virtio_blk_init(void) {
     uint8_t registered_irq = 0;
     for (unsigned n = 0; device_count < VIRTIO_BLK_MAX_DEVICES; n++) {
         pci_device_t dev;
-        if (!pci_find_nth_device(VIRTIO_VENDOR, VIRTIO_BLK_LEGACY_ID, n, &dev)) break;
+        if (!virtio_pci_find(VIRTIO_TYPE_BLOCK, n, &dev)) break;
         // (The handler walks devices[0 .. device_count): count it only once
         // it is set up, and set it up before its interrupt can be routed.)
         if (init_device(&devices[device_count], &dev, device_count, &irq_registered, &registered_irq) == 0) device_count++;

@@ -37,13 +37,14 @@ struct vring_used {
     struct vring_used_elem ring[];
 } __attribute__((packed));
 
-bool virtqueue_setup(virtqueue_t *vq, uint16_t io_base, uint16_t index) {
-    outw(io_base + VIRTIO_REG_QUEUE_SELECT, index);
-    uint16_t size = inw(io_base + VIRTIO_REG_QUEUE_SIZE);
+bool virtqueue_setup(virtqueue_t *vq, virtio_device_t *dev, uint16_t index) {
+    uint16_t size = virtio_queue_size(dev, index);
     if (size == 0 || size > 32768) return false; // 0: the device has no such queue
 
-    // Layout fixed by the specification: descriptors, then the available
-    // ring, then padding to a page boundary, then the used ring
+    // Descriptors, then the available ring, then padding to a page
+    // boundary, then the used ring. The legacy interface fixes this layout
+    // (it is told one address and works out the rest); the modern one is
+    // told all three addresses, and is given the same layout.
     size_t avail_offset = sizeof(struct vring_desc) * size;
     size_t used_offset = (avail_offset + sizeof(uint16_t) * (3 + size) + QUEUE_ALIGN - 1) & ~(size_t)(QUEUE_ALIGN - 1);
     size_t total = used_offset + sizeof(uint16_t) * 3 + sizeof(struct vring_used_elem) * size;
@@ -51,15 +52,10 @@ bool virtqueue_setup(virtqueue_t *vq, uint16_t io_base, uint16_t index) {
 
     void *phys = pmm_alloc_frames(pages);
     if (!phys) return false;
-    if (((uint64_t)phys >> 12) > 0xFFFFFFFFULL) { // The register holds a 32-bit page number
-        pmm_free_frames(phys, pages);
-        return false;
-    }
-
     uint8_t *memory = (uint8_t *)((uint64_t)phys + pmm_get_hhdm_offset());
     memset(memory, 0, pages * PAGE_SIZE);
 
-    vq->io_base = io_base;
+    vq->dev = dev;
     vq->index = index;
     vq->size = size;
     vq->desc = (struct vring_desc *)memory;
@@ -72,7 +68,11 @@ bool virtqueue_setup(virtqueue_t *vq, uint16_t io_base, uint16_t index) {
     vq->free_head = 0;
     vq->free_count = size;
 
-    outl(io_base + VIRTIO_REG_QUEUE_ADDRESS, (uint32_t)((uint64_t)phys >> 12));
+    if (!virtio_queue_start(dev, index, (uint64_t)phys, (uint64_t)phys + avail_offset, (uint64_t)phys + used_offset,
+                            &vq->notify_address)) {
+        pmm_free_frames(phys, pages);
+        return false;
+    }
     return true;
 }
 
@@ -108,7 +108,9 @@ int virtqueue_add(virtqueue_t *vq, const virtqueue_buffer_t *buffers, unsigned o
 }
 
 void virtqueue_kick(virtqueue_t *vq) {
-    outw(vq->io_base + VIRTIO_REG_QUEUE_NOTIFY, vq->index);
+    // Either way, what is written is the queue's number
+    if (vq->notify_address) *vq->notify_address = vq->index;
+    else outw(vq->dev->io_base + VIRTIO_REG_QUEUE_NOTIFY, vq->index);
 }
 
 bool virtqueue_has_used(const virtqueue_t *vq) {

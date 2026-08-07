@@ -336,6 +336,25 @@ bool vmm_map_page(uint64_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags) 
     return ok;
 }
 
+void *vmm_map_device(uint64_t phys, size_t length) {
+    static uint64_t next_free = DEVICE_REGION_BASE;
+    if (length == 0) return NULL;
+
+    uint64_t first = phys & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t pages = (phys + length - first + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    // Take the addresses first (one page more than needed: an unmapped page
+    // between one device's registers and the next), then fill them in
+    uint64_t virt = __atomic_fetch_add(&next_free, (pages + 1) * PAGE_SIZE, __ATOMIC_SEQ_CST);
+    for (uint64_t i = 0; i < pages; i++) {
+        // PCD and PWT both set selects "uncacheable" in the default page
+        // attribute table (Intel SDM Vol. 3A, 12.12.3, table 12-11)
+        if (!vmm_map_page(NULL, virt + i * PAGE_SIZE, first + i * PAGE_SIZE,
+                          VMM_PRESENT | VMM_WRITABLE | VMM_CACHE_DIS | VMM_WRITE_THRU | VMM_NO_EXECUTE)) return NULL;
+    }
+    return (void *)(virt + (phys - first));
+}
+
 bool vmm_unmap_page(uint64_t *pml4, uint64_t virt) {
     if (pml4 == NULL) {
         pml4 = kernel_pml4;

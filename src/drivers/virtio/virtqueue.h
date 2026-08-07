@@ -3,8 +3,9 @@
  * @brief Virtqueues: the shared-memory rings every virtio device uses
  *
  * A virtqueue is how a driver hands buffers to a virtio device and gets them
- * back (virtio 1.0 specification, section 2.4; this is the "legacy" layout).
- * It is three arrays in ordinary memory whose address the device is told:
+ * back (virtio 1.2 specification, section 2.7, "split virtqueues"). It is
+ * three arrays in ordinary memory whose addresses the device is told (how
+ * it is told differs between the two register interfaces: virtio_pci.h):
  *
  *   descriptor table   each entry describes one buffer: physical address,
  *                      length, whether the device may write to it, and
@@ -33,6 +34,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "virtio_pci.h"
 
 // Registers of the legacy virtio PCI interface, as offsets from the I/O base
 #define VIRTIO_REG_DEVICE_FEATURES 0x00 // 32 bits, read
@@ -45,11 +47,6 @@
 #define VIRTIO_REG_ISR_STATUS      0x13 // 8 bits; reading it acknowledges the interrupt
 #define VIRTIO_REG_DEVICE_CONFIG   0x14 // Device-specific fields start here
 
-#define VIRTIO_STATUS_ACKNOWLEDGE 0x01 // "I have noticed you"
-#define VIRTIO_STATUS_DRIVER      0x02 // "I know how to drive you"
-#define VIRTIO_STATUS_DRIVER_OK   0x04 // "I am ready"
-#define VIRTIO_STATUS_FAILED      0x80
-
 #define VIRTQUEUE_MAX_CHAIN 4          // Longest chain of buffers in one request
 
 struct vring_desc;
@@ -57,7 +54,8 @@ struct vring_avail;
 struct vring_used;
 
 typedef struct {
-    uint16_t io_base;                  // The device's I/O port base
+    virtio_device_t *dev;              // The device this queue belongs to
+    volatile uint16_t *notify_address; // Modern interface: where to write to notify the device
     uint16_t index;                    // Which of the device's queues this is
     uint16_t size;                     // Number of descriptors (the device decides)
     struct vring_desc *desc;
@@ -75,11 +73,16 @@ typedef struct {
 } virtqueue_buffer_t;
 
 /**
- * @brief Set up queue `index` of the device at `io_base`: ask its size,
- *        allocate and clear the rings, and tell the device where they are.
+ * @brief Set up queue `index` of a device: ask its size, allocate and clear
+ *        the rings, and tell the device where they are.
  * @return false if the device has no such queue or memory ran out.
  */
-bool virtqueue_setup(virtqueue_t *vq, uint16_t io_base, uint16_t index);
+bool virtqueue_setup(virtqueue_t *vq, virtio_device_t *dev, uint16_t index);
+
+// The two steps of that which depend on the register interface (virtio_pci.c)
+uint16_t virtio_queue_size(virtio_device_t *dev, uint16_t index);
+bool virtio_queue_start(virtio_device_t *dev, uint16_t index, uint64_t desc_phys, uint64_t avail_phys, uint64_t used_phys,
+                        volatile uint16_t **notify_address);
 
 /**
  * @brief Add one request: `out_count` buffers the device reads, followed by

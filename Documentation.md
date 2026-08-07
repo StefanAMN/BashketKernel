@@ -187,7 +187,7 @@ so the numbering has gaps.
 ---
 
 ### 11. Storage Subsystem & FAT32 Filesystem (Phase 11)
-**Status: real.** virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, up to eight requests with the device at once); `/dev/vda` is the raw disk. A write-through cache of 1024 sectors (`src/drivers/block/bcache.c`) sits between the filesystem and the driver. The FAT32 volume on it is mounted at `/disk`, readable and writable: files and directories can be created, written, appended, truncated, renamed, moved and removed, programs can be run from it, and everything survives a reboot. Long file names are read and written (ASCII; up to 127 characters), with invented short aliases; names keep their case and are unique without regard to it. A directory is read from the disk when something first looks inside it. Entries carry the date and time from the RTC. `fsck.fat` accepts what the kernel writes. Limits: no journal, writes are not delayed or batched, names outside ASCII are shown by their short alias, looking a name up is case-sensitive, and FAT stores no owners or permissions. See `src/fs/fat32.c` (the "Names" and "Directory slots" sections for long names), `vfs_rename` and `vfs_load_dir` in `src/fs/vfs.c`, and `tools/mkfat.py`, which writes the same format from the host.
+**Status: real.** virtio-blk is a real driver (one virtqueue, interrupt-driven, up to eight requests with the device at once); `/dev/vda` is the raw disk. A write-through cache of 1024 sectors (`src/drivers/block/bcache.c`) sits between the filesystem and the driver. The FAT32 volume on it is mounted at `/disk`, readable and writable: files and directories can be created, written, appended, truncated, renamed, moved and removed, programs can be run from it, and everything survives a reboot. Long file names are read and written (ASCII; up to 127 characters), with invented short aliases; names keep their case and are unique without regard to it. A directory is read from the disk when something first looks inside it. Entries carry the date and time from the RTC. `fsck.fat` accepts what the kernel writes. Limits: no journal, writes are not delayed or batched, names outside ASCII are shown by their short alias, looking a name up is case-sensitive, and FAT stores no owners or permissions. See `src/fs/fat32.c` (the "Names" and "Directory slots" sections for long names), `vfs_rename` and `vfs_load_dir` in `src/fs/vfs.c`, and `tools/mkfat.py`, which writes the same format from the host.
 
 **Goal:** VirtIO Block device driver, FAT32 directory and file reading/writing.
 
@@ -217,7 +217,7 @@ so the numbering has gaps.
 ---
 
 ### 13. PCI Bus & VirtIO Network Driver (Phase 13)
-**Status: real.** PCI scan (function 0 of each device), configuration space access, shared interrupt lines. virtio-net is a real driver: receive and transmit virtqueues, interrupt-driven, MAC address from the device.
+**Status: real.** PCI scan (function 0 of each device), configuration space access, capability list, shared interrupt lines. The virtio drivers reach their devices through either of virtio's register interfaces: the modern one (registers in memory, found through the capability list, 64-bit feature negotiation) when the device offers it, the legacy I/O port block otherwise; `make check` runs the tests with devices that offer both, only the legacy and only the modern one. virtio-net is a real driver: receive and transmit virtqueues, interrupt-driven, MAC address from the device. Interrupts are the shared PCI line, not MSI-X.
 
 **Goal:** PCI bus enumeration, VirtIO Net driver (Ethernet frame transmit/receive).
 
@@ -225,7 +225,11 @@ so the numbering has gaps.
   1. **PCI Bus Subsystem:**
      - **Concepts:** Scanning PCI buses (0–255), reading vendor/device IDs via config ports `0xCF8/0xCFC`.
      - Files to inspect: `src/drivers/bus/pci.h`, `src/drivers/bus/pci.c`
-  2. **VirtIO Net Interface Card (NIC):**
+  2. **Finding a virtio device's registers:**
+     - **Concepts:** the PCI capability list; base address registers (I/O or memory, 32 or 64 bits); mapping device memory uncached, outside the direct map; why nothing a device says about itself is believed; the handshake (reset, acknowledge, features, FEATURES_OK, queues, DRIVER_OK) and what differs between the legacy and modern interfaces.
+     - Files to inspect: `src/drivers/virtio/virtio_pci.h`, `src/drivers/virtio/virtio_pci.c`, `vmm_map_device` in `src/mm/vmm.c`, `tests/test_virtio.c`
+     - Try: `make test VIRTIO=legacy`, `make test VIRTIO=modern`.
+  3. **VirtIO Net Interface Card (NIC):**
      - **Concepts:** Rx/Tx virtqueue initialization, MAC address retrieval, raw Ethernet frame transmission.
      - Files to inspect: `src/drivers/net/virtio_net.h`, `src/drivers/net/virtio_net.c`
 

@@ -45,6 +45,11 @@ void pci_write16(const pci_device_t *dev, uint8_t offset, uint16_t value);
 void pci_enable_io_and_bus_master(const pci_device_t *dev);
 
 /**
+ * @brief Let a device use its memory-mapped registers and do DMA.
+ */
+void pci_enable_memory_and_bus_master(const pci_device_t *dev);
+
+/**
  * @brief Find PCI device matching vendor and device IDs.
  * @param vendor_id Target PCI vendor ID.
  * @param device_id Target PCI device ID.

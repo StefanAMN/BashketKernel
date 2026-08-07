@@ -349,8 +349,14 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   timestamp counter the kernel stays periodic, and `make check` runs that
   too. Not done: device interrupts still all arrive on the boot CPU, and
   the tick count is still the unit most of the kernel thinks in.
-- **virtio modern (MMIO capability) transport**, so the drivers are not tied
-  to the legacy I/O port interface.
+- **virtio modern transport** — done (`src/drivers/virtio/virtio_pci.c`).
+  Both drivers go through one layer that uses the modern interface
+  (registers in memory, located by the PCI capability list) when a device
+  offers it and the legacy I/O ports otherwise. Device registers are mapped
+  uncached in a region of their own (`vmm_map_device`). Tested with devices
+  offering both, legacy only and modern only (`VIRTIO=legacy|modern`).
+  Not done: MSI-X (interrupts still come over the shared PCI line), and
+  the packed virtqueue layout.
 - **PS/2 mouse and a framebuffer device** (`/dev/fb0`, `/dev/mouse`), as real
   drivers with a user program that uses them; this is where a window system
   would start, as a user-space program, if one is wanted at all.

@@ -18,10 +18,7 @@
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
-#define VIRTIO_VENDOR        0x1AF4
-#define VIRTIO_NET_LEGACY_ID 0x1000
-
-#define FEATURE_MAC (1u << 5)  // The card has a MAC address in its configuration space
+#define FEATURE_MAC (1ULL << 5) // The card has a MAC address in its configuration space
 
 #define QUEUE_RX 0
 #define QUEUE_TX 1
@@ -33,6 +30,10 @@ extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *
 // Every frame on a virtqueue is preceded by this header. It carries
 // offloading information (checksums, segmentation) that this driver does not
 // use: it is sent as zeros and ignored on receive.
+//
+// Its length depends on the interface (virtio 1.2, section 5.1.6): the last
+// field exists on a modern device always, and on a legacy one only if a
+// feature we do not ask for (merged receive buffers) was negotiated.
 struct virtio_net_header {
     uint8_t flags;
     uint8_t gso_type;
@@ -40,12 +41,15 @@ struct virtio_net_header {
     uint16_t gso_size;
     uint16_t checksum_start;
     uint16_t checksum_offset;
+    uint16_t num_buffers;
 } __attribute__((packed));
 
-#define HEADER_SIZE sizeof(struct virtio_net_header)
+#define HEADER_SIZE_MODERN sizeof(struct virtio_net_header)
+#define HEADER_SIZE_LEGACY (sizeof(struct virtio_net_header) - sizeof(uint16_t))
 
 static bool present = false;
-static uint16_t io_base;
+static virtio_device_t card;
+static size_t header_size;      // Of the two above, the one this card uses
 static uint8_t mac_address[6];
 
 static virtqueue_t rx_queue, tx_queue;
@@ -64,7 +68,7 @@ static spinlock_t card_lock = SPINLOCK_RANKED("virtio-net", LOCK_RANK_DEVICE);
 static void virtio_net_irq(struct registers *regs) {
     (void)regs;
     // Reading the ISR register makes the card lower its interrupt line
-    uint8_t isr = inb(io_base + VIRTIO_REG_ISR_STATUS);
+    uint8_t isr = virtio_isr(&card);
     random_add_event(isr); // Packets arrive when the rest of the world sends them
     if (isr & 1) {
         // Under the lock, so that a receiver between "nothing there" and
@@ -88,28 +92,20 @@ int virtio_net_init(void) {
     pci_init();
 
     pci_device_t dev;
-    if (!pci_find_device(VIRTIO_VENDOR, VIRTIO_NET_LEGACY_ID, &dev)) {
+    if (!virtio_pci_find(VIRTIO_TYPE_NET, 0, &dev)) {
         kprintf("virtio-net: no network card attached\n");
         return -1;
     }
 
-    uint32_t bar0 = pci_read32(&dev, PCI_BAR0);
-    if (!(bar0 & 1)) {
-        kprintf("virtio-net: device has no legacy I/O port interface\n");
+    // The only optional feature we want is the MAC address
+    uint64_t features = 0;
+    if (!virtio_open(&card, &dev) || !virtio_negotiate(&card, FEATURE_MAC, &features)) {
+        kprintf("virtio-net: device offers no interface this kernel can use\n");
         return -1;
     }
-    io_base = (uint16_t)(bar0 & ~3u);
-    pci_enable_io_and_bus_master(&dev);
+    header_size = card.modern ? HEADER_SIZE_MODERN : HEADER_SIZE_LEGACY;
 
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, 0);
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
-
-    // The only optional feature we want is the MAC address
-    uint32_t features = inl(io_base + VIRTIO_REG_DEVICE_FEATURES);
-    outl(io_base + VIRTIO_REG_DRIVER_FEATURES, features & FEATURE_MAC);
-
-    bool ok = virtqueue_setup(&rx_queue, io_base, QUEUE_RX) && virtqueue_setup(&tx_queue, io_base, QUEUE_TX) &&
+    bool ok = virtqueue_setup(&rx_queue, &card, QUEUE_RX) && virtqueue_setup(&tx_queue, &card, QUEUE_TX) &&
               rx_queue.size <= MAX_QUEUE_SIZE && tx_queue.size <= MAX_QUEUE_SIZE;
 
     for (unsigned i = 0; ok && i < RX_BUFFERS; i++) {
@@ -122,33 +118,34 @@ int virtio_net_init(void) {
     }
     if (!ok) {
         kprintf("virtio-net: could not set up the queues\n");
-        outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_FAILED);
+        virtio_fail(&card);
         return -1;
     }
 
     if (features & FEATURE_MAC) {
-        for (int i = 0; i < 6; i++) mac_address[i] = inb(io_base + VIRTIO_REG_DEVICE_CONFIG + i);
+        for (int i = 0; i < 6; i++) mac_address[i] = virtio_config8(&card, (uint32_t)i);
     } else {
         // No address given: make one up in the "locally administered" range
         static const uint8_t fallback[6] = { 0x02, 0x00, 0x00, 0xBA, 0x5C, 0xE7 };
         memcpy(mac_address, fallback, 6);
     }
 
-    uint8_t irq = pci_read8(&dev, PCI_INTERRUPT_LINE);
+    uint8_t irq = card.irq;
     if (irq > 0 && irq < 16) {
         register_irq_handler(irq, virtio_net_irq);
         ioapic_route_isa_irq(irq);
     }
 
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+    virtio_driver_ok(&card);
 
     // Give the card somewhere to put incoming frames
     for (unsigned i = 0; i < RX_BUFFERS && i < rx_queue.size; i++) post_rx_buffer(i);
     virtqueue_kick(&rx_queue);
 
     present = true;
-    kprintf("virtio-net: card ready, MAC %02x:%02x:%02x:%02x:%02x:%02x, IRQ %u\n",
-            mac_address[0], mac_address[1], mac_address[2], mac_address[3], mac_address[4], mac_address[5], irq);
+    kprintf("virtio-net: card ready, MAC %02x:%02x:%02x:%02x:%02x:%02x, IRQ %u, %s interface\n",
+            mac_address[0], mac_address[1], mac_address[2], mac_address[3], mac_address[4], mac_address[5], irq,
+            virtio_interface_name(&card));
     return 0;
 }
 
@@ -181,11 +178,11 @@ size_t virtio_net_poll(void *frame, size_t max) {
         // Both values come from the device: check them before use
         if (id < MAX_QUEUE_SIZE && rx_buffer_of[id] < RX_BUFFERS) {
             unsigned buffer = rx_buffer_of[id];
-            if (len > HEADER_SIZE && len <= PAGE_SIZE) {
-                result = len - HEADER_SIZE;
+            if (len > header_size && len <= PAGE_SIZE) {
+                result = len - header_size;
                 if (result > max) result = max;
                 const uint8_t *data = (const uint8_t *)(rx_phys[buffer] + pmm_get_hhdm_offset());
-                memcpy(frame, data + HEADER_SIZE, result);
+                memcpy(frame, data + header_size, result);
                 rx_count++;
             }
             post_rx_buffer(buffer); // Back on the queue for the next frame
@@ -218,10 +215,10 @@ int virtio_net_send(const void *frame, size_t len) {
         uint8_t *data = (uint8_t *)(tx_phys[buffer] + pmm_get_hhdm_offset());
         size_t frame_len = len < ETH_FRAME_MIN ? ETH_FRAME_MIN : len;
 
-        memset(data, 0, HEADER_SIZE + frame_len);   // Zero header, and zero padding for a short frame
-        memcpy(data + HEADER_SIZE, frame, len);
+        memset(data, 0, header_size + frame_len);   // Zero header, and zero padding for a short frame
+        memcpy(data + header_size, frame, len);
 
-        virtqueue_buffer_t b = { tx_phys[buffer], (uint32_t)(HEADER_SIZE + frame_len) };
+        virtqueue_buffer_t b = { tx_phys[buffer], (uint32_t)(header_size + frame_len) };
         int request = virtqueue_add(&tx_queue, &b, 1, 0); // One buffer, read by the card
         if (request >= 0 && request < MAX_QUEUE_SIZE) {
             tx_buffer_of[request] = (uint8_t)buffer;
