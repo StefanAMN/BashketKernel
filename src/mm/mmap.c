@@ -30,6 +30,8 @@ int user_unmap_range(uint64_t *pml4, uint64_t addr, size_t length) {
         if (phys) {
             vmm_unmap_page(pml4, page);
             pmm_unref_frame((void *)phys);
+        } else {
+            vmm_swap_discard(pml4, page); // On the swap disk: give the slot back
         }
     }
     return 0;

@@ -15,7 +15,7 @@
 #include <stdbool.h>
 
 #define VIRTIO_BLK_SECTOR_SIZE 512
-#define VIRTIO_BLK_MAX_DEVICES 2   // Disks the driver will take charge of
+#define VIRTIO_BLK_MAX_DEVICES 3   // Disks the driver will take charge of
 
 /**
  * @brief Find and initialise the disk.

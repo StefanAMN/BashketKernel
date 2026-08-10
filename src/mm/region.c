@@ -18,6 +18,7 @@
 #include "process.h"
 #include "kstring.h"
 #include "kerrno.h"
+#include "swap.h"
 
 static size_t promised_total = 0;
 
@@ -49,6 +50,8 @@ static void uncharge(struct task *task, size_t pages) {
 static bool can_promise(size_t pages) {
     size_t free_frames = pmm_get_free_frames();
     size_t spoken_for = region_promised_pages() + PROCESS_FORK_RESERVE_FRAMES;
+    // (With a swap disk, pages can also be kept there)
+    free_frames += swap_free_pages();
     return free_frames > spoken_for && pages <= free_frames - spoken_for;
 }
 
@@ -57,7 +60,8 @@ static size_t untouched_pages(const struct task *task, uint64_t start, uint64_t 
     size_t count = 0;
     uint64_t *space = space_of(task);
     for (uint64_t page = start; page < end; page += PAGE_SIZE) {
-        if (!(vmm_get_pte(space, page) & VMM_PRESENT)) count++;
+        uint64_t pte = vmm_get_pte(space, page);
+        if (!(pte & VMM_PRESENT) && !vmm_pte_swapped(pte)) count++; // (Swapped out is not untouched)
     }
     return count;
 }
@@ -173,7 +177,8 @@ int region_fault(struct task *task, uint64_t addr) {
     if (!task || !task->is_user || addr >= USER_SPACE_END) return 0;
     uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
     uint64_t *space = space_of(task);
-    if (vmm_get_pte(space, page) & VMM_PRESENT) return 0; // Some other kind of fault
+    uint64_t entry = vmm_get_pte(space, page);
+    if ((entry & VMM_PRESENT) || vmm_pte_swapped(entry)) return 0; // Some other kind of fault
 
     int prot = 0;
     struct vnode *node = NULL;

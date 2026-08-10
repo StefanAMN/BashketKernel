@@ -25,6 +25,7 @@ extern void test_suite_smp(void);
 extern void test_suite_storage(void);
 extern void test_suite_virtio(void);
 extern void test_suite_mouse(void);
+extern void test_suite_swap(void);
 extern void test_suite_fat32(void);
 extern void test_suite_process(void);
 extern void test_suite_ext2(void);
@@ -72,6 +73,7 @@ bool run_all_tests(void) {
     test_suite_smp();
     test_suite_virtio();
     test_suite_mouse();
+    test_suite_swap();
     test_suite_storage();
     test_suite_fat32();
     test_suite_process();

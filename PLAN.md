@@ -365,8 +365,44 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   screenshots (`make test-paint`). Not done: `mmap` of the screen (drawing
   is by `write`), `poll`, a window system; this is where one would start,
   as a user-space program, if one is wanted at all.
-- **Swap**, only once C2's block cache exists: evict anonymous pages to a
-  disk partition under memory pressure and fault them back in.
+- **Swap** — done as designed below (`src/mm/swap.c`; `make test-swap`).
+  What the first runs added to the design: the page a process is faulting
+  on can be the one it has just pushed out, so the fault handler reads the
+  faulting page back whatever kind of fault it was; and a process with
+  nothing it may give up (a fresh fork child: every page still shared)
+  must not search its whole address space at every fault. Known limits:
+  a fork child cannot free memory until it has pages of its own, a system
+  call that needs a swapped page when no frame is free fails rather than
+  making room, and a zombie keeps its memory until it is reaped.
+  The design, decided before the code:
+  - *Where:* a disk of its own carrying the Linux swap signature (made on
+    the host by `mkswap`, so the format is checked against someone else's
+    implementation). One page per slot, read and written past the sector
+    cache.
+  - *What a swapped page looks like:* a page-table entry that is not
+    present, marked as swapped, holding the slot number where the frame
+    address was and the page's permission bits unchanged. Slots are
+    counted: `fork` copies the entry and adds one, so parent and child each
+    read their own copy back (copy-on-write without a shared frame).
+  - *Whose pages:* a process's own, and only when it page-faults from user
+    mode ("local replacement"). The kernel checks a program's buffers and
+    then uses them, sometimes after sleeping and sometimes under a lock;
+    a page taken in between would fault where nothing can sleep. A process
+    faulting in ring 3 has no such buffer outstanding, and its address
+    space is live on no other CPU, so its own pages can be taken with one
+    `invlpg` and no cross-CPU work. Pages shared with another process
+    (shared memory, copy-on-write not yet resolved) stay.
+  - *Which page:* the clock algorithm over the process's own page tables,
+    using the accessed bit as the second chance.
+  - *When:* at a user-mode page fault, if free frames are below a low mark,
+    until they are above it again. System calls only swap in.
+  - *Promises:* `mmap` and `brk` may promise free frames plus free slots.
+  - *Not in the design:* taking pages from other processes (global
+    replacement), keeping the disk copy of a page that was read back and
+    not changed, swapping to a file, more than one swap device.
+  - **Check:** unit tests on an address space built for the purpose (out,
+    back, fork, unmap, destroy, every slot returned); a program that uses
+    more memory than a 64 MB machine has, with and without the swap disk.
 - **Check:** each with its own unit tests and a scripted QEMU scenario.
 
 ---

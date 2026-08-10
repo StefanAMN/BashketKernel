@@ -19,6 +19,7 @@
 #include "dev.h"
 #include "auth.h"
 #include "heap.h"
+#include "swap.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
@@ -205,7 +206,14 @@ bool process_populate(uint64_t addr, size_t len) {
 
     uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
     for (uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1); page < addr + len; page += PAGE_SIZE) {
-        if (vmm_get_pte(space, page) & VMM_PRESENT) continue;
+        uint64_t entry = vmm_get_pte(space, page);
+        if (entry & VMM_PRESENT) continue;
+        if (vmm_pte_swapped(entry)) {
+            // On the swap disk: read it back. (Nothing is pushed out to
+            // make room here: see swap.h.)
+            if (swap_in(space, page) < 0) return false;
+            continue;
+        }
         if (process_grow_stack(page)) continue;
         int given = region_fault(self, page);
         if (given < 0) return false;  // Promised, and no memory to keep the promise
@@ -226,7 +234,8 @@ bool process_grow_stack(uint64_t addr) {
 
     uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
     uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
-    if (vmm_get_pte(space, page) & VMM_PRESENT) return false; // Some other kind of fault
+    uint64_t entry = vmm_get_pte(space, page);
+    if ((entry & VMM_PRESENT) || vmm_pte_swapped(entry)) return false; // Some other kind of fault
 
     return vmm_alloc_user_page(space, page, VMM_WRITABLE | VMM_NO_EXECUTE) != NULL;
 }
