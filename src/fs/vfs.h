@@ -44,6 +44,13 @@ typedef struct vnode_ops {
     // them now) where the filesystem keeps them. A filesystem without this
     // cannot store them: what it shows for them is fixed.
     int (*setattr)(struct vnode *node);
+
+    // Told when the node is opened and when that open file is closed for
+    // good (by its last holder, or because its last holder died), for
+    // devices that change state while a program has them. `opened` may
+    // refuse by returning a negative error number.
+    int (*opened)(struct vnode *node, bool writable);
+    void (*closed)(struct vnode *node, bool writable);
 } vnode_ops_t;
 
 typedef struct vnode {

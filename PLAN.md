@@ -357,9 +357,14 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   offering both, legacy only and modern only (`VIRTIO=legacy|modern`).
   Not done: MSI-X (interrupts still come over the shared PCI line), and
   the packed virtqueue layout.
-- **PS/2 mouse and a framebuffer device** (`/dev/fb0`, `/dev/mouse`), as real
-  drivers with a user program that uses them; this is where a window system
-  would start, as a user-space program, if one is wanted at all.
+- **PS/2 mouse and a framebuffer device** — done: `/dev/mouse`
+  (`src/drivers/input/mouse.c`), `/dev/fb0`, and `/bin/paint`, which uses
+  both. A program that opens the screen for writing owns it until it closes
+  the device or dies; file operations gained `opened`/`closed` hooks for
+  that. Tested by moving the mouse through QEMU's monitor and checking
+  screenshots (`make test-paint`). Not done: `mmap` of the screen (drawing
+  is by `write`), `poll`, a window system; this is where one would start,
+  as a user-space program, if one is wanted at all.
 - **Swap**, only once C2's block cache exists: evict anonymous pages to a
   disk partition under memory pressure and fault them back in.
 - **Check:** each with its own unit tests and a scripted QEMU scenario.

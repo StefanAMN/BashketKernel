@@ -976,6 +976,16 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_TTY_RAW:
             tty_set_raw(regs->rdi != 0, task->pid);
             return 0;
+        case SYS_FB_INFO: {
+            // Width, height, bytes per row, bits per pixel of /dev/fb0
+            uint32_t info[4] = { 0, 0, 0, 32 };
+            if (!user_range_ok(regs->rdi, sizeof(info), true)) return -EFAULT;
+            if (!console_framebuffer(NULL, &info[0], &info[1], &info[2])) return -ENODEV;
+            user_access_begin();
+            memcpy((void *)regs->rdi, info, sizeof(info));
+            user_access_end();
+            return 0;
+        }
         case SYS_TTY_SIZE: {
             if (!user_range_ok(regs->rdi, 2 * sizeof(uint32_t), true)) return -EFAULT;
             uint32_t size[2];

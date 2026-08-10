@@ -108,7 +108,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-crash test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-crash test-paint test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -422,6 +422,39 @@ test-crash: iso
 	@tools/crash_test.py --rounds $(CRASH_ROUNDS) $(SHELL_CPU) > $(BUILD)/crash.log 2>&1 \
 		&& tail -1 $(BUILD)/crash.log || { echo "crash: FAILED (see $(BUILD)/crash.log)"; exit 1; }
 
+# The mouse and the screen as devices: /bin/paint takes the screen, the
+# mouse is moved and clicked through QEMU's monitor, and screenshots show
+# what was drawn. Then the program ends (once by its own way out, once
+# killed) and the text screen has to be back both times.
+PAINT_SHOTS = $(BUILD)/paint
+test-paint: iso
+	@rm -rf $(PAINT_SHOTS) && mkdir -p $(PAINT_SHOTS)
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'paint: 1280x800, pointer at 640,400' --expect 'paint: 2 strokes; pointer last at 124,320' \
+		--expect 'Hello from ring 3' --forbid 'no mouse|no screen' \
+		'!exec /bin/paint' \
+		'@button:1' '@mouse:60,0' '@mouse:0,40' '@button:0' \
+		'@screendump:$(PAINT_SHOTS)/1-stroke.ppm' \
+		'@mouse:-100,-100' '@mouse:-100,-100' '@mouse:-100,-100' '@mouse:-100,-124' '@mouse:-100,0' '@mouse:-100,0' '@mouse:-24,0' \
+		'@button:1' '@button:0' \
+		'@mouse:0,100' '@mouse:0,100' '@mouse:0,104' '@button:1' '@mouse:48,0' '@button:0' \
+		'@screendump:$(PAINT_SHOTS)/2-red.ppm' \
+		'@button:2' '@wait:1' \
+		'@screendump:$(PAINT_SHOTS)/3-text.ppm' \
+		'exec /bin/hello' '!exec /bin/paint' '@button:1' '@mouse:30,30' '@button:0' \
+		'@screendump:$(PAINT_SHOTS)/4-again.ppm' '^C' '@wait:1' \
+		'@screendump:$(PAINT_SHOTS)/5-killed.ppm' 'exec /bin/hello' > $(BUILD)/paint.log 2>&1 \
+		|| { echo "paint: FAILED (see $(BUILD)/paint.log)"; exit 1; }
+	@tools/check_ppm.py $(PAINT_SHOTS)/1-stroke.ppm 100,300=202428 670,400=ffffff 700,420=ffffff 690,410=202428 \
+			28,16=ffffff 8,4=ffffff 60,4=101010 1250,6=c02020 640,395=202428 \
+		&& tools/check_ppm.py $(PAINT_SHOTS)/2-red.ppm 670,400=ffffff 100,320=e04040 80,16=e04040 60,4=e04040 \
+			8,4=101010 100,300=202428 \
+		&& tools/check_ppm.py $(PAINT_SHOTS)/3-text.ppm 670,400!=ffffff 100,320!=e04040 1250,6!=c02020 1000,700=000000 \
+		&& tools/check_ppm.py $(PAINT_SHOTS)/4-again.ppm 655,415=ffffff 1250,6=c02020 100,320=202428 \
+		&& tools/check_ppm.py $(PAINT_SHOTS)/5-killed.ppm 655,415!=ffffff 1250,6!=c02020 1000,700=000000 \
+		&& echo "paint (mouse and screen as devices; the text screen returns after exit and after a kill): ok" \
+		|| { echo "paint: FAILED, the screenshots in $(PAINT_SHOTS) are not as expected"; exit 1; }
+
 # Jobs in the user shell: a command in the background, another stopped with
 # Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
 # which init must adopt and collect.
@@ -454,6 +487,8 @@ check:
 	@$(MAKE) --no-print-directory test-home
 	@$(MAKE) --no-print-directory test-crash
 	@$(MAKE) --no-print-directory test-crash SMP=4 CRASH_ROUNDS=3
+	@$(MAKE) --no-print-directory test-paint
+	@$(MAKE) --no-print-directory test-paint SMP=2
 	@$(MAKE) --no-print-directory test-login
 	@$(MAKE) --no-print-directory test-jobs
 	@$(MAKE) --no-print-directory test-jobs SMP=4

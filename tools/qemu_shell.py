@@ -11,7 +11,9 @@ fixed sleeps and the run takes as long as the kernel actually needs.
 
 A command starting with '!' is sent without waiting for a prompt afterwards
 (for programs that do not finish by themselves). '^C' and '^D' send Ctrl-C
-and Ctrl-D. '@wait:3' lets the
+and Ctrl-D. '@mouse:dx,dy', '@button:n' and '@screendump:file' move the mouse,
+press its buttons and save a picture of the screen (through QEMU's monitor).
+'@wait:3' lets the
 guest run for 3 seconds. A command starting with '~' is typed as raw keys into a
 full-screen program: '~hello\\r^S^Q' types hello, Enter, Ctrl-S, Ctrl-Q
 ('\\e' is Escape, so '\\e[A' is the up arrow).
@@ -31,6 +33,8 @@ import select
 import subprocess
 import sys
 import time
+import socket
+import tempfile
 
 PROMPT = b"BashketOS> "
 CONTROL_KEYS = {"^C": b"\x03", "^D": b"\x04", "^S": b"\x13", "^Q": b"\x11", "^Z": b"\x1a"}
@@ -55,6 +59,20 @@ def read_until(proc, buf, patterns, deadline):
             if not chunk:
                 return None
             buf.extend(chunk)
+
+
+def monitor_command(path, command):
+    """Run one command in QEMU's monitor and wait until it has been carried out."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
+        monitor.settimeout(10)
+        monitor.connect(path)
+        seen = b""
+        while b"(qemu) " not in seen:            # The greeting, up to the first prompt
+            seen += monitor.recv(4096)
+        monitor.sendall(command.encode() + b"\n")
+        seen = b""
+        while b"(qemu) " not in seen:            # The echo and any output, up to the next
+            seen += monitor.recv(4096)
 
 
 def main():
@@ -108,6 +126,13 @@ def main():
         cmd += ["-d", "int,cpu_reset", "-D", "int.log"]
     cmd += args.qemu_arg
 
+    # '@mouse', '@button' and '@screendump' commands go to QEMU itself, through
+    # its monitor on a socket (only set up when one of them is used)
+    monitor_path = None
+    if any(c.startswith(("@mouse:", "@button:", "@screendump:")) for c in args.commands):
+        monitor_path = os.path.join(tempfile.mkdtemp(prefix="qemu-shell-"), "monitor")
+        cmd += ["-monitor", f"unix:{monitor_path},server=on,wait=off"]
+
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     buf = bytearray()
     status = 0
@@ -126,6 +151,18 @@ def main():
                     proc.stdin.write(command[1:].encode() + b"\n")
                     proc.stdin.flush()
                     read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.5)
+                    continue
+                if command.startswith(("@mouse:", "@button:", "@screendump:")):
+                    kind, value = command[1:].split(":", 1)
+                    if kind == "mouse":          # '@mouse:40,-10': right 40, up 10
+                        dx, dy = value.split(",")
+                        monitor_command(monitor_path, f"mouse_move {int(dx)} {int(dy)}")
+                    elif kind == "button":       # '@button:1': left down; 2 right, 4 middle, 0 none
+                        monitor_command(monitor_path, f"mouse_button {int(value)}")
+                    else:                        # '@screendump:shot.ppm': the screen, as a PPM file
+                        monitor_command(monitor_path, f"screendump {value}")
+                    # Let the guest take the interrupt and act on it
+                    read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.3)
                     continue
                 if command.startswith("@wait:"):
                     # Let the guest run for a while (something outside is

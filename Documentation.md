@@ -508,3 +508,23 @@ so the numbering has gaps.
      - **Concepts:** reachability from the root; why "allocated but unreferenced" is the only damage ordered writes allow; what a journal would add (nothing half-written at all).
      - Files to inspect: `ext2_check` in `src/fs/ext2.c`, `tools/crash_test.py`, `user/fsstress.c`
 6. **Checking against other implementations**: `tools/mkhome.sh` (the image is made by `mke2fs`), `make test-home` (what the kernel writes is judged by `e2fsck`), `tools/corrupt_ext2.py`.
+
+### 40. The Mouse and the Screen as Devices
+**Status: partial.** A PS/2 mouse driver (the keyboard controller's second port, IRQ 12; three-byte packets decoded with resynchronisation) read by programs from `/dev/mouse`, and the screen as a file of pixels, `/dev/fb0` (`fb_info()` gives its geometry). A program that opens the screen for writing has it to itself: the console keeps its text up to date in RAM and on serial and repaints when the program closes the device or dies. `/bin/paint` draws with the mouse; `make test-paint` moves and clicks the mouse through QEMU's monitor and checks screenshots. Not done: mapping the screen into a program (`mmap`), a wheel, waiting for the mouse and the keyboard at once (there is no `poll`), and any window system.
+
+**Goal:** see that "graphics" is two files, one read and one written, and that sharing a piece of hardware between the kernel and a program needs an owner.
+
+1. **A second device on the keyboard controller.**
+     - **Concepts:** the controller's auxiliary port and how the status register says whose byte is waiting; one data port, so one lock; commands that are acknowledged; giving up when nothing answers.
+     - Files to inspect: `ps2_aux_enable`, `ps2_aux_command`, `ps2_read_aux` in `src/drivers/input/keyboard.c`
+2. **A packet protocol with no framing.**
+     - **Concepts:** three bytes with only one bit to say where a packet starts; 9-bit signed numbers; what to do when the reader is slower than the mouse (add movements up, never lose the buttons' last state).
+     - Files to inspect: `src/drivers/input/mouse.h`, `src/drivers/input/mouse.c`, `tests/test_mouse.c` (the tests play the mouse)
+3. **Who has the screen.**
+     - **Concepts:** the console's copy of the screen in RAM; handing video memory to a program and taking it back; tying that to the open file so that it ends when the program does, however it ends.
+     - Files to inspect: `console_graphics_begin` in `src/drivers/console/console.c`, the `opened`/`closed` hooks in `src/fs/vfs.h` and `src/fs/file.c`, `fb_ops` in `src/drivers/char/dev.c`
+4. **A program that draws.**
+     - **Concepts:** the pointer is drawn by the program; keeping a copy of the picture to take the pointer off again; Bresenham's line.
+     - Files to inspect: `user/paint.c`
+     - Try: `make run`, then `exec /bin/paint` in the QEMU window (click inside it first; right button to leave).
+5. **Testing something you look at:** `make test-paint`, `tools/check_ppm.py`, and the `@mouse`, `@button` and `@screendump` commands of `tools/qemu_shell.py`.

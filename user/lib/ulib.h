@@ -153,6 +153,11 @@ void format_ip(uint32_t ip, char out[16]);
 void tty_raw(int raw);                           /* 1: every key at once, no echo; 0: whole lines (the default) */
 void tty_size(unsigned *columns, unsigned *rows);
 
+/* The screen as pixels (/dev/fb0): its size, and how many bytes one row of
+ * it takes in the device. Four bytes per pixel: blue, green, red, unused. */
+struct fb_info { unsigned width, height, pitch, bpp; };
+int fb_info(struct fb_info *info);
+
 /* Formatted output */
 void puts(const char *s);
 void printf(const char *fmt, ...);               /* To standard output */

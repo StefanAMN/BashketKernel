@@ -128,6 +128,34 @@ static void check_basics(void) {
     }
     CHECK(best < (one_shot ? 6000000UL : 30000000UL));
     CHECK(sleep_ns(0) == 0);
+
+    /* The screen as a file of pixels. Only looked at here: opening it for
+     * writing would take the screen from the console (paint does that). */
+    struct fb_info screen = { 0, 0, 0, 0 };
+    if (fb_info(&screen) == 0) {
+        CHECK(screen.width >= 320 && screen.height >= 200 && screen.bpp == 32);
+        CHECK(screen.pitch >= screen.width * 4);
+        CHECK(fb_info((struct fb_info *)0x10) == -EFAULT);
+        CHECK(fb_info((struct fb_info *)0xFFFF800000000000UL) == -EFAULT);
+        long fbfd = open("/dev/fb0", O_RDONLY);
+        CHECK(fbfd >= 0);
+        unsigned pixel = 0xFFFFFFFFu;
+        CHECK(read((int)fbfd, &pixel, 4) == 4);
+        CHECK(lseek((int)fbfd, 0, SEEK_END) == (long)screen.pitch * screen.height);
+        CHECK(read((int)fbfd, &pixel, 4) == 0);                    /* The end of the screen */
+        CHECK(write((int)fbfd, &pixel, 4) < 0);                    /* Opened for reading */
+        close((int)fbfd);
+    } else {
+        CHECK(fb_info(&screen) == -ENODEV);                       /* A machine without a screen */
+    }
+    /* The mouse: only opened here (reading it would wait for someone to
+     * move it) */
+    long mousefd = open("/dev/mouse", O_RDONLY);
+    if (mousefd >= 0) {
+        char byte;
+        CHECK(read((int)mousefd, &byte, 1) == -EINVAL);           /* Events are three bytes: no room for one */
+        close((int)mousefd);
+    }
     CHECK(sleep_ns(~0UL) == -EINVAL);
     CHECK(execv("/bin/does-not-exist", NULL) == -ENOENT);
     CHECK(waitpid(-1, NULL, 0) == -ECHILD);

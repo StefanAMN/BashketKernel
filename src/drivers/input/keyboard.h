@@ -14,6 +14,27 @@
  */
 void keyboard_init(void);
 
+// The PS/2 controller's second ("auxiliary") port, for the mouse driver.
+// It shares the controller's data port with the keyboard, so access to it
+// goes through here.
+
+/**
+ * @brief Enable the second port and its interrupt (IRQ 12).
+ */
+bool ps2_aux_enable(void);
+
+/**
+ * @brief Send one command byte to the device on the second port.
+ * @return true if it acknowledged.
+ */
+bool ps2_aux_command(uint8_t command);
+
+/**
+ * @brief Fetch a byte the device on the second port has sent, if one is
+ *        waiting.
+ */
+bool ps2_read_aux(uint8_t *byte);
+
 /**
  * @brief Check if input character is available in keyboard buffer.
  * @return true if character is buffered, false otherwise.
