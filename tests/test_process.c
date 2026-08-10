@@ -159,6 +159,41 @@ static int count_tasks(const char *name) {
     return n;
 }
 
+// A dead process that nobody has waited for yet keeps its exit status, not
+// its memory
+TEST(a_zombie_holds_no_memory) {
+    sched_reap();
+    size_t free_before = test_free_frames();
+
+    pid_t pid = process_spawn("/bin/spin", NULL);
+    EXPECT_TRUE(pid > 0);
+    sched_sleep_ticks(3);
+    task_t *task = sched_find_task((uint32_t)pid);
+    EXPECT_TRUE(task != NULL);
+    if (!task) return;
+    size_t free_running = test_free_frames();
+    EXPECT_TRUE(free_running + 8 < free_before);           // A program's pages and page tables
+
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    TEST_WAIT(task->state == TASK_ZOMBIE, 100);
+    EXPECT_EQ(task->state, TASK_ZOMBIE);
+
+    // Dead and not collected. What is left is the task itself and its
+    // kernel stack: the address space has gone, and the task points at the
+    // kernel's page tables.
+    size_t free_dead = test_free_frames();
+    EXPECT_TRUE((uint64_t)task->pml4_phys == vmm_get_kernel_pml4_phys());
+    EXPECT_TRUE(free_dead > free_running);
+    EXPECT_TRUE(free_before - free_dead <= 6);
+    if (free_before - free_dead > 6) kprintf("    a zombie still holds %zu frames\n", free_before - free_dead);
+
+    int status = -1;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    EXPECT_EQ(status, 128 + SIGKILL);
+    sched_reap();
+    EXPECT_TRUE(test_free_frames() == free_before);
+}
+
 TEST(kill_takes_effect_at_a_safe_point) {
     sched_reap();
     size_t free_before = test_free_frames();
@@ -396,6 +431,7 @@ void test_suite_process(void) {
     RUN_TEST(processes_leave_nothing_behind);
     RUN_TEST(shell_pipelines_and_redirection);
     RUN_TEST(kill_takes_effect_at_a_safe_point);
+    RUN_TEST(a_zombie_holds_no_memory);
     RUN_TEST(orphans_are_adopted_and_collected_by_init);
     RUN_TEST(mapped_file_pages_are_read_only_when_touched);
     RUN_TEST(interrupt_spares_processes_that_ignore_it);

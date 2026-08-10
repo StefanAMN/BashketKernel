@@ -768,6 +768,23 @@ void task_exit_status(int status) {
     file_close_all(self->fds);
     task_set_cwd(self, NULL);
     region_release_all(self); // Mapped files are free to be removed again
+
+    // Its memory goes now too, not when someone collects its exit status: a
+    // parent may take its time over that (or be asleep), and until then a
+    // large dead program would hold frames, and swap slots, that others are
+    // being refused. From here on the task runs on the kernel's own page
+    // tables (it is in the kernel, on its kernel stack, and will not return
+    // to user code). The task is pointed at them before the CPU is, with
+    // interrupts off, so that being switched out and in again in between
+    // loads the right ones.
+    if (self->is_user && self->pml4_phys && (uint64_t)self->pml4_phys != vmm_get_kernel_pml4_phys()) {
+        uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
+        uint64_t irq = irq_save();
+        self->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys();
+        vmm_switch_pml4(self->pml4_phys);
+        irq_restore(irq);
+        vmm_destroy_address_space(space);
+    }
     tty_process_exited(self->pid);
     process_foreground_owner_exited(self->pid);
 

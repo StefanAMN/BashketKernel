@@ -243,6 +243,16 @@ code comments and commit messages; `git log` is the full history.
   killed while holding it would lock the terminal for good.
 - **Close a process's files when it dies, not when it is reaped**, or the
   reader of its pipe waits for an end-of-file that depends on the reaper.
+  The same goes for its memory: a zombie is an exit status, and holds a task
+  structure and a kernel stack, nothing else. (It leaves its address space
+  for the kernel's before freeing it.)
+- **A safe point that only interrupts reach can be starved.** A process
+  short of memory spends its time in page faults; the timer almost always
+  found it in the kernel, and its pending kill waited for seconds. A fault
+  that has been handled and is returning to user code checks too.
+- **"Done" counted by a task is not "exited".** A test that reaps "until
+  something was reaped" after two tasks report in catches one of them some
+  of the time. Wait for the number expected.
 - **The kernel takes copy-on-write faults too** (CR0.WP), so the fault
   handler resolves COW before asking which ring faulted. If the copy cannot
   be allocated, kill the process even when the kernel was the writer.
