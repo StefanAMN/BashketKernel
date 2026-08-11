@@ -1,8 +1,9 @@
 # BashketKernel — Plan
 
-This document lists what to build next, in three tracks. The tracks are being
-implemented in order (A, then B, then C); items are marked **done** as they
-land. Everything not marked is still a proposal.
+This document lists what to build next. Tracks A, B and C are done (items
+are marked as they land). Track D makes the system live on its disk instead
+of in memory; track E documents every function and removes code nothing
+uses. Everything not marked done is still a proposal.
 
 The previous plan (the repair plan that took the tree from mostly-mock to
 real) is finished and remains in git: `git show e04ac04:PLAN.md`. The
@@ -408,6 +409,109 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
 
 ---
 
+## Track D — A system that lives on its disk
+
+Today `/` is a tree in memory, rebuilt from the boot image (the initrd) at
+every start: a new user, a changed password or a file outside `/home` and
+`/disk` is gone at the next boot. The machine starts into the kernel's own
+debugging shell, and it has no way to shut down but to be switched off.
+After this track it behaves like a Unix machine: the system is installed on
+an ext2 disk, `/` is that disk, the kernel starts `/bin/init`, which puts a
+login prompt on the console, and `shutdown` stops everything and leaves
+the disk clean.
+
+### D1. Mount points in the VFS (S)
+
+An ext2 root has `/dev`, `/proc` and `/tmp` as ordinary empty directories,
+and the kernel's own trees must sit on top of them, as `mount` does
+elsewhere. The VFS keeps the whole tree in memory with nodes from several
+filesystems, so a mount point is a node the kernel attaches in place of the
+disk's directory of that name: the disk's entry is skipped when its parent
+is read, and a mount point can be neither removed nor renamed (`EBUSY`).
+- **Check:** unit tests mount a memory directory over an ext2 directory,
+  read the parent from the disk again, and try to remove and rename it.
+
+### D2. ext2 as the root (M)
+
+- `tools/mkroot.sh` builds `build/root.img`: the user programs in `/bin`,
+  `/etc` (passwords, groups, a profile), the home directories with their
+  owners, the set-uid programs, empty `/dev`, `/proc`, `/tmp` and `/disk`.
+  It replaces `home.img`: `/home` becomes a directory of the root.
+- At boot the first disk holding an ext2 volume with `/bin/init` becomes
+  `/`; the memory trees are mounted on it (D1). Without one, the kernel
+  falls back to today's memory root from the initrd, which stays as the
+  rescue system and is tested as such.
+- **Check:** unit tests run with the disk root; a change to `/etc/passwd`
+  made through `passwd` survives a reboot; `e2fsck` agrees after each run.
+
+### D3. Booting into init and a login prompt (M)
+
+- The kernel reads its command line from Limine. `limine.conf` gets two
+  entries: the system (the default), and a developer entry whose command
+  line asks for the kernel shell, as now. The scripted tests boot the
+  developer entry; a new target boots the system.
+- Without the developer flag, PID 1 is `/bin/init`. It runs `/etc/rc` with
+  the shell, then keeps a `login` running on the console, starting a new one
+  whenever the last ends, the way `getty` does. Orphans are still adopted
+  and collected.
+- **Check:** `make test-boot`: boot the system entry, log in at the prompt,
+  run commands in the shell, log out, log in again as another user.
+
+### D4. Shutdown and reboot (M)
+
+- A system call, root only, that ends every process (a terminate signal,
+  then a kill after a grace period), writes everything out, marks each
+  ext2 volume clean, and powers the machine off through ACPI (S5: the
+  `PM1a` control register from the FADT, the sleep type from the `\_S5`
+  object in the DSDT) or resets it (the FADT reset register, or the
+  keyboard controller).
+- Mounting an ext2 volume clears its clean mark; the full check at mount
+  (C3) runs only when the mark is missing, that is after a crash.
+- `/bin/shutdown` (`-r` to reboot).
+- **Check:** `make test-boot` ends with `shutdown`, and QEMU must exit by
+  itself; the next boot finds the volume clean and skips the check; the
+  crash test (C3) still finds it unclean and repairs it.
+
+## Track E — Every function explained; nothing nobody uses
+
+From 2026-10-18 the rule (CLAUDE.md) is that every function has a comment
+saying what it does: its arguments and result, what it changes, and what a
+caller has to know (locks held or taken, whether it may sleep). A function
+other files call is documented once, at its declaration in the header; a
+static one at its definition. New code follows the rule from now on; this
+track brings the existing code up to it, and removes what nothing uses on
+the way.
+
+Measured on 2026-10-18 with `tools/undocumented.py --count` (a heuristic,
+see the tool): 569 of about 1200 functions have no comment saying what they
+do. Most are in user programs (108), the unused crypto library (83), the
+tests (82), `src/fs` (61), the system calls (36) and the user C library
+(30). `tools/unused.sh` (the linker's list of what nothing refers to)
+finds about 50 files with uncalled functions: most of `lib/crypto` (AES and
+its modes, BLAKE2s, Ed25519, MD5, SHA-1, SHA-512, Poly1305, SipHash, HKDF,
+CRC32), and in the kernel proper a few dozen leftovers such as
+`file_open_at`, `vfs_stat`, `signal_send`, `idt_set_gate`,
+`ioapic_route_irq` and `klog_print_dmesg`. Some of those are only called by
+tests (`tools/unused.sh tests` tells them apart), some only inlined.
+
+One pass per area, each on its own branch and checked with `make check`:
+
+1. `src/mm`, `src/kernel` (scheduler, processes, signals, locks, time)
+2. `src/arch/x86_64`
+3. `src/fs`
+4. `src/drivers`, `src/net`
+5. `lib`: delete the unused crypto (repair 10 below decided it: nothing
+   uses it, and nothing tests it against a reference), keep SHA-256,
+   ChaCha20 and what PBKDF2 needs
+6. `user/lib`, then `user`
+7. `tests`
+
+In each pass: document every function to the rule; delete functions
+nothing calls, unless a test is their reason to exist and the feature is
+real (then say so in the comment); delete commented-out code and comments
+that describe what the code no longer does. At the end, `make check` runs
+`tools/undocumented.py` and fails if the count grows.
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -448,6 +552,9 @@ B3, B1                           the features users of the system notice most
 C1 -> C2 -> C3                   persistence done properly
         |
 B2, B4, B5, C4                   as interest dictates
+        |
+D1 -> D2 -> D3 -> D4             the system on its disk (next)
+E (one area at a time)           alongside D: each D item documents the code it touches
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
