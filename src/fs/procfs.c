@@ -168,7 +168,8 @@ static const vnode_ops_t ops_kmsg = { .read = read_kmsg, .write = NULL };
 
 void procfs_init(void) {
     vfs_init();
-    vnode_t *proc_dir = vfs_create_dir(vfs_get_root(), "proc");
+    vnode_t *proc_dir = NULL;
+    vfs_mount_dir(vfs_get_root(), "proc", &proc_dir);
     if (!proc_dir) return;
 
     // Each call is a no-op if the node already exists
