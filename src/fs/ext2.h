@@ -45,8 +45,12 @@ typedef struct {
 bool ext2_parse_superblock(const uint8_t *superblock, uint64_t disk_sectors, ext2_layout_t *out);
 
 /**
- * @brief Mount the ext2 volume on disk number `disk` at `mount_point`.
- *        0, or -1 if there is no such volume.
+ * @brief Mount the ext2 volume on disk number `disk` at `mount_point`:
+ *        "/" makes it the root of the whole tree (the root directory the
+ *        VFS starts with, still empty, takes on the volume's root), any
+ *        other path a mount point (vfs_mount_dir). Checks the volume and
+ *        repairs what an interrupted write left (ext2_check) first.
+ * @return 0, or -1 if there is no usable volume or one is mounted already.
  */
 int ext2_mount(const char *mount_point, unsigned disk);
 

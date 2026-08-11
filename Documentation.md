@@ -109,7 +109,7 @@ so the numbering has gaps.
 ---
 
 ### 6. Virtual Filesystem (VFS) & InitRD (Phase 6)
-**Status: real.** In-memory VFS tree, readable and writable (contents live in RAM and are lost at power-off). A USTAR initrd with the user programs is loaded as a Limine module.
+**Status: real.** One tree, with nodes from the system disk (`/`), the FAT volume, and memory (`/tmp`, `/dev`, `/proc`), per-process working directories and relative paths. A USTAR initrd with the programs and `/etc` is loaded as a Limine module: without a system disk it fills a root kept in memory, the rescue system (`make test-rescue`), whose changes are lost at power-off.
 
 **Goal:** VFS inode and file operation abstractions, USTAR initrd parser.
 
@@ -425,7 +425,7 @@ so the numbering has gaps.
 ---
 
 ### 34. VFS Mount Manager (Phase 34)
-**Status: real.** Mount points: `/dev`, `/proc`, `/tmp` and each disk volume (`/disk` FAT32, `/home` ext2) sit on a directory the kernel puts in place (`vfs_mount_dir`). On a directory read from a disk, the disk's own entry of that name is hidden, not changed, and comes back when the mount point is taken away; a mount point cannot be removed or renamed (`EBUSY`). A record of which source provides which part of the tree is shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Only an empty memory directory can be unmounted; volumes stay mounted.
+**Status: real.** Mount points: `/dev`, `/proc`, `/tmp` and the FAT32 volume at `/disk` sit on a directory the kernel puts in place (`vfs_mount_dir`). On a directory read from a disk, the disk's own entry of that name is hidden, not changed, and comes back when the mount point is taken away; a mount point cannot be removed or renamed (`EBUSY`). A record of which source provides which part of the tree is shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Only an empty memory directory can be unmounted; volumes stay mounted.
 
 **Goal:** Path mount points (`vfs_mount`), mount table management, shell `mount` command.
 
@@ -492,7 +492,7 @@ so the numbering has gaps.
      - Files to inspect: `src/kernel/bench.h`, `src/kernel/bench.c`
 
 ### 39. A Filesystem with Owners: ext2
-**Status: partial.** An ext2 volume on a second virtio disk is mounted at `/home`: files there have owners, groups, permission bits and times that are stored on the disk and survive a reboot. Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkhome.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. At every mount the whole volume is checked and what an interrupted write can leave behind is put right (`make test-crash`). Not done: links, device files, the triply indirect block, a journal; and it is mounted beside the in-memory root, not as the root, so `/etc` (and with it a changed password) is still not persistent.
+**Status: partial.** The system disk: an ext2 volume on the second virtio disk is the root of the file tree, with the programs in `/bin`, `/etc` and the users' home directories; files have owners, groups, permission bits and times that are stored on the disk and survive a reboot (a changed password included). Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkroot.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. At every mount the whole volume is checked and what an interrupted write can leave behind is put right (`make test-crash`). Not done: links, device files, the triply indirect block, a journal.
 
 **Goal:** see how a Unix filesystem stores what FAT cannot: one record (inode) per file holding owner, mode, times and block numbers, with names kept separately in directories.
 
@@ -510,7 +510,7 @@ so the numbering has gaps.
 5. **After a crash**: what can be wrong, and how the mount-time check puts it right.
      - **Concepts:** reachability from the root; why "allocated but unreferenced" is the only damage ordered writes allow; what a journal would add (nothing half-written at all).
      - Files to inspect: `ext2_check` in `src/fs/ext2.c`, `tools/crash_test.py`, `user/fsstress.c`
-6. **Checking against other implementations**: `tools/mkhome.sh` (the image is made by `mke2fs`), `make test-home` (what the kernel writes is judged by `e2fsck`), `tools/corrupt_ext2.py`.
+6. **Checking against other implementations**: `tools/mkroot.sh` (the image is made by `mke2fs`), `make test-home` (what the kernel writes is judged by `e2fsck`), `tools/corrupt_ext2.py`.
 
 ### 40. The Mouse and the Screen as Devices
 **Status: partial.** A PS/2 mouse driver (the keyboard controller's second port, IRQ 12; three-byte packets decoded with resynchronisation) read by programs from `/dev/mouse`, and the screen as a file of pixels, `/dev/fb0` (`fb_info()` gives its geometry). A program that opens the screen for writing has it to itself: the console keeps its text up to date in RAM and on serial and repaints when the program closes the device or dies. `/bin/paint` draws with the mouse; `make test-paint` moves and clicks the mouse through QEMU's monitor and checks screenshots. Not done: mapping the screen into a program (`mmap`), a wheel, waiting for the mouse and the keyboard at once (there is no `poll`), and any window system.
