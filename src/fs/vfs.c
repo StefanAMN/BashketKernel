@@ -140,6 +140,20 @@ static size_t vfs_path_of_unlocked(vnode_t *node, char *buf, size_t size) {
     return len;
 }
 
+// The child of `dir` called `name`, without reading the directory from its
+// disk first (unlike vfs_find_child): what is already in memory. Caller
+// holds the tree lock.
+static vnode_t *child_in_memory(vnode_t *dir, const char *name) {
+    for (vnode_t *c = dir->children; c; c = c->next) {
+        if (strcmp(c->name, name) == 0) return c;
+    }
+    return NULL;
+}
+
+// Make a node called `name` of the given type and link it into `parent`'s
+// children, owned by root with the default permissions. Nothing is written
+// anywhere: filesystems call this for an entry they have read or just made.
+// Caller holds the tree lock.
 static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t type) {
     if (!parent || parent->type != VFS_DIRECTORY || !name || name[0] == '\0') return NULL;
 
@@ -219,6 +233,66 @@ static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, c
     vnode_t *node = vfs_create_file(parent, name, NULL, 0);
     if (node) node->ops = ops;
     return node;
+}
+
+// See vfs_mount_dir. Caller holds the tree lock.
+static int vfs_mount_dir_unlocked(vnode_t *parent, const char *name, vnode_t **out) {
+    if (!parent) parent = vfs_root;
+    if (parent->type != VFS_DIRECTORY || !name || name[0] == '\0') return -ENOTDIR;
+
+    // The parent's entries are read first, so that a directory of this name
+    // on the disk is found now and hidden, rather than turning up later
+    vfs_load_dir(parent);
+    vnode_t *hidden = child_in_memory(parent, name);
+    if (hidden) {
+        if (hidden->type != VFS_DIRECTORY) return -ENOTDIR;
+        if (hidden->mount_point || hidden->open_count > 0) return -EBUSY;
+        if (!hidden->unloaded && hidden->children) return -EBUSY; // Something below it is known, perhaps in use
+    }
+
+    // The new node goes in first; only then is the hidden one taken out, so
+    // a failure leaves the tree as it was
+    vnode_t *node = (vnode_t *)kmalloc(sizeof(vnode_t));
+    if (!node) return -ENOMEM;
+    memset(node, 0, sizeof(vnode_t));
+    strncpy(node->name, name, sizeof(node->name) - 1);
+    node->type = VFS_DIRECTORY;
+    node->parent = parent;
+    node->mode = hidden ? hidden->mode : 0755;
+    node->uid = hidden ? hidden->uid : 0;
+    node->gid = hidden ? hidden->gid : 0;
+    node->mount_point = true;
+    node->covered = hidden;
+
+    if (hidden) {
+        vnode_t **link = &parent->children;
+        while (*link && *link != hidden) link = &(*link)->next;
+        if (*link) *link = hidden->next;
+        hidden->next = NULL;
+    }
+    node->next = parent->children;
+    parent->children = node;
+    if (out) *out = node;
+    return 0;
+}
+
+// See vfs_unmount_dir. Caller holds the tree lock.
+static int vfs_unmount_dir_unlocked(vnode_t *node) {
+    if (!node || !node->mount_point) return -EINVAL;
+    if (node->open_count > 0 || node->children || node->ops) return -EBUSY;
+
+    vnode_t *parent = node->parent;
+    vnode_t **link = &parent->children;
+    while (*link && *link != node) link = &(*link)->next;
+    if (*link) *link = node->next;
+
+    // The directory it hid comes back as it was
+    if (node->covered) {
+        node->covered->next = parent->children;
+        parent->children = node->covered;
+    }
+    kfree(node);
+    return 0;
 }
 
 static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
@@ -330,6 +404,7 @@ static int vfs_unlink_unlocked(vnode_t *parent, const char *name) {
     for (vnode_t *curr = parent->children; curr; prev = curr, curr = curr->next) {
         if (strcmp(curr->name, name) != 0) continue;
 
+        if (curr->mount_point) return -EBUSY;  // Unmount it first (vfs_unmount_dir)
         vfs_load_dir(curr); // Whether it is empty is only known once it has been read
         if (curr->children) return -ENOTEMPTY;
         if (curr->open_count > 0) return -EBUSY; // Someone holds it open
@@ -374,6 +449,7 @@ static int vfs_rename_unlocked(vnode_t *old_parent, const char *old_name, vnode_
 
     vnode_t *node = vfs_find_child_unlocked(old_parent, old_name);
     if (!node) return -ENOENT;
+    if (node->mount_point) return -EBUSY;
     vnode_t *existing = vfs_find_child_unlocked(new_parent, new_name);
     if (existing == node) return 0;                     // Onto itself: nothing to do
     if (existing) return -EEXIST;                       // Nothing is replaced: remove it first
@@ -451,6 +527,20 @@ int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out) 
 vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
     vfs_lock();
     vnode_t *result = vfs_create_dir_unlocked(parent, name);
+    vfs_unlock();
+    return result;
+}
+
+int vfs_mount_dir(vnode_t *parent, const char *name, vnode_t **out) {
+    vfs_lock();
+    int result = vfs_mount_dir_unlocked(parent, name, out);
+    vfs_unlock();
+    return result;
+}
+
+int vfs_unmount_dir(vnode_t *node) {
+    vfs_lock();
+    int result = vfs_unmount_dir_unlocked(node);
     vfs_unlock();
     return result;
 }

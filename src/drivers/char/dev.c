@@ -154,7 +154,11 @@ static const vnode_ops_t console_ops = { .read = dev_console_read, .write = dev_
 
 void dev_init(void) {
     vfs_init();
-    vnode_t *dev_dir = vfs_create_dir(vfs_get_root(), "dev");
+    vnode_t *dev_dir = vfs_find(NULL, "/dev");
+    if (!dev_dir || !dev_dir->mount_point) {
+        dev_dir = NULL;
+        vfs_mount_dir(vfs_get_root(), "dev", &dev_dir);
+    }
     if (!dev_dir) return;
 
     mount_register("/dev", "dev", "kernel");

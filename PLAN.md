@@ -420,7 +420,7 @@ an ext2 disk, `/` is that disk, the kernel starts `/bin/init`, which puts a
 login prompt on the console, and `shutdown` stops everything and leaves
 the disk clean.
 
-### D1. Mount points in the VFS (S)
+### D1. Mount points in the VFS (S) — done
 
 An ext2 root has `/dev`, `/proc` and `/tmp` as ordinary empty directories,
 and the kernel's own trees must sit on top of them, as `mount` does
