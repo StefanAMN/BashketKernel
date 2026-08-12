@@ -172,17 +172,14 @@ the test script; against a real resolver it was only tried by hand.
 - **Check:** boot with no configured address, obtain one from QEMU's DHCP
   server, ping the gateway by the address it gave.
 
-### B3. Processes: the missing pieces (M) — done, except booting into init
+### B3. Processes: the missing pieces (M) — done (booting into init: D3)
 
 Done: signal masks, `sigaction` with `SA_RESTART`, `SIGCHLD`; `WNOHANG` and
 `WUNTRACED`, `dup`, `pipe2`, close-on-exec; stop and continue signals;
 process groups, a foreground group for the terminal, and job control in the
 shell; `/bin/init`, to which orphans are handed and which waits for them.
 
-Not done: the machine still boots into the kernel's shell, with init
-running beside it as the adopter. Every scripted test drives that shell;
-moving the console to a user shell started by init means reworking the test
-tool first, and is left as its own piece of work. Also absent: sessions,
+Booting into init came later, as D3. Absent: sessions,
 and stopping a background job that reads the terminal (`SIGTTIN`).
 
 - Signal masks and `sigaction`, `SIGCHLD`, restart of interrupted calls.
@@ -444,7 +441,7 @@ is read, and a mount point can be neither removed nor renamed (`EBUSY`).
 - **Check:** unit tests run with the disk root; a change to `/etc/passwd`
   made through `passwd` survives a reboot; `e2fsck` agrees after each run.
 
-### D3. Booting into init and a login prompt (M)
+### D3. Booting into init and a login prompt (M) — done
 
 - The kernel reads its command line from Limine. `limine.conf` gets two
   entries: the system (the default), and a developer entry whose command

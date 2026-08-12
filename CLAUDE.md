@@ -90,14 +90,16 @@ When unsure, say so and name where to verify (Intel SDM, OSDev Wiki, Limine's
 ## Build and run
 
 ```
-make iso          # build/kernel.elf + build/BashketKernel.iso (fetches Limine once)
+make iso          # build/kernel.elf, build/BashketKernel.iso (the system) and BashketKernel-dev.iso (fetches Limine once)
 make test         # separate test kernel in build-test/, exit 0 only if all pass
-make run          # QEMU with serial and monitor on stdio
-make run-gdb      # QEMU halted, gdb stub on :1234
+make run          # the system: boot menu, /bin/init, a login prompt (root/root, alice/alice, bob/bob)
+make run-dev      # the developer image: the kernel's own shell on the console, as the scripted tests use
+make run-gdb      # the developer image in QEMU halted, gdb stub on :1234
 
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
 make test-home                  # the ext2 system disk: owners across a reboot, e2fsck, damaged images (~40 s)
+make test-boot                  # the system image: init, /etc/rc, login, logout, Ctrl-C (~10 s)
 make test-rescue                # no system disk: the kernel runs the rescue system from its boot module (~10 s)
 make test-swap                  # 80 MiB used on a 64 MiB machine, with and without a swap disk (~30 s)
 make test-paint                 # /bin/paint driven by the mouse, screenshots checked (~10 s)
@@ -109,7 +111,9 @@ make test VIRTIO=legacy         # devices with only the legacy virtio interface 
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
 make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one; SMP=4
 tools/qemu_shell.py --qemu-arg=-smp --qemu-arg=4 'exec /bin/ps'   # any scripted boot on more CPUs
-tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
+tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot the developer image headless, type kernel shell commands (<1 s)
+tools/qemu_shell.py --iso build/BashketKernel.iso --boot-prompt 'login: ' --prompt 'login: ' --prompt 'password: ' 'root' 'root' 'id'
+                                          # the system image: wait for the login prompt instead
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
 tools/qemu_shell.py --quiet '!exec /bin/edit /tmp/f' '~hi\r^S^Q'   # '~' = raw keys into a full-screen program

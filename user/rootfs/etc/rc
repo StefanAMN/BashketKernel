@@ -1,0 +1,6 @@
+# /etc/rc: run once by init when the system starts, before the login prompt.
+# Each line is a command for /bin/sh.
+
+# Ask the network for an address (QEMU's user network has a DHCP server).
+# Without a network card this fails at once, and the system starts anyway.
+dhcp

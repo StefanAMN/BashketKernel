@@ -21,6 +21,7 @@
 #include "initrd.h"
 #include "keyboard.h"
 #include "mouse.h"
+#include "kstring.h"
 #include "swap.h"
 #include "shell.h"
 #include "slab.h"
@@ -102,6 +103,14 @@ static volatile struct LIMINE_MP(request) mp_request = {
     .revision = 0
 };
 
+// The kernel's own file, which carries the command line from the boot entry
+// in limine.conf (see boot_option)
+__attribute__((used, section(".requests")))
+static volatile struct limine_kernel_file_request kernel_file_request = {
+    .id = LIMINE_KERNEL_FILE_REQUEST,
+    .revision = 0
+};
+
 // Ask Limine for a 128 KiB boot stack. kmain keeps running on it as PID 0.
 __attribute__((used, section(".requests")))
 static volatile struct limine_stack_size_request stack_size_request = {
@@ -118,6 +127,28 @@ static void hcf(void) {
     }
 }
 
+// Is `word` one of the space-separated words of the kernel's command line?
+// The command line comes from the boot entry ("cmdline:" in limine.conf).
+// The words the kernel knows: "shell" (start the kernel's own shell for
+// development instead of /bin/init and a login prompt).
+static bool boot_option(const char *word) {
+    if (!kernel_file_request.response || !kernel_file_request.response->kernel_file) return false;
+    const char *line = kernel_file_request.response->kernel_file->cmdline;
+    if (!line) return false;
+    size_t length = strlen(word);
+    for (const char *at = line; *at; ) {
+        while (*at == ' ') at++;
+        const char *end = at;
+        while (*end && *end != ' ') end++;
+        if ((size_t)(end - at) == length && strncmp(at, word, length) == 0) return true;
+        at = end;
+    }
+    return false;
+}
+
+// The kernel's own shell (see shell.c): reads lines from the console and
+// runs its built-in commands. Started in place of a login prompt when the
+// boot entry asks for it ("shell"), and by the automated tests.
 static void shell_task_entry(void) {
     kprintf("\n=== Interactive Shell Started ===\n");
     kprintf("This is the kernel's own shell. Type 'help' for its commands, or\n");
@@ -312,12 +343,18 @@ void _start(void) {
     hcf();
 #endif
 
-    // The process that adopts orphans: when a process dies, its children
-    // become init's, and init waits for them
-    if (process_start_init("/bin/init") < 0) kprintf("init: could not start /bin/init; orphans are reaped by the kernel\n");
-
-    // Create interactive shell task
-    task_create("shell", shell_task_entry);
+    // The first process. It adopts orphans (when a process dies, its
+    // children become init's, and init waits for them), runs /etc/rc, and
+    // keeps a login prompt on the console. With the developer boot entry
+    // the kernel's own shell has the console instead, and init only does
+    // the first of those (it is told by "-s", for "no sessions").
+    bool developer = boot_option("shell");
+    char *init_args[] = { "/bin/init", developer ? "-s" : NULL, NULL };
+    if (process_spawn_init("/bin/init", init_args) < 0) {
+        kprintf("init: could not start /bin/init; starting the kernel shell instead\n");
+        developer = true;
+    }
+    if (developer) task_create("shell", shell_task_entry);
 
     // What is left for this task: free tasks that have exited and have
     // nobody to wait for them, sleeping until there is one.
