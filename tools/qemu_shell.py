@@ -170,6 +170,8 @@ def main():
                     proc.stdin.flush()
                     read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.5)
                     continue
+                if command.startswith("@") and not command.startswith("@wait:") and proc.poll() is not None:
+                    continue  # QEMU has gone (the machine switched itself off): nobody to ask
                 if command.startswith("@monitor:"):
                     # Any monitor command ('@monitor:info registers'); what it
                     # prints goes to stderr, apart from the guest's output
@@ -218,10 +220,15 @@ def main():
                     read_until(proc, buf, [CRASH_END], time.monotonic() + 2)
                     break
     finally:
+        # Did the machine switch itself off (or reset, with -no-reboot)
+        # before we were done with it?
+        ended_by_itself = proc.poll()
         proc.kill()
         proc.wait()
 
     text = buf.decode("utf-8", errors="replace").replace("\r", "")
+    if ended_by_itself is not None:
+        text += f"qemu_shell: QEMU exited by itself (status {ended_by_itself})\n"
     shown = text[boot_len:] if args.quiet and boot_len else text
     sys.stdout.write(shown if shown.endswith("\n") else shown + "\n")
 

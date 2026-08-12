@@ -1489,6 +1489,8 @@ static void checks_as_alice(void) {
     struct net_config net;
     CHECK(netconfig(&net, NULL) == 0 && net.ip != 0);   /* Anyone may look at the network settings */
     CHECK(netconfig(NULL, &net) == -EPERM);             /* Only root may change them */
+    CHECK(reboot(0) == -EPERM);                         /* Only root may stop the system */
+    CHECK(reboot(1) == -EPERM);
     CHECK(setuid(0) == -EPERM);                         /* No way back to root */
     CHECK(setuid(1001) == -EPERM);                      /* Nor sideways */
     CHECK(setuid(1000) == 0);                           /* "Becoming" yourself is allowed */

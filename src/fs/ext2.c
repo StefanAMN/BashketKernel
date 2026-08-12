@@ -127,6 +127,9 @@ static uint8_t zero_block[MAX_BLOCK_SIZE];
 static const vnode_ops_t ext2_file_ops;
 static const vnode_ops_t ext2_dir_ops;
 
+#define SB_STATE    58      // Superblock: 16 bits, the volume's state
+#define STATE_VALID 0x0001  // ...set: it was unmounted cleanly
+
 static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t get32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
@@ -1323,10 +1326,20 @@ int ext2_mount(const char *mount_point, unsigned disk) {
     static const char *const devices[] = { "/dev/vda", "/dev/vdb", "/dev/vdc" };
     mount_register(mount_point, "ext2", devices[disk < 3 ? disk : 2]);
 
-    // The machine has no orderly shutdown, so every start is "after a
-    // crash": see that the volume is whole before anyone uses it
+    // The superblock's state (offset 58) says whether the volume was put
+    // away properly: bit 0, "valid", is cleared while it is mounted and set
+    // again by an orderly shutdown (ext2_mark_clean). Mounted without it,
+    // the last session ended in a crash or a power cut: see that the volume
+    // is whole before anyone uses it. Then clear the bit for this session.
+    uint16_t state = get16(superblock + SB_STATE);
+    bool clean = (state & STATE_VALID) != 0;
+    put16(superblock + SB_STATE, (uint16_t)(state & ~STATE_VALID));
+    bcache_write_dev(disk, 2, superblock, 2);
+
     ext2_check_t check;
-    if (ext2_check(&check) == 0) {
+    if (clean) {
+        kprintf("ext2: the volume was shut down cleanly; no check needed\n");
+    } else if (ext2_check(&check) == 0) {
         if (check.blocks_freed || check.inodes_freed || check.links_corrected || check.blocks_marked ||
             check.inodes_marked || check.sizes_corrected) {
             kprintf("ext2: repaired after an interrupted write: %u blocks and %u inodes freed, %u link counts and "
@@ -1340,6 +1353,18 @@ int ext2_mount(const char *mount_point, unsigned disk) {
     kprintf("ext2: mounted at %s: %u blocks of %u bytes (%u free), %u inodes (%u free)\n",
             mount_point, vol.blocks_count, vol.block_size, vol.free_blocks, vol.inodes_count, vol.free_inodes);
     return 0;
+}
+
+void ext2_mark_clean(void) {
+    if (!mounted) return;
+    mutex_lock(&ext2_mutex);
+    put16(superblock + SB_STATE, (uint16_t)(get16(superblock + SB_STATE) | STATE_VALID));
+    bcache_write_dev(vol.disk, 2, superblock, 2); // Write-through: on the disk when this returns
+    mutex_unlock(&ext2_mutex);
+}
+
+bool ext2_volume_marked_clean(void) {
+    return mounted && (get16(superblock + SB_STATE) & STATE_VALID);
 }
 
 bool ext2_mounted(void) { return mounted; }
