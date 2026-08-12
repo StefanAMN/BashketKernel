@@ -84,20 +84,21 @@ QEMU = qemu-system-x86_64
 # The disk QEMU presents as a virtio block device. `make run` writes to it
 # for real, so what is stored there survives a reboot.
 DISK = $(BUILD)/disk.img
-# A second disk: an ext2 volume, mounted at /home, whose files have owners.
-# Built with mke2fs and debugfs; without them (e2fsprogs) there is simply no
-# second disk, and nothing under /home.
-HOME_IMG = $(BUILD)/home.img
+# The system disk: an ext2 volume that the kernel mounts as "/", with the
+# programs, /etc and the users' home directories (tools/mkroot.sh). Built
+# with mke2fs and debugfs; without them (e2fsprogs) there is no system disk,
+# and the kernel runs from the boot module instead (the rescue system).
+ROOT_IMG = $(BUILD)/root.img
 HOME_FILES = $(shell find home -type f | sed 's/ /\\ /g')
 HAVE_E2FS = $(shell command -v mke2fs >/dev/null && command -v debugfs >/dev/null && command -v e2fsck >/dev/null && echo yes)
 ifeq ($(HAVE_E2FS),yes)
-DISKS = $(DISK) $(HOME_IMG)
-HOME_FLAGS = -drive file=$(HOME_IMG),if=virtio,format=raw
+DISKS = $(DISK) $(ROOT_IMG)
+ROOT_FLAGS = -drive file=$(ROOT_IMG),if=virtio,format=raw
 else
 DISKS = $(DISK)
-HOME_FLAGS =
+ROOT_FLAGS =
 endif
-DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw $(HOME_FLAGS)
+DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw $(ROOT_FLAGS)
 
 # A swap disk, made by the host's mkswap (so the kernel's reading of the
 # header is checked against the program that defines it). Attached to the
@@ -123,7 +124,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -172,9 +173,8 @@ $(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
 DISK_FILES = $(shell find disk -type f | sed 's/ /\\ /g')
 disks: $(DISKS)
 
-$(HOME_IMG): tools/mkhome.sh $(HOME_FILES)
-	@mkdir -p $(BUILD)
-	tools/mkhome.sh $@ 16M home
+$(ROOT_IMG): tools/mkroot.sh $(INITRD) $(HOME_FILES)
+	tools/mkroot.sh $@ 64M $(BUILD)/initrd home
 
 $(DISK): tools/mkfat.py $(DISK_FILES) $(BUILD)/initrd/bin/hello
 	@mkdir -p $(BUILD)
@@ -218,7 +218,7 @@ SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-ar
 test:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
 	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
-		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(ROOT_FLAGS),-drive file=build-test/root.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
 	status=$$?; \
@@ -340,7 +340,7 @@ SMP_PROGRAM_CPUS ?= 2 4 8
 test-smp:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
 	@timeout 180 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel.iso -boot d \
-		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(ROOT_FLAGS),-drive file=build-test/root.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
 	status=$$?; \
@@ -390,9 +390,9 @@ test-login: iso
 # survive a reboot, and e2fsck must find nothing wrong with what the kernel
 # wrote. Then images damaged on purpose: the kernel must stay up.
 test-home: iso
-	@if [ -z "$(HOME_FLAGS)" ]; then echo "home: skipped (no mke2fs, debugfs and e2fsck on this machine)"; exit 0; fi; \
-	cp $(DISK) $(BUILD)/home-fat.img && cp $(HOME_IMG) $(BUILD)/home-persist.img && \
-	tools/qemu_shell.py --quiet --timeout 90 --disk $(BUILD)/home-fat.img --home-disk $(BUILD)/home-persist.img \
+	@if [ -z "$(ROOT_FLAGS)" ]; then echo "home: skipped (no mke2fs, debugfs and e2fsck on this machine)"; exit 0; fi; \
+	cp $(DISK) $(BUILD)/home-fat.img && cp $(ROOT_IMG) $(BUILD)/root-persist.img && \
+	tools/qemu_shell.py --quiet --timeout 90 --disk $(BUILD)/home-fat.img --root-disk $(BUILD)/root-persist.img \
 		--keep-disk-writes $(SHELL_CPU) \
 		--expect 'intruder.txt: permission denied' --expect 'kept.txt: permission denied' --expect 'Bob was here' \
 		--forbid 'no such|invalid|error' \
@@ -402,9 +402,9 @@ test-home: iso
 		'exit' '!exec /bin/login bob' '~bob\r' 'cat /home/alice/kept.txt' \
 		'echo from bob > /home/bob/second.txt' 'exit' > $(BUILD)/home-boot1.log 2>&1 \
 		|| { echo "home: FAILED in the first boot (see $(BUILD)/home-boot1.log)"; exit 1; }; \
-	e2fsck -fn $(BUILD)/home-persist.img > $(BUILD)/home-fsck.log 2>&1 \
+	e2fsck -fn $(BUILD)/root-persist.img > $(BUILD)/home-fsck.log 2>&1 \
 		|| { echo "home: FAILED, e2fsck rejects the volume after the kernel wrote to it (see $(BUILD)/home-fsck.log)"; exit 1; }; \
-	tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/home-fat.img --home-disk $(BUILD)/home-persist.img $(SHELL_CPU) \
+	tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/home-fat.img --root-disk $(BUILD)/root-persist.img $(SHELL_CPU) \
 		--expect '-rw------- +1000 +100 +23 [0-9-]+ [0-9:]+ kept.txt' \
 		--expect 'drwxr-xr-x +1000 +100 +0 [0-9-]+ [0-9:]+ projects' \
 		--expect '-rw-r--r-- +1001 +100 +9 [0-9-]+ [0-9:]+ second.txt' \
@@ -416,9 +416,9 @@ test-home: iso
 		'exec /bin/sh /home/../etc/compare.sh' > $(BUILD)/home-boot2.log 2>&1 \
 		|| { echo "home: FAILED, the second boot does not see the files as they were left (see $(BUILD)/home-boot2.log)"; exit 1; }; \
 	echo "home (ext2: owners and modes across a reboot, checked by e2fsck): ok"
-	@if [ -n "$(HOME_FLAGS)" ]; then for kind in dir-reclen dir-overrun block-outside indirect-loop huge-size inode-table bitmap-full root-not-dir; do \
-		tools/corrupt_ext2.py $(HOME_IMG) $$kind $(BUILD)/home-damaged.img && \
-		tools/qemu_shell.py --quiet --timeout 90 --home-disk $(BUILD)/home-damaged.img $(SHELL_CPU) \
+	@if [ -n "$(ROOT_FLAGS)" ]; then for kind in dir-reclen dir-overrun block-outside indirect-loop huge-size inode-table bitmap-full root-not-dir; do \
+		tools/corrupt_ext2.py $(ROOT_IMG) $$kind $(BUILD)/home-damaged.img && \
+		tools/qemu_shell.py --quiet --timeout 90 --root-disk $(BUILD)/home-damaged.img $(SHELL_CPU) \
 			--expect 'Hello from ring 3' \
 			'exec /bin/ls -l /home' 'exec /bin/ls -l /home/alice' 'exec /bin/sh -c "cat /home/alice/notes.txt | wc"' \
 			'exec /bin/sh -c "cat /home/readme.txt | wc"' 'exec /bin/sh -c "echo written > /home/alice/w.txt"' \
@@ -495,6 +495,16 @@ test-swap: iso
 		|| { echo "swap: FAILED, a program killed while swapping did not give everything back at once (see $(BUILD)/swap-killed.log)"; exit 1; }; \
 	echo "swap (80 MiB used on a 64 MiB machine, then two programs of 45; refused without a swap disk): ok"
 
+# The rescue system: without a system disk the kernel runs from its boot
+# module, in memory. Everything must still work; nothing outside /disk lasts.
+test-rescue: iso
+	@tools/qemu_shell.py --quiet --timeout 120 --no-root-disk $(SHELL_CPU) \
+		--expect 'No system disk: running the rescue system' --expect 'syscheck: all checks passed' \
+		--expect 'memory / memfs' --expect 'Hello from ring 3' --forbid 'ext2: mounted' \
+		'exec /bin/syscheck' 'cat /proc/mounts' 'exec /bin/hello' > $(BUILD)/rescue.log 2>&1 \
+		&& echo "rescue system (no system disk: root in memory from the boot module): ok" \
+		|| { echo "rescue system: FAILED (see $(BUILD)/rescue.log)"; exit 1; }
+
 # Jobs in the user shell: a command in the background, another stopped with
 # Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
 # which init must adopt and collect.
@@ -525,6 +535,7 @@ check:
 	@$(MAKE) --no-print-directory test-net VIRTIO=modern SMP=2
 	@$(MAKE) --no-print-directory test-edit
 	@$(MAKE) --no-print-directory test-home
+	@$(MAKE) --no-print-directory test-rescue
 	@$(MAKE) --no-print-directory test-crash
 	@$(MAKE) --no-print-directory test-crash SMP=4 CRASH_ROUNDS=3
 	@$(MAKE) --no-print-directory test-paint

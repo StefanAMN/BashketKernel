@@ -64,7 +64,7 @@ TEST(disk_multi_sector_transfers) {
 TEST(disk_refuses_out_of_range_requests) {
     static uint8_t buf[2 * VIRTIO_BLK_SECTOR_SIZE];
     uint64_t capacity = virtio_blk_capacity();
-    uint64_t before = virtio_blk_requests();
+    uint64_t before = virtio_blk_requests(0);
 
     EXPECT_EQ(virtio_blk_read(capacity, buf, 1), -1);            // First sector past the end
     EXPECT_EQ(virtio_blk_read(capacity - 1, buf, 2), -1);        // Starts inside, ends outside
@@ -73,22 +73,22 @@ TEST(disk_refuses_out_of_range_requests) {
     EXPECT_EQ(virtio_blk_read(0, buf, (size_t)-1), -1);          // Count that would wrap
     EXPECT_EQ(virtio_blk_read(0, NULL, 1), -1);
     EXPECT_EQ(virtio_blk_read(0, buf, 0), 0);                    // Nothing to do is not an error
-    EXPECT_TRUE(virtio_blk_requests() == before);                // None of these reached the device
+    EXPECT_TRUE(virtio_blk_requests(0) == before);                // None of these reached the device
 
     EXPECT_EQ(virtio_blk_read(capacity - 1, buf, 1), 0);         // The last sector itself is fine
 }
 
 TEST(disk_completions_arrive_by_interrupt) {
     static uint8_t buf[VIRTIO_BLK_SECTOR_SIZE];
-    uint64_t interrupts = virtio_blk_interrupts();
-    uint64_t requests = virtio_blk_requests();
+    uint64_t interrupts = virtio_blk_interrupts(0);
+    uint64_t requests = virtio_blk_requests(0);
 
     for (int i = 0; i < 50; i++) EXPECT_EQ(virtio_blk_read((uint64_t)i, buf, 1), 0);
 
-    EXPECT_TRUE(virtio_blk_requests() == requests + 50);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests + 50);
     // Not necessarily one interrupt per request (a fast device can finish
     // before we go to sleep), but the interrupt path must be in use
-    EXPECT_TRUE(virtio_blk_interrupts() >= interrupts + 25);
+    EXPECT_TRUE(virtio_blk_interrupts(0) >= interrupts + 25);
 }
 
 static volatile int workers_done;
@@ -144,39 +144,39 @@ TEST(cache_serves_repeated_reads_from_memory) {
     // Cold: every sector comes from the disk
     bcache_invalidate();
     bcache_get_stats(&before);
-    uint64_t requests = virtio_blk_requests();
+    uint64_t requests = virtio_blk_requests(0);
     EXPECT_EQ(bcache_read(FIRST, first, SECTORS), 0);
     bcache_get_stats(&after);
     EXPECT_TRUE(after.misses == before.misses + SECTORS && after.hits == before.hits);
-    EXPECT_TRUE(virtio_blk_requests() == requests + SECTORS);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests + SECTORS);
 
     // Warm: none does, and the data is the same
-    requests = virtio_blk_requests();
+    requests = virtio_blk_requests(0);
     EXPECT_EQ(bcache_read(FIRST, second, SECTORS), 0);
     bcache_get_stats(&before);
     EXPECT_TRUE(before.hits == after.hits + SECTORS && before.misses == after.misses);
-    EXPECT_TRUE(virtio_blk_requests() == requests);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests);
     EXPECT_EQ(memcmp(first, second, sizeof(first)), 0);
 
     // A write goes to the disk at once, and the cache has the new contents
     for (size_t i = 0; i < sizeof(changed); i++) changed[i] = (uint8_t)(i * 3 + 1);
-    requests = virtio_blk_requests();
+    requests = virtio_blk_requests(0);
     EXPECT_EQ(bcache_write(FIRST + 5, changed, 1), 0);
-    EXPECT_TRUE(virtio_blk_requests() == requests + 1);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests + 1);
     EXPECT_EQ(virtio_blk_read(FIRST + 5, raw, 1), 0);                 // Straight from the device
     EXPECT_EQ(memcmp(raw, changed, sizeof(raw)), 0);
-    requests = virtio_blk_requests();
+    requests = virtio_blk_requests(0);
     EXPECT_EQ(bcache_read(FIRST + 5, raw, 1), 0);                     // And from the cache
     EXPECT_EQ(memcmp(raw, changed, sizeof(raw)), 0);
-    EXPECT_TRUE(virtio_blk_requests() == requests);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests);
     EXPECT_EQ(bcache_write(FIRST + 5, first + 5 * VIRTIO_BLK_SECTOR_SIZE, 1), 0); // Put back what was there
 
     // Two sectors that share a place in the cache: the newer pushes the
     // older out, and each still reads correctly
-    requests = virtio_blk_requests();
+    requests = virtio_blk_requests(0);
     EXPECT_EQ(bcache_read(FIRST + BCACHE_SECTORS, raw, 1), 0);
     EXPECT_EQ(bcache_read(FIRST, raw, 1), 0);
-    EXPECT_TRUE(virtio_blk_requests() == requests + 2);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests + 2);
     EXPECT_EQ(memcmp(raw, first, sizeof(raw)), 0);
 
     // Errors are errors with a cache too, and reach nothing
@@ -194,11 +194,11 @@ TEST(cache_makes_rereading_a_file_free) {
         file_t *file = NULL;
         EXPECT_EQ(file_open("/disk/pattern.bin", O_RDONLY, &file), 0);
         if (!file) return;
-        uint64_t start_requests = virtio_blk_requests(), start = clock_ns();
+        uint64_t start_requests = virtio_blk_requests(0), start = clock_ns();
         int64_t n, total = 0;
         while ((n = file_read(file, buf, sizeof(buf))) > 0) total += n;
         nanoseconds[pass] = clock_ns() - start;
-        requests[pass] = virtio_blk_requests() - start_requests;
+        requests[pass] = virtio_blk_requests(0) - start_requests;
         file_close(file);
         EXPECT_EQ(total, 100 * 1024);
     }
