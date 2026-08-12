@@ -12,7 +12,7 @@ so the numbering has gaps.
 ---
 
 ### 1. Boot to Output & Serial Infrastructure (Phase 1)
-**Status: real.** Framebuffer console, COM1 serial, `kprintf`.
+**Status: real.** Limine with two boot entries: the system, which starts `/bin/init` (it runs `/etc/rc`, then keeps a `login` prompt on the console and starts a new one after every session, `make test-boot`), and a developer entry whose command line (`shell`) gives the console to the kernel's own shell instead (`make run-dev`, and every scripted test). Framebuffer console, COM1 serial, `kprintf`.
 
 **Goal:** Higher-half kernel entry, Limine boot protocol, text console blitter, COM1 serial logging.
 
@@ -202,7 +202,7 @@ so the numbering has gaps.
 ---
 
 ### 12. Process Life Cycle & Signal Handling (Phase 12)
-**Status: partial.** `fork` (copy-on-write; it refuses rather than leave no memory for the copies), `execve`, `waitpid` (with `WNOHANG` and `WUNTRACED`), `kill` (a negative number signals a process group), exit statuses, `dup`, `pipe2` and close-on-exec. A faulting process is killed without affecting the kernel. Signals can end a process, stop and continue it (`SIGSTOP`, `SIGTSTP`, `SIGCONT`), be ignored, or run a handler in the program (`signal`, `sigaction`), with the interrupted state saved on the user stack and restored by `sigreturn`. They can be blocked (`sigprocmask`; a handler's own signal is held back while it runs), a handler set with `SA_RESTART` restarts the `read`, `write`, `waitpid` or `accept` it interrupted, and `SIGCHLD` tells a parent that a child has exited or stopped. Signals take effect at safe points. `/bin/init` adopts processes whose parent has died and waits for them. Process groups and a terminal foreground group give the user shell job control (`&`, Ctrl-Z, `jobs`, `fg`, `bg`). Not done: the kernel's own shell is still what the machine boots into (init only adopts), there are no sessions, and a background job that reads the terminal is not stopped. See `src/kernel/proc/process.c`, `signal.h` and `signal.c`, the stop and adoption code in `src/kernel/sched/sched.c`, `user/init.c`, and the jobs part of `user/sh.c`.
+**Status: partial.** `fork` (copy-on-write; it refuses rather than leave no memory for the copies), `execve`, `waitpid` (with `WNOHANG` and `WUNTRACED`), `kill` (a negative number signals a process group), exit statuses, `dup`, `pipe2` and close-on-exec. A faulting process is killed without affecting the kernel. Signals can end a process, stop and continue it (`SIGSTOP`, `SIGTSTP`, `SIGCONT`), be ignored, or run a handler in the program (`signal`, `sigaction`), with the interrupted state saved on the user stack and restored by `sigreturn`. They can be blocked (`sigprocmask`; a handler's own signal is held back while it runs), a handler set with `SA_RESTART` restarts the `read`, `write`, `waitpid` or `accept` it interrupted, and `SIGCHLD` tells a parent that a child has exited or stopped. Signals take effect at safe points. `/bin/init` adopts processes whose parent has died and waits for them. Process groups and a terminal foreground group give the user shell job control (`&`, Ctrl-Z, `jobs`, `fg`, `bg`). Not done: there are no sessions, and a background job that reads the terminal is not stopped. See `src/kernel/proc/process.c`, `signal.h` and `signal.c`, the stop and adoption code in `src/kernel/sched/sched.c`, `user/init.c`, and the jobs part of `user/sh.c`.
 
 **Goal:** Process hierarchy (`fork`, `exec`, `waitpid`, `exit`), UNIX signal dispatching.
 
