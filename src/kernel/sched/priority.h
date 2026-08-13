@@ -20,6 +20,9 @@
  */
 void task_set_priority(task_t *task, uint8_t priority);
 
+/**
+ * @brief A task's priority (PRIO_NORMAL for NULL).
+ */
 uint8_t task_get_priority(const task_t *task);
 
 /**

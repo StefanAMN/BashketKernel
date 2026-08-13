@@ -44,23 +44,14 @@ int user_map_range(uint64_t *pml4, uint64_t addr, size_t length, int prot);
 int user_unmap_range(uint64_t *pml4, uint64_t addr, size_t length);
 
 /**
- * @brief Map `length` bytes of zeroed memory at the next free mmap address.
+ * @brief Map `length` bytes of zeroed memory at the next free mmap address,
+ *        with frames behind them at once (unlike region_map, which only
+ *        promises them). Used for shared memory (`shared`: children created
+ *        by fork see each other's writes instead of getting copies).
  * @param next_addr The task's mmap cursor; advanced on success.
  * @return The address of the new mapping, or 0 on failure.
  */
-uint64_t user_mmap_anon(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot);
-
-/**
- * @brief As user_mmap_anon; with `shared`, the memory stays shared with
- *        children created by fork (they see each other's writes) instead of
- *        becoming copy-on-write.
- */
 uint64_t user_mmap_anon_flags(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot, bool shared);
 
-/**
- * @brief Move the program break, mapping or unmapping pages as needed.
- * @return The break after the call: `new_brk` on success, the old break on failure.
- */
-uint64_t user_set_brk(uint64_t *pml4, uint64_t brk_start, uint64_t *brk_end, uint64_t new_brk);
 
 #endif // MMAP_H

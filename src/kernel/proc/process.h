@@ -79,6 +79,16 @@ pid_t process_wait(pid_t pid, int *status);
 
 // fork fails rather than leave fewer free frames than this (256 KiB)
 #define PROCESS_FORK_RESERVE_FRAMES 64
+
+/**
+ * @brief Wait for a child of the caller to end, or (with
+ *        PROCESS_WUNTRACED) to stop. `pid` > 0 names the child, -1 means
+ *        any. With PROCESS_WNOHANG, return 0 at once if none has.
+ * @param status Receives its exit status (or PROCESS_STATUS_STOPPED | signal).
+ * @return The child's PID; 0 (WNOHANG, nothing yet); -1 if the caller has no
+ *         such child; PROCESS_WAIT_INTERRUPTED if a signal ended the wait.
+ *         An ended child is collected (freed) by this call.
+ */
 pid_t process_wait_options(pid_t pid, int *status, int options);
 
 /**
@@ -129,7 +139,17 @@ int process_kill_group(uint32_t pgid, int sig, uint32_t sender_uid);
  *        Reverts to 0 when the calling process exits.
  */
 int process_set_foreground(uint32_t pgid);
+
+/**
+ * @brief The terminal's foreground process group (0: none, no job control).
+ */
 uint32_t process_get_foreground(void);
+
+/**
+ * @brief Process `pid` is ending: if it set the foreground group, that
+ *        setting goes with it, so that a dead shell does not leave the
+ *        keyboard aimed at one of its jobs.
+ */
 void process_foreground_owner_exited(uint32_t pid);
 
 /**

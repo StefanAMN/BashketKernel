@@ -65,6 +65,12 @@ bool auth_permits(uint32_t uid, uint32_t gid, const vnode_t *node, int want);
  *        calling process if `uid` is its own (else: no group).
  */
 bool auth_may_access(uint32_t uid, const vnode_t *node, bool write);
+
+/**
+ * @brief May `uid` run `node` as a program (its execute bit for the owner,
+ *        the group or others)? Root may run anything that has any execute
+ *        bit at all.
+ */
 bool auth_may_execute(uint32_t uid, const vnode_t *node);
 
 /**
@@ -73,14 +79,28 @@ bool auth_may_execute(uint32_t uid, const vnode_t *node);
  *        directory.
  */
 bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child);
+
+/**
+ * @brief May `uid` send a signal to a process running as `target_uid`?
+ *        Root may signal anyone; anyone else only their own processes.
+ */
 bool auth_may_signal(uint32_t uid, uint32_t target_uid);
 
 /**
- * @brief The effective user and group of the calling process (root for
- *        kernel threads), and its umask.
+ * @brief The effective user of the calling process: whose rights it has
+ *        (root for kernel threads).
  */
 uint32_t auth_current_uid(void);
+
+/**
+ * @brief The group of the calling process (root's for kernel threads).
+ */
 uint32_t auth_current_gid(void);
+
+/**
+ * @brief The permission bits the calling process takes away from what it
+ *        creates (its umask; the default for kernel threads).
+ */
 uint16_t auth_current_umask(void);
 
 #endif // AUTH_H

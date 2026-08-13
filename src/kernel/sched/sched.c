@@ -197,6 +197,11 @@ task_t *task_alloc(const char *name, void (*entry)(void)) {
     return task_alloc_with_pid(name, entry, true);
 }
 
+// Make a task (not yet runnable) that will start in `entry`: its structure,
+// a guarded kernel stack prepared so that the first switch to it lands in
+// task_start_trampoline, the kernel's address space, normal priority. With
+// `assign_pid`, it gets the next PID (the idle tasks get none). NULL if
+// memory runs out.
 static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool assign_pid) {
     task_t *t = (task_t *)kmalloc(sizeof(task_t));
     if (!t) return NULL;
@@ -456,6 +461,9 @@ void sched_yield(void) {
 static void wakeup_locked(void *channel);
 static void stop_current(task_t *self);
 
+// Make a blocked task runnable: forget what it waited for and when it was to
+// wake, and tell an idle CPU (another may take it before this one looks).
+// Caller holds the scheduler lock.
 static void wake_task(task_t *t) {
     t->wait_channel = NULL;
     t->wake_tick = 0;
@@ -560,6 +568,7 @@ void sched_sleep_until_ns(uint64_t deadline_ns) {
 // dead task that nobody else will wait for.
 static int reaper_channel;
 
+// Is there a dead task that nobody will wait for (one sched_reap frees)? Caller holds the scheduler lock.
 static bool reapable_exists(void) {
     for (task_t *t = task_queue_head; t; t = t->next) {
         if (t->state == TASK_ZOMBIE && t->detached && t != current_task) return true;

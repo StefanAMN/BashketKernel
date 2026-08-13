@@ -84,6 +84,11 @@ static uint64_t *current_space(void) {
     return vmm_space_from_phys((uint64_t)task->pml4_phys);
 }
 
+// May the calling process's memory [addr, addr + len) be read (and, with
+// `write`, written) by the kernel on its behalf? Pages it was promised but
+// has not touched get their frames first, and pages on the swap disk are
+// read back (process_populate). Use the range only inside
+// user_access_begin/end.
 static bool user_range_ok(uint64_t addr, size_t len, bool write) {
     // Memory the program has been promised but has not touched yet is
     // given its frames now: see process_populate
@@ -129,11 +134,17 @@ static file_t *fd_to_file(int fd) {
 // nothing.
 #define IO_BUFFER_SIZE PAGE_SIZE
 
+// The calling task's page for read() and write() to copy through, made on
+// first use and freed with the task. NULL if memory runs out.
 static uint8_t *io_buffer(task_t *task) {
     if (!task->io_buffer) task->io_buffer = kmalloc(IO_BUFFER_SIZE);
     return task->io_buffer;
 }
 
+// read(fd, buf, count): read up to `count` bytes into buf. A file is read
+// until the request is met or the file ends; a terminal, pipe or socket
+// gives what it has (waiting for something first). Returns the number of
+// bytes, 0 at the end; -EBADF, -EFAULT, or the file's error if nothing was read.
 static int64_t sys_read(int fd, uint64_t buf, size_t count) {
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
@@ -162,6 +173,9 @@ static int64_t sys_read(int fd, uint64_t buf, size_t count) {
     return (int64_t)done;
 }
 
+// write(fd, buf, count): write `count` bytes from buf. Returns how many were
+// written (fewer if the file stopped taking them); -EBADF, -EFAULT, or the
+// file's error if nothing was written.
 static int64_t sys_write(int fd, uint64_t buf, size_t count) {
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
@@ -186,6 +200,9 @@ static int64_t sys_write(int fd, uint64_t buf, size_t count) {
     return (int64_t)done;
 }
 
+// open(path, flags): open a file as the caller (permissions checked with its
+// user id; O_CREAT makes the file with its umask) and give it the lowest
+// free descriptor. Returns the descriptor or a negative error.
 static int64_t sys_open(uint64_t user_path, int flags) {
     char path[PATH_MAX];
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
@@ -201,6 +218,8 @@ static int64_t sys_open(uint64_t user_path, int flags) {
     return fd;
 }
 
+// close(fd): free the descriptor; the file itself closes when its last
+// descriptor (in any process) is gone. -EBADF if fd is not open.
 static int64_t sys_close(int fd) {
     task_t *task = sched_get_current_task();
     file_t *file = fd_to_file(fd);
@@ -211,6 +230,8 @@ static int64_t sys_close(int fd) {
     return 0;
 }
 
+// pipe2(fds, flags): make a pipe and store its two descriptors (read end,
+// then write end) in fds[0] and fds[1]. Only O_CLOEXEC may be given.
 static int64_t sys_pipe(uint64_t user_fds, uint64_t flags) {
     if (flags & ~(uint64_t)O_CLOEXEC) return -EINVAL;
     if (!user_range_ok(user_fds, 2 * sizeof(int), true)) return -EFAULT;
@@ -238,6 +259,8 @@ static int64_t sys_pipe(uint64_t user_fds, uint64_t flags) {
     return 0;
 }
 
+// dup2(old_fd, new_fd): make new_fd refer to the same open file as old_fd,
+// closing what new_fd was first. Returns new_fd.
 static int64_t sys_dup2(int old_fd, int new_fd) {
     file_t *file = fd_to_file(old_fd);
     if (!file || new_fd < 0 || new_fd >= TASK_MAX_FDS) return -EBADF;
@@ -251,6 +274,7 @@ static int64_t sys_dup2(int old_fd, int new_fd) {
     return new_fd;
 }
 
+// dup(fd): a second descriptor (the lowest free) for the same open file
 static int64_t sys_dup(int old_fd) {
     file_t *file = fd_to_file(old_fd);
     if (!file) return -EBADF;
@@ -278,6 +302,8 @@ static int64_t sys_fcntl(int fd, uint64_t command, uint64_t arg) {
     return -EINVAL;
 }
 
+// readdir(fd, entry): the next entry of an open directory into *entry.
+// Returns 1 for an entry, 0 at the end, or a negative error.
 static int64_t sys_readdir(int fd, uint64_t user_entry) {
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
@@ -289,6 +315,8 @@ static int64_t sys_readdir(int fd, uint64_t user_entry) {
     return result;
 }
 
+// mkdir(path): make a directory, owned by the caller, with 0777 less its
+// umask. The caller needs the right to write in the parent directory.
 static int64_t sys_mkdir(uint64_t user_path) {
     char path[PATH_MAX];
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
@@ -317,6 +345,9 @@ static int64_t sys_mkdir(uint64_t user_path) {
     return err;
 }
 
+// unlink(path): remove a file or an empty directory. Except for root, the
+// caller needs the right to write in the directory and must own the entry
+// or the directory (so that everyone may use /tmp, but not empty it).
 static int64_t sys_unlink(uint64_t user_path) {
     char path[PATH_MAX];
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
@@ -330,6 +361,9 @@ static int64_t sys_unlink(uint64_t user_path) {
     return vfs_unlink(parent, leaf);
 }
 
+// rename(old, new): give an entry a new name, in the same or another
+// directory of the same filesystem. Nothing is replaced: -EEXIST if `new`
+// exists.
 static int64_t sys_rename(uint64_t user_old, uint64_t user_new) {
     char old_path[PATH_MAX], new_path[PATH_MAX];
     if (copy_string_from_user(old_path, user_old, sizeof(old_path)) < 0) return -EFAULT;
@@ -368,6 +402,7 @@ static int64_t lookup_for_change(uint64_t user_path, vnode_t **out) {
     return *out ? 0 : -ENOENT;
 }
 
+// chmod(path, mode): set the permission bits. Only the owner or root.
 static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
     vnode_t *node = NULL;
     int64_t err = lookup_for_change(user_path, &node);
@@ -384,6 +419,9 @@ static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
 
 #define CHOWN_KEEP 0xFFFFFFFFULL // "Leave this one as it is"
 
+// chown(path, uid, gid): give a file to another user or group
+// (CHOWN_KEEP leaves one as it is). Root only, except that an owner may
+// move a file into its own group. Takes away the set-uid bit.
 static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid) {
     vnode_t *node = NULL;
     int64_t err = lookup_for_change(user_path, &node);
@@ -404,6 +442,8 @@ static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid)
     return (node->ops && node->ops->setattr) ? node->ops->setattr(node) : 0;
 }
 
+// kill(pid, sig): send a signal to a process, or (pid < 0) to every process
+// of group -pid. Allowed for root, or towards one's own processes.
 static int64_t sys_kill(int pid, int sig) {
     // A negative number names a process group: every member gets the signal
     if (pid < 0) {
@@ -426,12 +466,19 @@ static int64_t sys_kill(int pid, int sig) {
     return process_kill((pid_t)pid, sig) == 0 ? 0 : -ESRCH;
 }
 
+// brk(addr): move the end of the heap to addr (0: just say where it is).
+// Returns the end after the call, which is the old one if refused.
 static int64_t sys_brk(uint64_t new_brk) {
     task_t *task = sched_get_current_task();
     if (new_brk == 0) return (int64_t)task->brk_end;
     return (int64_t)region_set_brk(task, new_brk);
 }
 
+// mmap(0, length, prot, flags, fd, offset): map memory at an address the
+// kernel chooses: anonymous (private: promised and given frames when
+// touched; shared: given frames at once and shared with forked children),
+// or a private copy of part of a file opened for reading. Returns the
+// address or a negative error.
 static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
     // Always at an address the kernel chooses
     if (addr != 0 || (flags & MAP_FIXED) || length == 0) return -EINVAL;
@@ -466,11 +513,14 @@ static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int f
     return mapped ? (int64_t)mapped : error;
 }
 
+// munmap(addr, length): give back mapped memory, its frames and its promise
 static int64_t sys_munmap(uint64_t addr, size_t length) {
     if (addr < USER_MMAP_BASE) return -EINVAL; // Not something mmap handed out
     return region_unmap(sched_get_current_task(), addr, length);
 }
 
+// sleep(milliseconds): sleep that long (at most a day). -EINTR if a signal
+// handler cut it short.
 static int64_t sys_sleep(uint64_t milliseconds) {
     if (milliseconds > 24ULL * 60 * 60 * 1000) return -EINVAL;
     return nanosleep(milliseconds * 1000000ULL) ? 0 : -EINTR; // To the millisecond, not to the next tick
@@ -507,6 +557,11 @@ static int64_t copy_string_vector(uint64_t user_vec, char *storage, size_t *used
     return (int64_t)count;
 }
 
+// execve(path, argv, envp): replace the caller's program with the one at
+// path (permissions checked: execute and read). The arguments and
+// environment are copied in first, since the address space they live in
+// is about to go. Does not return on success; -EACCES, -ENOENT (not found
+// or not a valid program), -E2BIG, -EFAULT.
 static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t user_argv, uint64_t user_envp) {
     // Copy the path, arguments and environment into kernel memory first:
     // exec destroys the address space they live in.
@@ -545,6 +600,9 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
     return result;
 }
 
+// waitpid(pid, status, options): see process_wait_options. Stores the
+// status if a pointer is given. -ECHILD if there is no such child, -EINTR
+// if a signal interrupted the wait.
 static int64_t sys_waitpid(int pid, uint64_t user_status, uint64_t options) {
     if (options & ~(uint64_t)(PROCESS_WNOHANG | PROCESS_WUNTRACED)) return -EINVAL;
     if (user_status != 0 && !user_range_ok(user_status, sizeof(int), true)) return -EFAULT;
@@ -563,6 +621,7 @@ static int64_t sys_waitpid(int pid, uint64_t user_status, uint64_t options) {
     return child;
 }
 
+// uname(buf): the system's name, release and machine, into *buf
 static int64_t sys_uname(uint64_t user_buf) {
     if (!user_range_ok(user_buf, sizeof(struct utsname), true)) return -EFAULT;
 
@@ -578,6 +637,8 @@ static int64_t sys_uname(uint64_t user_buf) {
     return 0;
 }
 
+// getcwd(buf, size): the caller's working directory as an absolute path.
+// Returns its length; -EINVAL if buf is too small.
 static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
     char path[PATH_MAX];
     task_t *task = sched_get_current_task();
@@ -593,6 +654,7 @@ static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
     return (int64_t)len;
 }
 
+// chdir(path): change the caller's working directory
 static int64_t sys_chdir(uint64_t user_path) {
     char path[PATH_MAX];
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
@@ -621,16 +683,20 @@ static uint64_t ms_to_ticks(uint64_t ms) {
     return (ms * TIMER_HZ + 999) / 1000;
 }
 
+// The UDP socket behind descriptor fd, or NULL if it is not one
 static udp_socket_t *fd_to_socket(int fd) {
     file_t *file = fd_to_file(fd);
     return (file && file->kind == FILE_SOCKET) ? file->socket : NULL;
 }
 
+// The TCP socket behind descriptor fd, or NULL if it is not one
 static tcp_socket_t *fd_to_tcp(int fd) {
     file_t *file = fd_to_file(fd);
     return (file && file->kind == FILE_TCP) ? file->tcp : NULL;
 }
 
+// socket(type): a new UDP (SOCK_DGRAM) or TCP (SOCK_STREAM) socket, as a
+// descriptor. -ENETDOWN without a network card.
 static int64_t sys_socket(uint64_t type) {
     if (type != SOCK_STREAM && type != SOCK_DGRAM) return -EINVAL;
     if (!net_up()) return -ENETDOWN;
@@ -642,6 +708,8 @@ static int64_t sys_socket(uint64_t type) {
     return fd;
 }
 
+// connect(fd, ip, port): connect a TCP socket; waits until the connection
+// is made or refused
 static int64_t sys_connect(int fd, uint64_t ip, uint64_t port) {
     tcp_socket_t *socket = fd_to_tcp(fd);
     if (!socket) return -EBADF;
@@ -649,6 +717,8 @@ static int64_t sys_connect(int fd, uint64_t ip, uint64_t port) {
     return tcp_connect(socket, (uint32_t)ip, (uint16_t)port);
 }
 
+// accept(fd, from): wait for a connection on a listening TCP socket and
+// return it as a new descriptor; the peer's address goes to *from if given
 static int64_t sys_accept(int fd, uint64_t user_from) {
     tcp_socket_t *listener = fd_to_tcp(fd);
     if (!listener) return -EBADF;
@@ -684,6 +754,7 @@ static int64_t sys_accept(int fd, uint64_t user_from) {
     return new_fd;
 }
 
+// sendto(fd, buf, len, ip, port): send one UDP datagram
 static int64_t sys_sendto(int fd, uint64_t user_buf, size_t len, uint32_t ip, uint64_t port) {
     udp_socket_t *socket = fd_to_socket(fd);
     if (!socket) return -EBADF;
@@ -701,6 +772,9 @@ static int64_t sys_sendto(int fd, uint64_t user_buf, size_t len, uint32_t ip, ui
     return udp_sendto(socket, ip, (uint16_t)port, data, len);
 }
 
+// recvfrom(fd, buf, len, from, timeout_ms): receive one UDP datagram,
+// waiting up to timeout_ms (0: as long as it takes). Returns its length;
+// the sender's address goes to *from if given.
 static int64_t sys_recvfrom(int fd, uint64_t user_buf, size_t len, uint64_t user_from, uint64_t timeout_ms) {
     udp_socket_t *socket = fd_to_socket(fd);
     if (!socket) return -EBADF;
@@ -720,6 +794,8 @@ static int64_t sys_recvfrom(int fd, uint64_t user_buf, size_t len, uint64_t user
     return n;
 }
 
+// netconfig(get, set): copy the network settings to *get, and (root only)
+// replace them with *set; either may be NULL
 static int64_t sys_netconfig(uint64_t user_get, uint64_t user_set) {
     if (user_get != 0 && !user_range_ok(user_get, sizeof(net_config_t), true)) return -EFAULT;
     if (user_set != 0 && !user_range_ok(user_set, sizeof(net_config_t), false)) return -EFAULT;
@@ -761,6 +837,9 @@ static bool restartable(uint64_t number) {
     return number == SYS_READ || number == SYS_WRITE || number == SYS_WAITPID || number == SYS_ACCEPT;
 }
 
+// sigaction(sig, new, old, restorer): read and/or set what happens on
+// signal `sig`; `restorer` is the user function that calls sigreturn when
+// a handler returns
 static int64_t sys_sigaction(int sig, uint64_t user_new, uint64_t user_old, uint64_t restorer) {
     if (user_new != 0 && !user_range_ok(user_new, sizeof(struct signal_action), false)) return -EFAULT;
     if (user_old != 0 && !user_range_ok(user_old, sizeof(struct signal_action), true)) return -EFAULT;
@@ -780,6 +859,8 @@ static int64_t sys_sigaction(int sig, uint64_t user_new, uint64_t user_old, uint
     return err;
 }
 
+// sigprocmask(how, set, old): change which signals are held back
+// (SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK) and/or read the mask as it was
 static int64_t sys_sigprocmask(int how, uint64_t user_set, uint64_t user_old) {
     if (user_set != 0 && !user_range_ok(user_set, sizeof(uint32_t), false)) return -EFAULT;
     if (user_old != 0 && !user_range_ok(user_old, sizeof(uint32_t), true)) return -EFAULT;
@@ -845,6 +926,10 @@ int64_t syscall_handler(struct registers *regs) {
     return (int64_t)regs->rax;
 }
 
+// Call the function for system call number regs->rax with the arguments in
+// rdi, rsi, rdx, r10, r8, r9 (the System V convention, with r10 for rcx,
+// which syscall overwrites). Returns its result: a value, or a negative
+// error number (-ENOSYS for an unknown call).
 static int64_t dispatch(struct registers *regs) {
     task_t *task = sched_get_current_task();
 

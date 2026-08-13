@@ -37,10 +37,6 @@ typedef struct {
     uint32_t owner;       // ...and this owner
 } user_image_t;
 
-static uint64_t page_align_up(uint64_t value) {
-    return (value + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-}
-
 // Lay out the arguments and environment on the new program's stack the way
 // the System V AMD64 ABI specifies for process entry:
 //
@@ -74,6 +70,12 @@ static int push_strings(uint64_t *pml4, char *const strings[], uint64_t *sp, siz
     return count;
 }
 
+// Map a new program's stack (USER_STACK_PAGES below `stack_top`) and lay
+// out on it what the program's start code expects: the strings of argv and
+// envp, then argc, the argv pointers, NULL, the envp pointers, NULL (the
+// System V layout). argv defaults to { path }. *out_rsp receives the stack
+// pointer the program starts with. False if memory runs out or the
+// arguments do not fit.
 static bool build_user_stack(uint64_t *pml4, uint64_t stack_top, const char *path, char *const argv[], char *const envp[], uint64_t *out_rsp) {
     uint64_t stack_bottom = stack_top - (uint64_t)USER_STACK_PAGES * PAGE_SIZE;
     if (user_map_range(pml4, stack_bottom, USER_STACK_PAGES * PAGE_SIZE, PROT_READ | PROT_WRITE) != 0) {
@@ -113,9 +115,12 @@ static bool build_user_stack(uint64_t *pml4, uint64_t stack_top, const char *pat
     return true;
 }
 
-// Build a complete user image for `path`. On failure nothing is left allocated.
 static bool load_user_image_locked(const char *path, char *const argv[], char *const envp[], user_image_t *image);
 
+// Load the program at `path` into a new address space, with its arguments
+// and environment on the stack, ready for a task to start in (`image`). The
+// caller must be allowed to execute and read it. False if not, or if it is
+// not a valid program, or memory runs out; nothing is left allocated then.
 static bool load_user_image(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
     // The file is used from the moment its name is looked up until its
     // contents have been copied into the new address space: it must not be
@@ -126,6 +131,8 @@ static bool load_user_image(const char *path, char *const argv[], char *const en
     return ok;
 }
 
+// Build a complete user image for `path`. On failure nothing is left allocated.
+// load_user_image, with the file tree locked by the caller
 static bool load_user_image_locked(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
     task_t *caller = sched_get_current_task();
     vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
@@ -173,6 +180,9 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
     return true;
 }
 
+// Make `task` run the loaded program: its address space, entry point and
+// stack, an empty heap after the image, a randomly placed start for mmap,
+// and (set-uid) the file owner's rights
 static void apply_image(task_t *task, const user_image_t *image) {
     task->is_user = true;
     task->pml4_phys = (uint64_t *)((uint64_t)image->pml4 - pmm_get_hhdm_offset());

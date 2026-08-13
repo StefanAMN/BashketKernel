@@ -310,8 +310,6 @@ void _start(void) {
     // Phase 26: Hardware FPU & SSE State Management
     fpu_init();
 
-    // Phase 32: Kernel Logging Ring Buffer
-    klog_init();
 
     // Phase 33: High-Resolution Timers
     hrtimer_init();

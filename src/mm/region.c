@@ -26,19 +26,20 @@ size_t region_promised_pages(void) {
     return __atomic_load_n(&promised_total, __ATOMIC_RELAXED);
 }
 
-static uint64_t page_up(uint64_t value) {
-    return (value + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-}
-
+// The page tables of `task`'s address space, at their kernel address
 static uint64_t *space_of(const struct task *task) {
     return vmm_space_from_phys((uint64_t)task->pml4_phys);
 }
 
+// Count `pages` more as promised to `task` and not yet given a frame: in its
+// own total and in the system's (which limits what can be promised)
 static void charge(struct task *task, size_t pages) {
     task->promised_pages += pages;
     __atomic_add_fetch(&promised_total, pages, __ATOMIC_RELAXED);
 }
 
+// The reverse of charge: `pages` of the task's promise have been kept (given
+// a frame) or withdrawn (unmapped). Never takes more than the task has.
 static void uncharge(struct task *task, size_t pages) {
     if (pages > task->promised_pages) pages = task->promised_pages;
     task->promised_pages -= pages;
@@ -75,6 +76,7 @@ static void pin(struct vnode *node, int by) {
     vfs_unlock();
 }
 
+// An unused entry of the task's table of regions, or NULL if all are in use
 static mem_region_t *free_slot(struct task *task) {
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
         if (task->regions[i].end == 0) return &task->regions[i];
@@ -88,7 +90,7 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
     *error = -EINVAL;
     if (!task || length == 0 || (offset & (PAGE_SIZE - 1))) return 0;
 
-    uint64_t size = page_up(length);
+    uint64_t size = page_align_up(length);
     if (size < length) return 0; // Overflow
     uint64_t addr = task->mmap_next;
     *error = -ENOMEM;
@@ -114,7 +116,7 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
 int region_unmap(struct task *task, uint64_t addr, size_t length) {
     if (!task || length == 0 || (addr & (PAGE_SIZE - 1))) return -EINVAL;
     if (addr >= USER_SPACE_END || length > USER_SPACE_END - addr) return -EINVAL;
-    uint64_t end = addr + page_up(length);
+    uint64_t end = addr + page_align_up(length);
 
     // Cutting a hole in the middle of a region leaves two: make sure there
     // is somewhere to record the second before changing anything
@@ -159,8 +161,8 @@ uint64_t region_set_brk(struct task *task, uint64_t new_brk) {
     // unchanged value and knows the request failed (Linux brk semantics).
     if (new_brk < task->brk_start || new_brk > task->brk_start + USER_BRK_MAX) return task->brk_end;
 
-    uint64_t old_top = page_up(task->brk_end);
-    uint64_t new_top = page_up(new_brk);
+    uint64_t old_top = page_align_up(task->brk_end);
+    uint64_t new_top = page_align_up(new_brk);
     if (new_top > old_top) {
         size_t pages = (new_top - old_top) / PAGE_SIZE;
         if (!can_promise(pages)) return task->brk_end;
@@ -185,7 +187,7 @@ int region_fault(struct task *task, uint64_t addr) {
     uint64_t file_offset = 0;
     bool found = false;
 
-    if (page >= task->brk_start && page < page_up(task->brk_end)) {
+    if (page >= task->brk_start && page < page_align_up(task->brk_end)) {
         prot = PROT_READ | PROT_WRITE;                    // The heap
         found = true;
     }

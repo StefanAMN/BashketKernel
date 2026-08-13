@@ -17,6 +17,9 @@
 static bool slot_used[KSTACK_MAX_SLOTS];
 static spinlock_t kstack_lock = SPINLOCK_RANKED("kstack", LOCK_RANK_KSTACK);
 
+// The lowest address of the stack in slot `slot`. Each slot starts with an
+// unmapped guard page, so the stack begins one page in: running off its
+// bottom faults instead of overwriting the stack below.
 static uint64_t slot_stack_base(size_t slot) {
     return KSTACK_REGION_BASE + slot * KSTACK_SLOT_SIZE + PAGE_SIZE;
 }

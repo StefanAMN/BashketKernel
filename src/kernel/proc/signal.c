@@ -41,6 +41,7 @@ typedef struct {
 #define FXSAVE_MXCSR_OFFSET 24
 #define MXCSR_VALID_BITS    0xFFBFu
 
+// Is `sig` a signal number (1 .. TASK_NSIG - 1)?
 static bool valid_signal(int sig) {
     return sig > 0 && sig < TASK_NSIG;
 }
@@ -57,6 +58,7 @@ static bool default_is_ignore(int sig) {
     return sig == SIGCHLD || sig == SIGCONT;
 }
 
+// Does `sig`, when it is not handled, stop the process (rather than end it)?
 static bool default_is_stop(int sig) {
     return sig == SIGSTOP || sig == SIGTSTP;
 }
@@ -136,12 +138,6 @@ int signal_change_mask(task_t *task, int how, uint32_t set, uint32_t *old) {
     act_on_pending(task);                      // What was held back may now be due
     sched_unlock_irqrestore(flags);
     return 0;
-}
-
-void signal_send(task_t *task, int sig) {
-    uint64_t flags = sched_lock_irqsave();
-    signal_send_locked(task, sig);
-    sched_unlock_irqrestore(flags);
 }
 
 void signal_send_locked(task_t *task, int sig) {

@@ -10,11 +10,6 @@
 static char ring[KLOG_SIZE];
 static size_t total_written = 0; // Bytes ever appended; the newest is at (total_written - 1) % KLOG_SIZE
 
-void klog_init(void) {
-    // Nothing to set up: the buffer is static and has been recording since
-    // the first kprintf. Kept so the boot sequence has one place to say so.
-}
-
 static spinlock_t klog_lock = SPINLOCK_RANKED("klog", LOCK_RANK_KLOG);
 
 void klog_force_unlock(void) {
