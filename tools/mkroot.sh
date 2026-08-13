@@ -52,4 +52,4 @@ mke2fs -q -t ext2 -O ^resize_inode,^dir_index,^ext_attr -b 1024 -L system -d "$s
     done < "$stage/etc/passwd"
 } | debugfs -w "$image" -f - >/dev/null 2>&1
 
-e2fsck -fn "$image" >/dev/null || { echo "e2fsck rejects $image" >&2; rm -f "$image"; exit 1; }
+e2fsck -fn "$image" >/dev/null 2>&1 || { echo "e2fsck rejects $image" >&2; rm -f "$image"; exit 1; }

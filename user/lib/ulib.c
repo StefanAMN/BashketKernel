@@ -455,6 +455,8 @@ void format_ip(uint32_t ip, char out[16]) {
 
 void tty_raw(int raw) { syscall1(SYS_TTY_RAW, raw); }
 
+long reboot(int restart) { return syscall1(SYS_REBOOT, restart); }
+
 int fb_info(struct fb_info *info) { return (int)syscall1(SYS_FB_INFO, (long)info); }
 
 void tty_size(unsigned *columns, unsigned *rows) {

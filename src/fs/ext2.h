@@ -72,6 +72,19 @@ typedef struct {
  */
 int ext2_check(ext2_check_t *report);
 
+/**
+ * @brief Mark the volume as unmounted cleanly, for the next mount to see
+ *        that no check is needed. Only at shutdown, once every process has
+ *        ended: anything written after it would make the mark a lie.
+ */
+void ext2_mark_clean(void);
+
+/**
+ * @brief Does the volume carry the clean mark? (While it is in use it does
+ *        not: the mark is taken away at mount.)
+ */
+bool ext2_volume_marked_clean(void);
+
 bool ext2_mounted(void);
 uint32_t ext2_free_blocks(void);
 uint32_t ext2_free_inodes(void);

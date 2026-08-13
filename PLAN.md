@@ -406,7 +406,7 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
 
 ---
 
-## Track D — A system that lives on its disk
+## Track D — A system that lives on its disk (done)
 
 Today `/` is a tree in memory, rebuilt from the boot image (the initrd) at
 every start: a new user, a changed password or a file outside `/home` and
@@ -454,7 +454,7 @@ is read, and a mount point can be neither removed nor renamed (`EBUSY`).
 - **Check:** `make test-boot`: boot the system entry, log in at the prompt,
   run commands in the shell, log out, log in again as another user.
 
-### D4. Shutdown and reboot (M)
+### D4. Shutdown and reboot (M) — done
 
 - A system call, root only, that ends every process (a terminate signal,
   then a kill after a grace period), writes everything out, marks each
