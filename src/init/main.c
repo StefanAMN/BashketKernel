@@ -262,7 +262,6 @@ void _start(void) {
     file_init();
     // Phase 7: Keyboard & Shell
     keyboard_init();
-    shell_init();
 
     // Phase 8: Advanced Memory Management (Slab, Refcounting, mmap)
     cow_init();

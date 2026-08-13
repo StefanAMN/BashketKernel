@@ -101,6 +101,7 @@ make test-smp                   # unit tests on 4 CPUs, then real programs on 2,
 make test-home                  # the ext2 system disk: owners across a reboot, e2fsck, damaged images (~40 s)
 make test-boot                  # the system image: init, /etc/rc, login, logout, Ctrl-C (~10 s)
 make test-shutdown              # a change survives a clean power-off; the next boot skips the check; restart (~20 s)
+make test-kshell                # the kernel shell's help, mount, bench and dmesg (~5 s)
 make test-rescue                # no system disk: the kernel runs the rescue system from its boot module (~10 s)
 make test-swap                  # 80 MiB used on a 64 MiB machine, with and without a swap disk (~30 s)
 make test-paint                 # /bin/paint driven by the mouse, screenshots checked (~10 s)
@@ -466,6 +467,12 @@ code comments and commit messages; `git log` is the full history.
   present, because making room at the start of that same fault had swapped
   out the page being written. Printing the numbers at the kill took one
   run; the theories before it were all wrong.
+- **A help text is a claim; test it against the dispatcher.** Removing a
+  stub took the `dmesg`, `mount` and `bench` branches of the kernel shell
+  with it; "help" went on listing them for months, and the README still
+  described `bench`. The shell is now one table that both print and
+  dispatch, and a test runs every entry. Found by the linker
+  (`tools/unused.sh`): the functions behind them had no callers.
 - **A sampled RIP beats reasoning about a hang.** The swap test "hung" in
   the victim search, run in full at every fault by a process that had
   nothing to give. `@monitor:info registers` three times, then

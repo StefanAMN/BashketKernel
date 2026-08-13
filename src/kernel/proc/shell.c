@@ -1,6 +1,12 @@
 /**
  * @file shell.c
- * @brief Implementation of Interactive Kernel Shell and Core Utilities
+ * @brief The kernel's own shell (see shell.h)
+ *
+ * Every command is one entry of `commands` below: its name, what it takes,
+ * one line of help, and the function that runs it. "help" prints the table
+ * and the dispatcher looks names up in it, so the two cannot disagree. (They
+ * once did: three commands were deleted by mistake along with something
+ * else, and "help" went on offering them for months.)
  */
 
 #include "shell.h"
@@ -18,8 +24,10 @@
 #include "klog.h"
 #include "mount.h"
 #include "bench.h"
-#include "crypto.h"
+#include "kerrno.h"
 
+// Read a decimal number from the start of `str` (stops at the first
+// non-digit; 0 if there is none)
 static int parse_int(const char *str) {
     int val = 0;
     while (*str >= '0' && *str <= '9') {
@@ -28,6 +36,9 @@ static int parse_int(const char *str) {
     }
     return val;
 }
+
+// --- Commands, one function each. `arg` is the rest of the line after the
+// command's name, without leading spaces ("" if there was nothing). --------------
 
 // Deliberate crashes, for checking that each fault is caught and reported.
 // noinline + volatile keep the compiler from optimizing the faults away.
@@ -40,7 +51,8 @@ __attribute__((noinline)) static uint64_t crash_recurse(uint64_t depth) {
 }
 #pragma GCC diagnostic pop
 
-static void shell_crash(const char *kind) {
+// crash KIND: cause the fault named KIND in the kernel, to see it reported
+static void cmd_crash(const char *kind) {
     if (strcmp(kind, "div0") == 0) {
         volatile int zero = 0;
         volatile int one = 1; // 1 / x with a constant 1 compiles to a compare, not a divide
@@ -77,9 +89,9 @@ static void shell_crash(const char *kind) {
     }
 }
 
-// Run a user program in the foreground: split the line into arguments,
-// start the process, and wait for it to exit.
-static void shell_exec(const char *args_line) {
+// exec PATH [ARGS]: run a user program in the foreground: split the line into
+// arguments, start the process, and wait for it to exit
+static void cmd_exec(const char *args_line) {
     char line[128];
     char *argv[PROCESS_MAX_ARGS + 1];
     size_t argc = 0;
@@ -103,11 +115,6 @@ static void shell_exec(const char *args_line) {
     }
     argv[argc] = NULL;
 
-    if (argc == 0) {
-        kprintf("usage: exec <path> [args...]\n");
-        return;
-    }
-
     pid_t pid = process_spawn(argv[0], argv);
     if (pid < 0) {
         kprintf("exec: cannot run '%s' (not found, or not a valid executable)\n", argv[0]);
@@ -121,127 +128,236 @@ static void shell_exec(const char *args_line) {
     }
 }
 
-void shell_run_cmd(const char *cmdline) {
-    if (!cmdline || cmdline[0] == '\0') return;
+// ls [DIR]: list a directory (default: the root), one entry per line
+static void cmd_ls(const char *path) {
+    vnode_t *dir = vfs_find(NULL, path[0] ? path : "/");
+    if (!dir || dir->type != VFS_DIRECTORY) {
+        kprintf("ls: '%s' is not a directory\n", path);
+        return;
+    }
+    vfs_lock();
+    vfs_load_dir(dir);
+    kprintf("TYPE  SIZE        NAME\n");
+    kprintf("----------------------------------------\n");
+    for (vnode_t *child = dir->children; child; child = child->next) {
+        const char *type_str = (child->type == VFS_DIRECTORY) ? "[DIR] " : "[FILE]";
+        kprintf("%s %zu bytes\t%s\n", type_str, child->size, child->name);
+    }
+    vfs_unlock();
+}
 
-    if (strcmp(cmdline, "help") == 0) {
-        kprintf("BashketOS Shell Core Utilities:\n");
-        kprintf("  help            - Display this help message\n");
-        kprintf("  ls              - List files in root directory\n");
-        kprintf("  cat <file>      - Display file contents\n");
-        kprintf("  echo <text>     - Echo text back to screen\n");
-        kprintf("  mem             - Display system memory statistics\n");
-        kprintf("  ps              - List active processes and tasks\n");
-        kprintf("  uptime          - Display system uptime and timer ticks\n");
-        kprintf("  date            - Display real-time clock UTC timestamp\n");
-        kprintf("  dmesg           - Display kernel log ring buffer\n");
-        kprintf("  mount           - Display active VFS mount table\n");
-        kprintf("  bench           - Execute kernel performance benchmarks\n");
-        kprintf("  touch <file>    - Create new empty file in VFS\n");
-        kprintf("  mkdir <dir>     - Create new directory in VFS\n");
-        kprintf("  rm <file>       - Remove file from VFS\n");
-        kprintf("  exec <path> [args] - Run a user program and wait for it\n");
-        kprintf("  kill <pid>      - Send SIGKILL signal to process\n");
-        kprintf("  clear           - Clear screen\n");
-        kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack, wtext, smap)\n");
-    } else if (strcmp(cmdline, "ls") == 0) {
-        vnode_t *root = vfs_get_root();
-        vfs_lock();
-        vfs_load_dir(root);
-        vfs_unlock();
-        if (!root || !root->children) {
-            kprintf("(empty directory)\n");
-            return;
-        }
+// cat FILE: print a file's contents
+static void cmd_cat(const char *filename) {
+    vnode_t *file = vfs_find(NULL, filename);
+    if (!file) {
+        kprintf("cat: file '%s' not found!\n", filename);
+        return;
+    }
+    if (file->type == VFS_DIRECTORY) {
+        kprintf("cat: '%s' is a directory\n", filename);
+        return;
+    }
 
-        vnode_t *child = root->children;
-        kprintf("TYPE  SIZE        NAME\n");
-        kprintf("----------------------------------------\n");
-        while (child) {
-            const char *type_str = (child->type == VFS_DIRECTORY) ? "[DIR] " : "[FILE]";
-            kprintf("%s %zu bytes\t%s\n", type_str, child->size, child->name);
-            child = child->next;
-        }
-    } else if (strncmp(cmdline, "cat ", 4) == 0) {
-        const char *filename = cmdline + 4;
-        vnode_t *file = vfs_find(NULL, filename);
-        if (!file) {
-            kprintf("cat: file '%s' not found!\n", filename);
-            return;
-        }
-        if (file->type == VFS_DIRECTORY) {
-            kprintf("cat: '%s' is a directory\n", filename);
-            return;
-        }
+    // Stop after 64 KiB: /dev/zero and /dev/random never end, and this
+    // shell has no Ctrl-C of its own
+    char buf[256];
+    size_t offset = 0;
+    size_t read_bytes;
+    while (offset < 64 * 1024 && (read_bytes = vfs_read(file, offset, sizeof(buf) - 1, buf)) > 0) {
+        buf[read_bytes] = '\0';
+        kprintf("%s", buf);
+        offset += read_bytes;
+    }
+    kprintf("\n");
+}
 
-        // Stop after 64 KiB: /dev/zero and /dev/random never end, and this
-        // shell has no Ctrl-C of its own
-        char buf[256];
-        size_t offset = 0;
-        size_t read_bytes;
-        while (offset < 64 * 1024 && (read_bytes = vfs_read(file, offset, sizeof(buf) - 1, buf)) > 0) {
-            buf[read_bytes] = '\0';
-            kprintf("%s", buf);
-            offset += read_bytes;
-        }
-        kprintf("\n");
-    } else if (strncmp(cmdline, "echo ", 5) == 0) {
-        kprintf("%s\n", cmdline + 5);
-    } else if (strcmp(cmdline, "mem") == 0) {
-        kprintf("Physical Memory:\n");
-        kprintf("  Total Frames: %zu (%zu MB)\n", pmm_get_total_frames(), (pmm_get_total_frames() * 4096) / (1024 * 1024));
-        kprintf("  Free Frames : %zu (%zu MB)\n", pmm_get_free_frames(), (pmm_get_free_frames() * 4096) / (1024 * 1024));
-        kprintf("Kernel Heap:\n");
-        kprintf("  Allocated Bytes: %zu bytes\n", kheap_get_allocated_bytes());
-    } else if (strcmp(cmdline, "ps") == 0) {
-        sched_print_tasks();
-    } else if (strcmp(cmdline, "uptime") == 0) {
-        uint64_t ticks = timer_ticks();
-        uint64_t seconds = ticks / TIMER_HZ;
-        kprintf("Uptime: %zu seconds (%zu ticks)\n", seconds, ticks);
-    } else if (strcmp(cmdline, "date") == 0) {
-        struct rtc_time t;
-        rtc_read_time(&t);
-        kprintf("Date (UTC): %d-%02d-%02d %02d:%02d:%02d\n", t.year, t.month, t.day, t.hour, t.minute, t.second);
-    } else if (strncmp(cmdline, "touch ", 6) == 0) {
-        const char *filename = cmdline + 6;
-        vnode_t *file = vfs_create_file(NULL, filename, "", 0);
-        if (file) {
-            kprintf("Created file '%s'\n", filename);
-        } else {
-            kprintf("touch: failed to create file '%s'\n", filename);
-        }
-    } else if (strncmp(cmdline, "mkdir ", 6) == 0) {
-        const char *dirname = cmdline + 6;
-        vnode_t *dir = vfs_create_dir(NULL, dirname);
-        if (dir) {
-            kprintf("Created directory '%s'\n", dirname);
-        } else {
-            kprintf("mkdir: failed to create directory '%s'\n", dirname);
-        }
-    } else if (strncmp(cmdline, "rm ", 3) == 0) {
-        const char *filename = cmdline + 3;
-        if (vfs_unlink(NULL, filename) == 0) {
-            kprintf("Removed '%s'\n", filename);
-        } else {
-            kprintf("rm: file '%s' not found\n", filename);
-        }
-    } else if (strncmp(cmdline, "exec ", 5) == 0) {
-        shell_exec(cmdline + 5);
-    } else if (strncmp(cmdline, "kill ", 5) == 0) {
-        int pid = parse_int(cmdline + 5);
-        if (process_kill(pid, SIGKILL) != 0) {
-            kprintf("kill: no such process %d\n", pid);
-        }
-    } else if (strncmp(cmdline, "crash ", 6) == 0) {
-        shell_crash(cmdline + 6);
-    } else if (strcmp(cmdline, "clear") == 0) {
-        kprintf("\033[2J\033[H"); // Erase the screen, cursor to the top left
-    } else {
-        kprintf("shell: command not found '%s'. Type 'help' for commands.\n", cmdline);
+// echo TEXT: print TEXT
+static void cmd_echo(const char *text) {
+    kprintf("%s\n", text);
+}
+
+// mem: frames in use and free, and the kernel heap
+static void cmd_mem(const char *arg) {
+    (void)arg;
+    kprintf("Physical Memory:\n");
+    kprintf("  Total Frames: %zu (%zu MB)\n", pmm_get_total_frames(), (pmm_get_total_frames() * 4096) / (1024 * 1024));
+    kprintf("  Free Frames : %zu (%zu MB)\n", pmm_get_free_frames(), (pmm_get_free_frames() * 4096) / (1024 * 1024));
+    kprintf("Kernel Heap:\n");
+    kprintf("  Allocated Bytes: %zu bytes\n", kheap_get_allocated_bytes());
+}
+
+// ps: every task, with its state
+static void cmd_ps(const char *arg) {
+    (void)arg;
+    sched_print_tasks();
+}
+
+// uptime: time since boot, in seconds and ticks
+static void cmd_uptime(const char *arg) {
+    (void)arg;
+    uint64_t ticks = timer_ticks();
+    kprintf("Uptime: %zu seconds (%zu ticks)\n", ticks / TIMER_HZ, ticks);
+}
+
+// date: the real-time clock's date and time
+static void cmd_date(const char *arg) {
+    (void)arg;
+    struct rtc_time t;
+    rtc_read_time(&t);
+    kprintf("Date (UTC): %d-%02d-%02d %02d:%02d:%02d\n", t.year, t.month, t.day, t.hour, t.minute, t.second);
+}
+
+// dmesg: the kernel's log since boot
+static void cmd_dmesg(const char *arg) {
+    (void)arg;
+    klog_print_dmesg();
+}
+
+// mount: what provides which part of the file tree
+static void cmd_mount(const char *arg) {
+    (void)arg;
+    vfs_list_mounts();
+}
+
+// bench: time memory copying and allocation, and print the rates
+static void cmd_bench(const char *arg) {
+    (void)arg;
+    bench_run_all();
+}
+
+// What a negative error number from the file layer means, in words
+static const char *error_text(int err) {
+    switch (-err) {
+        case ENOENT:    return "no such file or directory";
+        case EEXIST:    return "it exists already";
+        case ENOTDIR:   return "not a directory";
+        case ENOTEMPTY: return "the directory is not empty";
+        case EBUSY:     return "in use";
+        case EROFS:     return "read-only";
+        case EACCES:    return "permission denied";
+        case ENOSPC:    return "no space left";
+        case EINVAL:    return "not a valid name";
+        case ENOMEM:    return "out of memory";
+        default:        return "failed";
     }
 }
 
-void shell_init(void) {
-    kprintf("Interactive Shell Init: Shell system ready.\n");
+// The directory that will hold `path` (a new name in it), or NULL with a
+// message if there is none. *leaf receives the new name.
+static vnode_t *parent_for(const char *command, const char *path, const char **leaf) {
+    vnode_t *parent = vfs_find_parent(path, leaf);
+    if (!parent || !*leaf || (*leaf)[0] == '\0') {
+        kprintf("%s: no such directory for '%s'\n", command, path);
+        return NULL;
+    }
+    return parent;
+}
+
+// touch FILE: create an empty file
+static void cmd_touch(const char *path) {
+    const char *leaf;
+    vnode_t *parent = parent_for("touch", path, &leaf);
+    if (!parent) return;
+    int err = vfs_create(parent, leaf, VFS_FILE, NULL);
+    if (err == 0) kprintf("Created file '%s'\n", path);
+    else kprintf("touch: cannot create '%s': %s\n", path, error_text(err));
+}
+
+// mkdir DIR: create a directory
+static void cmd_mkdir(const char *path) {
+    const char *leaf;
+    vnode_t *parent = parent_for("mkdir", path, &leaf);
+    if (!parent) return;
+    int err = vfs_create(parent, leaf, VFS_DIRECTORY, NULL);
+    if (err == 0) kprintf("Created directory '%s'\n", path);
+    else kprintf("mkdir: cannot create '%s': %s\n", path, error_text(err));
+}
+
+// rm PATH: remove a file or an empty directory
+static void cmd_rm(const char *path) {
+    const char *leaf;
+    vnode_t *parent = parent_for("rm", path, &leaf);
+    if (!parent) return;
+    int err = vfs_unlink(parent, leaf);
+    if (err == 0) kprintf("Removed '%s'\n", path);
+    else kprintf("rm: cannot remove '%s': %s\n", path, error_text(err));
+}
+
+// kill PID: end a process (SIGKILL)
+static void cmd_kill(const char *arg) {
+    int pid = parse_int(arg);
+    if (process_kill(pid, SIGKILL) != 0) {
+        kprintf("kill: no such process %d\n", pid);
+    }
+}
+
+// clear: blank the screen
+static void cmd_clear(const char *arg) {
+    (void)arg;
+    kprintf("\033[2J\033[H"); // Erase the screen, cursor to the top left
+}
+
+static void cmd_help(const char *arg);
+
+static const shell_command_t commands[] = {
+    { "help",   "",              "this list",                                     false, cmd_help },
+    { "ls",     "[dir]",         "list a directory (the root if none is named)",  false, cmd_ls },
+    { "cat",    "<file>",        "print a file",                                  true,  cmd_cat },
+    { "echo",   "<text>",        "print text",                                    true,  cmd_echo },
+    { "mem",    "",              "memory: frames used and free, the kernel heap", false, cmd_mem },
+    { "ps",     "",              "every task and its state",                      false, cmd_ps },
+    { "uptime", "",              "time since boot",                               false, cmd_uptime },
+    { "date",   "",              "the real-time clock (UTC)",                     false, cmd_date },
+    { "dmesg",  "",              "the kernel's log",                              false, cmd_dmesg },
+    { "mount",  "",              "what provides which part of the file tree",     false, cmd_mount },
+    { "bench",  "",              "time memory copying and allocation",            false, cmd_bench },
+    { "touch",  "<file>",        "create an empty file",                          true,  cmd_touch },
+    { "mkdir",  "<dir>",         "create a directory",                            true,  cmd_mkdir },
+    { "rm",     "<path>",        "remove a file or an empty directory",           true,  cmd_rm },
+    { "exec",   "<path> [args]", "run a program and wait for it",                 true,  cmd_exec },
+    { "kill",   "<pid>",         "end a process (SIGKILL)",                       true,  cmd_kill },
+    { "clear",  "",              "blank the screen",                              false, cmd_clear },
+    { "crash",  "<kind>",        "cause a fault: div0, pf, stack, wtext, smap",   true,  cmd_crash },
+};
+#define COMMAND_COUNT (sizeof(commands) / sizeof(commands[0]))
+
+// help: every command, from the table
+static void cmd_help(const char *arg) {
+    (void)arg;
+    kprintf("The kernel shell's commands:\n");
+    for (size_t i = 0; i < COMMAND_COUNT; i++) {
+        char usage[32];
+        size_t length = ksnprintf(usage, sizeof(usage), "%s %s", commands[i].name, commands[i].args);
+        while (length < 21 && length < sizeof(usage) - 1) usage[length++] = ' '; // A column for the help
+        usage[length] = '\0';
+        kprintf("  %s %s\n", usage, commands[i].help);
+    }
+}
+
+const shell_command_t *shell_commands(size_t *count) {
+    *count = COMMAND_COUNT;
+    return commands;
+}
+
+void shell_run_cmd(const char *cmdline) {
+    if (!cmdline) return;
+    while (*cmdline == ' ') cmdline++;
+    if (cmdline[0] == '\0') return;
+
+    // The command's name is the first word; the argument is the rest
+    size_t name_length = 0;
+    while (cmdline[name_length] && cmdline[name_length] != ' ') name_length++;
+    const char *arg = cmdline + name_length;
+    while (*arg == ' ') arg++;
+
+    for (size_t i = 0; i < COMMAND_COUNT; i++) {
+        if (strlen(commands[i].name) != name_length || strncmp(commands[i].name, cmdline, name_length) != 0) continue;
+        if (commands[i].needs_arg && arg[0] == '\0') {
+            kprintf("usage: %s %s\n", commands[i].name, commands[i].args);
+            return;
+        }
+        commands[i].run(arg);
+        return;
+    }
+    kprintf("shell: command not found '%s'. Type 'help' for commands.\n", cmdline);
 }
