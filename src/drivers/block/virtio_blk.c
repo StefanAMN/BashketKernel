@@ -27,7 +27,6 @@
 #include "interrupts.h"
 #include "virtqueue.h"
 
-extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
 
 #define CONFIG_CAPACITY 0 // Device configuration: 64 bits, the disk size in sectors

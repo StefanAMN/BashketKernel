@@ -41,10 +41,6 @@ void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t regs[4]) {
                  : "a"(leaf), "c"(subleaf));
 }
 
-static uint64_t read_efer(void) {
-    return rdmsr(MSR_EFER);
-}
-
 static bool has_smep = false, has_umip = false, has_smap = false;
 static bool nx_enabled = false; // The boot CPU has EFER.NXE set (the bootloader does it)
 
@@ -79,12 +75,12 @@ void cpu_protection_init(void) {
         has_umip = (r[2] >> 2) & 1;  // ECX bit 2
     }
 
-    nx_enabled = (read_efer() & EFER_NXE) != 0;
+    nx_enabled = (rdmsr(MSR_EFER) & EFER_NXE) != 0;
     if (has_smap) cpu_smap_enabled = true;
     cpu_protection_enable_on_this_cpu();
 
     ksnprintf(summary, sizeof(summary), "%swp%s%s%s",
-              (read_efer() & EFER_NXE) ? "nx " : "",
+              nx_enabled ? "nx " : "",
               has_smep ? " smep" : "",
               has_smap ? " smap" : "",
               has_umip ? " umip" : "");

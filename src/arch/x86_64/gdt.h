@@ -84,14 +84,18 @@ struct gdt_ptr {
 } __attribute__((packed));
 
 /**
- * @brief Initialize GDT entries (Null, Kernel Code, Kernel Data, User Code, User Data, TSS)
- * and load them into the CPU GDTR register.
+ * @brief Fill the GDT (null, kernel code and data, user data and code), load
+ *        it on the boot CPU and reload every segment register, then set up
+ *        the boot CPU's per-CPU structure and TSS (cpu_init_this). Call once,
+ *        first thing at boot.
  */
 void gdt_init(void);
 
 /**
- * @brief Set Ring 0 Kernel Stack Pointer inside TSS.
- * @param rsp The kernel stack pointer to use when entering Ring 0.
+ * @brief Set the stack the calling CPU switches to when an interrupt or
+ *        exception arrives in ring 3 (its TSS's RSP0). The scheduler sets it
+ *        to the top of the incoming task's kernel stack at every switch.
+ *        Interrupts must be off (it writes this CPU's TSS).
  */
 void tss_set_rsp0(uint64_t rsp);
 

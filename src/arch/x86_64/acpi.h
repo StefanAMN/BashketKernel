@@ -18,11 +18,22 @@
 #define ACPI_INTI_LEVEL_TRIGGERED 0xC
 
 /**
- * @brief Parse the MADT and record its Interrupt Source Overrides.
- * @param rsdp Virtual address of the RSDP as handed over by Limine.
+ * @brief Walk the tables the RSDP leads to: record the MADT's I/O APIC and
+ *        Interrupt Source Overrides, and from the FADT and DSDT what powering
+ *        off and resetting need. Call once, at boot, after the memory
+ *        manager (tables are read through the direct map).
+ * @param rsdp Virtual address of the RSDP as handed over by Limine (NULL:
+ *        no ACPI; ISA IRQs are then assumed to map 1:1).
  * @return true if a MADT was found.
  */
 bool acpi_init(void *rsdp);
+
+/**
+ * @brief Where the first I/O APIC's registers are and the first GSI it
+ *        handles, as the MADT says.
+ * @return false if the MADT listed none (or there is no MADT).
+ */
+bool acpi_ioapic(uint64_t *phys, uint32_t *gsi_base);
 
 /**
  * @brief Translate a legacy ISA IRQ (0..15) to its Global System Interrupt.

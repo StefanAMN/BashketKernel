@@ -38,6 +38,7 @@ static volatile uint32_t scheduling_started = 0;
 // it waits with interrupts off (taking a spinlock, waiting for another CPU),
 // because the CPU that asked may be holding the very lock it is waiting for.
 
+// Drop every cached translation on the calling CPU, global pages included
 static void flush_whole_tlb(void) {
     uint64_t cr4;
     asm volatile("mov %0, cr4" : "=r"(cr4));
@@ -236,6 +237,9 @@ void smp_init(struct LIMINE_MP(response) *response) {
         next_id++;
         __atomic_store_n(&cpu->goto_address, ap_entry, __ATOMIC_SEQ_CST);
     }
+    // Only the CPUs that were given what they need were started; the
+    // others (memory ran out) are not waited for or counted
+    cpu_total = next_id;
 
     // Give them a moment to arrive (they are already running, in parallel)
     uint64_t deadline = timer_ticks() + 20;
@@ -251,8 +255,4 @@ size_t smp_get_cpu_count(void) {
 
 size_t smp_get_cpu_total(void) {
     return cpu_total;
-}
-
-per_cpu_t *smp_get_per_cpu(uint32_t cpu_id) {
-    return cpu_get(cpu_id);
 }

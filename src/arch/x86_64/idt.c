@@ -12,7 +12,10 @@ static struct idt_ptr idt_pointer;
 // Array of 256 ISR stub pointers defined in isr_stubs.S
 extern uint64_t isr_stub_table[256];
 
-void idt_set_gate(uint8_t num, uint64_t base, uint16_t selector, uint8_t flags) {
+// Fill gate `num`: the handler's address `base`, the code segment it runs
+// in, and the type and attribute byte `flags` (0x8E: present, DPL 0, 64-bit
+// interrupt gate). No interrupt stack (IST 0).
+static void idt_set_gate(uint8_t num, uint64_t base, uint16_t selector, uint8_t flags) {
     idt_entries[num].offset_low     = (base & 0xFFFF);
     idt_entries[num].offset_middle  = (base >> 16) & 0xFFFF;
     idt_entries[num].offset_high    = (base >> 32) & 0xFFFFFFFF;

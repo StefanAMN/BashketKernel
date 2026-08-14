@@ -29,15 +29,15 @@ TEST(smp_cpus_report_in) {
     EXPECT_TRUE(smp_get_cpu_total() >= 1 && smp_get_cpu_total() <= MAX_CPUS);
     EXPECT_TRUE(smp_get_cpu_count() == smp_get_cpu_total());
 
-    per_cpu_t *bsp = smp_get_per_cpu(0);
+    cpu_t *bsp = cpu_get(0);
     EXPECT_TRUE(bsp != NULL && bsp->active);
-    EXPECT_TRUE(smp_get_per_cpu(MAX_CPUS) == NULL);
+    EXPECT_TRUE(cpu_get(MAX_CPUS) == NULL);
 
     // Each started CPU has its own hardware identifier
     for (uint32_t i = 0; i < smp_get_cpu_total(); i++) {
-        EXPECT_TRUE(smp_get_per_cpu(i)->active);
+        EXPECT_TRUE(cpu_get(i)->active);
         for (uint32_t j = 0; j < i; j++) {
-            EXPECT_TRUE(smp_get_per_cpu(i)->lapic_id != smp_get_per_cpu(j)->lapic_id);
+            EXPECT_TRUE(cpu_get(i)->lapic_id != cpu_get(j)->lapic_id);
         }
     }
 }
