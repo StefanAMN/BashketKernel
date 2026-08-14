@@ -80,7 +80,18 @@ void swap_relieve_pressure(void);
 
 // Slots are counted, because fork gives parent and child the same one.
 // Called by the address space code (vmm.c) as entries are copied and dropped.
+
+/**
+ * @brief One more page-table entry refers to `slot` (fork copied one).
+ *        Numbers outside the swap disk are ignored.
+ */
 void swap_slot_ref(uint32_t slot);
+
+/**
+ * @brief One entry fewer refers to `slot` (it was read back, unmapped, or its
+ *        address space destroyed); with the last, the slot is free again.
+ *        Numbers outside the swap disk are ignored.
+ */
 void swap_slot_unref(uint32_t slot);
 
 #endif // SWAP_H

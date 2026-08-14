@@ -35,6 +35,11 @@ typedef struct {
  * each take the lock and also call one another.
  */
 void mutex_lock(mutex_t *mutex);
+
+/**
+ * @brief Give the mutex up once (it is free again when every mutex_lock by
+ *        its owner has been matched), and wake a task waiting for it.
+ */
 void mutex_unlock(mutex_t *mutex);
 
 /**

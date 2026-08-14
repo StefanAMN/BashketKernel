@@ -16,16 +16,11 @@
 #include "virtio_blk.h"
 #include "bcache.h"
 #include "kerrno.h"
+#include "cpu.h"
 #include "mount.h"
 #include "console.h"
 #include "mouse.h"
 #include "kerrno.h"
-
-static inline uint64_t rdtsc(void) {
-    uint32_t low, high;
-    asm volatile("rdtsc" : "=a"(low), "=d"(high));
-    return ((uint64_t)high << 32) | low;
-}
 
 // --- Device operations -------------------------------------------------------
 

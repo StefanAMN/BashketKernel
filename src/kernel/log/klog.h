@@ -15,8 +15,6 @@
 
 #define KLOG_SIZE (64 * 1024)
 
-void klog_init(void);
-
 /**
  * @brief Append one character. Called by kprintf for every character it
  *        prints. Needs no initialisation; safe from any CPU and from

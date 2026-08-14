@@ -53,6 +53,9 @@ void timer_periodic_tick(void);
  */
 bool timer_start_one_shot(void);
 
+/**
+ * @brief Are the one-shot timers in use (rather than the periodic tick)?
+ */
 bool timer_is_one_shot(void);
 
 /**
