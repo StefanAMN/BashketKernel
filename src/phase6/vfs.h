@@ -62,4 +62,21 @@ vnode_t *vfs_create_dir(vnode_t *parent, const char *name);
  */
 size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf);
 
+/**
+ * @brief Delete/unlink file or empty directory node from VFS.
+ * @param parent Directory vnode containing the file.
+ * @param name File or directory name to delete.
+ * @return 0 on success, -1 on failure.
+ */
+int vfs_unlink(vnode_t *parent, const char *name);
+
+/**
+ * @brief Query metadata statistics for a VFS vnode.
+ * @param node VFS node to query.
+ * @param out_size Pointer to store file size.
+ * @param out_type Pointer to store node type.
+ * @return 0 on success, -1 on failure.
+ */
+int vfs_stat(vnode_t *node, size_t *out_size, uint32_t *out_type);
+
 #endif // VFS_H

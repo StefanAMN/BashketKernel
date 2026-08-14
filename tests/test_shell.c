@@ -15,8 +15,13 @@ TEST(shell_commands) {
     shell_run_cmd("cat readme.txt");
     shell_run_cmd("echo Hello Shell Test!");
     shell_run_cmd("mem");
+    shell_run_cmd("ps");
+    shell_run_cmd("uptime");
+    shell_run_cmd("touch newfile.txt");
+    shell_run_cmd("mkdir testdir");
+    shell_run_cmd("rm newfile.txt");
 
-    EXPECT_TRUE(true);
+    EXPECT_TRUE(vfs_find(NULL, "testdir") != NULL);
 }
 
 void test_suite_shell(void) {

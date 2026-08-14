@@ -32,6 +32,9 @@
 #include "pci.h"
 #include "virtio_net.h"
 #include "boot_loader.h"
+#include "mouse.h"
+#include "cursor.h"
+#include "user_apps.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -195,7 +198,16 @@ void _start(void) {
     boot_loader_init();
     kprintf("Phase 14 Custom x86_64 Bootloader verification complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 14)
+    // Phase 15: PS/2 Mouse Driver & Framebuffer Canvas
+    mouse_init();
+    cursor_init();
+    kprintf("Phase 15 PS/2 Mouse Driver & Canvas initialization complete.\n");
+
+    // Phase 16: Userland Environment & Built-in ELF Programs
+    user_apps_init();
+    kprintf("Phase 16 Userland Apps & Binaries initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 16)
     run_all_tests();
 
     // Create interactive shell task
