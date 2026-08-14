@@ -32,6 +32,7 @@
 #define ESPIPE  29
 #define EROFS   30   // Read-only filesystem   // Illegal seek
 #define EPIPE   32   // Broken pipe
+#define ENAMETOOLONG 36 // A name longer than a directory entry can hold
 #define ENOSYS  38
 #define EMSGSIZE     90  // Message too long
 #define EADDRINUSE   98  // Port already in use

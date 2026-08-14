@@ -6,14 +6,15 @@
  * VFS. File contents stay on the disk: they are read when asked for and
  * written straight through, so what is saved survives a reboot.
  *
- * Supported: reading and writing files, creating and removing files and
- * directories, short (8.3) names, any cluster size. Names are stored in upper
- * case with the "show in lower case" flags; a name with mixed case or longer
- * than 8.3 cannot be created. Long file name entries are skipped when
- * reading, so such a file appears under its short alias.
+ * Supported: reading and writing files, creating, removing and renaming
+ * files and directories, long names (ASCII, up to 127 characters; their
+ * short aliases are made up as Windows does) and short ones (stored in
+ * upper case with the "show in lower case" flags), modification times from
+ * the real-time clock, any cluster size. Names are compared without case.
  *
- * Not supported: long names, renaming, timestamps (a fixed date is written),
- * and recovery after a crash in the middle of a change (no journal).
+ * Not supported: owners and permission bits (FAT has nowhere to keep them:
+ * everything belongs to root, mode 0755), names outside ASCII, and recovery
+ * after a crash in the middle of a change (no journal: run fsck.fat).
  *
  * Everything read from the disk is treated as untrusted: sizes and cluster
  * numbers are range-checked and cluster chains are length-limited, so a
@@ -48,13 +49,18 @@ typedef struct {
 bool fat32_parse_boot_sector(const uint8_t *sector, uint64_t disk_sectors, fat32_layout_t *out);
 
 /**
- * @brief Mount the disk's FAT32 volume at `mount_point` (created if needed).
- *        `mount_point` must be a string that stays valid (a constant).
- * @return Number of files found, or -1 if there is no disk, it does not
- *         hold a FAT32 volume, or the mount point cannot be used.
+ * @brief Mount the FAT32 volume on the first disk at `mount_point` (a mount
+ *        point is made there: vfs_mount_dir). `mount_point` must be a string
+ *        that stays valid (a constant). Nothing is read but the boot sector
+ *        until someone looks inside.
+ * @return 0, or -1 if there is no disk, it does not hold a FAT32 volume, a
+ *         volume is mounted already, or the mount point cannot be used.
  */
 int fat32_mount(const char *mount_point);
 
+/**
+ * @brief Whether the FAT32 volume is mounted.
+ */
 bool fat32_mounted(void);
 
 /**
@@ -62,10 +68,5 @@ bool fat32_mounted(void);
  *        and diagnostics).
  */
 uint32_t fat32_free_clusters(void);
-
-#ifdef KERNEL_TESTS
-struct vnode;
-bool fat32_forget_directory(struct vnode *dir);
-#endif
 
 #endif // FAT32_H

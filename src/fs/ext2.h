@@ -4,9 +4,10 @@
  *
  * FAT has no place to record who a file belongs to or who may read it. ext2,
  * the classic Linux filesystem, has: each file is an "inode" holding its
- * owner, group, permission bits and times, as Unix means them. A volume in
- * this format on the second disk is mounted at /home, so that users' files
- * keep their owners and modes across a reboot.
+ * owner, group, permission bits and times, as Unix means them. The system
+ * disk is in this format and is mounted as the root ("/"), so that the
+ * system and users' files keep their owners and modes across a reboot. One
+ * ext2 volume can be mounted at a time.
  *
  * What is implemented: reading and writing files (up to the doubly indirect
  * block: about 64 MiB with 1 KiB blocks), creating and removing files and
@@ -39,8 +40,10 @@ typedef struct {
 
 /**
  * @brief Read and check a superblock (the 1024 bytes at byte 1024 of the
- *        volume). False for anything that is not an ext2 volume this driver
- *        can use, including one with features it does not know.
+ *        volume) of a disk of `disk_sectors` sectors, and fill *out. False
+ *        for anything that is not an ext2 volume this driver can use,
+ *        including one with features it does not know or one larger than
+ *        the disk.
  */
 bool ext2_parse_superblock(const uint8_t *superblock, uint64_t disk_sectors, ext2_layout_t *out);
 
@@ -48,8 +51,10 @@ bool ext2_parse_superblock(const uint8_t *superblock, uint64_t disk_sectors, ext
  * @brief Mount the ext2 volume on disk number `disk` at `mount_point`:
  *        "/" makes it the root of the whole tree (the root directory the
  *        VFS starts with, still empty, takes on the volume's root), any
- *        other path a mount point (vfs_mount_dir). Checks the volume and
- *        repairs what an interrupted write left (ext2_check) first.
+ *        other path a mount point (vfs_mount_dir). Unless the volume carries
+ *        the clean mark of an orderly shutdown, checks it and repairs what
+ *        an interrupted write left (ext2_check) first; then removes the
+ *        mark for as long as it is in use. Sleeps on the disk.
  * @return 0, or -1 if there is no usable volume or one is mounted already.
  */
 int ext2_mount(const char *mount_point, unsigned disk);
@@ -65,10 +70,14 @@ typedef struct {
 } ext2_check_t;
 
 /**
- * @brief Walk the whole volume and make its bitmaps, link counts and free
- *        counts agree with what is reachable from the root. Run at every
- *        mount: it is what makes an interrupted write harmless. If it finds
- *        damage it does not understand, it frees nothing.
+ * @brief Walk the whole volume and make its bitmaps, link counts, sizes and
+ *        free counts agree with what is reachable from the root. Run at
+ *        mount when the volume was not shut down cleanly: it is what makes
+ *        an interrupted write harmless. If it finds damage it does not
+ *        understand, it frees nothing. *report (if not NULL) says what it
+ *        did.
+ * @return 0, or -1 if nothing is mounted or there was not enough memory to
+ *         look (the volume is then left as it was).
  */
 int ext2_check(ext2_check_t *report);
 
@@ -85,13 +94,24 @@ void ext2_mark_clean(void);
  */
 bool ext2_volume_marked_clean(void);
 
+/**
+ * @brief Whether an ext2 volume is mounted.
+ */
 bool ext2_mounted(void);
+
+/**
+ * @brief Free blocks and free inodes on the mounted volume (0 if none is).
+ */
 uint32_t ext2_free_blocks(void);
 uint32_t ext2_free_inodes(void);
 
 #ifdef KERNEL_TESTS
 struct vnode;
-bool ext2_forget_directory(struct vnode *dir);
+/**
+ * @brief For tests: leave the damage interrupted writes would (a block and
+ *        an inode in use that nothing names; one link too many on the given
+ *        file, if any), for ext2_check to find.
+ */
 bool ext2_test_damage(struct vnode *file_with_extra_link);
 #endif
 

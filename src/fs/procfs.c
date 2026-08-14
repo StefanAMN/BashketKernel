@@ -26,8 +26,14 @@
 
 #define PROC_TEXT_MAX 4096
 
+// Writes a /proc file's whole current text into `buf` (at most `size`
+// bytes, NUL-terminated) and returns its length. Must not sleep: some hold
+// spinlocks while they format.
 typedef size_t (*proc_generator_t)(char *buf, size_t size);
 
+// Run `generate` into a temporary buffer and copy out `count` bytes from
+// `offset` into the kernel buffer `buf`. Returns the bytes copied (0 past
+// the end) or -ENOMEM. Text beyond PROC_TEXT_MAX is cut off.
 static int64_t serve_text(proc_generator_t generate, size_t offset, void *buf, size_t count) {
     char *text = kmalloc(PROC_TEXT_MAX);
     if (!text) return -ENOMEM;
@@ -44,10 +50,14 @@ static int64_t serve_text(proc_generator_t generate, size_t offset, void *buf, s
     return (int64_t)n;
 }
 
+// The generators: one per file, each named after it
+
+// /proc/version: the kernel's name and version
 static size_t gen_version(char *buf, size_t size) {
     return ksnprintf(buf, size, "BashketOS 0.1.0 x86_64\n");
 }
 
+// /proc/uptime: seconds since boot, and the tick count
 static size_t gen_uptime(char *buf, size_t size) {
     uint64_t ticks = timer_ticks();
     uint64_t hundredths = (ticks % TIMER_HZ) * 100 / TIMER_HZ;
@@ -56,6 +66,7 @@ static size_t gen_uptime(char *buf, size_t size) {
                      ticks, (unsigned)TIMER_HZ);
 }
 
+// /proc/meminfo: frames, promised pages, swap and the kernel heap
 static size_t gen_meminfo(char *buf, size_t size) {
     return ksnprintf(buf, size,
                      "MemTotal:   %lu kB\n"
@@ -78,6 +89,7 @@ static size_t gen_meminfo(char *buf, size_t size) {
                      (uint64_t)kheap_get_failed_allocations());
 }
 
+// /proc/tasks: one line per task (taken under the scheduler lock)
 static size_t gen_tasks(char *buf, size_t size) {
     static const char *const state_names[] = { "ready  ", "running", "blocked", "zombie ", "stopped" };
     size_t len = ksnprintf(buf, size, "PID\tPPID\tUID\tSTATE\tKIND\tPRIO\tTICKS\tCPU\tNAME\n");
@@ -95,10 +107,12 @@ static size_t gen_tasks(char *buf, size_t size) {
     return len;
 }
 
+// /proc/timers: the timer subsystem's own report (timer_describe)
 static size_t gen_timers(char *buf, size_t size) {
     return timer_describe(buf, size);
 }
 
+// /proc/cpuinfo: CPUID's vendor, brand, family and model, CPUs, protections
 static size_t gen_cpuinfo(char *buf, size_t size) {
     uint32_t r[4];
 
@@ -133,16 +147,19 @@ static size_t gen_cpuinfo(char *buf, size_t size) {
                      "model name: %s\n"
                      "family:     %u\n"
                      "model:      %u\n"
-                     "cpus:       %lu started, 1 running tasks\n"
+                     "cpus:       %lu started, %u running tasks\n"
                      "protection: %s\n",
-                     vendor, brand, family, model, (uint64_t)smp_get_cpu_count(), cpu_protection_summary());
+                     vendor, brand, family, model, (uint64_t)smp_get_cpu_count(), sched_running_count(),
+                     cpu_protection_summary());
 }
 
+// /proc/mounts: the mount table (mount_describe)
 static size_t gen_mounts(char *buf, size_t size) {
     return mount_describe(buf, size);
 }
 
-// One read function and one ops table per file
+// One read function and one ops table per file: read_<name> serves
+// gen_<name>'s text, ops_<name> is what the node is created with
 #define PROC_FILE(name) \
     static int64_t read_##name(vnode_t *node, size_t offset, void *buf, size_t count) { \
         (void)node; \

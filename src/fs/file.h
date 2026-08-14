@@ -73,20 +73,22 @@ struct dirent_info {
 void file_init(void);
 
 /**
- * @brief Open a path. On success *out holds a file with one reference.
- * @return 0 or a negative error number.
+ * @brief Open a path for the kernel itself (no permission checks; relative
+ *        paths start at the root). On success *out holds a file with one
+ *        reference. `flags`: O_RDONLY, O_WRONLY or O_RDWR, with O_CREAT,
+ *        O_TRUNC, O_APPEND.
+ * @return 0 or a negative error number (ENOENT, EISDIR to write a
+ *         directory, EROFS, EACCES, ENOMEM, or the device's refusal).
  */
 int file_open(const char *path, int flags, file_t **out);
 
 /**
- * @brief As file_open, with relative paths starting at `base` (NULL: the root).
- */
-int file_open_at(vnode_t *base, const char *path, int flags, file_t **out);
-
-/**
- * @brief As file_open_at, on behalf of user `uid`: the file's (and, when
+ * @brief As file_open, on behalf of user `uid` and with relative paths
+ *        starting at `base` (NULL: the root): the file's (and, when
  *        creating, the directory's) permissions must allow it, and a file
- *        created belongs to that user.
+ *        created belongs to that user. O_CREAT of "name/" creates "name".
+ *        Takes the tree lock; may sleep (a directory read from a disk, a
+ *        device's `opened`).
  */
 int file_open_as(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out);
 
@@ -119,25 +121,42 @@ file_t *file_open_tcp(struct tcp_socket *tcp);
 file_t *file_dup(file_t *file);
 
 /**
- * @brief Drop a reference; the file is really closed when the last one goes.
+ * @brief Drop a reference; the file is really closed when the last one goes
+ *        (the node's open count drops, a pipe end or socket is closed).
+ *        May sleep: call without spinlocks held.
  */
 void file_close(file_t *file);
 
 /**
- * @brief Close every descriptor in a table and clear it.
+ * @brief Close every descriptor in a table and clear it (each slot is
+ *        emptied before its file is closed). May sleep.
  */
 void file_close_all(file_t *fds[TASK_MAX_FDS]);
 
 /**
- * @brief Read/write at the file's position. May sleep (console, pipes).
- * @return Bytes transferred, 0 at end-of-file, or a negative error number.
+ * @brief Read up to `count` bytes at the file's position into the kernel
+ *        buffer `buf`, and move the position past them. May sleep (console,
+ *        pipes, sockets, disks).
+ * @return Bytes read, 0 at end-of-file, or a negative error number (EBADF
+ *         if not open for reading, EISDIR for a directory, EINVAL for a UDP
+ *         socket, or the device's error).
  */
 int64_t file_read(file_t *file, void *buf, size_t count);
+
+/**
+ * @brief Write `count` bytes from the kernel buffer `buf` at the file's
+ *        position (at its end with O_APPEND), and move the position past
+ *        them. May sleep.
+ * @return Bytes written or a negative error number (EBADF, ENOSPC when a
+ *         file kept in memory cannot grow, EPIPE, the device's error).
+ */
 int64_t file_write(file_t *file, const void *buf, size_t count);
 
 /**
- * @brief Move the position of a regular file.
- * @return The new position or a negative error number.
+ * @brief Move the position of a regular file: to `offset` from the start
+ *        (SEEK_SET), the current position (SEEK_CUR) or the end (SEEK_END).
+ * @return The new position, or -ESPIPE for anything but a file, -EINVAL
+ *         for a position below 0 or above 1 GiB.
  */
 int64_t file_seek(file_t *file, int64_t offset, int whence);
 

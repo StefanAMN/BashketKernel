@@ -85,6 +85,8 @@ int64_t pipe_write(pipe_t *pipe, const void *buf, size_t count) {
     return (int64_t)done;
 }
 
+// Mark one end (`end` points at reader_open or writer_open) closed, wake
+// whoever waits at the other, and free the pipe if both ends are now closed
 static void close_end(pipe_t *pipe, bool *end) {
     if (!pipe) return;
 
