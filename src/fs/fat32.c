@@ -102,6 +102,7 @@ static bool fsinfo_invalidated = false;
 static uint8_t fat_cache[SECTOR];
 static uint32_t fat_cache_sector = 0; // 0: nothing cached (sector 0 is never part of the FAT)
 
+// Little-endian fields at any alignment: read 16 and 32 bits at `p`
 static uint16_t read16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t read32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 
@@ -147,10 +148,12 @@ bool fat32_parse_boot_sector(const uint8_t *sector, uint64_t disk_sectors, fat32
     return true;
 }
 
+// Is `cluster` a data cluster of this volume (2 .. cluster_count + 1)?
 static bool valid_cluster(uint32_t cluster) {
     return cluster >= 2 && cluster < volume.cluster_count + 2;
 }
 
+// The first sector of data cluster `cluster` (which must be valid)
 static uint64_t cluster_to_sector(uint32_t cluster) {
     return (uint64_t)volume.data_start + (uint64_t)(cluster - 2) * volume.sectors_per_cluster;
 }
@@ -229,10 +232,12 @@ static int64_t read_chain(uint32_t first_cluster, uint64_t limit, size_t offset,
 
 // --- Locking ---------------------------------------------------------------
 
+// Take and release the lock every change to the volume holds (it sleeps)
 static void volume_lock(void) {
     mutex_lock(&volume_mutex);
 }
 
+// (See volume_lock)
 static void volume_unlock(void) {
     mutex_unlock(&volume_mutex);
 }
@@ -255,6 +260,9 @@ static void invalidate_fsinfo(void) {
     bcache_write(lba, sector, 1);
 }
 
+// Set the FAT entry of `cluster` to `value` (a next cluster, FAT_END_MARK
+// or FAT_FREE) in every copy of the FAT, keeping its reserved top bits, and
+// in the cached sector. Caller holds the volume lock. False on a disk error.
 static bool set_fat_entry(uint32_t cluster, uint32_t value) {
     if (!valid_cluster(cluster)) return false;
     invalidate_fsinfo();
@@ -284,6 +292,7 @@ static bool set_fat_entry(uint32_t cluster, uint32_t value) {
     return true;
 }
 
+// Fill a cluster with zeros on the disk. False on a disk error.
 static bool zero_cluster(uint32_t cluster) {
     uint8_t zeros[SECTOR];
     memset(zeros, 0, SECTOR);
@@ -316,7 +325,8 @@ static uint32_t allocate_cluster(void) {
     return 0;
 }
 
-// Give back every cluster of a chain.
+// Give back every cluster of a chain (stopping after as many steps as the
+// volume has clusters: a damaged chain may loop). Caller holds the volume lock.
 static void free_chain(uint32_t cluster) {
     uint32_t steps = 0;
     while (valid_cluster(cluster) && steps++ <= volume.cluster_count) {
@@ -332,7 +342,8 @@ static void free_chain(uint32_t cluster) {
 static void fat_now(uint16_t *date, uint16_t *time);
 static uint32_t fat_now_packed(void);
 
-// Change the first cluster and size recorded in a node's directory entry.
+// Change the first cluster and size recorded in a node's directory entry,
+// and stamp it as written now. Caller holds the volume lock.
 static bool update_entry(const fat_node_t *info, uint32_t first_cluster, uint32_t size) {
     if (info->entry_lba == 0) return true; // The root directory has no entry
 
@@ -373,6 +384,7 @@ static uint8_t lfn_checksum(const uint8_t short_name[11]) {
     return sum;
 }
 
+// ASCII upper case of `c`
 static char upper(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
 
 // FAT names keep their case but are compared without it
@@ -525,6 +537,8 @@ static void fat_now(uint16_t *date, uint16_t *time) {
     *time = (uint16_t)(((now.hour % 24u) << 11) | ((now.minute % 60u) << 5) | ((now.second % 60u) / 2));
 }
 
+// A fresh short directory entry: name, case flags, attributes, first
+// cluster, size 0, and the creation and write times set to now
 static void fill_entry(struct dir_entry *entry, const uint8_t name[11], uint8_t nt_flags, uint8_t attr, uint32_t cluster) {
     uint16_t date, time;
     fat_now(&date, &time);
@@ -560,6 +574,8 @@ static bool slot_location(uint32_t first_cluster, uint32_t index, uint64_t *lba,
     return true;
 }
 
+// Write the 32 bytes of `entry` into slot `index` of the directory starting
+// at `first_cluster`. False if the slot is past its end or on a disk error.
 static bool write_slot(uint32_t first_cluster, uint32_t index, const uint8_t entry[32]) {
     uint8_t sector[SECTOR];
     uint64_t lba;
@@ -632,6 +648,8 @@ static bool find_free_run(const fat_node_t *dir, uint32_t count, uint32_t *first
 
 // --- File operations ----------------------------------------------------------
 
+// vnode_ops_t.read: up to `count` bytes from `offset` (takes no lock: see
+// the top of this file). Returns the bytes read or -EIO.
 static int64_t fat_file_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     const fat_node_t *info = (const fat_node_t *)node->private_data;
     return read_chain(info->first_cluster, node->size, offset, buf, count);
@@ -711,25 +729,24 @@ static int64_t write_locked(vnode_t *node, size_t offset, const uint8_t *data, s
     return (int64_t)done;
 }
 
+// vnode_ops_t.write: `count` bytes at `offset` (at most MAX_WRITE_BYTES per
+// call: a short write, which the caller continues). `buf` is kernel memory
+// (system calls copy user data through a page of their own), so nothing
+// done under the volume lock can fault. Returns the bytes written, -ENOSPC
+// when the volume is full or the file would pass 4 GiB, or -EIO.
 static int64_t fat_file_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
     if (count == 0) return 0;
-    if (count > MAX_WRITE_BYTES) count = MAX_WRITE_BYTES;          // A short write; the caller continues
+    if (count > MAX_WRITE_BYTES) count = MAX_WRITE_BYTES;
     if (offset > 0xFFFFFFFFu || count > 0xFFFFFFFFu - offset) return -ENOSPC; // FAT32 files end at 4 GiB
 
-    // `buf` may be user memory, and touching that can fault. Copy it into
-    // kernel memory first, so that nothing done under the lock can.
-    uint8_t *copy = kmalloc(count);
-    if (!copy) return -ENOMEM;
-    memcpy(copy, buf, count);
-
     volume_lock();
-    int64_t result = write_locked(node, offset, copy, count);
+    int64_t result = write_locked(node, offset, buf, count);
     volume_unlock();
-
-    kfree(copy);
     return result;
 }
 
+// vnode_ops_t.truncate: cut the file to nothing (the entry first, then the
+// clusters are freed). Returns 0 or -EIO.
 static int fat_file_truncate(vnode_t *node) {
     fat_node_t *info = (fat_node_t *)node->private_data;
 
@@ -747,10 +764,9 @@ static int fat_file_truncate(vnode_t *node) {
     return ok ? 0 : -EIO;
 }
 
-// --- Directory operations -----------------------------------------------------
-
 // --- Reading directories ---------------------------------------------------------
 
+// The time now, packed as the VFS keeps it (date << 16 | time, FAT's form)
 static uint32_t fat_now_packed(void) {
     uint16_t date, time;
     fat_now(&date, &time);
@@ -800,9 +816,10 @@ static int depth_of(const vnode_t *dir) {
     return depth;
 }
 
-// Read a directory's entries from the disk and attach a node for each: the
-// VFS calls this the first time something looks inside the directory. Long
-// names are put together from the entries in front of each short one.
+// vnode_ops_t.load: read a directory's entries from the disk and attach a
+// node for each: the VFS calls this, holding the tree lock, the first time
+// something looks inside the directory. Long names are put together from
+// the entries in front of each short one. Returns 0 or -EIO.
 static int fat_dir_load(vnode_t *dir) {
     const fat_node_t *dir_info = (const fat_node_t *)dir->private_data;
     if (!dir_info) return -EIO;
@@ -954,6 +971,8 @@ static int store_name(vnode_t *dir, const char *name, const struct dir_entry *li
     return 0;
 }
 
+// Has `dir` a child other than `except` whose name differs from `name`
+// only in case? (To FAT those are one name.) Caller holds the tree lock.
 static bool name_taken_nocase(const vnode_t *dir, const char *name, const vnode_t *except) {
     for (const vnode_t *c = dir->children; c; c = c->next) {
         if (c != except && names_equal_nocase(c->name, name)) return true;
@@ -961,6 +980,10 @@ static bool name_taken_nocase(const vnode_t *dir, const char *name, const vnode_
     return false;
 }
 
+// vnode_ops_t.create: make a file (no cluster until written) or a directory
+// (a cluster with "." and "..") called `name` in `dir`, and attach its node.
+// Returns 0, -EINVAL for a name FAT cannot hold, -EEXIST (in any case),
+// -ENOSPC, -EIO or -ENOMEM.
 static int fat_dir_create(vnode_t *dir, const char *name, bool directory, vnode_t **out) {
     fat_node_t *dir_info = (fat_node_t *)dir->private_data;
     if (!valid_long_name(name)) return -EINVAL;
@@ -1020,6 +1043,8 @@ static int fat_dir_create(vnode_t *dir, const char *name, bool directory, vnode_
     return 0;
 }
 
+// vnode_ops_t.remove: delete `child`'s entries (long and short) from `dir`,
+// then free its clusters. Returns 0 or -EIO.
 static int fat_dir_remove(vnode_t *dir, vnode_t *child) {
     const fat_node_t *dir_info = (const fat_node_t *)dir->private_data;
     fat_node_t *info = (fat_node_t *)child->private_data;
@@ -1038,8 +1063,9 @@ static int fat_dir_remove(vnode_t *dir, vnode_t *child) {
     return err;
 }
 
-// Give a file or directory a new name, in the same directory or another one
-// of this volume. The new entries are written before the old ones are
+// vnode_ops_t.rename: give a file or directory a new name, in the same
+// directory or another one of this volume. Returns 0, -EINVAL, -EEXIST,
+// -ENOSPC or -EIO. The new entries are written before the old ones are
 // removed: a crash in between leaves the file under both names (which
 // fsck.fat reports and repairs), never under none.
 static int fat_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, const char *new_name) {
@@ -1102,8 +1128,8 @@ int fat32_mount(const char *mount_point) {
         return -1;
     }
 
-    const char *leaf = NULL;
-    vnode_t *parent = vfs_find_parent(mount_point, &leaf);
+    char leaf[VFS_NAME_MAX];
+    vnode_t *parent = vfs_find_parent(mount_point, leaf);
     vnode_t *root = NULL;
     if (parent) vfs_mount_dir(parent, leaf, &root);
     if (!root || root->children || root->ops) return -1; // Must be a new or empty in-memory directory
@@ -1123,37 +1149,6 @@ int fat32_mount(const char *mount_point) {
             mount_point, volume.cluster_count, volume.sectors_per_cluster * SECTOR);
     return 0;
 }
-
-#ifdef KERNEL_TESTS
-// For tests: drop what is known about a directory's contents, so that the
-// next look inside reads it from the disk again. Only for a directory none
-// of whose files is open; does nothing otherwise.
-bool fat32_forget_directory(vnode_t *dir) {
-    if (!dir || dir->ops != &fat_dir_ops || dir->unloaded) return false;
-    vfs_lock();
-    for (vnode_t *c = dir->children; c; c = c->next) {
-        if (!c->mount_point && (c->open_count != 0 || c->children)) {
-            vfs_unlock();
-            return false;
-        }
-    }
-    // Mount points stay: they are not the disk's (vfs_mount_dir)
-    vnode_t **link = &dir->children;
-    while (*link) {
-        vnode_t *c = *link;
-        if (c->mount_point) {
-            link = &c->next;
-            continue;
-        }
-        *link = c->next;
-        kfree((void *)c->private_data);
-        kfree(c);
-    }
-    dir->unloaded = true;
-    vfs_unlock();
-    return true;
-}
-#endif
 
 bool fat32_mounted(void) {
     return mounted;

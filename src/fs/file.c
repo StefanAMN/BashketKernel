@@ -26,6 +26,7 @@ void file_init(void) {
     kmem_cache_free(file_cache, kmem_cache_alloc(file_cache));
 }
 
+// A new open file of `kind` with one reference and position 0, or NULL
 static file_t *file_alloc(file_kind_t kind, bool readable, bool writable) {
     file_t *file = (file_t *)kmem_cache_alloc(file_cache);
     if (!file) return NULL;
@@ -37,16 +38,13 @@ static file_t *file_alloc(file_kind_t kind, bool readable, bool writable) {
     return file;
 }
 
+// Give an open file's memory back (NULL is allowed). Closes nothing.
 static void file_free(file_t *file) {
     kmem_cache_free(file_cache, file);
 }
 
 int file_open(const char *path, int flags, file_t **out) {
-    return file_open_at(NULL, path, flags, out);
-}
-
-int file_open_at(vnode_t *base, const char *path, int flags, file_t **out) {
-    return file_open_as(UID_ROOT, base, path, flags, out); // The kernel itself is not restricted
+    return file_open_as(UID_ROOT, NULL, path, flags, out); // The kernel itself is not restricted
 }
 
 static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out);
@@ -60,6 +58,8 @@ int file_open_as(uint32_t uid, vnode_t *base, const char *path, int flags, file_
     return result;
 }
 
+// See file_open_as. Caller holds the tree lock, which keeps the node from
+// being removed between the lookup and the open count going up.
 static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out) {
     if (!path || !out) return -EINVAL;
 
@@ -69,9 +69,10 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
 
     vnode_t *node = vfs_find(base, path);
     if (!node && (flags & O_CREAT)) {
-        const char *leaf = NULL;
-        vnode_t *parent = vfs_find_parent_at(base, path, &leaf);
-        if (!parent) return -ENOENT;
+        char leaf[VFS_NAME_MAX];
+        vnode_t *parent = NULL;
+        int found = vfs_find_parent_at(base, path, &parent, leaf);
+        if (found < 0) return found;
         if (!auth_may_access(uid, parent, true)) return -EACCES; // Creating changes the directory
         int err = vfs_create(parent, leaf, VFS_FILE, &node);
         if (err != 0) return err;
@@ -152,8 +153,6 @@ file_t *file_open_socket(void) {
     return file;
 }
 
-// An open file can be shared by processes on different CPUs (fork copies
-// the descriptor table), so the count of holders is changed atomically
 file_t *file_open_tcp(struct tcp_socket *tcp) {
     if (!tcp) tcp = tcp_open();
     if (!tcp) return NULL;
@@ -166,6 +165,8 @@ file_t *file_open_tcp(struct tcp_socket *tcp) {
     return file;
 }
 
+// An open file can be shared by processes on different CPUs (fork copies
+// the descriptor table), so the count of holders is changed atomically
 file_t *file_dup(file_t *file) {
     if (file) __atomic_add_fetch(&file->refs, 1, __ATOMIC_SEQ_CST);
     return file;
@@ -173,11 +174,15 @@ file_t *file_dup(file_t *file) {
 
 void file_close(file_t *file) {
     if (!file) return;
-    if (--file->refs > 0) return;
+    if (__atomic_sub_fetch(&file->refs, 1, __ATOMIC_ACQ_REL) > 0) return;
 
     if (file->kind == FILE_VNODE && file->node) {
+        // The open count belongs to the tree lock, like every other change
+        // to it (another CPU may be opening the same node)
+        vfs_lock();
         file->node->open_count--;
         if (file->node->ops && file->node->ops->closed) file->node->ops->closed(file->node, file->writable);
+        vfs_unlock();
     } else if (file->kind == FILE_PIPE) {
         if (file->readable) pipe_close_reader(file->pipe);
         else pipe_close_writer(file->pipe);
@@ -295,6 +300,7 @@ int file_readdir(file_t *file, struct dirent_info *out) {
     return result;
 }
 
+// See file_readdir. Caller holds the tree lock.
 static int readdir_locked(file_t *file, struct dirent_info *out) {
     if (!file || !file->readable || !out) return -EBADF;
     if (file->kind != FILE_VNODE || file->node->type != VFS_DIRECTORY) return -ENOTDIR;

@@ -16,6 +16,7 @@ void vfs_init(void) {
     if (vfs_root != NULL) return;
 
     vfs_root = (vnode_t *)kmalloc(sizeof(vnode_t));
+    if (!vfs_root) panic("VFS: no memory for the root directory");
     memset(vfs_root, 0, sizeof(vnode_t));
 
     vfs_root->name[0] = '/';
@@ -42,7 +43,7 @@ void vfs_lock(void) { mutex_lock(&vfs_mutex); }
 void vfs_unlock(void) { mutex_unlock(&vfs_mutex); }
 
 static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name);
-static vnode_t * vfs_find_parent_at_unlocked(vnode_t *base, const char *path, const char **out_leaf);
+static int vfs_find_parent_at_unlocked(vnode_t *base, const char *path, vnode_t **parent_out, char *leaf_out);
 static size_t vfs_path_of_unlocked(vnode_t *node, char *buf, size_t size);
 static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t type);
 static int vfs_create_unlocked(vnode_t *parent, const char *name, uint32_t type, vnode_t **out);
@@ -52,12 +53,20 @@ static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, c
 static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path);
 static void vfs_truncate_unlocked(vnode_t *file, size_t size);
 static int vfs_unlink_unlocked(vnode_t *parent, const char *name);
-static int vfs_stat_unlocked(vnode_t *node, size_t *out_size, uint32_t *out_type);
 static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void *buf);
 static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, const void *buf);
 
 vnode_t *vfs_get_root(void) {
     return vfs_root;
+}
+
+// Whether `name` can be the name of a new entry: not empty, short enough
+// for a node, no '/', and not "." or "..". Returns 0 or the error to give.
+static int check_new_name(const char *name) {
+    if (!name || name[0] == '\0' || strchr(name, '/')) return -EINVAL;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return -EINVAL;
+    if (strlen(name) >= VFS_NAME_MAX) return -ENAMETOOLONG;
+    return 0;
 }
 
 void vfs_load_dir(vnode_t *dir) {
@@ -70,6 +79,7 @@ void vfs_load_dir(vnode_t *dir) {
     }
 }
 
+// See vfs_find_child. Caller holds the tree lock.
 static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name) {
     if (!dir || dir->type != VFS_DIRECTORY || !name) return NULL;
     vfs_load_dir(dir);
@@ -79,41 +89,48 @@ static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name) {
     return NULL;
 }
 
-static vnode_t * vfs_find_parent_at_unlocked(vnode_t *base, const char *path, const char **out_leaf) {
-    if (!path || !out_leaf) return NULL;
+// See vfs_find_parent_at. Caller holds the tree lock.
+static int vfs_find_parent_at_unlocked(vnode_t *base, const char *path, vnode_t **parent_out, char *leaf_out) {
+    if (!path || !parent_out || !leaf_out) return -EINVAL;
 
     // The leaf is what follows the last '/' that has something after it
     const char *leaf = path;
     for (const char *p = path; *p != '\0'; p++) {
         if (*p == '/' && p[1] != '\0' && p[1] != '/') leaf = p + 1;
     }
-    if (*leaf == '\0' || *leaf == '/') return NULL;
+    if (*leaf == '\0' || *leaf == '/') return -EINVAL;
 
     // "." and ".." name existing directories; nothing can be created or
-    // removed under those names
+    // removed under those names. Trailing slashes ("mkdir dir/") are not
+    // part of the name.
     size_t leaf_len = 0;
     while (leaf[leaf_len] != '\0' && leaf[leaf_len] != '/') leaf_len++;
-    if ((leaf_len == 1 && leaf[0] == '.') || (leaf_len == 2 && leaf[0] == '.' && leaf[1] == '.')) return NULL;
+    if ((leaf_len == 1 && leaf[0] == '.') || (leaf_len == 2 && leaf[0] == '.' && leaf[1] == '.')) return -EINVAL;
+    if (leaf_len >= VFS_NAME_MAX) return -ENAMETOOLONG;
 
     // Everything before the leaf names the parent
     size_t parent_len = (size_t)(leaf - path);
-    char parent_path[128];
-    if (parent_len >= sizeof(parent_path)) return NULL;
+    char parent_path[VFS_PATH_MAX];
+    if (parent_len >= sizeof(parent_path)) return -ENOENT;
     memcpy(parent_path, path, parent_len);
     parent_path[parent_len] = '\0';
 
     // No directory part means "in the base directory"
     vnode_t *parent = (parent_len == 0) ? (base ? base : vfs_root) : vfs_find(base, parent_path);
-    if (!parent || parent->type != VFS_DIRECTORY) return NULL;
+    if (!parent || parent->type != VFS_DIRECTORY) return -ENOENT;
 
-    *out_leaf = leaf;
-    return parent;
+    memcpy(leaf_out, leaf, leaf_len);
+    leaf_out[leaf_len] = '\0';
+    *parent_out = parent;
+    return 0;
 }
 
-vnode_t *vfs_find_parent(const char *path, const char **out_leaf) {
-    return vfs_find_parent_at(NULL, path, out_leaf);
+vnode_t *vfs_find_parent(const char *path, char leaf[VFS_NAME_MAX]) {
+    vnode_t *parent = NULL;
+    return vfs_find_parent_at(NULL, path, &parent, leaf) == 0 ? parent : NULL;
 }
 
+// See vfs_path_of. Caller holds the tree lock.
 static size_t vfs_path_of_unlocked(vnode_t *node, char *buf, size_t size) {
     if (!node || !buf || size < 2) return 0;
 
@@ -156,16 +173,13 @@ static vnode_t *child_in_memory(vnode_t *dir, const char *name) {
 // Caller holds the tree lock.
 static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t type) {
     if (!parent || parent->type != VFS_DIRECTORY || !name || name[0] == '\0') return NULL;
+    // Cut short, the name would no longer be the one stored on the disk
+    if (strlen(name) >= VFS_NAME_MAX) return NULL;
 
     vnode_t *node = (vnode_t *)kmalloc(sizeof(vnode_t));
     if (!node) return NULL;
     memset(node, 0, sizeof(vnode_t));
-
-    size_t i = 0;
-    for (; name[i] != '\0' && i < sizeof(node->name) - 1; i++) {
-        node->name[i] = name[i];
-    }
-    node->name[i] = '\0';
+    memcpy(node->name, name, strlen(name) + 1);
 
     node->type = type;
     node->parent = parent;
@@ -180,10 +194,12 @@ static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t
     return node;
 }
 
+// See vfs_create. Caller holds the tree lock.
 static int vfs_create_unlocked(vnode_t *parent, const char *name, uint32_t type, vnode_t **out) {
     if (!parent) parent = vfs_root;
     if (!name || parent->type != VFS_DIRECTORY) return -ENOTDIR;
-    if (name[0] == '\0') return -EINVAL;
+    int bad = check_new_name(name);
+    if (bad) return bad;
     if (vfs_find_child(parent, name)) return -EEXIST;
     if (parent->read_only) return -EROFS;
 
@@ -202,6 +218,7 @@ static int vfs_create_unlocked(vnode_t *parent, const char *name, uint32_t type,
     return 0;
 }
 
+// See vfs_create_dir. Caller holds the tree lock.
 static vnode_t * vfs_create_dir_unlocked(vnode_t *parent, const char *name) {
     if (!parent) parent = vfs_root;
 
@@ -213,6 +230,7 @@ static vnode_t * vfs_create_dir_unlocked(vnode_t *parent, const char *name) {
     return vfs_create(parent, name, VFS_DIRECTORY, &dir) == 0 ? dir : NULL;
 }
 
+// See vfs_create_file. Caller holds the tree lock.
 static vnode_t * vfs_create_file_unlocked(vnode_t *parent, const char *name, const void *data, size_t size) {
     if (!parent) parent = vfs_root;
 
@@ -228,6 +246,7 @@ static vnode_t * vfs_create_file_unlocked(vnode_t *parent, const char *name, con
     return file;
 }
 
+// See vfs_create_device. Caller holds the tree lock.
 static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, const vnode_ops_t *ops) {
     if (!ops) return NULL;
     vnode_t *node = vfs_create_file(parent, name, NULL, 0);
@@ -238,7 +257,8 @@ static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, c
 // See vfs_mount_dir. Caller holds the tree lock.
 static int vfs_mount_dir_unlocked(vnode_t *parent, const char *name, vnode_t **out) {
     if (!parent) parent = vfs_root;
-    if (parent->type != VFS_DIRECTORY || !name || name[0] == '\0') return -ENOTDIR;
+    if (parent->type != VFS_DIRECTORY || !name) return -ENOTDIR;
+    if (check_new_name(name)) return -EINVAL;
 
     // The parent's entries are read first, so that a directory of this name
     // on the disk is found now and hidden, rather than turning up later
@@ -295,6 +315,7 @@ static int vfs_unmount_dir_unlocked(vnode_t *node) {
     return 0;
 }
 
+// See vfs_find. Caller holds the tree lock.
 static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
     if (!path) return NULL;
 
@@ -329,6 +350,7 @@ static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
     return node;
 }
 
+// See vfs_read. Caller holds the tree lock unless the node has `ops`.
 static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void *buf) {
     if (!file || file->type != VFS_FILE || !buf) return 0;
     if (file->ops) {
@@ -345,6 +367,7 @@ static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void
     return to_read;
 }
 
+// See vfs_write. Caller holds the tree lock unless the node has `ops`.
 static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, const void *buf) {
     if (!file || file->type != VFS_FILE || !buf || count == 0) return 0;
     if (file->ops) {
@@ -383,6 +406,7 @@ static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, con
     return count;
 }
 
+// See vfs_truncate. Caller holds the tree lock.
 static void vfs_truncate_unlocked(vnode_t *file, size_t size) {
     if (!file || file->type != VFS_FILE) return;
 
@@ -394,14 +418,14 @@ static void vfs_truncate_unlocked(vnode_t *file, size_t size) {
     if (size < file->size) file->size = size;
 }
 
+// See vfs_unlink. Caller holds the tree lock.
 static int vfs_unlink_unlocked(vnode_t *parent, const char *name) {
     if (!parent) parent = vfs_root;
     if (!name || parent->type != VFS_DIRECTORY) return -ENOTDIR;
     if (parent->read_only) return -EROFS;
 
     vfs_load_dir(parent);
-    vnode_t *prev = NULL;
-    for (vnode_t *curr = parent->children; curr; prev = curr, curr = curr->next) {
+    for (vnode_t *curr = parent->children; curr; curr = curr->next) {
         if (strcmp(curr->name, name) != 0) continue;
 
         if (curr->mount_point) return -EBUSY;  // Unmount it first (vfs_unmount_dir)
@@ -416,12 +440,11 @@ static int vfs_unlink_unlocked(vnode_t *parent, const char *name) {
             if (err != 0) return err;
         }
 
-        // The filesystem's call may have slept: find the node's place in the
-        // list again rather than trusting `prev`
+        // The filesystem's call may have slept (the tree lock is a mutex,
+        // so nothing changed meanwhile, but the walk is cheap): unlink it
         vnode_t **link = &parent->children;
         while (*link && *link != curr) link = &(*link)->next;
         if (*link) *link = curr->next;
-        (void)prev;
 
         if (curr->owns_data) kfree((void *)curr->data);
         kfree(curr);
@@ -431,20 +454,14 @@ static int vfs_unlink_unlocked(vnode_t *parent, const char *name) {
     return -ENOENT;
 }
 
-static int vfs_stat_unlocked(vnode_t *node, size_t *out_size, uint32_t *out_type) {
-    if (!node) return -1;
-    if (out_size) *out_size = node->size;
-    if (out_type) *out_type = node->type;
-    return 0;
-}
-
+// See vfs_rename. Caller holds the tree lock.
 static int vfs_rename_unlocked(vnode_t *old_parent, const char *old_name, vnode_t *new_parent, const char *new_name) {
     if (!old_parent) old_parent = vfs_root;
     if (!new_parent) new_parent = vfs_root;
-    if (!old_name || !new_name || new_name[0] == '\0') return -EINVAL;
+    if (!old_name) return -EINVAL;
     if (old_parent->type != VFS_DIRECTORY || new_parent->type != VFS_DIRECTORY) return -ENOTDIR;
-    if (strlen(new_name) >= sizeof(old_parent->name) || strchr(new_name, '/')) return -EINVAL;
-    if (strcmp(new_name, ".") == 0 || strcmp(new_name, "..") == 0) return -EINVAL;
+    int bad = check_new_name(new_name);
+    if (bad) return bad;
     if (old_parent->read_only || new_parent->read_only) return -EROFS;
 
     vnode_t *node = vfs_find_child_unlocked(old_parent, old_name);
@@ -487,6 +504,34 @@ int vfs_rename(vnode_t *old_parent, const char *old_name, vnode_t *new_parent, c
     return result;
 }
 
+#ifdef KERNEL_TESTS
+bool vfs_forget_directory(vnode_t *dir) {
+    if (!dir || !dir->ops || !dir->ops->load || dir->unloaded) return false;
+    vfs_lock();
+    for (vnode_t *c = dir->children; c; c = c->next) {
+        if (!c->mount_point && (c->open_count != 0 || c->children)) {
+            vfs_unlock();
+            return false;
+        }
+    }
+    // Mount points stay: they are not the disk's (vfs_mount_dir)
+    vnode_t **link = &dir->children;
+    while (*link) {
+        vnode_t *c = *link;
+        if (c->mount_point) {
+            link = &c->next;
+            continue;
+        }
+        *link = c->next;
+        kfree((void *)c->private_data); // The filesystem's record of the entry (a plain kmalloc block)
+        kfree(c);
+    }
+    dir->unloaded = true;
+    vfs_unlock();
+    return true;
+}
+#endif
+
 // --- The public functions: each of the above, under the tree lock ----------
 
 vnode_t *vfs_find_child(vnode_t *dir, const char *name) {
@@ -496,9 +541,9 @@ vnode_t *vfs_find_child(vnode_t *dir, const char *name) {
     return result;
 }
 
-vnode_t *vfs_find_parent_at(vnode_t *base, const char *path, const char **out_leaf) {
+int vfs_find_parent_at(vnode_t *base, const char *path, vnode_t **parent, char leaf[VFS_NAME_MAX]) {
     vfs_lock();
-    vnode_t *result = vfs_find_parent_at_unlocked(base, path, out_leaf);
+    int result = vfs_find_parent_at_unlocked(base, path, parent, leaf);
     vfs_unlock();
     return result;
 }
@@ -579,13 +624,6 @@ int vfs_unlink(vnode_t *parent, const char *name) {
     return result;
 }
 
-int vfs_stat(vnode_t *node, size_t *out_size, uint32_t *out_type) {
-    vfs_lock();
-    int result = vfs_stat_unlocked(node, out_size, out_type);
-    vfs_unlock();
-    return result;
-}
-
 size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
     // A node with its own operations (a device, /proc, a disk file) looks
     // after itself, and may wait a long time (a terminal read): the tree
@@ -598,9 +636,8 @@ size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
 }
 
 size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf) {
-    // A node with its own operations (a device, /proc, a disk file) looks
-    // after itself, and may wait a long time (a terminal read): the tree
-    // lock is not held for it. An open node can not go away meanwhile.
+    // As in vfs_read: a node with its own operations is not written under
+    // the tree lock
     if (file && file->ops) return vfs_write_unlocked(file, offset, count, buf);
     vfs_lock();
     size_t result = vfs_write_unlocked(file, offset, count, buf);

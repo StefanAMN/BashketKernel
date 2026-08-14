@@ -440,7 +440,7 @@ code comments and commit messages; `git log` is the full history.
 - **To test what was written to disk, forget it first.** A filesystem that
   keeps its tree in memory answers every question from memory: a test that
   creates a long name and looks it up proves nothing about the entries on
-  disk. The FAT tests drop a directory's nodes (`fat32_forget_directory`)
+  disk. The disk tests drop a directory's nodes (`vfs_forget_directory`)
   and read it back; `fsck.fat` on the image is the outside opinion.
 - **`make` cannot have prerequisites with spaces in their names** unless
   each space is escaped; a test file called "Long Names/..." made the disk

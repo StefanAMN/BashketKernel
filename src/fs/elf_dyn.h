@@ -26,8 +26,6 @@
 #include <stdbool.h>
 #include "elf.h"
 
-#define PT_DYNAMIC 2
-
 #define DT_NULL    0
 #define DT_RELA    7    // Address of the relocation table
 #define DT_RELASZ  8    // Its size in bytes
