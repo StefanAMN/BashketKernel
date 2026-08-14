@@ -13,7 +13,6 @@
 #include "kprintf.h"
 #include "kerrno.h"
 
-extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
 #define MOUSE_IRQ 12
 

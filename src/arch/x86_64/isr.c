@@ -22,14 +22,14 @@
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
-
 // PCI devices share interrupt lines (QEMU puts the virtio disk and network
 // card on the same one), so each IRQ can have several handlers. All of them
 // are called; each asks its own device whether it was the one.
 #define HANDLERS_PER_IRQ 4
 static irq_handler_t irq_handlers[16][HANDLERS_PER_IRQ] = {0};
 
-const char *exception_messages[] = {
+// Names of the 32 exception vectors (Intel SDM Vol. 3A, table 6-1)
+static const char *exception_messages[] = {
     "Division By Zero",
     "Debug",
     "Non Maskable Interrupt",
@@ -57,7 +57,7 @@ const char *exception_messages[] = {
     "Reserved", "Reserved"
 };
 
-void register_irq_handler(uint8_t irq, irq_handler_t handler) {
+void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs)) {
     if (irq >= 16 || !handler) return;
     for (int i = 0; i < HANDLERS_PER_IRQ; i++) {
         if (irq_handlers[irq][i] == handler) return;       // Already registered
@@ -69,8 +69,23 @@ void register_irq_handler(uint8_t irq, irq_handler_t handler) {
     kprintf("IRQ %u: too many handlers, one was not registered\n", irq);
 }
 
+// The signal a program is killed with for exception `vector`, as Unix
+// reports them: an arithmetic error is SIGFPE, an instruction the CPU does
+// not know is SIGILL, a bad memory access (or privileged instruction) is
+// SIGSEGV. None can be caught yet: the process ends with 128 + the signal.
+static int exception_signal(uint64_t vector) {
+    switch (vector) {
+    case 0: case 16: case 19: return SIGFPE;   // #DE, x87 #MF, SIMD #XM
+    case 6:                   return SIGILL;   // #UD
+    case 1: case 3:           return SIGTRAP;  // #DB, #BP
+    case 12: case 13: case 14: case 17: return SIGSEGV; // #SS, #GP, #PF, #AC
+    default:                  return SIGKILL;
+    }
+}
+
 // An exception raised by ring 3 code is that program's problem, not the
-// kernel's: report it, end the process, keep the system running.
+// kernel's: report it, end the process (status 128 + the signal of
+// exception_signal), keep the system running. Does not return.
 static void kill_faulting_process(struct registers *regs) {
     task_t *task = sched_get_current_task();
     kprintf("\n[pid %u %s] killed: %s at RIP 0x%zx", task->pid, task->name,
@@ -85,14 +100,15 @@ static void kill_faulting_process(struct registers *regs) {
     kprintf("\n");
 
     // Shell convention: killed by signal N reports status 128 + N
-    task_exit_status(128 + (regs->int_no == 14 || regs->int_no == 13 ? SIGSEGV : SIGKILL));
+    task_exit_status(128 + exception_signal(regs->int_no));
 }
 
 // A write to a present page of a user process may be the first write to a
 // copy-on-write page after fork. That is not an error: give the process its
 // own copy and let it retry the instruction. This also covers the kernel
 // writing to a user buffer on the process's behalf (CR0.WP makes ring 0
-// respect read-only pages).
+// respect read-only pages). Returns true if the fault was resolved; kills
+// the process (does not return) if the copy could not be allocated.
 static bool try_copy_on_write(struct registers *regs) {
     if (regs->int_no != 14 || (regs->err_code & 3) != 3) return false; // Not "write to present page"
 
@@ -118,13 +134,12 @@ static bool try_copy_on_write(struct registers *regs) {
     return false;
 }
 
-// A fault on a page that is not there, inside the stack region of a user
-// process, means the stack needs to grow.
 // A program's first touch of memory that mmap or brk promised it: now is
 // when it gets the frame (see region.h). Only for faults from ring 3: the
 // kernel gives a program's buffers their frames before it uses them
 // (process_populate), because here it could be holding a lock, and reading
-// a file's page from disk sleeps.
+// a file's page from disk sleeps. Returns true if the page is now there;
+// kills the process (does not return) when memory ran out.
 static bool try_promised_page(struct registers *regs) {
     if (regs->int_no != 14 || (regs->err_code & 1) || (regs->cs & 3) != 3) return false;
 
@@ -150,7 +165,8 @@ static bool try_promised_page(struct registers *regs) {
 // pages when memory is short, and where a page that was swapped out is
 // read back. Both wait for the disk, so interrupts are let in; another
 // task's fault may then overwrite CR2 on this CPU, and the handlers after
-// this one read it, so it is put back.
+// this one read it, so it is put back. Returns true if the faulting page was
+// swapped in; kills the process (does not return) if it could not be.
 static bool try_swap(struct registers *regs) {
     if (!swap_active() || regs->int_no != 14 || (regs->cs & 3) != 3) return false;
     task_t *task = sched_get_current_task();
@@ -174,6 +190,9 @@ static bool try_swap(struct registers *regs) {
     return result > 0;
 }
 
+// A fault on a page that is not there, inside the stack region of a user
+// process, means the stack needs to grow: give it a zeroed page. Returns
+// true if it did (see process_grow_stack for the limits).
 static bool try_grow_stack(struct registers *regs) {
     if (regs->int_no != 14 || (regs->err_code & 1)) return false; // Not "page not present"
 
@@ -182,6 +201,13 @@ static bool try_grow_stack(struct registers *regs) {
     return process_grow_stack(cr2);
 }
 
+// Called by common_isr_stub (isr_stubs.S) for every vector, with interrupts
+// off and the interrupted registers in `regs`. Resolves the page faults that
+// are part of normal running (swap, copy-on-write, stack growth, promised
+// pages); kills a program that raised any other exception; reports a kernel
+// exception and halts the machine; and dispatches device interrupts, the
+// inter-processor wake-up and the local timer. Changes to `regs` take effect
+// when the stub returns with iretq.
 void isr_handler(struct registers *regs) {
     // Handlers never touch user memory. The interrupted code may have had a
     // user access window open (and ring 3 can set RFLAGS.AC itself): close it

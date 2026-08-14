@@ -16,7 +16,6 @@
 #include "ioapic.h"
 #include "interrupts.h"
 
-extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
 #define FEATURE_MAC (1ULL << 5) // The card has a MAC address in its configuration space
 

@@ -44,6 +44,9 @@
 #include "task.h"
 
 #define SIGINT   2   // Ctrl-C
+#define SIGILL   4   // An instruction the CPU does not know (from an exception only)
+#define SIGTRAP  5   // A debug exception (from an exception only)
+#define SIGFPE   8   // Division by zero, or a floating point error (from an exception only)
 #define SIGKILL  9   // Cannot be caught or ignored
 #define SIGUSR1 10
 #define SIGSEGV 11
