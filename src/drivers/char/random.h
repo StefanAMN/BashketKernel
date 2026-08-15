@@ -31,9 +31,15 @@
 #include <stdbool.h>
 
 /**
- * @brief Random bytes. Safe from any context; seeds itself on first use.
+ * @brief Fill `buf` (kernel memory) with `count` random bytes. Safe from
+ *        any context, interrupt handlers included; never sleeps; seeds
+ *        itself on first use.
  */
 void get_random_bytes(void *buf, size_t count);
+
+/**
+ * @brief Four random bytes as a number (get_random_bytes).
+ */
 uint32_t get_random_u32(void);
 
 /**

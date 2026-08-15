@@ -79,8 +79,20 @@ typedef struct {
  */
 bool virtqueue_setup(virtqueue_t *vq, virtio_device_t *dev, uint16_t index);
 
-// The two steps of that which depend on the register interface (virtio_pci.c)
+/**
+ * @brief For virtqueue_setup (the step that depends on the register
+ *        interface, in virtio_pci.c): how many entries queue `index` has
+ *        (0: the device has no such queue).
+ */
 uint16_t virtio_queue_size(virtio_device_t *dev, uint16_t index);
+
+/**
+ * @brief For virtqueue_setup: tell the device where the three parts of
+ *        queue `index` are and enable it. *notify_address receives where
+ *        to write to kick it with the modern interface (NULL: legacy, an
+ *        I/O port). False if the legacy interface cannot reach the memory
+ *        or the notification address is outside what was mapped.
+ */
 bool virtio_queue_start(virtio_device_t *dev, uint16_t index, uint64_t desc_phys, uint64_t avail_phys, uint64_t used_phys,
                         volatile uint16_t **notify_address);
 

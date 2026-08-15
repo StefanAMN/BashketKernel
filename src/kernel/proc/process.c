@@ -16,7 +16,7 @@
 #include "spinlock.h"
 #include "file.h"
 #include "fpu.h"
-#include "dev.h"
+#include "random.h"
 #include "auth.h"
 #include "heap.h"
 #include "swap.h"

@@ -91,6 +91,7 @@ static void collect_finished(blk_device_t *d) {
     }
 }
 
+// The disks' interrupt handler (every disk on a line shares it)
 static void virtio_blk_irq(struct registers *regs) {
     (void)regs;
     // Interrupt lines are shared, and so is this handler: ask every disk.
@@ -110,6 +111,10 @@ static void virtio_blk_irq(struct registers *regs) {
     }
 }
 
+// Set disk `number` up from its PCI device: interface, features, request
+// queue, the slots' DMA pages, its size; register and route its interrupt
+// line unless that was just done for the previous disk. Returns 0 or -1
+// (everything it took is given back).
 static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number, bool *irq_registered, uint8_t *registered_irq) {
     pci_device_t dev = *pci;
     spinlock_init_ranked(&d->lock, "virtio-blk", LOCK_RANK_DEVICE);
@@ -280,6 +285,8 @@ static int do_request(blk_device_t *d, uint32_t type, uint64_t lba, uint8_t *byt
     return result;
 }
 
+// Check a request against the disk's size and carry it out in pieces of at
+// most one page. Returns 0, or -1 at the first piece that fails.
 static int transfer(unsigned dev, uint32_t type, uint64_t lba, void *buf, size_t count) {
     if (dev >= device_count || !buf) return -1;
     blk_device_t *d = &devices[dev];
@@ -298,6 +305,7 @@ static int transfer(unsigned dev, uint32_t type, uint64_t lba, void *buf, size_t
     return result;
 }
 
+// The four entry points: see virtio_blk.h
 int virtio_blk_read(uint64_t lba, void *buf, size_t count) {
     return transfer(0, BLK_T_IN, lba, buf, count);
 }

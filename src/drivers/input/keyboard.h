@@ -10,7 +10,9 @@
 #include <stdbool.h>
 
 /**
- * @brief Initialize PS/2 Keyboard driver and register IRQ 1 handler.
+ * @brief Register the IRQ 1 handler and switch the PS/2 controller's first
+ *        port on. Every wait is bounded: without a controller this reports
+ *        it and returns, and input comes from the serial line only.
  */
 void keyboard_init(void);
 
@@ -36,8 +38,8 @@ bool ps2_aux_command(uint8_t command);
 bool ps2_read_aux(uint8_t *byte);
 
 /**
- * @brief Check if input character is available in keyboard buffer.
- * @return true if character is buffered, false otherwise.
+ * @brief Whether a character is waiting, from the keyboard or the serial
+ *        line (both are polled too, for input whose interrupt is late).
  */
 bool keyboard_has_char(void);
 
@@ -48,11 +50,12 @@ bool keyboard_has_char(void);
 void keyboard_input_arrived(void);
 
 /**
- * @brief Retrieve next character from keyboard buffer (blocking if empty).
- * @return ASCII character byte.
+ * @brief The next character typed, from the keyboard or the serial line,
+ *        sleeping until there is one. Arrow and editing keys arrive as ANSI
+ *        sequences (ESC [ A ...), Ctrl+letter as its control character.
+ * @return The character, or 0 if the calling process was interrupted by a
+ *         signal first (kernel threads are never interrupted).
  */
-// Returns 0 if the calling process was interrupted by a signal before any
-// character arrived (kernel threads are never interrupted).
 char keyboard_getchar(void);
 
 #endif // KEYBOARD_H

@@ -73,7 +73,15 @@ typedef struct udp_socket udp_socket_t;
  */
 void net_init(void);
 
+/**
+ * @brief Whether the stack is running (there is a network card).
+ */
 bool net_up(void);
+
+/**
+ * @brief The stack's counters since boot (read without a lock: for tests
+ *        and diagnostics).
+ */
 const net_stats_t *net_stats(void);
 
 /**
@@ -99,14 +107,29 @@ uint16_t net_checksum(const void *data, size_t len);
 #define IP_PROTO_UDP 17
 #define IP_PROTO_TCP 6
 
-// The address our packets to `dst` carry as their source
+/**
+ * @brief The address our packets to `dst` carry as their source: `dst`
+ *        itself for a loopback address, else ours.
+ */
 uint32_t net_source_for(uint32_t dst);
 
-// Checksum of a UDP or TCP segment, including the pseudo header
+/**
+ * @brief Checksum of a UDP or TCP segment (`len` bytes), including the
+ *        pseudo header of addresses, protocol and length. 0 when checking
+ *        a segment that carries its correct checksum.
+ */
 uint16_t net_transport_checksum(uint8_t protocol, uint32_t src_ip, uint32_t dst_ip, const void *segment, size_t len);
 
-// Send `len` bytes as the payload of an IPv4 packet. `can_block`: the caller
-// may sleep waiting for an ARP answer. Never call with a lock held.
+/**
+ * @brief Send `len` bytes as the payload of an IPv4 packet to `dst`: to
+ *        ourselves straight back through the input path, else to the
+ *        machine or the gateway, whichever is the next hop. Never call with
+ *        a lock held.
+ * @param can_block The caller may sleep waiting for an ARP answer (the
+ *        receive thread may not: it would be waiting for itself).
+ * @return 0, -EMSGSIZE, -ENETDOWN, -EHOSTUNREACH (or no ARP answer known,
+ *         when it may not wait), -EINTR.
+ */
 int net_ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t len, bool can_block);
 
 /**
@@ -141,6 +164,10 @@ udp_socket_t *udp_open(void);
  */
 int udp_bind(udp_socket_t *sock, uint16_t port);
 
+/**
+ * @brief Close the socket: datagrams queued for it are thrown away, and a
+ *        task waiting in udp_recvfrom gets -EBADF.
+ */
 void udp_close(udp_socket_t *sock);
 
 /**
@@ -151,7 +178,8 @@ void udp_close(udp_socket_t *sock);
 int64_t udp_sendto(udp_socket_t *sock, uint32_t ip, uint16_t port, const void *data, size_t len);
 
 /**
- * @brief Receive one datagram, sleeping until one arrives.
+ * @brief Receive one datagram into the kernel buffer `buf`, sleeping until
+ *        one arrives.
  * @param timeout_ticks 0 waits for ever.
  * @return Bytes copied (a longer datagram is cut to `len`), -ETIMEDOUT,
  *         -EINVAL (socket not bound), or -EINTR.

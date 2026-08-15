@@ -531,7 +531,20 @@ One pass per area, each on its own branch and checked with `make check`:
    `file_open_at`, the FAT driver's copy of every write (system calls pass
    it kernel memory), and the two copies of the "forget a directory" test
    helper (one, `vfs_forget_directory`).
-4. `src/drivers`, `src/net`
+4. `src/drivers`, `src/net` — done: every function documented. Found on
+   the way: `keyboard_init` waited for the PS/2 controller without limit,
+   and a machine without one (most current PCs) hung at boot (bounded now;
+   `make test-kshell` boots QEMU with `i8042=off`); the CMOS clock's index
+   and data ports were used from any CPU without a lock, a read could
+   straddle the clock's own update, and 12-hour mode turned 12 PM into 0
+   and left 12 AM at 12; every IPv4 packet taught the ARP cache its
+   sender, so a burst from distant hosts (whose frames carry the gateway's
+   address) could push the gateway's entry out, and the receive thread,
+   which may not wait for ARP, could no longer answer them. Removed:
+   `rtc_init` (it only printed), `serial_write`, `pci_find_device` and two
+   PCI fields nothing filled in, `virtio_net_rx_pending`, `dev.h`'s
+   re-export of `random.h`, a second copy of each UDP datagram on its way
+   to the caller.
 5. `lib`: delete the unused crypto (repair 10 below decided it: nothing
    uses it, and nothing tests it against a reference), keep SHA-256,
    ChaCha20 and what PBKDF2 needs

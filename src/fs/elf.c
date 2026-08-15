@@ -10,7 +10,7 @@
 
 #include "elf.h"
 #include "elf_dyn.h"
-#include "dev.h"
+#include "random.h"
 #include "vmm.h"
 #include "pmm.h"
 #include "kprintf.h"
@@ -67,7 +67,7 @@ static bool load_segment(uint64_t *pml4, const uint8_t *file, size_t size, const
 // Where to put a position-independent executable: a random page-aligned
 // address between 4 GiB and 260 GiB (26 bits of randomness). An attacker who
 // can make a program jump somewhere first has to guess where anything is.
-// The generator is not cryptographic; see dev.h.
+// The numbers come from the kernel's generator (random.h).
 static uint64_t random_load_base(void) {
     return ELF_PIE_BASE_MIN + ((uint64_t)(get_random_u32() & ELF_PIE_RANDOM_MASK) << 12);
 }

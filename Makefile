@@ -549,6 +549,11 @@ test-kshell: iso
 		'help' 'mount' 'bench' '!dmesg' '@wait:3' > $(BUILD)/kshell.log 2>&1 \
 		&& echo "kernel shell (dmesg, mount, bench and help): ok" \
 		|| { echo "kernel shell: FAILED (see $(BUILD)/kshell.log)"; exit 1; }
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) --qemu-arg=-machine --qemu-arg=pc,i8042=off \
+		--expect 'no PS/2 controller answered' --expect 'Hello from ring 3' \
+		'exec /bin/hello' > $(BUILD)/no-ps2.log 2>&1 \
+		&& echo "no PS/2 controller (boots, input from the serial line): ok" \
+		|| { echo "no PS/2 controller: FAILED (see $(BUILD)/no-ps2.log)"; exit 1; }
 
 # The rescue system: without a system disk the kernel runs from its boot
 # module, in memory. Everything must still work; nothing outside /disk lasts.

@@ -14,31 +14,28 @@
 #define COM1 0x3F8 // Base I/O port address for COM1 serial port
 
 /**
- * @brief Initialize the COM1 16550 UART serial controller.
+ * @brief Set COM1 up (115200 baud, 8N1, FIFOs on), interrupt on every
+ *        received byte (IRQ 4), and register the handler. Called first
+ *        thing at boot: kprintf writes here from then on.
  */
 void serial_init(void);
 
 /**
- * @brief Output a single ASCII character to COM1 serial.
- * @param c The character to send.
+ * @brief Send one byte, spinning until the UART has room for it. Safe from
+ *        any context; the caller serialises (kprintf's lock).
  */
 void serial_putchar(char c);
 
 /**
- * @brief Output a null-terminated string to COM1 serial.
- * @param str The string buffer to send.
- */
-void serial_write(const char *str);
-
-/**
- * @brief Check if input character is available on COM1 serial port.
- * @return true if character is ready to be read, false otherwise.
+ * @brief Whether a received byte is waiting (drains the UART into the
+ *        buffer first, for bytes whose interrupt has not come yet).
  */
 bool serial_has_char(void);
 
 /**
- * @brief Read a character from COM1 serial port (blocking if empty).
- * @return ASCII character byte.
+ * @brief Take the next received byte, spinning (not sleeping) until there
+ *        is one. Carriage return arrives as '\n' and DEL as '\b'; Ctrl-C
+ *        and Ctrl-Z never arrive: they signal the foreground programs.
  */
 char serial_getchar(void);
 

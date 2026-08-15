@@ -1,3 +1,8 @@
+/**
+ * @file console.c
+ * @brief Text on the framebuffer (see console.h)
+ */
+
 #include "console.h"
 #include "font.h"
 #include "pmm.h"
@@ -71,6 +76,8 @@ void console_enable_backbuffer(void) {
 
 static void putpixel(uint32_t x, uint32_t y, uint32_t color);
 
+// Draw or remove the cursor's underline at a cell (inverting the two
+// bottom rows of pixels: twice is nothing). Caller holds console_lock.
 static void invert_cursor_cell(uint32_t cell_x, uint32_t cell_y) {
     if (!backbuffer) return;
     for (uint32_t y = CELL - 2; y < CELL; y++) {         // The bottom two rows of the cell
@@ -83,12 +90,14 @@ static void invert_cursor_cell(uint32_t cell_x, uint32_t cell_y) {
     }
 }
 
+// Take the cursor off the screen if it is drawn. Caller holds console_lock.
 static void hide_cursor(void) {
     if (!cursor_drawn) return;
     invert_cursor_cell(cursor_drawn_x, cursor_drawn_y);
     cursor_drawn = false;
 }
 
+// Draw the cursor where the next character goes. Caller holds console_lock.
 static void show_cursor(void) {
     if (cursor_drawn || !backbuffer) return;
     cursor_drawn_x = cursor_x;
@@ -165,6 +174,8 @@ void console_refresh(void) {
     spinlock_release_irqrestore(&console_lock, flags);
 }
 
+// Set one pixel in the RAM copy and, unless the screen is stale or lent
+// to a program, in video memory. Off-screen pixels are ignored.
 static void putpixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= g_fb->width || y >= g_fb->height) return;
     uint32_t idx = y * (g_fb->pitch / 4) + x;
@@ -176,6 +187,8 @@ static void putpixel(uint32_t x, uint32_t y, uint32_t color) {
     fb_ptr[idx] = color;
 }
 
+// Move the text up one line of characters and clear the bottom one.
+// Caller holds console_lock.
 static void scroll(void) {
     uint32_t *fb_ptr = g_fb->address;
     uint32_t pixels_per_row = g_fb->pitch / 4;
@@ -298,6 +311,9 @@ static void putchar_unlocked(char c) {
     }
 }
 
+// Draw one printable character at the cursor and advance (or act on
+// newline, carriage return and backspace), scrolling when the cursor
+// falls off the bottom. Caller holds console_lock.
 static void draw_char(char c) {
     if (c == '\n') {
         cursor_x = 0;
