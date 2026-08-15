@@ -460,14 +460,16 @@ test-crash: iso
 # The mouse and the screen as devices: /bin/paint takes the screen, the
 # mouse is moved and clicked through QEMU's monitor, and screenshots show
 # what was drawn. Then the program ends (once by its own way out, once
-# killed) and the text screen has to be back both times.
+# killed) and the text screen has to be back both times. The screen is
+# cleared first: the checks look at pixels where the stroke was, which the
+# boot messages would otherwise reach (how far depends on how many there are).
 PAINT_SHOTS = $(BUILD)/paint
 test-paint: iso
 	@rm -rf $(PAINT_SHOTS) && mkdir -p $(PAINT_SHOTS)
 	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
 		--expect 'paint: 1280x800, pointer at 640,400' --expect 'paint: 2 strokes; pointer last at 124,320' \
 		--expect 'Hello from ring 3' --forbid 'no mouse|no screen' \
-		'!exec /bin/paint' \
+		'exec /bin/clear' '!exec /bin/paint' \
 		'@button:1' '@mouse:60,0' '@mouse:0,40' '@button:0' \
 		'@screendump:$(PAINT_SHOTS)/1-stroke.ppm' \
 		'@mouse:-100,-100' '@mouse:-100,-100' '@mouse:-100,-100' '@mouse:-100,-124' '@mouse:-100,0' '@mouse:-100,0' '@mouse:-24,0' \
