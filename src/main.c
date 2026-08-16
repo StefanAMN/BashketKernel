@@ -35,6 +35,11 @@
 #include "mouse.h"
 #include "cursor.h"
 #include "user_apps.h"
+#include "rtc.h"
+#include "env.h"
+#include "pipe.h"
+#include "ansi.h"
+#include "ramfs.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -190,7 +195,7 @@ void _start(void) {
     // Phase 12: UNIX Process Lifecycle & Signals (fork, execve, waitpid, signals)
     kprintf("Phase 12 UNIX Process Subsystem initialization complete.\n");
 
-    // Phase 13: PCI Bus Scanner & VirtIO Network Adapter
+    // Phase 13: PCI Bus & VirtIO Network Stack
     virtio_net_init();
     kprintf("Phase 13 PCI & VirtIO Network Stack initialization complete.\n");
 
@@ -207,7 +212,19 @@ void _start(void) {
     user_apps_init();
     kprintf("Phase 16 Userland Apps & Binaries initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 16)
+    // Phase 17: Real-Time Clock & CMOS Driver
+    rtc_init();
+    kprintf("Phase 17 RTC CMOS Driver initialization complete.\n");
+
+    // Phase 18: Process Environment Variables
+    env_init();
+    kprintf("Phase 18 Environment Variables initialization complete.\n");
+
+    // Phase 21: Dynamic RAM Filesystem (RamFS)
+    ramfs_init();
+    kprintf("Phase 21 Dynamic RamFS initialization complete.\n");
+
+    // Run Kernel Unit Tests (Phases 1 - 21)
     run_all_tests();
 
     // Create interactive shell task

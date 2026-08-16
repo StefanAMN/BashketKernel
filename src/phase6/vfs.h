@@ -63,6 +63,16 @@ vnode_t *vfs_create_dir(vnode_t *parent, const char *name);
 size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf);
 
 /**
+ * @brief Write bytes to a dynamic heap-allocated file vnode.
+ * @param file Pointer to file vnode.
+ * @param offset Byte offset to start writing at.
+ * @param count Number of bytes to write.
+ * @param buf Data input buffer.
+ * @return Number of bytes successfully written.
+ */
+size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf);
+
+/**
  * @brief Delete/unlink file or empty directory node from VFS.
  * @param parent Directory vnode containing the file.
  * @param name File or directory name to delete.

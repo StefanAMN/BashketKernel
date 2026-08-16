@@ -1,7 +1,7 @@
 CC = gcc
 LD = ld
 
-INCLUDES = -Isrc -Isrc/phase1 -Isrc/phase2 -Isrc/phase3 -Isrc/phase4 -Isrc/phase5 -Isrc/phase6 -Isrc/phase7 -Isrc/phase8 -Isrc/phase9 -Isrc/phase10 -Isrc/phase11 -Isrc/phase12 -Isrc/phase13 -Isrc/phase14 -Isrc/phase15 -Isrc/phase16
+INCLUDES = -Isrc -Isrc/phase1 -Isrc/phase2 -Isrc/phase3 -Isrc/phase4 -Isrc/phase5 -Isrc/phase6 -Isrc/phase7 -Isrc/phase8 -Isrc/phase9 -Isrc/phase10 -Isrc/phase11 -Isrc/phase12 -Isrc/phase13 -Isrc/phase14 -Isrc/phase15 -Isrc/phase16 -Isrc/phase17 -Isrc/phase18 -Isrc/phase19 -Isrc/phase20 -Isrc/phase21
 
 CFLAGS = -Wall -Wextra -O2 -pipe $(INCLUDES) \
          -ffreestanding -fno-stack-protector -fno-pie -fno-pic \

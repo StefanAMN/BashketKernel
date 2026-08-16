@@ -25,6 +25,11 @@ extern void test_suite_net(void);
 extern void test_suite_boot(void);
 extern void test_suite_mouse(void);
 extern void test_suite_user_apps(void);
+extern void test_suite_rtc(void);
+extern void test_suite_env(void);
+extern void test_suite_pipe(void);
+extern void test_suite_ansi(void);
+extern void test_suite_ramfs(void);
 
 void run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -48,6 +53,11 @@ void run_all_tests(void) {
     test_suite_boot();
     test_suite_mouse();
     test_suite_user_apps();
+    test_suite_rtc();
+    test_suite_env();
+    test_suite_pipe();
+    test_suite_ansi();
+    test_suite_ramfs();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);

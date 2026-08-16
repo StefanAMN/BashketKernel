@@ -110,7 +110,7 @@ This document tracks the recommended order of topics and concepts to learn as fe
 
 - **Order of Learning:**
   1. **Virtual Filesystem (VFS) Abstraction:**
-     - **Concepts:** `vnode_t` structures (`VFS_FILE` vs `VFS_DIRECTORY`), parent/child/sibling tree hierarchy, directory creation, path resolution (`vfs_find`), `vfs_unlink`, `vfs_stat`, and `vfs_read`.
+     - **Concepts:** `vnode_t` structures (`VFS_FILE` vs `VFS_DIRECTORY`), parent/child/sibling tree hierarchy, directory creation, path resolution (`vfs_find`), `vfs_unlink`, `vfs_stat`, `vfs_write`, and `vfs_read`.
      - Files to inspect: `src/phase6/vfs.h`, `src/phase6/vfs.c`
   2. **USTAR (Tar) Initrd Parser:**
      - **Concepts:** Reading 512-byte tar headers, octal size conversion, mounting files and directories into VFS tree on boot.
@@ -126,7 +126,7 @@ This document tracks the recommended order of topics and concepts to learn as fe
      - **Concepts:** Reading scancodes from port `0x60` on IRQ 1 (Vector 33), Shift key state handling, converting scancodes to ASCII, and buffering keys in a thread-safe circular queue.
      - Files to inspect: `src/phase7/keyboard.h`, `src/phase7/keyboard.c`
   2. **Interactive Kernel Shell & Core Utilities:**
-     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`), terminal prompt rendering, and backspace handling.
+     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `date`, `env`, `export`, `unset`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`), terminal prompt rendering, and backspace handling.
      - Files to inspect: `src/phase7/shell.h`, `src/phase7/shell.c`
 
 ---
@@ -242,3 +242,53 @@ This document tracks the recommended order of topics and concepts to learn as fe
   1. **Userland Binary Installation:**
      - **Concepts:** Registering built-in user binaries (`/bin/hello`, `/bin/calc`) into VFS `/bin`.
      - Files to inspect: `src/phase16/user_apps.h`, `src/phase16/user_apps.c`
+
+---
+
+### 17. Real-Time Clock & CMOS Driver (Phase 17)
+**Goal:** CMOS Register Port Access (`0x70`/`0x71`) & Wall-Clock UTC Timestamp Reading.
+
+- **Order of Learning:**
+  1. **CMOS Hardware Driver:**
+     - **Concepts:** CMOS register indices, BCD-to-Binary conversion, 12h/24h time decoding.
+     - Files to inspect: `src/phase17/rtc.h`, `src/phase17/rtc.c`
+
+---
+
+### 18. Process Environment Variables (Phase 18)
+**Goal:** Environment Variable Tables & Shell Variable Operations.
+
+- **Order of Learning:**
+  1. **Environment Table Subsystem:**
+     - **Concepts:** Environment lookup (`env_get`), modification (`env_set`), unsetting (`env_unset`), `$VAR` expansion.
+     - Files to inspect: `src/phase18/env.h`, `src/phase18/env.c`
+
+---
+
+### 19. Inter-Process Communication & Pipes (Phase 19)
+**Goal:** 4 KiB Ring-Buffer Stream Pipes for Inter-Task Data Streaming.
+
+- **Order of Learning:**
+  1. **IPC Stream Pipe:**
+     - **Concepts:** Thread-safe circular buffers, stream reads and writes.
+     - Files to inspect: `src/phase19/pipe.h`, `src/phase19/pipe.c`
+
+---
+
+### 20. Terminal ANSI Color Decoder (Phase 20)
+**Goal:** ANSI 8-Color & 16-Color Palette Mapping.
+
+- **Order of Learning:**
+  1. **ANSI Color Decoder:**
+     - **Concepts:** Decoding ANSI escape sequence indices (30..37) into RGB 24-bit colors.
+     - Files to inspect: `src/phase20/ansi.h`, `src/phase20/ansi.c`
+
+---
+
+### 21. Dynamic RamFS & VFS Write Operations (Phase 21)
+**Goal:** Dynamic RAM Filesystem & Dynamic VFS File Writing.
+
+- **Order of Learning:**
+  1. **RamFS & VFS Write:**
+     - **Concepts:** `vfs_write` memory allocation, dynamic file growth, `/tmp` dynamic scratch filesystem.
+     - Files to inspect: `src/phase21/ramfs.h`, `src/phase21/ramfs.c`

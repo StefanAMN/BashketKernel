@@ -149,6 +149,28 @@ size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
     return to_read;
 }
 
+size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf) {
+    if (!file || file->type != VFS_FILE || !buf || count == 0) return 0;
+
+    size_t new_size = offset + count;
+    uint8_t *new_data = (uint8_t *)kmalloc(new_size);
+    if (!new_data) return 0;
+
+    if (file->data && file->size > 0) {
+        size_t copy_len = (file->size < offset) ? file->size : offset;
+        memcpy(new_data, file->data, copy_len);
+    }
+
+    memcpy(new_data + offset, buf, count);
+
+    file->data = new_data;
+    if (new_size > file->size) {
+        file->size = new_size;
+    }
+
+    return count;
+}
+
 int vfs_unlink(vnode_t *parent, const char *name) {
     if (!parent) parent = vfs_root;
     if (!name || parent->type != VFS_DIRECTORY) return -1;
