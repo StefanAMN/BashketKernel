@@ -126,7 +126,7 @@ This document tracks the recommended order of topics and concepts to learn as fe
      - **Concepts:** Reading scancodes from port `0x60` on IRQ 1 (Vector 33), Shift key state handling, converting scancodes to ASCII, and buffering keys in a thread-safe circular queue.
      - Files to inspect: `src/phase7/keyboard.h`, `src/phase7/keyboard.c`
   2. **Interactive Kernel Shell & Core Utilities:**
-     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `date`, `env`, `export`, `unset`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`), terminal prompt rendering, and backspace handling.
+     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `date`, `env`, `export`, `unset`, `dmesg`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`), terminal prompt rendering, and backspace handling.
      - Files to inspect: `src/phase7/shell.h`, `src/phase7/shell.c`
 
 ---
@@ -342,3 +342,63 @@ This document tracks the recommended order of topics and concepts to learn as fe
   1. **FPU / SSE Enablement:**
      - **Concepts:** Control registers `CR0` and `CR4`, `fninit` instruction, floating-point arithmetic support.
      - Files to inspect: `src/phase26/fpu.h`, `src/phase26/fpu.c`
+
+---
+
+### 27. Virtual Memory Swap Manager & Demand Paging (Phase 27)
+**Goal:** Frame Eviction, Swap Allocation Bitmaps, and Page Restoration.
+
+- **Order of Learning:**
+  1. **Swap Management:**
+     - **Concepts:** `swap_out_frame`, `swap_in_frame`, swap frame tracking bitmaps.
+     - Files to inspect: `src/phase27/swap.h`, `src/phase27/swap.c`
+
+---
+
+### 28. ELF Dynamic Relocation Loader (Phase 28)
+**Goal:** Parsing Relocation Tables and Symbol Resolution.
+
+- **Order of Learning:**
+  1. **ELF Dynamic Symbol Relocations:**
+     - **Concepts:** `R_X86_64_RELATIVE`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`.
+     - Files to inspect: `src/phase28/elf_dyn.h`, `src/phase28/elf_dyn.c`
+
+---
+
+### 29. UDP/IP Network Socket Stack (Phase 29)
+**Goal:** Socket Layer Abstraction & Internet Checksumming.
+
+- **Order of Learning:**
+  1. **Network Sockets:**
+     - **Concepts:** `socket_create`, `socket_sendto`, `net_checksum`.
+     - Files to inspect: `src/phase29/socket.h`, `src/phase29/socket.c`
+
+---
+
+### 30. Desktop Window Manager & GUI Compositor (Phase 30)
+**Goal:** Graphical Desktop Windows & Canvas Buffer Allocations.
+
+- **Order of Learning:**
+  1. **Window Canvas Allocator:**
+     - **Concepts:** Window structure creation (`window_create`), canvas double-buffering.
+     - Files to inspect: `src/phase30/window.h`, `src/phase30/window.c`
+
+---
+
+### 31. User Account Authentication (Phase 31)
+**Goal:** Account Authentication & UID/GID Contexts.
+
+- **Order of Learning:**
+  1. **Authentication Subsystem:**
+     - **Concepts:** Account verification (`auth_login`), current profile context (`auth_get_current_user`).
+     - Files to inspect: `src/phase31/auth.h`, `src/phase31/auth.c`
+
+---
+
+### 32. Kernel Log Ring Buffer & dmesg (Phase 32)
+**Goal:** Kernel Diagnostic Ring Buffer & `dmesg` Coreutil.
+
+- **Order of Learning:**
+  1. **Kernel Ring Logger:**
+     - **Concepts:** Ring buffer message writing (`klog_write`), output formatting (`dmesg`).
+     - Files to inspect: `src/phase32/klog.h`, `src/phase32/klog.c`

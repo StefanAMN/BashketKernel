@@ -1,42 +1,35 @@
-# BashketKernel Extended Development Roadmap (Phases 17–26)
+# BashketKernel Extended Development Roadmap (Phases 17–32)
 
-This document outlines the completed roadmap for developing **BashketKernel** into a feature-rich, interactive 64-bit operating system.
-
----
-
-## Roadmap Overview (STATUS: ALL 26 PHASES COMPLETED)
-
-### 1. Phase 17: Real-Time Clock (RTC) & CMOS Driver (`src/phase17/`) [COMPLETED]
-- CMOS index/data port access, wall-clock UTC time parsing, shell `date` command.
-
-### 2. Phase 18: Process Environment & Argument Passing (`src/phase18/`) [COMPLETED]
-- Key-value environment table, `env`, `export`, `unset`, and `$VAR` expansion.
-
-### 3. Phase 19: Inter-Process Communication & Ring-Buffer Pipes (`src/phase19/`) [COMPLETED]
-- 4 KiB IPC ring-buffer stream pipe (`pipe_create`, `pipe_read`, `pipe_write`).
-
-### 4. Phase 20: ANSI Color Rendering (`src/phase20/`) [COMPLETED]
-- ANSI 30..37 escape color code decoder to 24-bit RGB palette values.
-
-### 5. Phase 21: Dynamic RamFS & VFS Write Operations (`src/phase21/`) [COMPLETED]
-- In-memory RAM filesystem mounted at `/tmp`, dynamic file writing (`vfs_write`).
-
-### 6. Phase 22: Priority-Based Scheduler & Multi-Level Queues (`src/phase22/`) [COMPLETED]
-- Multi-level priority levels (`HIGH`, `NORMAL`, `LOW`), `task_set_priority`.
-
-### 7. Phase 23: Counting Semaphores & Event Synchronization (`src/phase23/`) [COMPLETED]
-- Counting semaphores (`sem_t`, `sem_wait`, `sem_post`) for inter-thread sync.
-
-### 8. Phase 24: Pseudo-Filesystem ProcFS (`/proc`) (`src/phase24/`) [COMPLETED]
-- Virtual `/proc` directory mounting `/proc/meminfo`, `/proc/cpuinfo`, `/proc/version`, `/proc/uptime`.
-
-### 9. Phase 25: Virtual Terminal TTY & Framebuffer Scrollback (`src/phase25/`) [COMPLETED]
-- TTY virtual device buffer and 500-line screen scrollback history.
-
-### 10. Phase 26: Hardware FPU & SSE State Management (`src/phase26/`) [COMPLETED]
-- Enabling CR0/CR4 FPU/SSE control bits, `fxsave64` / `fxrstor64` context switching.
+This document outlines the extended roadmap for developing **BashketKernel** into a feature-rich, interactive 64-bit operating system.
 
 ---
 
-## Verification Results
-- All **312 kernel unit tests pass with 0 failures** in QEMU.
+## Roadmap Overview
+
+### 1. Phases 17–26 [COMPLETED]
+- RTC CMOS Driver, Process Environment Variables, IPC Pipes, ANSI Color Decoder, Dynamic RamFS, Priority Scheduler, Counting Semaphores, ProcFS, Virtual TTY, Hardware FPU/SSE.
+
+### 2. Phase 27: Virtual Memory Swap Manager & Demand Paging (`src/phase27/`)
+- Page swapping manager, swap frame allocation bitmap, page-in / page-out handlers.
+
+### 3. Phase 28: ELF Dynamic Linking & Symbol Relocation (`src/phase28/`)
+- Dynamic ELF relocations (`R_X86_64_RELATIVE`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`).
+
+### 4. Phase 29: Network Socket Layer & UDP/IP Protocol Stack (`src/phase29/`)
+- Socket layer (`socket`, `bind`, `sendto`, `recvfrom`), IPv4 header checksumming, UDP protocol stack over VirtIO-Net.
+
+### 5. Phase 30: Desktop Window Manager & GUI Compositor (`src/phase30/`)
+- Graphical window manager (`window_t`), title bar rendering, double-buffered screen compositing.
+
+### 6. Phase 31: User Accounts & Authentication (`src/phase31/`)
+- `/etc/passwd` parser, UID/GID context, `login` & `su` authentication commands.
+
+### 7. Phase 32: Kernel Ring Buffer & Diagnostic Logger (`dmesg`) (`src/phase32/`)
+- Kernel syslog ring buffer (`/dev/kmsg`), `dmesg` coreutil diagnostic command.
+
+---
+
+## Verification Plan
+Each phase will be verified using:
+- Automated kernel unit test suites in `tests/`.
+- QEMU runtime execution with 0 test failures.

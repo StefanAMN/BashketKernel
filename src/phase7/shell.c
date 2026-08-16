@@ -14,6 +14,7 @@
 #include "string_util.h"
 #include "rtc.h"
 #include "env.h"
+#include "klog.h"
 
 static int parse_int(const char *str) {
     int val = 0;
@@ -40,6 +41,7 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("  env             - Display environment variables\n");
         kprintf("  export K=V      - Set environment variable\n");
         kprintf("  unset K         - Unset environment variable\n");
+        kprintf("  dmesg           - Display kernel log ring buffer\n");
         kprintf("  touch <file>    - Create new empty file in VFS\n");
         kprintf("  mkdir <dir>     - Create new directory in VFS\n");
         kprintf("  rm <file>       - Remove file from VFS\n");
@@ -108,6 +110,8 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("Date (UTC): %d-%02d-%02d %02d:%02d:%02d\n", t.year, t.month, t.day, t.hour, t.minute, t.second);
     } else if (strcmp(cmdline, "env") == 0) {
         env_print_all();
+    } else if (strcmp(cmdline, "dmesg") == 0) {
+        klog_print_dmesg();
     } else if (strncmp(cmdline, "export ", 7) == 0) {
         const char *expr = cmdline + 7;
         char key[64], val[128];
