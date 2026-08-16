@@ -126,7 +126,7 @@ This document tracks the recommended order of topics and concepts to learn as fe
      - **Concepts:** Reading scancodes from port `0x60` on IRQ 1 (Vector 33), Shift key state handling, converting scancodes to ASCII, and buffering keys in a thread-safe circular queue.
      - Files to inspect: `src/phase7/keyboard.h`, `src/phase7/keyboard.c`
   2. **Interactive Kernel Shell & Core Utilities:**
-     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `date`, `env`, `export`, `unset`, `dmesg`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`), terminal prompt rendering, and backspace handling.
+     - **Concepts:** Command loop (`shell_run_cmd`), built-in command handlers (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `date`, `env`, `export`, `unset`, `dmesg`, `mount`, `bench`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`), terminal prompt rendering, and backspace handling.
      - Files to inspect: `src/phase7/shell.h`, `src/phase7/shell.c`
 
 ---
@@ -402,3 +402,63 @@ This document tracks the recommended order of topics and concepts to learn as fe
   1. **Kernel Ring Logger:**
      - **Concepts:** Ring buffer message writing (`klog_write`), output formatting (`dmesg`).
      - Files to inspect: `src/phase32/klog.h`, `src/phase32/klog.c`
+
+---
+
+### 33. High-Resolution Timers & Nanosleep (Phase 33)
+**Goal:** Nanosecond Precision Sleep & High-Resolution Timer Queue.
+
+- **Order of Learning:**
+  1. **High-Resolution Timers:**
+     - **Concepts:** Nanosecond timer queues, `nanosleep` delay loop.
+     - Files to inspect: `src/phase33/hrtimer.h`, `src/phase33/hrtimer.c`
+
+---
+
+### 34. VFS Mount Manager (Phase 34)
+**Goal:** Path Mount Points & Mount Table Management.
+
+- **Order of Learning:**
+  1. **VFS Mount Point Registry:**
+     - **Concepts:** Mount table creation (`vfs_mount`), unmounting (`vfs_umount`).
+     - Files to inspect: `src/phase34/mount.h`, `src/phase34/mount.c`
+
+---
+
+### 35. POSIX Shared Memory (SHM) (Phase 35)
+**Goal:** Inter-Process Shared Physical Frame Regions.
+
+- **Order of Learning:**
+  1. **Shared Memory IPC:**
+     - **Concepts:** Region creation (`shm_create`), region resolution (`shm_get`), region destruction (`shm_destroy`).
+     - Files to inspect: `src/phase35/shm.h`, `src/phase35/shm.c`
+
+---
+
+### 36. Cryptographic Primitives (Phase 36)
+**Goal:** SHA-256 Digest Hashing & AES-128 Block Encryption.
+
+- **Order of Learning:**
+  1. **Cryptographic Primitives:**
+     - **Concepts:** SHA-256 digest hashing (`sha256_hash`), AES-128 block cipher (`aes128_encrypt_block`).
+     - Files to inspect: `src/phase36/crypto.h`, `src/phase36/crypto.c`
+
+---
+
+### 37. Virtual Devices (/dev) (Phase 37)
+**Goal:** Virtual Character Devices & RDTSC Pseudo-Random Number Generator.
+
+- **Order of Learning:**
+  1. **Virtual Device Tree:**
+     - **Concepts:** Mount `/dev` nodes (`/dev/null`, `/dev/zero`, `/dev/random`), RDTSC PRNG (`get_random_u32`).
+     - Files to inspect: `src/phase37/dev.h`, `src/phase37/dev.c`
+
+---
+
+### 38. Kernel Performance Benchmark Suite (Phase 38)
+**Goal:** CPU MIPS Calculation & Memory Throughput Diagnostic Suite.
+
+- **Order of Learning:**
+  1. **Benchmark Suite:**
+     - **Concepts:** Memory copy benchmark, CPU loop benchmark (`bench_run_all`).
+     - Files to inspect: `src/phase38/bench.h`, `src/phase38/bench.c`
