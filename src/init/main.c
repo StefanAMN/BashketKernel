@@ -50,7 +50,6 @@
 #include "hrtimer.h"
 #include "mount.h"
 #include "shm.h"
-#include "crypto.h"
 #include "dev.h"
 #include "bench.h"
 #include "acpi.h"

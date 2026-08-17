@@ -8,7 +8,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "kprintf.h"
-#include "string_util.h"
+#include "kstring.h"
 #include "kstack.h"
 #include "spinlock.h"
 #include "gdt.h"

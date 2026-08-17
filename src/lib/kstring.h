@@ -1,6 +1,7 @@
 /**
  * @file kstring.h
- * @brief Kernel Freestanding String & Memory Utilities (Wrapper for lib/string.h)
+ * @brief The kernel's memory and string functions: lib/string.h, under the
+ *        name kernel code includes
  */
 
 #ifndef KSTRING_H
