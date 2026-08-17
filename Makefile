@@ -344,6 +344,14 @@ test-edit: iso
 		'~\e[A\e[A\e[F tail' '~^C' '~^S^Q' 'cat tmp/t.txt' 'exec /bin/sh -c "wc /tmp/t.txt"' \
 		'echo still-in-line-mode' > $(BUILD)/edit.log 2>&1 \
 		&& echo "editor: ok" || { echo "editor: FAILED (see $(BUILD)/edit.log)"; exit 1; }
+	@# A file larger than the editor holds is loaded in part, and must not be
+	@# saved (that would cut it short): the count of its bytes is unchanged
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect '\n(\d+ \d+ \d+)\n[\s\S]*not saved[\s\S]*\n\1\n' \
+		'exec /bin/sh -c "cat /bin/syscheck /bin/fuzz /bin/sh > /tmp/big"' 'exec /bin/sh -c "wc /tmp/big"' \
+		'!exec /bin/edit /tmp/big' '~^S' '@wait:1' '~^Q' 'exec /bin/sh -c "wc /tmp/big"' > $(BUILD)/edit-big.log 2>&1 \
+		&& echo "editor (a file too large to hold is not saved): ok" \
+		|| { echo "editor (large file): FAILED (see $(BUILD)/edit-big.log)"; exit 1; }
 
 # Real UDP datagrams between the host and the kernel, in both directions
 # (see tools/test_net.py). Uses only the loopback interface of the host.

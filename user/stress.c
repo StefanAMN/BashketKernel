@@ -24,6 +24,9 @@ static int still_alive(void) {
     return waitpid(pid, &status, 0) == pid && status == 33;
 }
 
+/* Each test returns 0 if the kernel refused cleanly and the process can
+ * still work afterwards, 1 otherwise.
+ * mem: map 1 MiB chunks until refused, touch them, give them back */
 static int stress_mem(void) {
     static void *chunks[4096];
     int count = 0;
@@ -49,6 +52,7 @@ static int stress_mem(void) {
     return still_alive() ? 0 : 1;
 }
 
+/* brk: grow the heap until refused, touch both ends, shrink it back */
 static int stress_brk(void) {
     char *start = sbrk(0);
     long grown = 0;
@@ -62,6 +66,7 @@ static int stress_brk(void) {
     return (sbrk(0) == start && still_alive()) ? 0 : 1;
 }
 
+/* fork: make children until refused, then end and reap them all */
 static int stress_fork(void) {
     static long pids[4096];
     int count = 0;
@@ -93,6 +98,9 @@ static int stress_cow_common(int via_syscall);
 static int stress_cow(void)    { return stress_cow_common(0); }
 static int stress_cowsys(void) { return stress_cow_common(1); }
 
+/* cow, cowsys: take most of memory, fork, and have the child (or a system
+ * call writing into the parent's buffer) need copies that cannot all be
+ * made: the one that runs out must be killed, not the kernel */
 static int stress_cow_common(int via_syscall) {
     /* Take most of the memory and dirty it */
     static unsigned char *chunks[4096];
@@ -139,6 +147,7 @@ static int stress_cow_common(int via_syscall) {
     return still_alive() ? 0 : 1;
 }
 
+/* file: write to /tmp until the memory runs out, then remove the file */
 static int stress_file(void) {
     long fd = open("/tmp/stress.dat", O_WRONLY | O_CREAT | O_TRUNC);
     if (fd < 0) return 1;

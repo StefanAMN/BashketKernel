@@ -24,16 +24,20 @@ static size_t cursor = 0;         /* Insertion point, 0 .. length */
 static size_t top = 0;            /* Start of the first line shown */
 static unsigned columns = 80, rows = 24;
 static int modified = 0;
+static int partial = 0;           /* The file did not fit: only its beginning is here */
 static const char *path;
 static const char *message = "";  /* Shown once on the status line */
 
 /* --- Moving around in the array ----------------------------------------- */
 
+/* Where the line holding `pos` starts, and where it ends (its newline, or
+ * the end of the text) */
 static size_t line_start(size_t pos) {
     while (pos > 0 && text[pos - 1] != '\n') pos--;
     return pos;
 }
 
+/* (See line_start) */
 static size_t line_end(size_t pos) {
     while (pos < length && text[pos] != '\n') pos++;
     return pos;
@@ -59,6 +63,7 @@ static void move_vertically(int down) {
 
 /* --- Changing the text --------------------------------------------------- */
 
+/* Put `c` in at the cursor and move past it */
 static void insert_char(char c) {
     if (length >= MAX_TEXT) { message = "file is full"; return; }
     for (size_t i = length; i > cursor; i--) text[i] = text[i - 1];
@@ -67,6 +72,7 @@ static void insert_char(char c) {
     modified = 1;
 }
 
+/* Remove the character at `pos` (nothing past the end) */
 static void delete_at(size_t pos) {
     if (pos >= length) return;
     for (size_t i = pos; i + 1 < length; i++) text[i] = text[i + 1];
@@ -76,6 +82,8 @@ static void delete_at(size_t pos) {
 
 /* --- Files ---------------------------------------------------------------- */
 
+/* Read the file named on the command line into the text (a missing file is
+ * a new one) */
 static void load(void) {
     long fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -84,11 +92,21 @@ static void load(void) {
     }
     long n;
     while (length < MAX_TEXT && (n = read((int)fd, text + length, MAX_TEXT - length)) > 0) length += (size_t)n;
+    char more;
+    if (length == MAX_TEXT && read((int)fd, &more, 1) > 0) {
+        partial = 1;
+        message = "file too large: only the beginning was loaded (it cannot be saved)";
+    }
     close((int)fd);
-    if (length == MAX_TEXT) message = "file too large: only the beginning was loaded";
 }
 
+/* Write the text over the file. Refused for a file that was only loaded in
+ * part: saving would cut off the rest of it. */
 static void save(void) {
+    if (partial) {
+        message = "not saved: only the beginning of this file was loaded";
+        return;
+    }
     long fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
     if (fd < 0) {
         message = strerror(fd);
@@ -116,10 +134,12 @@ static void save(void) {
 static char frame[32 * 1024];
 static size_t frame_len;
 
+/* Add text, or a number in decimal, to the frame (cut off when it is full) */
 static void put(const char *s) {
     while (*s && frame_len < sizeof(frame)) frame[frame_len++] = *s++;
 }
 
+/* (See put) */
 static void put_number(unsigned n) {
     char digits[12];
     int count = 0;
@@ -127,6 +147,8 @@ static void put_number(unsigned n) {
     while (count && frame_len < sizeof(frame)) frame[frame_len++] = digits[--count];
 }
 
+/* Draw the visible lines, the status line and the cursor, scrolling first
+ * so that the cursor's line is on the screen */
 static void draw(void) {
     unsigned text_rows = rows - 1;                /* The last row is the status line */
 

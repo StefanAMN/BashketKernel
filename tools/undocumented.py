@@ -8,7 +8,10 @@ The rule (CLAUDE.md, PLAN.md track E): every function has a comment. A
 function that other files call is documented once, at its declaration in a
 header; a static one at its definition. So a function counts as documented
 if the line before its definition, or before its declaration in any header,
-ends a comment.
+ends a comment, or its declaration in a header has a comment of its own at
+the end of the line (the user library's style: one line per call). A user
+program's `main` is documented by the comment the file starts with, which
+says what the program does and how it is called.
 
 This is a heuristic over the text, not a C parser: a definition is a line at
 column 0 that looks like "type name(arguments) {". It finds the cases that
@@ -22,6 +25,7 @@ import sys
 
 DEFINITION = re.compile(r'^(?!if\b|for\b|while\b|switch\b|else\b|return\b)'
                         r'[A-Za-z_][\w\s\*]*?\**\s*\b(\w+)\s*\([^;]*\)\s*\{\s*$')
+TRAILING_COMMENT = re.compile(r';\s*(//|/\*)')
 DECLARATION = re.compile(r'^[A-Za-z_][\w\s\*]*?\**\s*\b(\w+)\s*\(.*\)\s*;')
 
 
@@ -52,13 +56,16 @@ def main():
     for _, lines in walk(['src', 'lib', 'user'], '.h'):
         for i, line in enumerate(lines):
             m = DECLARATION.match(line)
-            if m and ends_comment(lines, i):
+            if m and (ends_comment(lines, i) or TRAILING_COMMENT.search(line)):
                 documented_in_header.add(m.group(1))
 
     missing = collections.defaultdict(list)
     for path, lines in walk(directories, '.c'):
+        program_described = path.startswith('user/') and lines and lines[0].startswith('/*')
         for i, line in enumerate(lines):
             m = DEFINITION.match(line)
+            if m and m.group(1) == 'main' and program_described:
+                continue
             if m and not ends_comment(lines, i) and m.group(1) not in documented_in_header:
                 missing[os.path.dirname(path)].append(f'{path}:{i + 1}: {m.group(1)}')
 

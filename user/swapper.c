@@ -46,6 +46,8 @@ static unsigned long value_of(unsigned long i, unsigned long g) {
     return (i * 0x9E3779B97F4A7C15UL) ^ (g << 56) ^ 0x5A5A5A5AUL;
 }
 
+/* How many of `pages` pages do not hold what fill() put there for
+ * `generation` (three words of each are looked at) */
 static unsigned long check(const unsigned long *memory, unsigned long pages, unsigned long generation) {
     unsigned long wrong = 0;
     for (unsigned long i = 0; i < pages; i++) {
@@ -56,6 +58,8 @@ static unsigned long check(const unsigned long *memory, unsigned long pages, uns
     return wrong;
 }
 
+/* Write a value that depends on the page and the generation into three
+ * places of every page (so each page is touched, and can be checked) */
 static void fill(unsigned long *memory, unsigned long pages, unsigned long generation) {
     for (unsigned long i = 0; i < pages; i++) {
         unsigned long *page = memory + i * (PAGE / sizeof(unsigned long));
