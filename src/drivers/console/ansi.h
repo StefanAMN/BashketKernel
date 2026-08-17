@@ -48,6 +48,9 @@ typedef struct {
     bool digits_seen;               // The current parameter has at least one digit
 } ansi_parser_t;
 
+/**
+ * @brief Put a parser in its starting state (between sequences).
+ */
 void ansi_init(ansi_parser_t *parser);
 
 /**

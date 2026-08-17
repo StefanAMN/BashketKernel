@@ -18,7 +18,7 @@ TEST(pci_finds_the_devices_qemu_provides) {
     EXPECT_TRUE(virtio_pci_find(VIRTIO_TYPE_NET, 0, &dev));
     EXPECT_TRUE(dev.device_id == 0x1000 || dev.device_id == 0x1041);
     EXPECT_TRUE(!virtio_pci_find(VIRTIO_TYPE_NET, 1, &dev));    // One card, not two
-    EXPECT_TRUE(!pci_find_device(0xDEAD, 0xBEEF, &dev));
+    EXPECT_TRUE(!pci_find_nth_device(0xDEAD, 0xBEEF, 0, &dev));
 
     // Configuration space reads agree with what the scan recorded
     EXPECT_TRUE(virtio_pci_find(VIRTIO_TYPE_NET, 0, &dev));
@@ -216,6 +216,23 @@ TEST(net_drops_malformed_frames) {
     EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), &from, NULL, 5), 6);
     EXPECT_TRUE(from == NET_IP(10, 0, 2, 77));
     EXPECT_TRUE(net_arp_known(NET_IP(10, 0, 2, 77)));        // The sender's address was learned
+
+    // A sender beyond the gateway is not learned (its frames carry the
+    // gateway's address), and a crowd of them does not push the gateway's
+    // own entry out of the cache, which replies to them need
+    EXPECT_EQ(net_ping(NET_GATEWAY, 100, NULL), 0);
+    for (uint8_t host = 1; host <= 20; host++) {
+        size_t far_len = make_udp_frame(bad, 7100, "far", 3);
+        uint8_t *ip = bad + 14;
+        ip[12] = 192; ip[13] = 0; ip[14] = 2; ip[15] = host;   // 192.0.2.host: another network
+        ip[10] = ip[11] = 0;
+        uint16_t sum = net_checksum(ip, 20);
+        ip[10] = (uint8_t)(sum >> 8); ip[11] = (uint8_t)sum;
+        net_handle_frame(bad, far_len);
+        EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 5), 3);
+    }
+    EXPECT_TRUE(!net_arp_known(NET_IP(192, 0, 2, 1)));
+    EXPECT_TRUE(net_arp_known(NET_GATEWAY));
 
 #define EXPECT_DROPPED(setup, length) do { \
         memcpy(bad, frame, len); setup; \

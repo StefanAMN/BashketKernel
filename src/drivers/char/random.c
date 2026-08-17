@@ -33,6 +33,7 @@ static const char *source = "timing only";
 // in the carry flag (the generator can run dry), so each is tried a few
 // times. RDSEED gives raw entropy; RDRAND the output of a generator the CPU
 // seeds from it.
+// Whether the CPU has RDSEED (CPUID leaf 7, EBX bit 18)
 static bool cpu_has_rdseed(void) {
     uint32_t r[4];
     cpuid(0, 0, r);
@@ -41,12 +42,15 @@ static bool cpu_has_rdseed(void) {
     return (r[1] >> 18) & 1;     // EBX bit 18
 }
 
+// Whether the CPU has RDRAND (CPUID leaf 1, ECX bit 30)
 static bool cpu_has_rdrand(void) {
     uint32_t r[4];
     cpuid(1, 0, r);
     return (r[2] >> 30) & 1;     // ECX bit 30
 }
 
+// 64 bits from RDSEED (raw entropy) or RDRAND (the CPU's own generator)
+// into *out; false if the instruction kept reporting it had none
 static bool rdseed64(uint64_t *out) {
     for (int tries = 0; tries < 32; tries++) {
         uint8_t ok;
@@ -57,6 +61,7 @@ static bool rdseed64(uint64_t *out) {
     return false;
 }
 
+// (See rdseed64)
 static bool rdrand64(uint64_t *out) {
     for (int tries = 0; tries < 16; tries++) {
         uint8_t ok;

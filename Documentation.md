@@ -128,7 +128,7 @@ so the numbering has gaps.
 ---
 
 ### 7. Interactive Shell & Keyboard Input (Phase 7)
-**Status: real.** Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines and redirection, built only on system calls.
+**Status: real.** Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines and redirection, built only on system calls. Input comes from the PS/2 keyboard and the serial line at once; a machine with no PS/2 controller boots anyway, with the serial line as its only keyboard (`make test-kshell` boots one).
 
 **Goal:** PS/2 keyboard scancode decoding, interactive shell commands (`ls`, `cat`, `echo`).
 
@@ -252,7 +252,7 @@ so the numbering has gaps.
 ---
 
 ### 17. Real-Time Clock (RTC) Driver (Phase 17)
-**Status: real.** Reads date and time from CMOS.
+**Status: real.** Reads date and time from CMOS, under a lock (the index and data ports are shared by every CPU) and twice until two reads agree (the clock updates its registers one at a time), in BCD or binary and 12- or 24-hour form, whichever the clock keeps (`rtc_decode`, tested for each). No time zone; the century is assumed to be 2000.
 
 **Goal:** Reading CMOS Real-Time Clock registers for system date and time.
 

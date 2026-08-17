@@ -111,6 +111,9 @@ int tcp_shutdown(tcp_socket_t *sock);
  */
 void tcp_peer(tcp_socket_t *sock, uint32_t *ip, uint16_t *port);
 
+/**
+ * @brief TCP's counters since boot (read without a lock: for tests).
+ */
 const tcp_stats_t *tcp_stats(void);
 
 /**

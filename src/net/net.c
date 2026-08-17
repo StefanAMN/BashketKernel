@@ -13,7 +13,7 @@
 #include "kstring.h"
 #include "spinlock.h"
 #include "kerrno.h"
-#include "dev.h"
+#include "random.h"
 
 #define ETHERTYPE_IPV4 0x0800
 #define ETHERTYPE_ARP  0x0806
@@ -80,7 +80,9 @@ struct udp_header {
     uint16_t checksum;             // 0: not computed
 } __attribute__((packed));
 
+// Reverse the byte order of 16 and 32-bit values (both are needed)
 static uint16_t swap16(uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); }
+// (See swap16)
 static uint32_t swap32(uint32_t v) {
     return (v << 24) | ((v << 8) & 0x00FF0000) | ((v >> 8) & 0x0000FF00) | (v >> 24);
 }
@@ -163,6 +165,7 @@ static uint32_t checksum_add(uint32_t sum, const void *data, size_t len) {
     return sum;
 }
 
+// Fold the carries of a checksum_add sum back in and invert it
 static uint16_t checksum_finish(uint32_t sum) {
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return (uint16_t)~sum;
@@ -192,6 +195,7 @@ uint16_t net_transport_checksum(uint8_t protocol, uint32_t src_ip, uint32_t dst_
     return checksum_finish(checksum_add(checksum_add(0, pseudo, sizeof(pseudo)), segment, len));
 }
 
+// The UDP checksum of a datagram (header and payload) between two addresses
 static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void *udp, size_t len) {
     return net_transport_checksum(IP_PROTO_UDP, src_ip, dst_ip, udp, len);
 }
@@ -203,6 +207,9 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void *udp, 
 // built or handed to the card.
 static spinlock_t net_lock = SPINLOCK_RANKED("net", LOCK_RANK_NET);
 
+// Remember that `ip` is at hardware address `mac` (replacing the entry
+// unused for longest if the cache is full), and wake whoever waits for
+// an answer. Takes net_lock.
 static void arp_learn(uint32_t ip, const uint8_t mac[6]) {
     if (ip == 0 || ip == local_ip) return;
 
@@ -236,6 +243,7 @@ static bool arp_lookup_locked(uint32_t ip, uint8_t mac[6]) {
     return found;
 }
 
+// arp_lookup_locked, taking net_lock
 static bool arp_lookup(uint32_t ip, uint8_t mac[6]) {
     uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     bool found = arp_lookup_locked(ip, mac);
@@ -248,6 +256,8 @@ bool net_arp_known(uint32_t ip) {
     return arp_lookup(ip, mac);
 }
 
+// Send an ARP request or reply (`operation`) for `target_ip` to `dst_mac`.
+// Called without net_lock.
 static void arp_send(uint16_t operation, const uint8_t dst_mac[6], const uint8_t target_mac[6], uint32_t target_ip) {
     uint8_t frame[sizeof(struct eth_header) + sizeof(struct arp_packet)];
     struct eth_header *eth = (struct eth_header *)frame;
@@ -270,6 +280,8 @@ static void arp_send(uint16_t operation, const uint8_t dst_mac[6], const uint8_t
     virtio_net_send(frame, sizeof(frame));
 }
 
+// A received ARP packet: learn the sender if it was addressed to us, and
+// answer a request for our address
 static void arp_input(const uint8_t *payload, size_t len) {
     if (len < sizeof(struct arp_packet)) { stats.dropped++; return; }
     const struct arp_packet *arp = (const struct arp_packet *)payload;
@@ -402,6 +414,8 @@ int net_ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t le
     return ipv4_send(dst, protocol, payload, len, can_block);
 }
 
+// A received ICMP message: answer an echo request (without waiting for
+// ARP: this is the receive thread), or note the answer to one of our pings
 static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
     if (len < sizeof(struct icmp_header) || net_checksum(data, len) != 0) { stats.dropped++; return; }
     const struct icmp_header *icmp = (const struct icmp_header *)data;
@@ -430,6 +444,8 @@ static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
     }
 }
 
+// A received UDP datagram: queue it on the socket bound to its port, or
+// count it as undeliverable (no socket, or its queue is full)
 static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t len) {
     if (len < sizeof(struct udp_header)) { stats.dropped++; return; }
     const struct udp_header *udp = (const struct udp_header *)data;
@@ -467,6 +483,8 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
     if (sock) sched_wakeup(sock);
 }
 
+// A received IPv4 packet (header checked, fragments refused): hand its
+// payload to ICMP, UDP or TCP if it is for us
 static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac) {
     if (len < sizeof(struct ipv4_header)) { stats.dropped++; return; }
     const struct ipv4_header *ip = (const struct ipv4_header *)packet;
@@ -490,8 +508,12 @@ static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac
     if (!for_us) { stats.dropped++; return; }
 
     uint32_t src = ntohl(ip->src);
-    // Remember how to reach the sender, so that a reply needs no ARP exchange
-    arp_learn(src, src_mac);
+    // Remember how to reach the sender, so that a reply needs no ARP
+    // exchange: if it is on our network. One further away was reached
+    // through the gateway, and its frame carries the gateway's address;
+    // learning that for every distant sender would push the gateway's own
+    // entry (which replies need) out of the cache.
+    if (our_ip == 0 || (src & local_netmask) == (our_ip & local_netmask)) arp_learn(src, src_mac);
 
     const uint8_t *payload = packet + header_len;
     size_t payload_len = total_len - header_len;
@@ -574,6 +596,7 @@ int net_ping(uint32_t ip, uint64_t timeout_ticks, uint64_t *rtt_ticks) {
 
 // --- UDP sockets -------------------------------------------------------------------
 
+// Is a socket bound to `port`? Caller holds net_lock.
 static bool port_in_use(uint16_t port) {
     for (int i = 0; i < UDP_MAX_SOCKETS; i++) {
         if (sockets[i].open && sockets[i].port == port) return true;
@@ -676,22 +699,16 @@ int64_t udp_recvfrom(udp_socket_t *sock, void *buf, size_t len, uint32_t *src_ip
         return -EBADF; // Closed while we waited
     }
 
-    // Take the datagram out of the queue into kernel memory with interrupts
-    // off, and only then copy it to `buf`: that may be user memory, which
-    // can fault, and must not be touched with the queue half updated.
+    // `buf` is kernel memory (the system call copies to the program), so
+    // the datagram goes straight there, under the lock
     const udp_datagram_t *front = &sock->queue[sock->head];
     size_t n = front->len < len ? front->len : len;
-    uint32_t from_ip = front->ip;
-    uint16_t from_port = front->port;
-    uint8_t local[UDP_PAYLOAD_MAX];
-    memcpy(local, front->data, n);
+    memcpy(buf, front->data, n);
+    if (src_ip) *src_ip = front->ip;
+    if (src_port) *src_port = front->port;
     sock->head = (sock->head + 1) % UDP_QUEUE_LEN;
     sock->count--;
     spinlock_release_irqrestore(&net_lock, flags);
-
-    memcpy(buf, local, n);
-    if (src_ip) *src_ip = from_ip;
-    if (src_port) *src_port = from_port;
     return (int64_t)n;
 }
 

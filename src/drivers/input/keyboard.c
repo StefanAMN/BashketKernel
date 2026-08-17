@@ -13,6 +13,7 @@
 #include "signal.h"
 #include "tty.h"
 #include "process.h"
+#include "kprintf.h"
 
 
 #define KEYBOARD_BUFFER_SIZE 256
@@ -69,18 +70,6 @@ static const char scancode_ascii_shift[128] = {
     0,   0,   0,   '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', /* 0x44 - 0x52 */
     '.'                                                                           /* 0x53 */
 };
-
-static void ps2_wait_write(void) {
-    while (inb(0x64) & 2) {
-        asm volatile("pause");
-    }
-}
-
-static void ps2_wait_read(void) {
-    while (!(inb(0x64) & 1)) {
-        asm volatile("pause");
-    }
-}
 
 // Caller must hold kbd_lock.
 static void keyboard_handle_port(void) {
@@ -253,6 +242,7 @@ bool ps2_aux_command(uint8_t command) {
     return acked;
 }
 
+// IRQ 1: decode the scancode, then wake whoever waits for input
 static void keyboard_irq_handler(struct registers *regs) {
     uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
     keyboard_handle_port();
@@ -276,37 +266,58 @@ void keyboard_input_arrived(void) {
     spinlock_release_irqrestore(&input_lock, flags);
 }
 
+// Wait (a bounded time) for the answer to a controller command. Caller
+// holds kbd_lock.
+static bool ps2_can_read(void) {
+    for (int i = 0; i < PS2_SPINS; i++) {
+        if (inb(0x64) & PS2_STATUS_OUTPUT_FULL) return true;
+        asm volatile("pause");
+    }
+    return false;
+}
+
 void keyboard_init(void) {
     register_irq_handler(1, keyboard_irq_handler); // IRQ 1 = Interrupt 33
 
-    // 1. Enable first PS/2 port (Keyboard)
-    ps2_wait_write();
-    outb(0x64, 0xAE);
+    // Every wait is bounded: a machine may have no PS/2 controller at all
+    // (port 0x64 then reads 0xFF, "busy" for ever), and that must not stop
+    // the boot. Its keyboard is then the serial line.
+    uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
+    bool ok = false;
 
-    // 2. Read PS/2 Controller Command Byte (0x20)
-    ps2_wait_write();
-    outb(0x64, 0x20);
-    ps2_wait_read();
-    uint8_t config = inb(0x60);
+    // Enable the first port (command 0xAE), then read the configuration
+    // byte (0x20), set bit 0 (raise IRQ 1) and clear bit 4 (stop that
+    // port's clock), and write it back (0x60)
+    if (ps2_can_write()) {
+        outb(0x64, 0xAE);
+        if (ps2_can_write()) {
+            outb(0x64, 0x20);
+            if (ps2_can_read()) {
+                uint8_t config = inb(0x60);
+                config = (uint8_t)((config | 0x01) & ~0x10);
+                if (ps2_can_write()) {
+                    outb(0x64, 0x60);
+                    if (ps2_can_write()) {
+                        outb(0x60, config);
+                        ok = true;
+                    }
+                }
+            }
+        }
+    }
 
-    // 3. Enable IRQ 1 (bit 0 = 1) and enable first PS/2 port (bit 4 = 0)
-    config |= 0x01;
-    config &= ~(0x10);
+    // Throw away anything stale the controller holds (at most its buffer's worth)
+    for (int i = 0; ok && i < 16 && (inb(0x64) & PS2_STATUS_OUTPUT_FULL); i++) (void)inb(0x60);
+    spinlock_release_irqrestore(&kbd_lock, flags);
 
-    // 4. Write updated Controller Command Byte (0x60)
-    ps2_wait_write();
-    outb(0x64, 0x60);
-    ps2_wait_write();
-    outb(0x60, config);
-
-    // 5. Explicitly unmask IRQ 1 (Keyboard) on 8259 Master PIC
+    if (!ok) {
+        kprintf("keyboard: no PS/2 controller answered; input comes from the serial line only\n");
+        return;
+    }
+    // Until the I/O APIC takes over (ioapic_init masks the PIC again), key
+    // presses arrive through the 8259 PIC: unmask IRQ 1 there
     uint8_t mask = inb(0x21);
     outb(0x21, mask & ~(1 << 1));
-
-    // 6. Clear any pending/stale scancode in PS/2 controller data buffer
-    while (inb(0x64) & 1) {
-        (void)inb(0x60);
-    }
 }
 
 // Take one character out of the ring buffer. Returns 0 if it is empty.
