@@ -47,6 +47,7 @@ extern void test_suite_shm(void);
 extern void test_suite_crypto(void);
 extern void test_suite_dev(void);
 extern void test_suite_bench(void);
+extern void test_suite_lib(void);
 
 void run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
@@ -92,6 +93,7 @@ void run_all_tests(void) {
     test_suite_crypto();
     test_suite_dev();
     test_suite_bench();
+    test_suite_lib();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);
