@@ -7,7 +7,7 @@
 #include "smp.h"
 #include "pmm.h"
 #include "kprintf.h"
-#include "string_util.h"
+#include "kstring.h"
 #include "spinlock.h"
 #include "cow.h"
 #include "swap.h"
