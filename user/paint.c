@@ -36,6 +36,7 @@ static void show(int x, int y, int width) {
     write(fb, canvas + (long)y * screen.width + x, (unsigned long)width * 4);
 }
 
+/* Fill a rectangle of the canvas with `colour` and put it on the screen */
 static void fill(int x0, int y0, int x1, int y1, unsigned colour) {
     for (int y = y0; y < y1; y++) {
         for (int x = x0; x < x1; x++) canvas[(long)y * screen.width + x] = colour;
@@ -93,6 +94,7 @@ static void pointer(int x, int y, int visible) {
     }
 }
 
+/* Draw the palette along the top, with the chosen colour's box larger */
 static void draw_bar(int chosen) {
     fill(0, 0, (int)screen.width, BAR_HEIGHT, 0x00101010u);
     for (int i = 0; i < COLOURS; i++) {
