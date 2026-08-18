@@ -16,6 +16,7 @@ static tcp_socket_t *echo_listener;
 static volatile int echo_served;
 static volatile uint64_t echo_bytes;
 
+// Accepts one connection on echo_listener and sends back all it receives
 static void echo_server_entry(void) {
     int error = 0;
     tcp_socket_t *conn = tcp_accept(echo_listener, &error);
@@ -31,6 +32,7 @@ static void echo_server_entry(void) {
     echo_served++;
 }
 
+// Listen on `port` and start the echo task. Returns the listener, or NULL
 static tcp_socket_t *start_echo_server(uint16_t port) {
     echo_served = 0;
     echo_bytes = 0;
@@ -41,12 +43,14 @@ static tcp_socket_t *start_echo_server(uint16_t port) {
     return echo_listener;
 }
 
+// Wait (up to 6 s) until only `count` sockets are left
 static void wait_for_sockets_to_go(size_t count) {
     // Closing finishes in the background (the last acknowledgements, then
     // two seconds in TIME_WAIT)
     TEST_WAIT(tcp_sockets_in_use() == count, 600);
 }
 
+// Read until `want` bytes have arrived or the connection ends; *got says how many
 static void read_fully(tcp_socket_t *sock, uint8_t *buf, size_t want, size_t *got) {
     *got = 0;
     while (*got < want) {
@@ -180,6 +184,7 @@ static tcp_socket_t *sink_listener;
 static volatile int sink_done;
 static volatile uint64_t sink_bytes, sink_errors;
 
+// The byte at `position` of the test stream (not periodic over a window)
 static uint8_t pattern_byte(uint64_t position) {
     return (uint8_t)((position * 31 + (position >> 8) * 7) & 0xFF);
 }
@@ -204,6 +209,8 @@ static void sink_entry(void) {
     sink_done = 1;
 }
 
+// Send TRANSFER_BYTES of the pattern to a sink task over a loopback
+// connection on `port`, and check that all of it arrived intact
 static void transfer(uint16_t port) {
     sink_done = 0; sink_bytes = 0; sink_errors = 0;
     sink_listener = tcp_open();

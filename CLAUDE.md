@@ -97,7 +97,7 @@ make run          # the system: boot menu, /bin/init, a login prompt (root/root,
 make run-dev      # the developer image: the kernel's own shell on the console, as the scripted tests use
 make run-gdb      # the developer image in QEMU halted, gdb stub on :1234
 
-make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
+make check                      # every function has a comment, then everything below, on both CPU models and 1 to 8 CPUs (~20 min)
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
 make test-home                  # the ext2 system disk: owners across a reboot, e2fsck, damaged images (~40 s)
 make test-boot                  # the system image: init, /etc/rc, login, logout, Ctrl-C (~10 s)

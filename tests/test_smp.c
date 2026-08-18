@@ -133,6 +133,7 @@ TEST(lock_rules_are_checked) {
 
 static volatile uint64_t remote_ran_on = 0;
 
+// Run on another CPU by smp_call: notes which CPU, counts the call
 static void remote_hello(void *arg) {
     __atomic_or_fetch(&remote_ran_on, 1ULL << this_cpu()->cpu_id, __ATOMIC_SEQ_CST);
     (*(volatile int *)arg)++;
@@ -168,6 +169,8 @@ static sem_t hammer_sem;
 static volatile uint32_t hammer_errors = 0;
 static char hammer_channel;
 
+// Allocates, checks and frees random blocks and takes locks for
+// HAMMER_ROUNDS rounds, from a seed of its own (`arg`)
 static void hammer(void *arg) {
     uint64_t seed = (uint64_t)arg * 0x9E3779B97F4A7C15ULL + 1;
     uint64_t last_time = 0;
@@ -235,6 +238,7 @@ static void hammer(void *arg) {
 
 static volatile int hammer_tasks_done = 0;
 
+// hammer() as a task, counting itself done
 static void hammer_task(void) {
     hammer((void *)(uint64_t)(100 + sched_get_current_task()->pid));
     __atomic_add_fetch(&hammer_tasks_done, 1, __ATOMIC_SEQ_CST);
@@ -281,6 +285,7 @@ TEST(cpus_share_the_kernel_safely) {
 static volatile int burners_stop, burners_done;
 static volatile uint64_t burner_cpus_seen;      // Bit n: some burner ran on CPU n
 
+// Uses the CPU until told to stop, noting every CPU it found itself on
 static void burner_entry(void) {
     while (!burners_stop) {
         uint64_t flags = irq_save();
@@ -291,6 +296,7 @@ static void burner_entry(void) {
     __atomic_add_fetch(&burners_done, 1, __ATOMIC_SEQ_CST);
 }
 
+// How many CPUs take part in scheduling
 static uint32_t online_cpus(void) {
     uint32_t n = 0;
     for (uint32_t i = 0; i < smp_get_cpu_total(); i++) if (cpu_get(i)->online) n++;
@@ -357,6 +363,7 @@ TEST(tasks_run_on_every_cpu_at_once) {
 static volatile int workers_done;
 static volatile uint64_t worker_sums;
 
+// A fixed amount of arithmetic, then counted done
 static void worker_entry(void) {
     volatile uint64_t sum = 0;
     for (uint64_t i = 1; i <= SUM_TO; i++) sum += i;
@@ -364,6 +371,7 @@ static void worker_entry(void) {
     __atomic_add_fetch(&workers_done, 1, __ATOMIC_SEQ_CST);
 }
 
+// Nanoseconds for `count` workers started together to finish
 static uint64_t time_workers(int count) {
     workers_done = 0;
     uint64_t start = clock_ns();
@@ -399,6 +407,7 @@ TEST(more_cpus_do_more_work) {
 
 static volatile uint64_t probe_value;
 
+// Run on another CPU: read through the probe mapping, caching it there
 static void probe_read(void *arg) {
     (void)arg;
     probe_value = *(volatile uint64_t *)PROBE_VA; // Leaves the lookup in this CPU's TLB

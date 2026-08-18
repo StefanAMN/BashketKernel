@@ -565,13 +565,23 @@ One pass per area, each on its own branch and checked with `make check`:
    buffer; `strchr` did not find the terminator as C's does; `chown`
    accepted ids that overflow. Tested in `syscheck` (a 5.5 KiB account
    file, a bad uid) and `make test-edit` (a 580 KiB file is not saved).
-7. `tests`
+7. `tests` — done: every function documented; the suites are declared
+   once, in `test.h`, each with a line saying what it covers. Removed:
+   `test_example.c` (it checked that 2 + 2 is 4), two copies of a "file
+   holds this text" helper and of a remove helper (one each, in
+   `test_runner.c`). Found: the disk test's workers took their numbers
+   with a plain `++` on a shared counter, so on several CPUs two could get
+   the same sectors. And `tools/qemu_shell.py` sometimes killed a QEMU
+   that was in the middle of exiting, failing `make test-shutdown` about
+   half the time after the third pass changed its timing (it waits for
+   QEMU once its output has ended now).
 
 In each pass: document every function to the rule; delete functions
 nothing calls, unless a test is their reason to exist and the feature is
 real (then say so in the comment); delete commented-out code and comments
 that describe what the code no longer does. At the end, `make check` runs
-`tools/undocumented.py` and fails if the count grows.
+`tools/undocumented.py --check` and fails if any function has no comment
+(done: the count is 0).
 
 ## Smaller repairs (any time, each S)
 

@@ -94,10 +94,11 @@ TEST(disk_completions_arrive_by_interrupt) {
 static volatile int workers_done;
 static volatile int workers_ok;
 
+// One of several tasks writing and reading back sectors of their own at once
 static void disk_worker(void) {
     // Each worker owns ten sectors and checks that it reads back its own data
     static volatile int next_id = 0;
-    int id = next_id++;
+    int id = __atomic_fetch_add(&next_id, 1, __ATOMIC_SEQ_CST); // Workers start at once on several CPUs
     uint64_t base = virtio_blk_capacity() - 400 + (uint64_t)id * 10;
     uint8_t out[VIRTIO_BLK_SECTOR_SIZE], in[VIRTIO_BLK_SECTOR_SIZE];
     int ok = 1;
