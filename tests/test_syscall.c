@@ -77,6 +77,8 @@ TEST(syscalls_from_ring3) {
 
 static volatile int probe_reads, probe_writes, probe_bad_pointer, probe_window_open;
 
+// Count a call that saw the user access window open, or a buffer that is
+// not kernel memory (both must never happen: see the test below)
 static void probe_note(const void *buf) {
     uint64_t flags;
     asm volatile("pushfq\n\tpop %0" : "=r"(flags));
@@ -84,6 +86,8 @@ static void probe_note(const void *buf) {
     if ((uint64_t)buf < KERNEL_SPACE_START) probe_bad_pointer++;
 }
 
+// The probe device: reads give 10000 bytes of 'x', writes accept anything;
+// both note what they were handed
 static int64_t probe_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     (void)node;
     probe_reads++;
@@ -94,6 +98,7 @@ static int64_t probe_read(vnode_t *node, size_t offset, void *buf, size_t count)
     return (int64_t)n;
 }
 
+// (See probe_read)
 static int64_t probe_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
     (void)node; (void)offset;
     probe_writes++;

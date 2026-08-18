@@ -20,6 +20,7 @@ TEST(priority_is_stored_and_clamped) {
 static volatile int stop_spinning;
 static volatile int spinners_done;
 
+// Uses the CPU until told to stop
 static void spinner_entry(void) {
     while (!stop_spinning) { } // Pure CPU use: only the timer takes it away
     spinners_done++;

@@ -53,6 +53,7 @@ TEST(dev_random_varies) {
     EXPECT_TRUE(guarded[3] == 0x5A && guarded[7] == 0x5A);
 }
 
+// `count` bytes from lower-case hex digits (test vectors, trusted)
 static void from_hex(const char *hex, uint8_t *out, size_t count) {
     for (size_t i = 0; i < count; i++) {
         uint8_t v = 0;

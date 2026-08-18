@@ -13,6 +13,8 @@
 #include "vfs.h"
 #include "cpu.h"
 
+// Start a program and wait for it: its exit status, -1 if it could not be
+// started, -2 if waiting failed
 static int run(const char *path, char *const argv[]) {
     pid_t pid = process_spawn(path, argv);
     if (pid < 0) return -1;
@@ -245,6 +247,7 @@ TEST(kill_takes_effect_at_a_safe_point) {
     EXPECT_TRUE(test_free_frames() == free_before);
 }
 
+// Whether a task of that name is on the task list
 static bool task_named_exists(const char *name) {
     bool found = false;
     uint64_t flags = sched_lock_irqsave();

@@ -114,6 +114,7 @@ static bool cell_has(uint32_t column, uint32_t row, uint32_t color) {
     return false;
 }
 
+// Whether every pixel of a character cell is `color` (nothing drawn there)
 static bool cell_is_only(uint32_t column, uint32_t row, uint32_t color) {
     for (uint32_t y = 0; y < 8; y++) {
         for (uint32_t x = 0; x < 8; x++) {

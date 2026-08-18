@@ -37,7 +37,7 @@ TEST(rtc_decodes_every_format) {
 }
 
 void test_suite_rtc(void) {
-    kprintf("Suite: Phase 17 Real-Time Clock & CMOS Driver\n");
+    kprintf("Suite: Real-time clock\n");
     RUN_TEST(rtc_time_read_test);
     RUN_TEST(rtc_decodes_every_format);
 }

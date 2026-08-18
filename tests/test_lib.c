@@ -99,7 +99,7 @@ TEST(ksnprintf_formats_and_truncates) {
 }
 
 void test_suite_lib(void) {
-    kprintf("Suite: Core Standard Library & Crypto (lib/)\n");
+    kprintf("Suite: String functions and kprintf\n");
     RUN_TEST(memory_routines);
     RUN_TEST(string_search);
     RUN_TEST(ksnprintf_formats_and_truncates);

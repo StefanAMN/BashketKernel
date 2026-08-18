@@ -121,6 +121,7 @@ static volatile int64_t reader_got;
 static volatile uint8_t reader_event[MOUSE_EVENT_SIZE];
 static task_t *reader_task;
 
+// Reads one event from the mouse, sleeping until there is one
 static void blocked_reader(void) {
     uint8_t event[MOUSE_EVENT_SIZE];
     int64_t n = mouse_read(event, sizeof(event), true);

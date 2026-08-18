@@ -3,6 +3,7 @@
 
     tools/undocumented.py [DIRECTORY ...]      (default: src lib user tests)
     tools/undocumented.py --count [DIRECTORY ...]
+    tools/undocumented.py --check              exit 1 if any function has none (make check)
 
 The rule (CLAUDE.md, PLAN.md track E): every function has a comment. A
 function that other files call is documented once, at its declaration in a
@@ -50,6 +51,7 @@ def walk(directories, suffix):
 def main():
     args = sys.argv[1:]
     count_only = '--count' in args
+    check = '--check' in args
     directories = [a for a in args if not a.startswith('--')] or ['src', 'lib', 'user', 'tests']
 
     documented_in_header = set()
@@ -77,6 +79,8 @@ def main():
         for directory in sorted(missing):
             print('\n'.join(missing[directory]))
     print(f'{total} functions without a comment', file=sys.stderr)
+    if check and total:
+        sys.exit(1)
 
 
 if __name__ == '__main__':

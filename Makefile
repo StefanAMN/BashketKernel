@@ -604,6 +604,9 @@ test-jobs: iso
 		&& echo "jobs and orphans: ok" || { echo "jobs and orphans: FAILED (see $(BUILD)/jobs.log)"; exit 1; }
 
 check:
+	@python3 tools/undocumented.py --check > /dev/null \
+		&& echo "every function has a comment: ok" \
+		|| { python3 tools/undocumented.py; echo "documentation: FAILED (functions without a comment, above)"; exit 1; }
 	@$(MAKE) --no-print-directory test
 	@$(MAKE) --no-print-directory test CPU=max
 	@$(MAKE) --no-print-directory test-smp

@@ -24,19 +24,6 @@ static void put_text(const char *path, const char *text) {
     file_close(file);
 }
 
-static bool has_text(const char *path, const char *text) {
-    char buf[128] = {0};
-    file_t *file = NULL;
-    if (file_open(path, O_RDONLY, &file) != 0) return false;
-    int64_t n = file_read(file, buf, sizeof(buf) - 1);
-    file_close(file);
-    return n == (int64_t)strlen(text) && memcmp(buf, text, (size_t)n) == 0;
-}
-
-static int remove_entry(const char *dir, const char *name) {
-    return vfs_unlink(vfs_find(NULL, dir), name);
-}
-
 TEST(ext2_reads_the_image_with_its_owners) {
     EXPECT_TRUE(ext2_mounted());
     vnode_t *home = vfs_find(NULL, "/home");
@@ -58,8 +45,8 @@ TEST(ext2_reads_the_image_with_its_owners) {
     EXPECT_EQ(notes->size, 28u);
     EXPECT_TRUE(notes->mtime != 0);
 
-    EXPECT_TRUE(has_text("/home/alice/notes.txt", "Alice keeps her notes here.\n"));
-    EXPECT_TRUE(has_text("/home/bob/hello.txt", "Bob was here.\n"));
+    EXPECT_TRUE(test_file_is("/home/alice/notes.txt", "Alice keeps her notes here.\n"));
+    EXPECT_TRUE(test_file_is("/home/bob/hello.txt", "Bob was here.\n"));
     // "." and ".." on the disk did not become children
     EXPECT_TRUE(vfs_find_child(alice, ".") == NULL && vfs_find_child(alice, "..") == NULL);
 
@@ -102,9 +89,9 @@ TEST(ext2_records_owner_and_mode) {
         EXPECT_EQ(1980 + (node->mtime >> 25), (unsigned)now.year);   // Written now, by the clock
         EXPECT_EQ((node->mtime >> 21) & 15, (unsigned)now.month);
     }
-    EXPECT_TRUE(has_text("/home/alice/mine.txt", "alice wrote this"));
+    EXPECT_TRUE(test_file_is("/home/alice/mine.txt", "alice wrote this"));
 
-    EXPECT_EQ(remove_entry("/home/alice", "mine.txt"), 0);
+    EXPECT_EQ(test_remove("/home/alice", "mine.txt"), 0);
     EXPECT_TRUE(ext2_free_inodes() == inodes_before && ext2_free_blocks() == blocks_before);
 }
 
@@ -205,7 +192,7 @@ TEST(ext2_directories) {
     for (int i = 0; i < 60; i++) {
         ksnprintf(path, sizeof(path), "/home/work/a file with a fairly long name, number %d.txt", i);
         ksnprintf(name, sizeof(name), "entry %d", i);
-        if (has_text(path, name)) found++;
+        if (test_file_is(path, name)) found++;
     }
     EXPECT_EQ(found, (size_t)60);
     size_t children = 0;
@@ -216,7 +203,7 @@ TEST(ext2_directories) {
     // entries go into the space that was freed (the directory does not grow)
     for (int i = 0; i < 60; i += 2) {
         ksnprintf(name, sizeof(name), "a file with a fairly long name, number %d.txt", i);
-        EXPECT_EQ(remove_entry("/home/work", name), 0);
+        EXPECT_EQ(test_remove("/home/work", name), 0);
     }
     uint32_t blocks_now = ext2_free_blocks();
     for (int i = 0; i < 20; i++) {
@@ -229,7 +216,7 @@ TEST(ext2_directories) {
     vfs_find(NULL, "/home/work/short 0");
     for (vnode_t *c = work->children; c; c = c->next) children++;
     EXPECT_EQ(children, (size_t)50);
-    EXPECT_TRUE(has_text("/home/work/a file with a fairly long name, number 31.txt", "entry 31"));
+    EXPECT_TRUE(test_file_is("/home/work/a file with a fairly long name, number 31.txt", "entry 31"));
 
     // Names that cannot be
     file_t *file = NULL;
@@ -243,9 +230,9 @@ TEST(ext2_directories) {
     vnode_t *inner = NULL;
     EXPECT_EQ(vfs_create(work, "inner", VFS_DIRECTORY, &inner), 0);
     put_text("/home/work/inner/deep.txt", "deep");
-    EXPECT_EQ(remove_entry("/home/work", "inner"), -ENOTEMPTY);
-    EXPECT_EQ(remove_entry("/home/work/inner", "deep.txt"), 0);
-    EXPECT_EQ(remove_entry("/home/work", "inner"), 0);
+    EXPECT_EQ(test_remove("/home/work", "inner"), -ENOTEMPTY);
+    EXPECT_EQ(test_remove("/home/work/inner", "deep.txt"), 0);
+    EXPECT_EQ(test_remove("/home/work", "inner"), 0);
     while (work->children) EXPECT_EQ(vfs_unlink(work, work->children->name), 0);
     EXPECT_EQ(vfs_unlink(home, "work"), 0);
     EXPECT_TRUE(ext2_free_blocks() == blocks_before && ext2_free_inodes() == inodes_before);
@@ -269,8 +256,8 @@ TEST(ext2_rename_and_move) {
     EXPECT_TRUE(vfs_forget_directory(from) && vfs_forget_directory(to));
     bcache_invalidate();
     EXPECT_TRUE(vfs_find(NULL, "/home/from/a.txt") == NULL && vfs_find(NULL, "/home/from/renamed in place") == NULL);
-    EXPECT_TRUE(has_text("/home/to/moved.txt", "contents of a"));
-    EXPECT_TRUE(has_text("/home/from/b.txt", "contents of b"));
+    EXPECT_TRUE(test_file_is("/home/to/moved.txt", "contents of a"));
+    EXPECT_TRUE(test_file_is("/home/from/b.txt", "contents of b"));
 
     // A directory, with what is in it, into another
     EXPECT_EQ(vfs_rename(home, "from", to, "from, moved"), 0);
@@ -278,11 +265,11 @@ TEST(ext2_rename_and_move) {
     EXPECT_TRUE(moved != NULL && vfs_forget_directory(moved) && vfs_forget_directory(to));
     bcache_invalidate();
     EXPECT_TRUE(vfs_find(NULL, "/home/from") == NULL);
-    EXPECT_TRUE(has_text("/home/to/from, moved/b.txt", "contents of b"));
+    EXPECT_TRUE(test_file_is("/home/to/from, moved/b.txt", "contents of b"));
 
-    EXPECT_EQ(remove_entry("/home/to/from, moved", "b.txt"), 0);
-    EXPECT_EQ(remove_entry("/home/to", "from, moved"), 0);
-    EXPECT_EQ(remove_entry("/home/to", "moved.txt"), 0);
+    EXPECT_EQ(test_remove("/home/to/from, moved", "b.txt"), 0);
+    EXPECT_EQ(test_remove("/home/to", "from, moved"), 0);
+    EXPECT_EQ(test_remove("/home/to", "moved.txt"), 0);
     EXPECT_EQ(vfs_unlink(home, "to"), 0);
     EXPECT_TRUE(ext2_free_blocks() == blocks_before && ext2_free_inodes() == inodes_before);
 }
@@ -352,13 +339,13 @@ TEST(ext2_check_repairs_an_interrupted_write) {
     // And then it is sound again, with every file as it was
     EXPECT_EQ(ext2_check(&report), 0);
     EXPECT_TRUE(report.blocks_freed == 0 && report.inodes_freed == 0 && report.links_corrected == 0 && report.counts_corrected == 0);
-    EXPECT_TRUE(has_text("/home/alice/notes.txt", "Alice keeps her notes here.\n"));
-    EXPECT_TRUE(has_text("/home/bob/hello.txt", "Bob was here.\n"));
+    EXPECT_TRUE(test_file_is("/home/alice/notes.txt", "Alice keeps her notes here.\n"));
+    EXPECT_TRUE(test_file_is("/home/bob/hello.txt", "Bob was here.\n"));
 
     // Files made now land on the space that was recovered, and are found
     put_text("/home/after.txt", "after the repair");
-    EXPECT_TRUE(has_text("/home/after.txt", "after the repair"));
-    EXPECT_EQ(remove_entry("/home", "after.txt"), 0);
+    EXPECT_TRUE(test_file_is("/home/after.txt", "after the repair"));
+    EXPECT_EQ(test_remove("/home", "after.txt"), 0);
     EXPECT_TRUE(ext2_free_blocks() == blocks && ext2_free_inodes() == inodes);
 }
 
@@ -385,7 +372,7 @@ TEST(mount_points_cover_a_disk_directory) {
 
     // What is made inside it is kept in memory, not written to the disk
     put_text("/home/outer/mnt/in-memory.txt", "only in memory");
-    EXPECT_TRUE(has_text("/home/outer/mnt/in-memory.txt", "only in memory"));
+    EXPECT_TRUE(test_file_is("/home/outer/mnt/in-memory.txt", "only in memory"));
     EXPECT_TRUE(ext2_free_inodes() == inodes_with_dir);
 
     // It can be neither removed nor renamed, nor mounted on twice
@@ -400,22 +387,22 @@ TEST(mount_points_cover_a_disk_directory) {
     // Reading the directory from the disk again finds the disk's "mnt" and
     // leaves it hidden: one entry of that name, the mount point
     EXPECT_TRUE(vfs_forget_directory(outer));
-    EXPECT_TRUE(has_text("/home/outer/beside.txt", "next to it")); // (Reads it again)
+    EXPECT_TRUE(test_file_is("/home/outer/beside.txt", "next to it")); // (Reads it again)
     size_t named_mnt = 0;
     for (vnode_t *c = outer->children; c; c = c->next) if (strcmp(c->name, "mnt") == 0) named_mnt++;
     EXPECT_EQ(named_mnt, (size_t)1);
     EXPECT_TRUE(vfs_find(NULL, "/home/outer/mnt") == mnt);
-    EXPECT_TRUE(has_text("/home/outer/mnt/in-memory.txt", "only in memory"));
+    EXPECT_TRUE(test_file_is("/home/outer/mnt/in-memory.txt", "only in memory"));
 
     // Not while something is in it; then the disk's directory is back, as it was
     EXPECT_EQ(vfs_unmount_dir(mnt), -EBUSY);
-    EXPECT_EQ(remove_entry("/home/outer/mnt", "in-memory.txt"), 0);
+    EXPECT_EQ(test_remove("/home/outer/mnt", "in-memory.txt"), 0);
     EXPECT_EQ(vfs_unmount_dir(mnt), 0);
-    EXPECT_TRUE(has_text("/home/outer/mnt/on-disk.txt", "written to the disk"));
+    EXPECT_TRUE(test_file_is("/home/outer/mnt/on-disk.txt", "written to the disk"));
 
-    EXPECT_EQ(remove_entry("/home/outer/mnt", "on-disk.txt"), 0);
-    EXPECT_EQ(remove_entry("/home/outer", "mnt"), 0);
-    EXPECT_EQ(remove_entry("/home/outer", "beside.txt"), 0);
+    EXPECT_EQ(test_remove("/home/outer/mnt", "on-disk.txt"), 0);
+    EXPECT_EQ(test_remove("/home/outer", "mnt"), 0);
+    EXPECT_EQ(test_remove("/home/outer", "beside.txt"), 0);
     EXPECT_EQ(vfs_unlink(home, "outer"), 0);
     EXPECT_TRUE(ext2_free_inodes() == inodes_before && ext2_free_blocks() == blocks_before);
 }
