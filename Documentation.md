@@ -436,12 +436,18 @@ This document tracks the recommended order of topics and concepts to learn as fe
 ---
 
 ### 36. Cryptographic Primitives (Phase 36)
-**Goal:** SHA-256 Digest Hashing & AES-128 Block Encryption.
+**Goal:** Production-grade Kernel Cryptographic Suite (SHA-1, SHA-256, SHA-512, MD5, BLAKE2s, AES-128, AES-256, ChaCha20, Poly1305, HMAC, CRC32/CRC32C).
 
 - **Order of Learning:**
-  1. **Cryptographic Primitives:**
-     - **Concepts:** SHA-256 digest hashing (`sha256_hash`), AES-128 block cipher (`aes128_encrypt_block`).
-     - Files to inspect: `src/phase36/crypto.h`, `src/phase36/crypto.c`
+  1. **Cryptographic Hashing & Checksums:**
+     - **Concepts:** SHA-256 (`sha256_hash`), SHA-512 (`sha512_hash`), SHA-1 (`sha1_hash`), MD5 (`md5_hash`), BLAKE2s-256 (`blake2s_hash`), CRC32/CRC32C (`crc32_calc`, `crc32c_calc`).
+     - Files to inspect: `lib/crypto/sha256.c`, `lib/crypto/sha512.c`, `lib/crypto/sha1.c`, `lib/crypto/blake2s.c`, `lib/crypto/crc32.c`
+  2. **Symmetric Block & Stream Ciphers:**
+     - **Concepts:** FIPS 197 AES-128 & AES-256 (`aes128_encrypt_block`, `aes256_encrypt_block`), RFC 7539 ChaCha20 (`chacha20_encrypt`).
+     - Files to inspect: `lib/crypto/aes.c`, `lib/crypto/chacha20.c`
+  3. **Message Authentication Codes (MAC):**
+     - **Concepts:** RFC 7539 Poly1305 MAC (`poly1305_mac`), RFC 2104 Keyed-HMAC (`hmac_sha256`, `hmac_sha512`, `hmac_md5`).
+     - Files to inspect: `lib/crypto/poly1305.c`, `lib/crypto/hmac.c`
 
 ---
 
