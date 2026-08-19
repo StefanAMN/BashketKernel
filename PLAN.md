@@ -584,7 +584,13 @@ that describe what the code no longer does. At the end, `make check` runs
 Proposed on 2026-10-20, after track E. Each item documents the code it
 touches as it goes (every function a comment, enforced by `make check`).
 
-### F1. The time of day (S)
+### F1. The time of day (S) — done
+
+Done as proposed (`src/kernel/time/walltime.c`, `/bin/date`, system calls
+311 and 312). On the way, the VFS's file times changed from FAT's packed
+format to Unix seconds (FAT converts at its edge), and the calendar
+arithmetic moved to `lib/time/date.c`, shared with the user library. The
+proposal:
 
 Programs can ask how long the machine has been up, not what time it is:
 there is no `date`, and `ls -l` shows FAT's packed dates. Every file

@@ -1526,6 +1526,7 @@ static void checks_as_alice(void) {
     char buf[16];
 
     CHECK(getuid() == 1000);
+    CHECK(set_time(1893456000UL) == -EPERM);              /* Only root sets the clock */
     struct net_config net;
     CHECK(netconfig(&net, NULL) == 0 && net.ip != 0);   /* Anyone may look at the network settings */
     CHECK(netconfig(NULL, &net) == -EPERM);             /* Only root may change them */
@@ -1856,6 +1857,36 @@ static void check_password_file(void) {
     CHECK(account_by_name("alice", &account) == 0 && account.uid == 1000);
 }
 
+/* The time of day, and the library's dates: printed and parsed, with the
+ * calendar's corners (a leap day, a day that does not exist) */
+static void check_time_of_day(void) {
+    unsigned long now = time_ns() / 1000000000UL;
+    CHECK(now > 1735689600UL && now < 4291747199UL);      /* Between 2025 and 2106 */
+    unsigned long later = time_ns() / 1000000000UL;
+    CHECK(later >= now && later - now <= 1);
+
+    char text[20];
+    format_date(951827696UL, text);
+    CHECK(strcmp(text, "2000-02-29 12:34:56") == 0);
+    unsigned long seconds = 0;
+    CHECK(parse_date("2000-02-29 12:34:56", &seconds) == 0 && seconds == 951827696UL);
+    CHECK(parse_date("2026-10-20 00:00", &seconds) == 0 && seconds == 1792454400UL);
+    CHECK(parse_date("2001-02-29 00:00", &seconds) == -EINVAL);   /* Not a leap year */
+    CHECK(parse_date("2026-13-01 00:00", &seconds) == -EINVAL);
+    CHECK(parse_date("2026-10-20 24:00", &seconds) == -EINVAL);
+    CHECK(parse_date("2026-10-20", &seconds) == -EINVAL);
+    CHECK(parse_date("2026-10-20 10:00x", &seconds) == -EINVAL);
+
+    /* Root may set it (to 2030, briefly) and the change is seen at once;
+     * out of range is refused */
+    CHECK(set_time(100UL) == -EINVAL);
+    CHECK(set_time(1893456000UL) == 0);
+    CHECK(time_ns() / 1000000000UL - 1893456000UL <= 1);
+    CHECK(set_time(time_ns() / 1000000000UL - 1893456000UL + now) == 0); /* Back, near enough */
+    later = time_ns() / 1000000000UL;
+    CHECK(later >= now && later - now <= 2);
+}
+
 /* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
 static void check_pipes(void) {
     int fds[2];
@@ -2153,6 +2184,7 @@ int main(void) {
     check_shared_memory();
     check_users();
     check_password_file();
+    check_time_of_day();
     check_groups_and_setuid();
     check_pipes();
 

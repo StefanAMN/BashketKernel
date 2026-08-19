@@ -1,5 +1,6 @@
 /* A very small C library for BashketKernel user programs. */
 #include "ulib.h"
+#include "date.h"
 
 /* --- Process ------------------------------------------------------------- */
 
@@ -19,6 +20,8 @@ void yield(void)                                   { syscall0(SYS_YIELD); }
 void sleep_ms(unsigned long ms)                    { syscall1(SYS_SLEEP, ms); }
 long uptime_ticks(void)                            { return syscall0(SYS_TIME); }
 unsigned long clock_ns(void)                       { return (unsigned long)syscall0(SYS_CLOCK_NS); }
+unsigned long time_ns(void)                        { return (unsigned long)syscall0(SYS_REALTIME); }
+long set_time(unsigned long seconds)               { return syscall1(SYS_SETTIME, seconds * 1000000000UL); }
 long sleep_ns(unsigned long nanoseconds)           { return syscall1(SYS_NANOSLEEP, nanoseconds); }
 long set_priority(int priority)                    { return syscall1(SYS_SETPRIORITY, priority); }
 void ignore_interrupt(int ignore)                  { signal(SIGINT, ignore ? SIG_IGN : SIG_DFL); }
@@ -256,6 +259,64 @@ long mkdir(const char *path)                       { return syscall1(SYS_MKDIR, 
 long chdir(const char *path)                       { return syscall1(SYS_CHDIR, path); }
 long getcwd(char *buf, size_t size)                { return syscall2(SYS_GETCWD, buf, size); }
 long unlink(const char *path)                      { return syscall1(SYS_UNLINK, path); }
+
+/* --- Dates ------------------------------------------------------------------ */
+
+void format_date(unsigned long seconds, char out[20]) {
+    unsigned year, month, day;
+    civil_from_days((int64_t)(seconds / 86400), &year, &month, &day);
+    unsigned rest = (unsigned)(seconds % 86400);
+    unsigned parts[6] = { year, month, day, rest / 3600, rest / 60 % 60, rest % 60 };
+    static const char after[6] = { '-', '-', ' ', ':', ':', '\0' };
+    int at = 0;
+    for (int i = 0; i < 6; i++) {
+        int digits = i == 0 ? 4 : 2;
+        for (int d = digits - 1; d >= 0; d--) { out[at + d] = (char)('0' + parts[i] % 10); parts[i] /= 10; }
+        at += digits;
+        out[at++] = after[i];
+    }
+}
+
+/* Exactly `digits` decimal digits at *text, as a number; moves past them.
+ * -1 if they are not there. */
+static long fixed_number(const char **text, int digits) {
+    long value = 0;
+    for (int i = 0; i < digits; i++) {
+        char c = (*text)[i];
+        if (c < '0' || c > '9') return -1;
+        value = value * 10 + (c - '0');
+    }
+    *text += digits;
+    return value;
+}
+
+long parse_date(const char *text, unsigned long *seconds) {
+    static const unsigned days_in[13] = { 0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    long year = fixed_number(&text, 4);
+    if (year < 0 || *text++ != '-') return -EINVAL;
+    long month = fixed_number(&text, 2);
+    if (month < 1 || month > 12 || *text++ != '-') return -EINVAL;
+    long day = fixed_number(&text, 2);
+    if (day < 1 || day > (long)days_in[month] || *text++ != ' ') return -EINVAL;
+    long hour = fixed_number(&text, 2);
+    if (hour < 0 || hour > 23 || *text++ != ':') return -EINVAL;
+    long minute = fixed_number(&text, 2);
+    if (minute < 0 || minute > 59) return -EINVAL;
+    long second = 0;
+    if (*text == ':') {
+        text++;
+        second = fixed_number(&text, 2);
+        if (second < 0 || second > 59) return -EINVAL;
+    }
+    if (*text != '\0') return -EINVAL;
+    /* February 29th only in a leap year: the day must come back unchanged */
+    int64_t days = days_from_civil(year, (unsigned)month, (unsigned)day);
+    unsigned y, m, d;
+    civil_from_days(days, &y, &m, &d);
+    if ((long)d != day) return -EINVAL;
+    *seconds = (unsigned long)(days * 86400 + hour * 3600 + minute * 60 + second);
+    return 0;
+}
 
 /* --- Network ---------------------------------------------------------------- */
 

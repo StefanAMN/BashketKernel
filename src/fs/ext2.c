@@ -37,7 +37,7 @@
 #include "mount.h"
 #include "mutex.h"
 #include "heap.h"
-#include "rtc.h"
+#include "walltime.h"
 #include "kprintf.h"
 #include "kstring.h"
 #include "kerrno.h"
@@ -135,47 +135,6 @@ static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8));
 static uint32_t get32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
-
-// --- Time ------------------------------------------------------------------------
-
-// Days since 1970-01-01 of a date (the algorithm for the proleptic Gregorian
-// calendar from Howard Hinnant's "chrono-compatible low-level date algorithms")
-static int64_t days_from_civil(int64_t y, unsigned m, unsigned d) {
-    y -= m <= 2;
-    int64_t era = (y >= 0 ? y : y - 399) / 400;
-    unsigned yoe = (unsigned)(y - era * 400);
-    unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
-    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return era * 146097 + (int64_t)doe - 719468;
-}
-
-// The real-time clock as seconds since 1970 (UTC, as the clock is kept),
-// or 0 if the clock reads as nonsense
-static uint32_t unix_now(void) {
-    struct rtc_time now;
-    rtc_read_time(&now);
-    if (now.year < 1970 || now.month < 1 || now.month > 12 || now.day < 1 || now.day > 31) return 0;
-    int64_t days = days_from_civil(now.year, now.month, now.day);
-    return (uint32_t)(days * 86400 + (now.hour % 24) * 3600 + (now.minute % 60) * 60 + (now.second % 60));
-}
-
-// Seconds since 1970 as the VFS keeps times (FAT's packing: see vfs.h)
-static uint32_t unix_to_packed(uint32_t seconds) {
-    int64_t z = (int64_t)(seconds / 86400) + 719468;
-    int64_t era = z / 146097;
-    unsigned doe = (unsigned)(z - era * 146097);
-    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    unsigned mp = (5 * doy + 2) / 153;
-    unsigned day = doy - (153 * mp + 2) / 5 + 1;
-    unsigned month = mp < 10 ? mp + 3 : mp - 9;
-    unsigned year = (unsigned)(yoe + era * 400) + (month <= 2);
-    if (year < 1980) return 0; // Before FAT's calendar begins: shown as unknown
-    unsigned rest = seconds % 86400;
-    uint32_t date = ((year - 1980) << 9) | (month << 5) | day;
-    uint32_t time = ((rest / 3600) << 11) | (((rest / 60) % 60) << 5) | ((rest % 60) / 2);
-    return (date << 16) | time;
-}
 
 // --- Blocks ----------------------------------------------------------------------
 
@@ -573,7 +532,7 @@ static void apply_inode(vnode_t *node, const struct ext2_inode *inode) {
     node->gid = inode->gid | ((uint32_t)inode->gid_high << 16);
     node->mode = inode->mode & 07777 & 04777;       // The bits this kernel knows
     node->size = (node->type == VFS_FILE) ? inode->size : 0;
-    node->mtime = unix_to_packed(inode->mtime);
+    node->mtime = inode->mtime;
 }
 
 // Put a node for inode `ino`, called `name`, into the VFS directory `dir`,
@@ -693,7 +652,7 @@ static int ext2_dir_create(vnode_t *dir, const char *name, bool directory, vnode
         if (!ino) err = -ENOSPC;
     }
     if (err == 0) {
-        uint32_t now = unix_now();
+        uint32_t now = walltime_seconds();
         memset(&inode, 0, sizeof(inode));
         // Owner, group and permission bits are set by the caller straight
         // after (ext2_setattr): root's and private until then
@@ -725,7 +684,7 @@ static int ext2_dir_create(vnode_t *dir, const char *name, bool directory, vnode
         err = dir_add(&parent, dir_ino, name, ino, directory ? FT_DIRECTORY : FT_REGULAR);
         if (err == 0) {
             if (directory) parent.links++;
-            parent.mtime = parent.ctime = unix_now();
+            parent.mtime = parent.ctime = walltime_seconds();
             if (!write_inode(dir_ino, &parent)) err = -EIO;
         }
     }
@@ -748,7 +707,7 @@ static int ext2_dir_create(vnode_t *dir, const char *name, bool directory, vnode
 static void release_inode(uint32_t ino, struct ext2_inode *inode, bool directory) {
     free_contents(inode);
     inode->links = 0;
-    inode->dtime = unix_now(); // How e2fsck tells a deleted inode from a lost one
+    inode->dtime = walltime_seconds(); // How e2fsck tells a deleted inode from a lost one
     write_inode(ino, inode);
     free_inode(ino, directory);
 }
@@ -770,7 +729,7 @@ static int ext2_dir_remove(vnode_t *dir, vnode_t *child) {
     if (err == 0 && dir_change(&parent, child->name, true, 0) != ino) err = -EIO;
     if (err == 0) {
         if (directory && parent.links > 0) parent.links--; // Its ".." is gone
-        parent.mtime = parent.ctime = unix_now();
+        parent.mtime = parent.ctime = walltime_seconds();
         write_inode(dir_ino, &parent);
 
         // A file may have other names (hard links made elsewhere); a
@@ -818,7 +777,7 @@ static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, co
     if (err == 0) err = dir_add(target, new_ino, new_name, ino, directory ? FT_DIRECTORY : FT_REGULAR);
     if (err == 0) {
         dir_change(&from, node->name, true, 0); // (dir_add may have grown `from` if it is also the target: same struct)
-        uint32_t now = unix_now();
+        uint32_t now = walltime_seconds();
 
         if (directory && !same_dir) {
             // Its ".." names the new parent now, and the two parents'
@@ -837,7 +796,7 @@ static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, co
     if (raised) {
         // Back to the one name it has (whether the new or, on failure, the old)
         if (inode.links > 0) inode.links--;
-        inode.ctime = unix_now();
+        inode.ctime = walltime_seconds();
         write_inode(ino, &inode);
     }
     mutex_unlock(&ext2_mutex);
@@ -860,7 +819,7 @@ static int ext2_setattr(vnode_t *node) {
         inode.gid = (uint16_t)node->gid;
         inode.gid_high = (uint16_t)(node->gid >> 16);
         inode.mode = (uint16_t)((inode.mode & MODE_TYPE_MASK) | (node->mode & 07777));
-        inode.ctime = unix_now();
+        inode.ctime = walltime_seconds();
         if (!write_inode(ino, &inode)) err = -EIO;
     }
     mutex_unlock(&ext2_mutex);
@@ -938,11 +897,11 @@ static int64_t ext2_file_write(vnode_t *node, size_t offset, const void *buf, si
 
     // The inode last: new blocks reachable only once their contents are there
     if (offset + done > inode.size && done > 0) inode.size = (uint32_t)(offset + done);
-    inode.mtime = inode.ctime = unix_now();
+    inode.mtime = inode.ctime = walltime_seconds();
     bool saved = write_inode(ino, &inode);
     if (saved) {
         node->size = inode.size;
-        node->mtime = unix_to_packed(inode.mtime);
+        node->mtime = inode.mtime;
     }
     mutex_unlock(&ext2_mutex);
 
@@ -969,12 +928,12 @@ static int ext2_file_truncate(vnode_t *node) {
         memset(inode.block, 0, sizeof(inode.block));
         inode.size = 0;
         inode.sectors = 0;
-        inode.mtime = inode.ctime = unix_now();
+        inode.mtime = inode.ctime = walltime_seconds();
         if (!write_inode(ino, &inode)) err = -EIO;
         else free_contents(&old);
         if (err == 0) {
             node->size = 0;
-            node->mtime = unix_to_packed(inode.mtime);
+            node->mtime = inode.mtime;
         }
     }
     mutex_unlock(&ext2_mutex);
@@ -1186,7 +1145,7 @@ int ext2_check(ext2_check_t *report) {
                 // reachable, so the pass below frees them.)
                 if (read_inode(ino, &inode)) {
                     inode.links = 0;
-                    inode.dtime = unix_now();
+                    inode.dtime = walltime_seconds();
                     write_inode(ino, &inode); // (Uses its own scratch block: the bitmap here is untouched)
                 }
                 bitmap_block[bit / 8] &= (uint8_t)~(1u << (bit % 8));

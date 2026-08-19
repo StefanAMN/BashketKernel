@@ -41,7 +41,7 @@
 #include "heap.h"
 #include "sched.h"
 #include "mount.h"
-#include "rtc.h"
+#include "walltime.h"
 
 #define SECTOR VIRTIO_BLK_SECTOR_SIZE
 
@@ -340,7 +340,6 @@ static void free_chain(uint32_t cluster) {
 // --- Directory entries on disk ------------------------------------------------
 
 static void fat_now(uint16_t *date, uint16_t *time);
-static uint32_t fat_now_packed(void);
 
 // Change the first cluster and size recorded in a node's directory entry,
 // and stamp it as written now. Caller holds the volume lock.
@@ -529,12 +528,21 @@ static void fill_lfn_entry(uint8_t entry[32], const char *name, unsigned ordinal
 // month in 4, day in 5; hours in 5, minutes in 6, seconds/2 in 5
 static void fat_now(uint16_t *date, uint16_t *time) {
     struct rtc_time now;
-    rtc_read_time(&now);
+    walltime_to_date(walltime_seconds(), &now);
     unsigned year = now.year >= 1980 && now.year < 2108 ? now.year - 1980u : 0;
-    unsigned month = now.month >= 1 && now.month <= 12 ? now.month : 1;
-    unsigned day = now.day >= 1 && now.day <= 31 ? now.day : 1;
-    *date = (uint16_t)((year << 9) | (month << 5) | day);
-    *time = (uint16_t)(((now.hour % 24u) << 11) | ((now.minute % 60u) << 5) | ((now.second % 60u) / 2));
+    *date = (uint16_t)((year << 9) | ((unsigned)now.month << 5) | now.day);
+    *time = (uint16_t)(((unsigned)now.hour << 11) | ((unsigned)now.minute << 5) | (now.second / 2));
+}
+
+// A FAT date and time as seconds since 1970 (what the VFS keeps), or 0
+// for a date that is not one (an entry written without a date)
+static uint32_t fat_to_unix(uint16_t date, uint16_t time) {
+    struct rtc_time t = {
+        .year = (uint16_t)(1980 + (date >> 9)), .month = (uint8_t)((date >> 5) & 15), .day = (uint8_t)(date & 31),
+        .hour = (uint8_t)(time >> 11), .minute = (uint8_t)((time >> 5) & 63), .second = (uint8_t)((time & 31) * 2),
+    };
+    if (t.month < 1 || t.month > 12 || t.day < 1 || t.hour > 23 || t.minute > 59 || t.second > 59) return 0;
+    return (uint32_t)walltime_from_date(&t);
 }
 
 // A fresh short directory entry: name, case flags, attributes, first
@@ -722,7 +730,7 @@ static int64_t write_locked(vnode_t *node, size_t offset, const uint8_t *data, s
         size_t new_size = reached > node->size ? reached : node->size;
         if (!update_entry(info, info->first_cluster, (uint32_t)new_size)) return -EIO;
         node->size = new_size;
-        node->mtime = fat_now_packed();
+        node->mtime = walltime_seconds();
     }
 
     if (done == 0 && count > 0) return -ENOSPC;
@@ -766,13 +774,6 @@ static int fat_file_truncate(vnode_t *node) {
 
 // --- Reading directories ---------------------------------------------------------
 
-// The time now, packed as the VFS keeps it (date << 16 | time, FAT's form)
-static uint32_t fat_now_packed(void) {
-    uint16_t date, time;
-    fat_now(&date, &time);
-    return ((uint32_t)date << 16) | time;
-}
-
 static bool name_taken_nocase(const vnode_t *dir, const char *name, const vnode_t *except);
 
 // Attach a node for one directory entry. Returns NULL if memory ran out.
@@ -803,7 +804,7 @@ static vnode_t *attach_entry(vnode_t *dir, const char *name, const struct dir_en
     node->ops = directory ? &fat_dir_ops : &fat_file_ops;
     node->private_data = (uint64_t)info;
     node->size = directory ? 0 : entry->size;
-    node->mtime = ((uint32_t)entry->write_date << 16) | entry->write_time;
+    node->mtime = fat_to_unix(entry->write_date, entry->write_time);
     // A directory's own entries are read when someone first looks inside
     node->unloaded = directory;
     return node;
@@ -1038,7 +1039,7 @@ static int fat_dir_create(vnode_t *dir, const char *name, bool directory, vnode_
     node->mode = 0755; // FAT stores no permissions: see attach_entry
     node->ops = directory ? &fat_dir_ops : &fat_file_ops;
     node->private_data = (uint64_t)info;
-    node->mtime = fat_now_packed();
+    node->mtime = walltime_seconds();
     *out = node;
     return 0;
 }

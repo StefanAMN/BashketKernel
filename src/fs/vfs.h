@@ -69,7 +69,7 @@ typedef struct vnode {
     uint64_t private_data;      // For whoever provides ops (the FAT driver keeps the first cluster here)
     bool read_only;             // Nothing may be created, removed or opened for writing here
     bool unloaded;              // A directory whose children have not been read yet (see ops->load)
-    uint32_t mtime;             // When it was last written, packed as FAT does (date << 16 | time); 0: not known
+    uint32_t mtime;             // When it was last written: seconds since 1970 (UTC); 0: not known
     uint32_t uid;               // Owner (see auth.h)
     uint32_t gid;               // Group
     uint16_t mode;              // Permission bits: who may read, write and execute; set-uid
