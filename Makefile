@@ -10,7 +10,7 @@ INCLUDES = -Ilib -Isrc -Isrc/include -Isrc/drivers/virtio -Isrc/init -Isrc/arch/
            -Isrc/fs -Isrc/kernel -Isrc/kernel/ipc -Isrc/kernel/log -Isrc/kernel/proc -Isrc/kernel/sched -Isrc/kernel/sync -Isrc/kernel/syscall -Isrc/kernel/time \
            -Isrc/lib -Isrc/mm -Isrc/net
 
-CFLAGS = -Wall -Wextra -O2 -g -pipe $(INCLUDES) \
+CFLAGS = -std=gnu17 -Wall -Wextra -O2 -g -pipe $(INCLUDES) \
          -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
          -fno-omit-frame-pointer \
          -mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2 \
@@ -39,7 +39,7 @@ ISO_ROOT = $(BUILD)/iso_root
 # Every user/*.c becomes /bin/<name> in the initrd, linked against the small
 # library in user/lib. User code may use floating point and SSE: the kernel
 # saves that state per task.
-USER_CFLAGS = -Wall -Wextra -O2 -g -pipe -Iuser/lib -Ilib/crypto \
+USER_CFLAGS = -std=gnu17 -Wall -Wextra -O2 -g -pipe -Iuser/lib -Ilib/crypto \
               -ffreestanding -fno-stack-protector -fpie \
               -masm=intel -MMD -MP
 # Static position-independent executables: no dynamic linker, and no

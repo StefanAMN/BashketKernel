@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define SHM_MAX_SEGMENTS 16
 #define SHM_MAX_PAGES 256      // 1 MiB
