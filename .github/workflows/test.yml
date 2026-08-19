@@ -1,14 +1,16 @@
 name: kernel tests
 
-# Never run so far: written against the Makefile targets, not yet tried on
-# GitHub's runners. See PLAN.md, "What is still wrong".
+# make check on every push and pull request: the documentation check, the
+# unit tests on both CPU models and 1 to 8 CPUs, and every scenario target.
+# QEMU runs without KVM here as on a developer's machine (software
+# emulation), only slower, hence the generous time limit.
 
 on: [push, pull_request]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools and QEMU
@@ -25,6 +27,5 @@ jobs:
         with:
           name: test-logs
           path: |
-            build-test/test.log
-            build/lowmem-*.log
-            build/fuzz-*.log
+            build-test/*.log
+            build/*.log
