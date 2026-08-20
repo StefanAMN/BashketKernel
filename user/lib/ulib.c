@@ -255,6 +255,7 @@ long dup(int fd)                                   { return syscall1(SYS_DUP, fd
 long pipe2(int fds[2], int flags)                  { return syscall2(SYS_PIPE2, fds, flags); }
 long fcntl(int fd, int command, long arg)          { return syscall3(SYS_FCNTL, fd, command, arg); }
 long readdir(int fd, struct dirent *entry)         { return syscall2(SYS_READDIR, fd, entry); }
+long poll(struct pollfd *fds, unsigned count, long timeout_ms) { return syscall3(SYS_POLL, fds, count, timeout_ms); }
 long mkdir(const char *path)                       { return syscall1(SYS_MKDIR, path); }
 long chdir(const char *path)                       { return syscall1(SYS_CHDIR, path); }
 long getcwd(char *buf, size_t size)                { return syscall2(SYS_GETCWD, buf, size); }

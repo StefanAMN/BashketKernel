@@ -99,6 +99,7 @@ void test_suite_crypto(void);    /* SHA-256 against published test vectors */
 void test_suite_dev(void);       /* /dev, and the random generator (ChaCha20 against RFC 8439) */
 void test_suite_bench(void);     /* Benchmarks: each must measure something */
 void test_suite_lib(void);       /* String functions and ksnprintf */
+void test_suite_poll(void);      /* poll: readiness of pipes, the terminal, sockets, the mouse; the wait */
 
 // Let other tasks run until `condition` holds, for at most `max_ticks` timer
 // ticks. "Yield N times" is not a wait: with more than one CPU the other

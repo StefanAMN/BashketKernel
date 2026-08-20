@@ -58,4 +58,11 @@ void pipe_close_reader(pipe_t *pipe);
  */
 void pipe_close_writer(pipe_t *pipe);
 
+/**
+ * @brief For poll(): the read end (`reader`) is readable when data waits or
+ *        the writer is gone (POLLIN, and POLLHUP for the latter); the write
+ *        end is writable while there is room, POLLERR once the reader is gone.
+ */
+int pipe_poll(pipe_t *pipe, bool reader);
+
 #endif // PIPE_H

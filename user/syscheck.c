@@ -1887,6 +1887,41 @@ static void check_time_of_day(void) {
     CHECK(later >= now && later - now <= 2);
 }
 
+/* poll: a child writes into the second of two pipes after a while; the
+ * parent, polling both, wakes with that one marked. And the errors. */
+static void check_poll(void) {
+    int a[2], b[2];
+    CHECK(pipe(a) == 0 && pipe(b) == 0);
+    struct pollfd fds[2] = { { a[0], POLLIN, 0 }, { b[0], POLLIN, 0 } };
+    CHECK(poll(fds, 2, 0) == 0);                          /* Nothing yet: just look */
+    CHECK(poll(fds, 2, 50) == 0);                         /* ...or wait 50 ms for nothing */
+
+    long pid = fork();
+    if (pid == 0) {
+        sleep_ms(50);
+        write(b[1], "!", 1);
+        exit(0);
+    }
+    unsigned long start = clock_ns();
+    CHECK(poll(fds, 2, 5000) == 1);
+    CHECK(fds[0].revents == 0 && fds[1].revents == POLLIN);
+    CHECK(clock_ns() - start < 2000000000UL);             /* Woken by the write, not the limit */
+    int status;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+
+    /* The child's end of b is closed with it: b's reader sees the end too */
+    close(b[1]);
+    char c;
+    CHECK(read(b[0], &c, 1) == 1);
+    CHECK(poll(&fds[1], 1, 0) == 1 && fds[1].revents == (POLLIN | POLLHUP));
+
+    struct pollfd bad = { 99, POLLIN, 0 };
+    CHECK(poll(&bad, 1, 0) == 1 && bad.revents == POLLNVAL);
+    CHECK(poll((struct pollfd *)0xffffffff80000000, 1, 0) == -EFAULT);
+    CHECK(poll(fds, 65, 0) == -EINVAL);                   /* More than the kernel takes at once */
+    close(a[0]); close(a[1]); close(b[0]);
+}
+
 /* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
 static void check_pipes(void) {
     int fds[2];
@@ -2185,6 +2220,7 @@ int main(void) {
     check_users();
     check_password_file();
     check_time_of_day();
+    check_poll();
     check_groups_and_setuid();
     check_pipes();
 

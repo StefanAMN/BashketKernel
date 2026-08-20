@@ -186,4 +186,9 @@ int64_t udp_sendto(udp_socket_t *sock, uint32_t ip, uint16_t port, const void *d
  */
 int64_t udp_recvfrom(udp_socket_t *sock, void *buf, size_t len, uint32_t *src_ip, uint16_t *src_port, uint64_t timeout_ticks);
 
+/**
+ * @brief For poll(): POLLIN when a datagram is queued; always POLLOUT.
+ */
+int udp_poll(udp_socket_t *sock);
+
 #endif // NET_H

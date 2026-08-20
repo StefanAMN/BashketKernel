@@ -14,6 +14,7 @@
 #include "tty.h"
 #include "process.h"
 #include "kprintf.h"
+#include "poll.h"
 
 
 #define KEYBOARD_BUFFER_SIZE 256
@@ -264,6 +265,7 @@ void keyboard_input_arrived(void) {
     uint64_t flags = spinlock_acquire_irqsave(&input_lock);
     sched_wakeup(&input_channel);
     spinlock_release_irqrestore(&input_lock, flags);
+    poll_notify();
 }
 
 // Wait (a bounded time) for the answer to a controller command. Caller
@@ -332,6 +334,12 @@ static char kbd_buffer_pop(void) {
         kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
     }
     spinlock_release_irqrestore(&kbd_lock, flags);
+    return c;
+}
+
+char keyboard_try_getchar(void) {
+    char c = kbd_buffer_pop();
+    if (c == 0 && serial_has_char()) c = serial_getchar();
     return c;
 }
 

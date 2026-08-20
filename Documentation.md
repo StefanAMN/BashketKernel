@@ -278,15 +278,18 @@ so the numbering has gaps.
 
 ---
 
-### 19. Inter-Process Communication Pipes (Phase 19)
-**Status: real.** Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a | b`.
+### 19. Inter-Process Communication Pipes, and `poll` (Phase 19, PLAN F2)
+**Status: real.** Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a | b`. `poll` waits on up to 64 descriptors at once: pipes, the terminal (a complete line in line mode, any key in raw mode), UDP and TCP sockets (a listener is readable when a connection waits for `accept`), the mouse; files and other devices are always ready. A poller is woken by any change anywhere and looks at its own descriptors again (a generation counter keeps a change during that look from being lost); simple, and fine for a system with a few programs. `/bin/nc` uses it to carry both directions in one process. Not done: `select`, edge-triggered or `epoll`-style interfaces, and readiness of regular files on a disk (always ready, as on Unix).
 
-**Goal:** POSIX Anonymous Pipes (`pipe`), blocking read/write ring buffers.
+**Goal:** POSIX Anonymous Pipes (`pipe`), blocking read/write ring buffers; waiting on several descriptors at once.
 
 - **Order of Learning:**
   1. **IPC Ring-Buffer Pipes:**
      - **Concepts:** Circular byte buffer, task sleeping on empty/full buffer, pipe EOF handling.
      - Files to inspect: `src/fs/pipe.h`, `src/fs/pipe.c`
+  2. **poll:**
+     - **Concepts:** readiness per kind of file, one wake-up channel for all pollers, the check-then-sleep race and the counter that closes it.
+     - Files to inspect: `src/fs/poll.h`, `src/fs/poll.c`, `pipe_poll`, `tty_poll`, `tcp_poll`, `user/nc.c`, `tests/test_poll.c`
 
 ---
 

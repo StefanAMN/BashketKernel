@@ -65,6 +65,7 @@
 #define SYS_DUP      32
 #define SYS_FCNTL    72
 #define SYS_PIPE2    293
+#define SYS_POLL     7
 #define SYS_SOCKET   41
 #define SYS_CONNECT  42
 #define SYS_ACCEPT   43
@@ -158,6 +159,18 @@ struct net_config {
 };
 
 /* One directory entry, filled in by readdir() */
+/* poll(): what to wait for on each descriptor, and what was found */
+struct pollfd {
+    int fd;              /* Negative: this entry is ignored */
+    short events;        /* POLLIN, POLLOUT */
+    short revents;       /* Filled in: those of events that are true, and POLLERR, POLLHUP, POLLNVAL */
+};
+#define POLLIN   0x001   /* A read would not wait (data, or the end of it) */
+#define POLLOUT  0x004   /* A write would not wait */
+#define POLLERR  0x008
+#define POLLHUP  0x010   /* The other end is gone */
+#define POLLNVAL 0x020   /* Not an open descriptor */
+
 struct dirent {
     uint32_t type;      /* DT_FILE or DT_DIR */
     uint32_t mode;      /* Permission bits, in octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid */

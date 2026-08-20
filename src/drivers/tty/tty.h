@@ -64,6 +64,13 @@ bool tty_is_raw(void);
 void tty_process_exited(uint32_t pid);
 
 /**
+ * @brief For poll(): POLLIN when a read would not wait (a complete line, or
+ *        in raw mode any key), and always POLLOUT. In line mode the keys
+ *        already typed are put through the line discipline first.
+ */
+int tty_poll(void);
+
+/**
  * @brief Write `count` bytes of kernel memory to the screen and the serial
  *        port. Never sleeps. Returns `count`.
  */
