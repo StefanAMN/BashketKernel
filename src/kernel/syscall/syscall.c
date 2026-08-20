@@ -33,6 +33,7 @@
 #include "shm.h"
 #include "hrtimer.h"
 #include "walltime.h"
+#include "poll.h"
 #include "power.h"
 #include "auth.h"
 
@@ -771,6 +772,29 @@ static int64_t sys_sendto(int fd, uint64_t user_buf, size_t len, uint32_t ip, ui
     return udp_sendto(socket, ip, (uint16_t)port, data, len);
 }
 
+// poll(fds, count, timeout_ms): sleep until one of the descriptors is ready
+// (poll.h). The array is copied in, worked on in kernel memory, and the
+// results copied back: nothing below this call sees a user pointer.
+static int64_t sys_poll(uint64_t user_fds, uint64_t count, int64_t timeout_ms) {
+    if (count > POLL_MAX) return -EINVAL;
+    size_t bytes = (size_t)count * sizeof(struct pollfd);
+    if (count > 0 && !user_range_ok(user_fds, bytes, true)) return -EFAULT;
+
+    struct pollfd fds[POLL_MAX];
+    user_access_begin();
+    memcpy(fds, (const void *)user_fds, bytes);
+    user_access_end();
+
+    int64_t result = poll_wait(sched_get_current_task()->fds, fds, (size_t)count, timeout_ms);
+    if (result < 0) return result;
+
+    if (count > 0 && !user_range_ok(user_fds, bytes, true)) return -EFAULT; // (It may have been unmapped meanwhile)
+    user_access_begin();
+    for (size_t i = 0; i < count; i++) ((struct pollfd *)user_fds)[i].revents = fds[i].revents;
+    user_access_end();
+    return result;
+}
+
 // recvfrom(fd, buf, len, from, timeout_ms): receive one UDP datagram,
 // waiting up to timeout_ms (0: as long as it takes). Returns its length;
 // the sender's address goes to *from if given.
@@ -1116,6 +1140,7 @@ static int64_t dispatch(struct registers *regs) {
         }
         case SYS_PIPE:    return sys_pipe(regs->rdi, 0);
         case SYS_PIPE2:   return sys_pipe(regs->rdi, regs->rsi);
+        case SYS_POLL:    return sys_poll(regs->rdi, regs->rsi, (int64_t)(int32_t)regs->rdx);
         case SYS_DUP:     return sys_dup((int)regs->rdi);
         case SYS_DUP2:    return sys_dup2((int)regs->rdi, (int)regs->rsi);
         case SYS_FCNTL:   return sys_fcntl((int)regs->rdi, regs->rsi, regs->rdx);

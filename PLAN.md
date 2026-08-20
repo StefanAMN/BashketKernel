@@ -603,7 +603,13 @@ take their times from it. A `date` program prints it (and root sets it).
 boot and advances with the monotonic clock; setting it moves both file
 times and `date`; non-root is refused.
 
-### F2. Waiting on several descriptors: `poll` (M)
+### F2. Waiting on several descriptors: `poll` (M) — done
+
+Done as proposed (`src/fs/poll.c`, system call 7, `nc` in one process).
+Pollers share one wake-up channel and a generation counter rather than
+per-file wait lists; the terminal in line mode feeds keys already typed
+through the line discipline when polled, since a line only exists once
+they have been. The proposal:
 
 A program can only wait on one thing at a time. `nc` has to choose between
 the terminal and the connection, `paint` between the mouse and the

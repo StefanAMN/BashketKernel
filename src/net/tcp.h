@@ -107,6 +107,14 @@ void tcp_close(tcp_socket_t *sock);
 int tcp_shutdown(tcp_socket_t *sock);
 
 /**
+ * @brief For poll(). A listening socket: POLLIN when a connection waits for
+ *        tcp_accept. A connection: POLLIN when there is data or the other
+ *        end has finished (or the connection failed: POLLERR and POLLHUP
+ *        too), POLLOUT while there is room to write, POLLHUP once closed.
+ */
+int tcp_poll(tcp_socket_t *sock);
+
+/**
  * @brief The other end's address (0 and 0 if not connected).
  */
 void tcp_peer(tcp_socket_t *sock, uint32_t *ip, uint16_t *port);

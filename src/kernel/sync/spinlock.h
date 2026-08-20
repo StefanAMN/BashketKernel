@@ -45,6 +45,7 @@ enum {
     LOCK_RANK_COW      = 78,
     LOCK_RANK_SWAP     = 79, // Which swap slots are in use
     LOCK_RANK_PMM      = 80,
+    LOCK_RANK_POLL     = 85, // "Something may be ready": taken by notifiers under any of the above
     LOCK_RANK_SCHED    = 90, // Task list and task states
     LOCK_RANK_TIME     = 92,
     LOCK_RANK_KPRINTF  = 100, // Output: may be used while holding anything above
