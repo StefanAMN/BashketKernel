@@ -110,7 +110,8 @@ static void ap_entry(struct LIMINE_MP(info) *info) {
     // Use the kernel's own tables rather than the bootloader's
     asm volatile("mov cr3, %0" : : "r"(vmm_get_kernel_pml4_phys()) : "memory");
     gdt_load_on_this_cpu();
-    cpu_init_this(id, (uint64_t)cpu->fault_stack + KERNEL_STACK_SIZE); // GS and this CPU's TSS
+    cpu_init_this(id, (uint64_t)cpu->fault_stack + KERNEL_STACK_SIZE,       // GS and this CPU's TSS
+                  (uint64_t)cpu->nmi_stack + KERNEL_STACK_SIZE);
     idt_load_on_this_cpu();
     lapic_enable_on_this_cpu();
     cpu->lapic_id = lapic_get_id();
@@ -231,7 +232,8 @@ void smp_init(struct LIMINE_MP(response) *response) {
         // Everything the new CPU needs is prepared here: it must not call
         // the allocators itself while we may be in them
         cpu_get((uint32_t)next_id)->fault_stack = kstack_alloc();
-        if (!cpu_get((uint32_t)next_id)->fault_stack) break;
+        cpu_get((uint32_t)next_id)->nmi_stack = kstack_alloc();
+        if (!cpu_get((uint32_t)next_id)->fault_stack || !cpu_get((uint32_t)next_id)->nmi_stack) break;
         if (!sched_prepare_cpu((uint32_t)next_id)) break;
         cpu->extra_argument = next_id;
         next_id++;
