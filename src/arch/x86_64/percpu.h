@@ -67,6 +67,8 @@ typedef struct cpu {
 
     struct tss tss;            // This CPU's task state segment
     void *fault_stack;         // Its stack for double faults (TSS IST1)
+    void *nmi_stack;           // Its stack for NMIs (TSS IST2)
+    volatile uint64_t nmis;    // NMIs this CPU has taken
 
     // Work another CPU has asked this one to do (smp_call)
     void (*call_fn)(void *);
@@ -118,8 +120,9 @@ cpu_t *cpu_get(uint32_t cpu_id);
  *        task state segment. Called once on each CPU, after the GDT is
  *        loaded there (loading segment registers resets the GS base).
  * @param fault_stack_top Top of a stack reserved for double faults.
+ * @param nmi_stack_top Top of a stack reserved for NMIs.
  */
-void cpu_init_this(uint32_t cpu_id, uint64_t fault_stack_top);
+void cpu_init_this(uint32_t cpu_id, uint64_t fault_stack_top, uint64_t nmi_stack_top);
 
 /**
  * @brief Read the GS base the CPU is using right now (for tests).

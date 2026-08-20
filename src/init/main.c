@@ -204,6 +204,8 @@ static void mount_rescue_system(void) {
     if (passwd) passwd->mode = 0600;
 }
 
+static void boot_continue(void) __attribute__((noreturn));
+
 // The kernel's entry point: Limine jumps here on the boot CPU, in long
 // mode on its own stack and page tables. Brings every subsystem up in
 // order (each numbered phase below needs the ones before it), starts
@@ -257,6 +259,16 @@ void _start(void) {
 
     // Phase 4: Multitasking & Scheduler
     sched_init();
+
+    // PID 0 exists from here: it leaves the bootloader's stack (no guard
+    // page below it) for a kernel stack of its own and boots on from there
+    sched_continue_on_own_stack(boot_continue);
+}
+
+// The rest of the boot, on PID 0's own kernel stack (see _start): timers,
+// interrupts, the other CPUs, the disks and the root, the network, then
+// /bin/init; afterwards this task frees dead tasks for good. Never returns.
+static void boot_continue(void) {
     pit_init(TIMER_HZ);
 
     // Phase 5: Userspace & System Calls

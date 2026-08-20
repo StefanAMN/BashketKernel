@@ -14,6 +14,15 @@
 void sched_init(void);
 
 /**
+ * @brief Move the calling task (PID 0, at boot) from the bootloader's stack
+ *        to an ordinary kernel stack, which has a guard page below it (the
+ *        boot stack has none: an overflow there would corrupt memory
+ *        silently), and call `continue_at` there. Never returns; whatever
+ *        the caller had on its stack is left behind. Panics without memory.
+ */
+void sched_continue_on_own_stack(void (*continue_at)(void)) __attribute__((noreturn));
+
+/**
  * @brief Create a new kernel thread.
  * @param name Descriptive task name.
  * @param entry Function pointer to task entry point.

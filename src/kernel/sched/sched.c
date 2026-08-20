@@ -158,6 +158,15 @@ void sched_init(void) {
     kprintf("Scheduler Init: Preemptive multitasking enabled (Main Kernel PID: %d)\n", main_task->pid);
 }
 
+void sched_continue_on_own_stack(void (*continue_at)(void)) {
+    extern void call_on_stack(uint64_t stack_top, void (*fn)(void)) __attribute__((noreturn));
+    void *stack = kstack_alloc();
+    if (!stack) panic("sched: no memory for PID 0's stack");
+    task_t *self = sched_get_current_task();
+    self->kernel_stack = stack;
+    call_on_stack((uint64_t)stack + KERNEL_STACK_SIZE, continue_at);
+}
+
 task_t *sched_prepare_cpu(uint32_t cpu_id) {
     // The CPU's own boot stack becomes its idle task's stack, the way the
     // boot CPU's became PID 0's: there is no separate stack to allocate,

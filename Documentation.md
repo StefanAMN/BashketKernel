@@ -34,7 +34,7 @@ so the numbering has gaps.
      - Try: `make run` (log in as root/root, then `shutdown`), `make test-boot`, `make test-shutdown`.
 
 ### 2. CPU Tables & Interrupt Handling (Phase 2)
-**Status: real.** Double faults run on their own stack (IST1).
+**Status: real.** Double faults run on their own stack (IST1), and NMIs on another (IST2), each CPU having its own pair. An NMI can arrive where the CPU is in ring 0 with the user's GS base (the first and last instructions of a system call), so its entry stub (`nmi_stub` in `isr_stubs.S`) decides `swapgs` from the GS base itself rather than the saved CS; its handler only counts (it may have interrupted the holder of the output locks) and the next ordinary interrupt reports it; `/proc/cpuinfo` shows the count. `make test-nmi` sends thirty from QEMU's monitor while `/bin/syscheck` runs. PID 0, which boots the kernel, leaves the bootloader's stack for a guarded kernel stack as soon as the scheduler exists (`sched_continue_on_own_stack`).
 
 **Goal:** Global Descriptor Table (GDT), Interrupt Descriptor Table (IDT), 8259 PIC remap, ISR stubs.
 

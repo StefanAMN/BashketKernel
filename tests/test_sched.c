@@ -3,6 +3,8 @@
 #include "heap.h"
 #include "pmm.h"
 #include "pit.h"
+#include "kstack.h"
+#include "kstring.h"
 
 static volatile int task1_counter = 0;
 static volatile int task2_counter = 0;
@@ -121,8 +123,22 @@ TEST(heap_stress_under_preemption) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// PID 0 (which runs the boot and these tests) is on a kernel stack of its
+// own with a guard page below it, not on the bootloader's stack, where an
+// overflow would have corrupted memory without a word
+TEST(pid0_runs_on_a_guarded_stack) {
+    task_t *self = sched_get_current_task();
+    EXPECT_EQ(strcmp(self->name, "kernel_main"), 0);
+    uint64_t rsp;
+    asm volatile("mov %0, rsp" : "=r"(rsp));
+    uint64_t base = (uint64_t)self->kernel_stack;
+    EXPECT_TRUE(base != 0 && rsp > base && rsp <= base + KERNEL_STACK_SIZE);
+    EXPECT_TRUE(kstack_is_guard_page(base - 1));
+}
+
 void test_suite_sched(void) {
     kprintf("Suite: Tasks and the scheduler\n");
+    RUN_TEST(pid0_runs_on_a_guarded_stack);
     RUN_TEST(multitasking_cooperative);
     RUN_TEST(zombie_reaping);
     RUN_TEST(heap_stress_under_preemption);
