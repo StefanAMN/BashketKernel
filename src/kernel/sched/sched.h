@@ -195,6 +195,14 @@ bool sched_sleep_ticks(uint64_t ticks);
 void sched_request_kill(task_t *task, int sig);
 
 /**
+ * @brief From now on `task` can be neither killed, stopped nor signalled,
+ *        and what was pending is dropped: as for a task that has begun to
+ *        exit. For work that must not be abandoned half way by the task
+ *        doing it (shutting the system down). It does not undo.
+ */
+void sched_make_unkillable(task_t *task);
+
+/**
  * @brief Ask for a process to be suspended (a stop signal). Like a kill, it
  *        takes effect at the target's next safe point. Caller holds the
  *        scheduler lock.

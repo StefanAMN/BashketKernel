@@ -127,6 +127,14 @@ static void one_call(void) {
         case SYS_EXIT:
             return; /* Ending the round early teaches nothing */
 
+        case SYS_REBOOT:
+        case SYS_SETTIME:
+            /* Root may switch the machine off or move the clock: the test
+             * bench, not the kernel, would be what broke. Only refusals. */
+            a = 2 + rnd() % 8;              /* Not 0 or 1: reboot says -EINVAL */
+            if (num == SYS_SETTIME) a = rnd() % 1000000000UL;   /* Before 1980: -EINVAL */
+            break;
+
         case SYS_READ:
             /* Never the console: nobody is typing, the child would just sleep */
             a = 3 + rnd() % 14;
