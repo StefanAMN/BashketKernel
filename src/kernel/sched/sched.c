@@ -602,6 +602,15 @@ void sched_interrupt_sleep(task_t *task) {
     if (task->state == TASK_BLOCKED) wake_task(task);
 }
 
+void sched_make_unkillable(task_t *task) {
+    uint64_t flags = sched_lock_irqsave();
+    task->exiting = true;
+    task->kill_pending = 0;
+    task->stop_pending = 0;
+    task->sig_pending = 0;
+    sched_unlock_irqrestore(flags);
+}
+
 void sched_request_kill(task_t *task, int sig) {
     if (task->state != TASK_ZOMBIE && !task->exiting && task->kill_pending == 0) {
         task->kill_pending = sig;

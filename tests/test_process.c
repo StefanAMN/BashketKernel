@@ -204,6 +204,26 @@ TEST(a_zombie_holds_no_memory) {
     EXPECT_TRUE(test_free_frames() == free_before);
 }
 
+// A task doing something that must not be abandoned (shutting the system
+// down) is made unkillable: a SIGKILL from anyone then changes nothing, and
+// it ends the way it would have. (The shutdown that made this necessary was
+// killed half way by the very processes it was ending.)
+TEST(an_unkillable_task_survives_sigkill) {
+    char *argv[] = { "/bin/sleep", "1", NULL };
+    pid_t pid = process_spawn("/bin/sleep", argv);
+    EXPECT_TRUE(pid > 0);
+    sched_sleep_ticks(3);                       // Asleep in its system call
+    task_t *task = sched_find_task((uint32_t)pid);
+    EXPECT_TRUE(task != NULL);
+    if (task) sched_make_unkillable(task);
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);   // Accepted, and ignored
+    EXPECT_EQ(process_kill(pid, SIGTERM), 0);
+    int status = -1;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    EXPECT_EQ(status, 0);                       // Slept its second and exited
+    sched_reap();
+}
+
 TEST(kill_takes_effect_at_a_safe_point) {
     sched_reap();
     size_t free_before = test_free_frames();
@@ -445,6 +465,7 @@ void test_suite_process(void) {
     RUN_TEST(processes_leave_nothing_behind);
     RUN_TEST(shell_pipelines_and_redirection);
     RUN_TEST(kill_takes_effect_at_a_safe_point);
+    RUN_TEST(an_unkillable_task_survives_sigkill);
     RUN_TEST(a_zombie_holds_no_memory);
     RUN_TEST(orphans_are_adopted_and_collected_by_init);
     RUN_TEST(mapped_file_pages_are_read_only_when_touched);
