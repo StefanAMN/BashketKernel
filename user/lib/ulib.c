@@ -22,6 +22,7 @@ long uptime_ticks(void)                            { return syscall0(SYS_TIME); 
 unsigned long clock_ns(void)                       { return (unsigned long)syscall0(SYS_CLOCK_NS); }
 unsigned long time_ns(void)                        { return (unsigned long)syscall0(SYS_REALTIME); }
 long set_time(unsigned long seconds)               { return syscall1(SYS_SETTIME, seconds * 1000000000UL); }
+long set_time_ns(unsigned long ns)                 { return syscall1(SYS_SETTIME, ns); }
 long sleep_ns(unsigned long nanoseconds)           { return syscall1(SYS_NANOSLEEP, nanoseconds); }
 long set_priority(int priority)                    { return syscall1(SYS_SETPRIORITY, priority); }
 void ignore_interrupt(int ignore)                  { signal(SIGINT, ignore ? SIG_IGN : SIG_DFL); }

@@ -1878,13 +1878,16 @@ static void check_time_of_day(void) {
     CHECK(parse_date("2026-10-20 10:00x", &seconds) == -EINVAL);
 
     /* Root may set it (to 2030, briefly) and the change is seen at once;
-     * out of range is refused */
+     * out of range is refused. Afterwards it is put back exactly, to the
+     * nanosecond (the kernel's own tests, run later, compare the time with
+     * the CMOS clock: put back to the second, it was sometimes 2 s out) */
+    unsigned long saved_ns = time_ns(), saved_at = clock_ns();
     CHECK(set_time(100UL) == -EINVAL);
     CHECK(set_time(1893456000UL) == 0);
     CHECK(time_ns() / 1000000000UL - 1893456000UL <= 1);
-    CHECK(set_time(time_ns() / 1000000000UL - 1893456000UL + now) == 0); /* Back, near enough */
-    later = time_ns() / 1000000000UL;
-    CHECK(later >= now && later - now <= 2);
+    CHECK(set_time_ns(saved_ns + (clock_ns() - saved_at)) == 0);
+    unsigned long back = time_ns();
+    CHECK(back >= saved_ns && back - saved_ns < 1000000000UL);
 }
 
 /* poll: a child writes into the second of two pipes after a while; the
