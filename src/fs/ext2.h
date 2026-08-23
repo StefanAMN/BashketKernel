@@ -12,10 +12,11 @@
  * What is implemented: reading and writing files (up to the doubly indirect
  * block: about 64 MiB with 1 KiB blocks), creating and removing files and
  * directories, rename and move, truncation to nothing, owners, groups,
- * permission bits and modification times.
+ * permission bits and modification times; symbolic links (short ones kept
+ * in the inode, longer ones in a block) and hard links (each name has a
+ * node of its own, brought up to date from the inode at every open).
  *
- * What is not: symbolic and hard links (existing hard links are shown as
- * separate files and survive; none can be made), device files, extended
+ * What is not: device files, extended
  * attributes, the hash index of large directories (a directory we change is
  * marked as not indexed, as Linux's own ext2 driver does), the triply
  * indirect block, and any journal: after a crash, run e2fsck.

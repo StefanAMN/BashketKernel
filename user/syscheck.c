@@ -1922,6 +1922,56 @@ static void check_poll(void) {
     close(a[0]); close(a[1]); close(b[0]);
 }
 
+/* Links: symbolic ones in memory and on the disk, hard ones on the disk
+ * only; reading a link's target; the errors */
+static void check_links(void) {
+    char buf[64];
+    long fd = open("/tmp/link-target", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "linked", 6) == 6);
+    close((int)fd);
+
+    CHECK(symlink("/tmp/link-target", "/tmp/sym") == 0);
+    CHECK(symlink("link-target", "/tmp/rel") == 0);
+    CHECK(readlink("/tmp/sym", buf, sizeof(buf)) == 16 && memcmp(buf, "/tmp/link-target", 16) == 0);
+    CHECK(readlink("/tmp/sym", buf, 4) == 4);                     /* Cut to the buffer */
+    CHECK(readlink("/tmp/link-target", buf, sizeof(buf)) == -EINVAL);
+    fd = open("/tmp/rel", O_RDONLY);
+    CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 6);
+    close((int)fd);
+    CHECK(symlink("x", "/tmp/sym") == -EEXIST);
+    CHECK(symlink("/tmp/loop-b", "/tmp/loop-a") == 0 && symlink("/tmp/loop-a", "/tmp/loop-b") == 0);
+    CHECK(open("/tmp/loop-a", O_RDONLY) == -ELOOP);
+    CHECK(link("/tmp/link-target", "/tmp/hard") == -EPERM);       /* Not in memory */
+    CHECK(link("/bin", "/tmp/bin-again") == -EPERM);              /* Nor of directories */
+
+    /* The rest needs the system disk as the root (the rescue system has
+     * none: its /root is in memory too) */
+    static char mounts[512];
+    fd = open("/proc/mounts", O_RDONLY);
+    long n = fd >= 0 ? read((int)fd, mounts, sizeof(mounts) - 1) : 0;
+    if (fd >= 0) close((int)fd);
+    mounts[n > 0 ? n : 0] = '\0';
+    int on_disk = 0;
+    for (long i = 0; i + 7 < n; i++) if (memcmp(mounts + i, " / ext2", 7) == 0) on_disk = 1;
+    if (!on_disk) goto clean_up;
+
+    CHECK(link("/tmp/link-target", "/root/hard") == -EXDEV);      /* Not across filesystems */
+    /* On the disk: a hard link is the same file */
+    fd = open("/root/one", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "same", 4) == 4);
+    close((int)fd);
+    CHECK(link("/root/one", "/root/two") == 0);
+    CHECK(unlink("/root/one") == 0);
+    fd = open("/root/two", O_RDONLY);
+    CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 4 && memcmp(buf, "same", 4) == 0);
+    close((int)fd);
+    CHECK(unlink("/root/two") == 0);
+
+clean_up:;
+    static const char *const gone[] = { "/tmp/sym", "/tmp/rel", "/tmp/loop-a", "/tmp/loop-b", "/tmp/link-target" };
+    for (unsigned i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) CHECK(unlink(gone[i]) == 0);
+}
+
 /* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
 static void check_pipes(void) {
     int fds[2];
@@ -2221,6 +2271,7 @@ int main(void) {
     check_password_file();
     check_time_of_day();
     check_poll();
+    check_links();
     check_groups_and_setuid();
     check_pipes();
 
