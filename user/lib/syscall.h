@@ -66,6 +66,9 @@
 #define SYS_FCNTL    72
 #define SYS_PIPE2    293
 #define SYS_POLL     7
+#define SYS_LINK     86
+#define SYS_SYMLINK  88
+#define SYS_READLINK 89
 #define SYS_SOCKET   41
 #define SYS_CONNECT  42
 #define SYS_ACCEPT   43
@@ -113,7 +116,9 @@
 #define ECONNREFUSED 111
 #define EHOSTUNREACH 113
 #define EFBIG 27
+#define EMLINK 31
 #define ENAMETOOLONG 36
+#define ELOOP 40
 #define ENOTEMPTY 39
 
 #define O_RDONLY 0x000
@@ -139,6 +144,7 @@
 
 #define DT_FILE 1
 #define DT_DIR  2
+#define DT_LNK  3
 
 /* Where a datagram came from. 10.0.2.2 is the number 0x0A000202. */
 struct net_address {
@@ -172,7 +178,7 @@ struct pollfd {
 #define POLLNVAL 0x020   /* Not an open descriptor */
 
 struct dirent {
-    uint32_t type;      /* DT_FILE or DT_DIR */
+    uint32_t type;      /* DT_FILE, DT_DIR or DT_LNK */
     uint32_t mode;      /* Permission bits, in octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid */
     uint64_t size;
     uint32_t uid;       /* Owner */

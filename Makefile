@@ -433,6 +433,8 @@ test-home: iso
 		'!exec /bin/login alice' '~alice\r' 'cd /home/alice' 'echo kept across the reboot > kept.txt' \
 		'chmod 600 kept.txt' 'mkdir projects' 'mv notes.txt projects/notes.txt' 'cat /bin/sh > projects/shell.bin' \
 		'echo gone > temp.txt' 'rm temp.txt' 'rm diary.txt' 'echo no > /home/bob/intruder.txt' 'cat /home/bob/hello.txt' \
+		'ln -s projects/notes.txt short-link' 'ln -s /home/alice/projects/./././././././././././././././notes.txt long-link' \
+		'ln projects/notes.txt notes-again' \
 		'exit' '!exec /bin/login bob' '~bob\r' 'cat /home/alice/kept.txt' \
 		'echo from bob > /home/bob/second.txt' 'exit' > $(BUILD)/home-boot1.log 2>&1 \
 		|| { echo "home: FAILED in the first boot (see $(BUILD)/home-boot1.log)"; exit 1; }; \
@@ -443,9 +445,12 @@ test-home: iso
 		--expect 'drwxr-xr-x +1000 +100 +0 [0-9-]+ [0-9:]+ projects' \
 		--expect '-rw-r--r-- +1001 +100 +9 [0-9-]+ [0-9:]+ second.txt' \
 		--expect 'kept across the reboot\nAlice keeps her notes here' --expect '\n([0-9]+ [0-9]+ [0-9]+)\n\1\n' \
+		--expect 'lrwxrwxrwx +1000 +100 +18 [0-9-]+ [0-9:]+ short-link -> projects/notes.txt' \
+		--expect 'long-link -> /home/alice/projects/\./\./' --expect '(Alice keeps her notes here\.\n){3}' \
 		--forbid 'diary' --forbid 'temp.txt' --forbid 'intruder' \
 		'exec /bin/ls -l /home/alice' 'exec /bin/ls -l /home/bob' \
 		'exec /bin/cat /home/alice/kept.txt /home/alice/projects/notes.txt' \
+		'exec /bin/cat /home/alice/short-link /home/alice/long-link /home/alice/notes-again' \
 		'exec /bin/sh -c "wc /home/alice/projects/shell.bin > /tmp/a"' 'exec /bin/sh -c "wc /bin/sh > /tmp/b"' \
 		'exec /bin/sh /home/../etc/compare.sh' > $(BUILD)/home-boot2.log 2>&1 \
 		|| { echo "home: FAILED, the second boot does not see the files as they were left (see $(BUILD)/home-boot2.log)"; exit 1; }; \

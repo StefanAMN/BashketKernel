@@ -67,7 +67,11 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     if (access == O_ACCMODE) return -EINVAL;
     bool writable = (access != O_RDONLY);
 
-    vnode_t *node = vfs_find(base, path);
+    // (Symbolic links are followed; the lookup says why it failed: a loop of
+    // links is ELOOP, a file used as a directory ENOTDIR)
+    vnode_t *node = NULL;
+    int looked = vfs_lookup(base, path, true, &node);
+    if (looked < 0 && looked != -ENOENT) return looked;
     if (!node && (flags & O_CREAT)) {
         char leaf[VFS_NAME_MAX];
         vnode_t *parent = NULL;

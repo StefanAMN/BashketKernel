@@ -264,6 +264,52 @@ TEST(initrd_stops_at_the_end_of_the_archive) {
     EXPECT_TRUE(vfs_find(NULL, "/tmp/initrd-test") == NULL);
 }
 
+// Symbolic links in the tree kept in memory: followed in the middle of a
+// path and at its end, not at its end when asked; relative ones from the
+// link's directory; a loop is ELOOP, a link to nothing ENOENT
+TEST(symbolic_links_in_memory) {
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    vnode_t *dir = NULL, *file = NULL, *link = NULL;
+    EXPECT_EQ(vfs_create(tmp, "links", VFS_DIRECTORY, &dir), 0);
+    EXPECT_EQ(vfs_create(dir, "target.txt", VFS_FILE, &file), 0);
+    EXPECT_EQ(vfs_symlink(dir, "absolute", "/tmp/links/target.txt", &link), 0);
+    EXPECT_TRUE(link != NULL && link->type == VFS_SYMLINK);
+    EXPECT_EQ(vfs_symlink(dir, "relative", "target.txt", NULL), 0);
+    EXPECT_EQ(vfs_symlink(tmp, "to-dir", "links", NULL), 0);
+    EXPECT_EQ(vfs_symlink(dir, "dangling", "nowhere", NULL), 0);
+    EXPECT_EQ(vfs_symlink(dir, "loop-a", "loop-b", NULL), 0);
+    EXPECT_EQ(vfs_symlink(dir, "loop-b", "loop-a", NULL), 0);
+
+    vnode_t *found = NULL;
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/links/absolute") == file);
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/links/relative") == file);
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/to-dir/relative") == file);           // Through a link to a directory
+    EXPECT_TRUE(vfs_find(vfs_find(NULL, "/tmp/to-dir"), "target.txt") == file);
+    EXPECT_EQ(vfs_lookup(NULL, "/tmp/links/absolute", false, &found), 0); // Not followed at the end...
+    EXPECT_TRUE(found == link);
+    EXPECT_EQ(vfs_lookup(NULL, "/tmp/to-dir/absolute", false, &found), 0); // ...but in the middle
+    EXPECT_TRUE(found == link);
+    EXPECT_EQ(vfs_lookup(NULL, "/tmp/links/dangling", true, &found), -ENOENT);
+    EXPECT_EQ(vfs_lookup(NULL, "/tmp/links/loop-a", true, &found), -ELOOP);
+    EXPECT_EQ(vfs_lookup(NULL, "/tmp/links/target.txt/x", true, &found), -ENOTDIR);
+
+    char buf[64];
+    EXPECT_EQ(vfs_readlink(link, buf, sizeof(buf)), 21);
+    EXPECT_TRUE(memcmp(buf, "/tmp/links/target.txt", 21) == 0);
+    EXPECT_EQ(vfs_readlink(file, buf, sizeof(buf)), -EINVAL);
+    EXPECT_EQ(vfs_symlink(dir, "absolute", "x", NULL), -EEXIST);
+    EXPECT_EQ(vfs_symlink(dir, "empty", "", NULL), -ENOENT);
+    EXPECT_EQ(vfs_link(file, dir, "hard"), -EPERM);                       // Not in memory
+
+    // Removing a link removes the link, not what it points to
+    EXPECT_EQ(vfs_unlink(dir, "absolute"), 0);
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/links/target.txt") == file);
+    static const char *const names[] = { "relative", "dangling", "loop-a", "loop-b", "target.txt" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) EXPECT_EQ(vfs_unlink(dir, names[i]), 0);
+    EXPECT_EQ(vfs_unlink(tmp, "to-dir"), 0);
+    EXPECT_EQ(vfs_unlink(tmp, "links"), 0);
+}
+
 void test_suite_vfs(void) {
     kprintf("Suite: Virtual Filesystem and Open Files\n");
     RUN_TEST(vfs_basic_tree);
@@ -271,4 +317,5 @@ void test_suite_vfs(void) {
     RUN_TEST(vfs_paths);
     RUN_TEST(open_files_and_descriptors);
     RUN_TEST(initrd_stops_at_the_end_of_the_archive);
+    RUN_TEST(symbolic_links_in_memory);
 }

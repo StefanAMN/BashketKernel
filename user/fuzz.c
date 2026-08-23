@@ -41,6 +41,10 @@ static const char *const safe_paths[] = {
     "/proc", "/dev", "", "/tmp/", "//", "/tmp/fuzz-a/not-a-dir", "no-slash",
     ".", "..", "../..", "./fuzz-b", "/tmp/fuzz-dir/../fuzz-a", "/tmp/./.",
 };
+/* Pointers that cannot be a path, for calls whose path we must not leave to
+ * chance (a random valid pointer may point at the text "/") */
+static const unsigned long not_paths[] = { 0, 1, 0x0000800000000000UL, 0xFFFF800000000000UL,
+                                           0xFFFFFFFF80000000UL, 0xFFFFFFFFFFFFFFFFUL };
 static const char *const programs[] = { "/bin/hello", "/bin/echo", "/tmp/fuzz-a", "/tmp", "/dev/zero" };
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
@@ -114,7 +118,7 @@ static void one_call(void) {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
-        SYS_SIGNAL, SYS_SIGACTION, SYS_SIGPROCMASK, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_NETCONFIG, SYS_DUP, SYS_PIPE2, SYS_FCNTL, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_GETEUID, SYS_GETGID, SYS_SETGID, SYS_UMASK, SYS_SETUID, SYS_CHMOD, SYS_CHOWN, SYS_RENAME, SYS_POLL,
+        SYS_SIGNAL, SYS_SIGACTION, SYS_SIGPROCMASK, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_NETCONFIG, SYS_DUP, SYS_PIPE2, SYS_FCNTL, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_GETEUID, SYS_GETGID, SYS_SETGID, SYS_UMASK, SYS_SETUID, SYS_CHMOD, SYS_CHOWN, SYS_RENAME, SYS_POLL, SYS_LINK, SYS_SYMLINK, SYS_READLINK,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -152,6 +156,18 @@ static void one_call(void) {
             break;
         case SYS_CHDIR:
             a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
+            break;
+        case SYS_SYMLINK:
+        case SYS_LINK:
+            /* Both names only under /tmp, or not a path at all. Not just the
+             * new one: the other calls trust the names under /tmp, and a
+             * link from /tmp/fuzz-dir to /tmp (or /) would hand them the real
+             * thing to chmod and chown. (It did: /tmp ended up root's alone.) */
+            a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
+            b = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
+            break;
+        case SYS_READLINK:
+            if (shaped) { a = (unsigned long)safe_paths[rnd() % COUNT(safe_paths)]; b = random_pointer(); c = random_length(); }
             break;
         case SYS_MKDIR:
         case SYS_UNLINK:
@@ -207,8 +223,6 @@ static void one_call(void) {
              * under /tmp, or pointers that cannot be a path at all: a random
              * valid pointer may happen to point at the text "/" in our own
              * memory, and then the root directory changes hands. */
-            static const unsigned long not_paths[] = { 0, 1, 0x0000800000000000UL, 0xFFFF800000000000UL,
-                                                       0xFFFFFFFF80000000UL, 0xFFFFFFFFFFFFFFFFUL };
             a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
             break;
         }

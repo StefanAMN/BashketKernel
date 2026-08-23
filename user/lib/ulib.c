@@ -22,6 +22,7 @@ long uptime_ticks(void)                            { return syscall0(SYS_TIME); 
 unsigned long clock_ns(void)                       { return (unsigned long)syscall0(SYS_CLOCK_NS); }
 unsigned long time_ns(void)                        { return (unsigned long)syscall0(SYS_REALTIME); }
 long set_time(unsigned long seconds)               { return syscall1(SYS_SETTIME, seconds * 1000000000UL); }
+long set_time_ns(unsigned long ns)                 { return syscall1(SYS_SETTIME, ns); }
 long sleep_ns(unsigned long nanoseconds)           { return syscall1(SYS_NANOSLEEP, nanoseconds); }
 long set_priority(int priority)                    { return syscall1(SYS_SETPRIORITY, priority); }
 void ignore_interrupt(int ignore)                  { signal(SIGINT, ignore ? SIG_IGN : SIG_DFL); }
@@ -260,6 +261,9 @@ long mkdir(const char *path)                       { return syscall1(SYS_MKDIR, 
 long chdir(const char *path)                       { return syscall1(SYS_CHDIR, path); }
 long getcwd(char *buf, size_t size)                { return syscall2(SYS_GETCWD, buf, size); }
 long unlink(const char *path)                      { return syscall1(SYS_UNLINK, path); }
+long symlink(const char *target, const char *path) { return syscall2(SYS_SYMLINK, target, path); }
+long link(const char *existing, const char *path)  { return syscall2(SYS_LINK, existing, path); }
+long readlink(const char *path, char *buf, size_t size) { return syscall3(SYS_READLINK, path, buf, size); }
 
 /* --- Dates ------------------------------------------------------------------ */
 
@@ -575,6 +579,8 @@ const char *strerror(long err) {
         case EHOSTUNREACH: return "host unreachable";
         case ENOTEMPTY: return "directory not empty";
         case ENAMETOOLONG: return "name too long";
+        case ELOOP:     return "too many symbolic links";
+        case EMLINK:    return "too many links";
         case EFBIG:     return "file too large";
         default:        return "unknown error";
     }
