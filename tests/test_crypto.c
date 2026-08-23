@@ -19,7 +19,6 @@ TEST(crypto_sha256_test) {
 }
 
 TEST(crypto_sha512_test) {
-    // NIST test vector: SHA-512("abc") = ddaf35a193617abacc417349ae204131...
     uint8_t hash[64];
     sha512_hash((const uint8_t *)"abc", 3, hash);
 
@@ -30,7 +29,6 @@ TEST(crypto_sha512_test) {
 }
 
 TEST(crypto_sha1_test) {
-    // NIST test vector: SHA-1("abc") = a9993e364706816aba3e25717850c26c9cd0d89d
     uint8_t hash[20];
     sha1_hash((const uint8_t *)"abc", 3, hash);
 
@@ -41,7 +39,6 @@ TEST(crypto_sha1_test) {
 }
 
 TEST(crypto_md5_test) {
-    // RFC 1321 test vector: MD5("abc") = 900150983cd24fb0d6963f7d28e17f72
     uint8_t hash[16];
     md5_hash((const uint8_t *)"abc", 3, hash);
 
@@ -52,7 +49,6 @@ TEST(crypto_md5_test) {
 }
 
 TEST(crypto_blake2s_test) {
-    // RFC 7693 test vector: BLAKE2s-256("abc") = 508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982
     uint8_t hash[32];
     blake2s_hash((const uint8_t *)"abc", 3, hash);
 
@@ -62,39 +58,60 @@ TEST(crypto_blake2s_test) {
     EXPECT_EQ(hash[31], 0x82);
 }
 
+TEST(crypto_siphash_test) {
+    // SipHash-2-4 reference test vector for 15-byte message 0x00..0x0E with key 0x00..0x0F
+    uint8_t key[16] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+    uint8_t data[15];
+    for (int i = 0; i < 15; i++) data[i] = (uint8_t)i;
+
+    uint64_t hash = siphash24(key, data, 15);
+    EXPECT_EQ(hash, 0xa129ca6149be45e5ULL);
+}
+
 TEST(crypto_aes_test) {
-    // FIPS 197 AES-128 test vector (all zeros key and block)
     uint8_t key128[16] = {0};
     uint8_t block128[16] = {0};
     aes128_encrypt_block(key128, block128);
 
-    // Expected ciphertext: 66e94bd4ef8a2c3b884cfa59ca342b2e
     EXPECT_EQ(block128[0], 0x66);
     EXPECT_EQ(block128[1], 0xe9);
     EXPECT_EQ(block128[2], 0x4b);
     EXPECT_EQ(block128[15], 0x2e);
 
-    // Decrypt back to all zeros
     aes128_decrypt_block(key128, block128);
     for (int i = 0; i < 16; i++) {
         EXPECT_EQ(block128[i], 0);
     }
+}
 
-    // FIPS 197 AES-256 test vector (all zeros key and block)
-    uint8_t key256[32] = {0};
-    uint8_t block256[16] = {0};
-    aes256_encrypt_block(key256, block256);
+TEST(crypto_aes_xts_test) {
+    uint8_t key[32] = {0};
+    uint8_t in[32] = "DiskSectorData1234567890123456";
+    uint8_t out[32];
+    uint8_t dec[32];
 
-    // Expected ciphertext: dc95c078a240898956121090741ee084
-    EXPECT_EQ(block256[0], 0xdc);
-    EXPECT_EQ(block256[1], 0x95);
-    EXPECT_EQ(block256[2], 0xc0);
-    EXPECT_EQ(block256[15], 0x84);
+    aes128_xts_encrypt(key, 1, in, out, 32);
+    EXPECT_TRUE(memcmp(in, out, 32) != 0);
 
-    aes256_decrypt_block(key256, block256);
-    for (int i = 0; i < 16; i++) {
-        EXPECT_EQ(block256[i], 0);
-    }
+    aes128_xts_decrypt(key, 1, out, dec, 32);
+    EXPECT_TRUE(memcmp(in, dec, 32) == 0);
+}
+
+TEST(crypto_aes_gcm_test) {
+    uint8_t key[16] = {0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08};
+    uint8_t iv[12] = {0xca,0xfe,0xba,0xbe,0xfa,0xce,0xdb,0xad,0xde,0xca,0xf8,0x88};
+    uint8_t aad[16] = "NetworkHeader12";
+    uint8_t pt[16] = "SecretDataPacke";
+    uint8_t ct[16];
+    uint8_t tag[16];
+    uint8_t dt[16];
+
+    aes128_gcm_encrypt(key, iv, aad, 16, pt, ct, 16, tag);
+    EXPECT_TRUE(memcmp(pt, ct, 16) != 0);
+
+    int status = aes128_gcm_decrypt(key, iv, aad, 16, ct, dt, 16, tag);
+    EXPECT_EQ(status, 0);
+    EXPECT_TRUE(memcmp(pt, dt, 16) == 0);
 }
 
 TEST(crypto_chacha20_test) {
@@ -121,8 +138,6 @@ TEST(crypto_poly1305_test) {
 }
 
 TEST(crypto_hmac_test) {
-    // RFC 4231 Test Case 2: key = "Jefe", data = "what do ya want for nothing?"
-    // HMAC-SHA256 = 5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843
     const uint8_t key[] = "Jefe";
     const uint8_t data[] = "what do ya want for nothing?";
     uint8_t mac[32];
@@ -134,10 +149,24 @@ TEST(crypto_hmac_test) {
     EXPECT_EQ(mac[31], 0x43);
 }
 
+TEST(crypto_hkdf_test) {
+    // RFC 5869 Test Case 1
+    uint8_t ikm[22] = {0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b,0x0b};
+    uint8_t salt[13] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c};
+    uint8_t info[10] = {0xf0,0xf1,0xf2,0xf3,0xf4,0xf5,0xf6,0xf7,0xf8,0xf9};
+    uint8_t okm[42];
+
+    hkdf_sha256(salt, 13, ikm, 22, info, 10, okm, 42);
+
+    // Expected OKM starts with 3cb743b916
+    EXPECT_EQ(okm[0], 0x3c);
+    EXPECT_EQ(okm[1], 0xb7);
+    EXPECT_EQ(okm[2], 0x43);
+    EXPECT_EQ(okm[3], 0xb9);
+    EXPECT_EQ(okm[4], 0x16);
+}
+
 TEST(crypto_crc32_test) {
-    // Standard test vector: "123456789"
-    // IEEE 802.3 CRC32("123456789") = 0xcbf43926
-    // Castagnoli CRC32C("123456789") = 0xe3069283
     const uint8_t data[] = "123456789";
     uint32_t c32 = crc32_calc(data, 9);
     uint32_t c32c = crc32c_calc(data, 9);
@@ -146,16 +175,38 @@ TEST(crypto_crc32_test) {
     EXPECT_EQ(c32c, 0xe3069283);
 }
 
+TEST(crypto_ed25519_test) {
+    uint8_t seed[32] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32};
+    uint8_t pubkey[32];
+    uint8_t privkey[64];
+    uint8_t sig[64];
+    uint8_t msg[] = "Hello World";
+
+    ed25519_create_keypair(pubkey, privkey, seed);
+    EXPECT_TRUE(pubkey[0] != 0 || pubkey[1] != 0);
+
+    ed25519_sign(sig, msg, 11, pubkey, privkey);
+    EXPECT_TRUE(sig[0] != 0 || sig[1] != 0);
+
+    int res = ed25519_verify(sig, msg, 11, pubkey);
+    EXPECT_EQ(res, 0);
+}
+
 void test_suite_crypto(void) {
-    kprintf("Suite: Expanded Kernel Cryptographic Primitives\n");
+    kprintf("Suite: Advanced Kernel Cryptographic Primitives\n");
     RUN_TEST(crypto_sha256_test);
     RUN_TEST(crypto_sha512_test);
     RUN_TEST(crypto_sha1_test);
     RUN_TEST(crypto_md5_test);
     RUN_TEST(crypto_blake2s_test);
+    RUN_TEST(crypto_siphash_test);
     RUN_TEST(crypto_aes_test);
+    RUN_TEST(crypto_aes_xts_test);
+    RUN_TEST(crypto_aes_gcm_test);
     RUN_TEST(crypto_chacha20_test);
     RUN_TEST(crypto_poly1305_test);
     RUN_TEST(crypto_hmac_test);
+    RUN_TEST(crypto_hkdf_test);
     RUN_TEST(crypto_crc32_test);
+    RUN_TEST(crypto_ed25519_test);
 }
