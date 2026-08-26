@@ -626,6 +626,15 @@ test-jobs: iso
 		'exec /bin/sh' 'sleep 30 &' 'jobs' '!spin' '^Z' 'jobs' 'ps' 'bg 2' 'jobs' '!fg 2' '^C' '!fg' '^C' \
 		'echo jobs-left:' 'jobs' 'orphan 200' 'sleep 1' 'ps' 'exit' 'echo after-exit' 'ps' > $(BUILD)/jobs.log 2>&1 \
 		&& echo "jobs and orphans: ok" || { echo "jobs and orphans: FAILED (see $(BUILD)/jobs.log)"; exit 1; }
+	@# Command lists: ';', '&&', '||', separators in quotes, $? between parts
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect '\nand-ran\n' --expect '\nor-ran\n' --expect '\none\ntwo\n' --expect '\nfallback\n' \
+		--expect '\na;b && c\n' --expect '\nstatus 1\n' --expect 'sh: syntax error' --expect 'exited with status 3' \
+		--forbid '\nshould-not\n' \
+		'exec /bin/sh' 'true && echo and-ran' 'false && echo should-not' 'false || echo or-ran' 'echo one ; echo two' \
+		'false && echo should-not || echo fallback' 'echo "a;b && c"' 'false ; echo status $$?' '&& echo should-not' \
+		'false || exit 3' > $(BUILD)/lists.log 2>&1 \
+		&& echo "command lists (; && ||): ok" || { echo "command lists: FAILED (see $(BUILD)/lists.log)"; exit 1; }
 
 check:
 	@python3 tools/undocumented.py --check > /dev/null \
