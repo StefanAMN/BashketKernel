@@ -681,7 +681,10 @@ sent from the QEMU monitor (`nmi`) is reported and the system carries on.
 Proposed on 2026-10-20, after track F. User-space work, with the kernel
 changes only where the shell cannot do without them.
 
-### G1. Command lists: `;`, `&&`, `||` (S)
+### G1. Command lists: `;`, `&&`, `||` (S) — done
+
+Done as proposed, with `/bin/true` and `/bin/false`; `make test-jobs` runs
+each form. `&` still only ends a whole line. The proposal:
 
 A line may hold several pipelines: `a ; b` runs both, `a && b` runs b only
 if a succeeded, `a || b` only if it failed. Scripts in `/etc` need it, and
