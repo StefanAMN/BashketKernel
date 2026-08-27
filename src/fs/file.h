@@ -116,6 +116,12 @@ file_t *file_open_socket(void);
 file_t *file_open_tcp(struct tcp_socket *tcp);
 
 /**
+ * @brief Whether the file is the terminal (the console, opened at boot or
+ *        as /dev/console): what isatty() asks.
+ */
+bool file_is_terminal(const file_t *file);
+
+/**
  * @brief Take another reference to an open file (fork, dup2).
  */
 file_t *file_dup(file_t *file);

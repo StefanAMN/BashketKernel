@@ -49,7 +49,7 @@ USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker
 # sha256.o and date.o are the kernel tree's own lib/crypto/sha256.c and
 # lib/time/date.c, compiled again for user programs (login hashes passwords
 # with the one; date and ls turn seconds into dates with the other)
-USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o
+USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/lineedit.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
@@ -74,7 +74,7 @@ $(BUILD)/user/lib/date.o: lib/time/date.c Makefile
 
 $(BUILD)/initrd/bin/%: $(BUILD)/user/%.o $(USER_LIB_OBJS) user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o -o $@
+	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/lineedit.o -o $@
 
 # USTAR archive of bin/ plus the static files under user/rootfs
 $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
@@ -635,6 +635,12 @@ test-jobs: iso
 		'false && echo should-not || echo fallback' 'echo "a;b && c"' 'false ; echo status $$?' '&& echo should-not' \
 		'false || exit 3' > $(BUILD)/lists.log 2>&1 \
 		&& echo "command lists (; && ||): ok" || { echo "command lists: FAILED (see $(BUILD)/lists.log)"; exit 1; }
+	@# Line editing at the prompt: a command recalled with Up and changed; a
+	@# shell reading a pipe edits nothing (no escape sequences in its output)
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect '\nfirst\n' --expect '\nfirsx\n' --expect '\nfrom-a-pipe\n\$$ ' --forbid 'pipe.*\x1b\[K' \
+		'exec /bin/sh' 'echo first' '~\e[A^Hx\r' '@wait:1' 'echo echo from-a-pipe | sh' 'exit' > $(BUILD)/editing.log 2>&1 \
+		&& echo "line editing and history at the prompt: ok" || { echo "line editing: FAILED (see $(BUILD)/editing.log)"; exit 1; }
 
 check:
 	@python3 tools/undocumented.py --check > /dev/null \

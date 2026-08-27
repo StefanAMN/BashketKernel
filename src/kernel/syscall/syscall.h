@@ -91,6 +91,7 @@
 #define SYS_SYMLINK     88   // (target, path): make path a symbolic link to target
 #define SYS_READLINK    89   // (path, buf, size): the target of a symbolic link, not NUL-terminated
 #define SYS_POLL        7    // (struct pollfd *fds, count, timeout_ms): wait until one is ready (poll.h); -1 ms: no limit
+#define SYS_ISATTY      313  // (fd): 1 if it is the terminal, 0 if not, -EBADF
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105
 #define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen

@@ -1160,6 +1160,10 @@ static int64_t dispatch(struct registers *regs) {
             if (regs->rdi > 1) return -EINVAL;
             system_shutdown(regs->rdi == 1);
 
+        case SYS_ISATTY: {
+            file_t *file = fd_to_file((int)regs->rdi);
+            return file ? (file_is_terminal(file) ? 1 : 0) : -EBADF;
+        }
         case SYS_FB_INFO: {
             // Width, height, bytes per row, bits per pixel of /dev/fb0
             uint32_t info[4] = { 0, 0, 0, 32 };

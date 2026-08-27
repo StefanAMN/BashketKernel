@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /**
  * @brief Make /dev (a mount point) with null, zero, random and console for
@@ -16,5 +17,11 @@
  *        the drivers.
  */
 void dev_init(void);
+
+struct vnode;
+/**
+ * @brief Whether `node` is /dev/console (the terminal under another name).
+ */
+bool dev_is_console(const struct vnode *node);
 
 #endif // DEV_H
