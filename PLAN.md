@@ -725,6 +725,42 @@ out; the network tests unchanged.
 
 ---
 
+## Track H — Names at the prompt, and a socket that holds a burst
+
+Proposed on 2026-10-20, after track G.
+
+### H1. Wildcards in the shell (S)
+
+`ls *.c`, `rm /tmp/f?`: an unquoted word with `*` or `?` (and `[...]`) is
+replaced by the names it matches in its directory, sorted; a word that
+matches nothing stays as it is, as in POSIX sh. Patterns in the last part
+of a path only (`/tmp/*.txt`, not `/*/x`). User-space: `readdir` is all it
+needs. The matcher is a function of two strings, tested on its own.
+**Check:** syscheck tests of the matcher; a scripted shell session with
+files made for it, quoted patterns left alone.
+
+### H2. Tab completion at the prompt (S)
+
+Tab completes the word before the cursor: the first word from the
+programs in `$PATH` and the built-ins, the others from the names in the
+directory the word names. One match: completed (with `/` after a
+directory); several: completed as far as they agree, and a second Tab
+lists them. Built on the line editor (G2), with the name lookup passed
+in, so the editor stays a function of its input.
+**Check:** editor tests with a fixed list of names; a scripted session.
+
+### H3. Socket queues sized in bytes (S)
+
+A UDP socket holds eight datagrams (repair 6), whatever their size: a
+burst of nine small ones loses one while 8 KiB would hold them all. The
+queue becomes a byte budget (64 KiB per socket), each datagram allocated
+at its own size, and what does not fit is dropped and counted as now.
+**Check:** a unit test that sends a burst of a hundred small datagrams
+over loopback and receives them all, and one that overflows the budget
+and sees exactly the excess dropped; no leak afterwards.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -743,8 +779,8 @@ plan:
    runs with interrupts off. One-shot mode reads the count off the clock.
 4. (Done in F5: PID 0 moves to a guarded kernel stack at boot.)
 5. (Done in F4: `kmalloc` and `kfree` no longer walk the heap.)
-6. A socket's queue holds eight datagrams. (The ARP cache now asks again
-   about answers older than a minute: G3.)
+6. A socket's queue holds eight datagrams (H3). (The ARP cache now asks
+   again about answers older than a minute: G3.)
 7. The forged-frame case of `sigreturn` has no targeted test (the frame is
    sanitised, and the fuzzer makes random `sigreturn` calls).
 8. The `sysretq` non-canonical-address check cannot be demonstrated under
@@ -776,6 +812,8 @@ E (one area at a time)           done: every function documented
 F1, F2, F3, F4, F5               done
         |
 G1, G2, G3                       done
+        |
+H1, H2, H3                       next
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
