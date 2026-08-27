@@ -710,7 +710,11 @@ tested without a terminal.
 **Check:** unit tests of the editor (keys in, line and cursor out) from
 ring 3; a scripted session that recalls and edits a previous command.
 
-### G3. Neighbours that move (S)
+### G3. Neighbours that move (S) — done
+
+Done as proposed, with a request counter in the network statistics. The
+receive thread's path (use the old answer, ask anyway) has no test of its
+own: it would need a neighbour that changes its address. The proposal:
 
 The ARP cache never forgets (repair 6): a machine that changes its
 hardware address, or a gateway replaced, stays unreachable. Entries older
@@ -739,8 +743,8 @@ plan:
    runs with interrupts off. One-shot mode reads the count off the clock.
 4. (Done in F5: PID 0 moves to a guarded kernel stack at boot.)
 5. (Done in F4: `kmalloc` and `kfree` no longer walk the heap.)
-6. The ARP cache never expires entries; a socket's queue holds eight
-   datagrams.
+6. A socket's queue holds eight datagrams. (The ARP cache now asks again
+   about answers older than a minute: G3.)
 7. The forged-frame case of `sigreturn` has no targeted test (the frame is
    sanitised, and the fuzzer makes random `sigreturn` calls).
 8. The `sysretq` non-canonical-address check cannot be demonstrated under
@@ -771,7 +775,7 @@ E (one area at a time)           done: every function documented
         |
 F1, F2, F3, F4, F5               done
         |
-G1, G2, G3                       next
+G1, G2, G3                       done
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
