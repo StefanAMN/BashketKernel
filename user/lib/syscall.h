@@ -56,6 +56,7 @@
 #define SYS_PING     305
 #define SYS_CLOCK_NS 228
 #define SYS_REALTIME 311
+#define SYS_ISATTY   313
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
 #define SYS_SHMGET   29

@@ -12,6 +12,7 @@
 #include "net.h"
 #include "tcp.h"
 #include "auth.h"
+#include "dev.h"
 
 // Open files are small, all the same size, and created and destroyed
 // constantly (every open, pipe and exit), which is what a slab cache is for.
@@ -171,6 +172,11 @@ file_t *file_open_tcp(struct tcp_socket *tcp) {
 
 // An open file can be shared by processes on different CPUs (fork copies
 // the descriptor table), so the count of holders is changed atomically
+bool file_is_terminal(const file_t *file) {
+    if (!file) return false;
+    return file->kind == FILE_CONSOLE || (file->kind == FILE_VNODE && dev_is_console(file->node));
+}
+
 file_t *file_dup(file_t *file) {
     if (file) __atomic_add_fetch(&file->refs, 1, __ATOMIC_SEQ_CST);
     return file;
