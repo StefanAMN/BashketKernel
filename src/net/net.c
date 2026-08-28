@@ -126,18 +126,22 @@ typedef struct {
 } ping_wait_t;
 static ping_wait_t pings[4];
 
-typedef struct {
-    uint32_t ip;
+// A received datagram, allocated at its own size and queued on its socket
+typedef struct udp_datagram {
+    struct udp_datagram *next;
+    uint32_t ip;                   // Where it came from
     uint16_t port;
     uint16_t len;
-    uint8_t data[UDP_PAYLOAD_MAX];
+    uint8_t data[];
 } udp_datagram_t;
+_Static_assert(sizeof(udp_datagram_t) == UDP_DATAGRAM_OVERHEAD, "the overhead charged is the header's size");
 
 struct udp_socket {
     bool open;
     uint16_t port;                 // 0: not bound
-    udp_datagram_t *queue;         // UDP_QUEUE_LEN entries
-    size_t head, count;
+    udp_datagram_t *head, *tail;   // Received, oldest first
+    size_t count;                  // How many
+    size_t bytes;                  // What they cost (UDP_DATAGRAM_OVERHEAD + payload each)
 };
 static struct udp_socket sockets[UDP_MAX_SOCKETS];
 static uint16_t next_ephemeral = EPHEMERAL_PORT_FIRST;
@@ -492,6 +496,16 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
     uint16_t port = ntohs(udp->dst_port);
     if (payload_len > UDP_PAYLOAD_MAX) { stats.dropped++; return; }
 
+    // Allocated before the lock (and freed after it if nobody takes it)
+    size_t cost = UDP_DATAGRAM_OVERHEAD + payload_len;
+    udp_datagram_t *datagram = kmalloc(cost);
+    if (!datagram) { stats.dropped++; return; }
+    datagram->next = NULL;
+    datagram->ip = src;
+    datagram->port = ntohs(udp->src_port);
+    datagram->len = (uint16_t)payload_len;
+    memcpy(datagram->data, data + sizeof(*udp), payload_len);
+
     uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     struct udp_socket *sock = NULL;
     for (int i = 0; i < UDP_MAX_SOCKETS; i++) {
@@ -500,18 +514,19 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
 
     if (!sock) {
         stats.udp_no_socket++;
-    } else if (sock->count == UDP_QUEUE_LEN) {
+    } else if (sock->bytes + cost > UDP_QUEUE_BYTES) {
         stats.udp_queue_full++;
     } else {
-        udp_datagram_t *slot = &sock->queue[(sock->head + sock->count) % UDP_QUEUE_LEN];
-        slot->ip = src;
-        slot->port = ntohs(udp->src_port);
-        slot->len = (uint16_t)payload_len;
-        memcpy(slot->data, data + sizeof(*udp), payload_len);
+        if (sock->tail) sock->tail->next = datagram;
+        else sock->head = datagram;
+        sock->tail = datagram;
         sock->count++;
+        sock->bytes += cost;
+        datagram = NULL;                                   // The socket has it now
         stats.udp_delivered++;
     }
     spinlock_release_irqrestore(&net_lock, flags);
+    kfree(datagram);                                       // (NULL if it was queued)
 
     if (sock) {
         sched_wakeup(sock);
@@ -641,9 +656,6 @@ static bool port_in_use(uint16_t port) {
 }
 
 udp_socket_t *udp_open(void) {
-    udp_datagram_t *queue = kmalloc(sizeof(udp_datagram_t) * UDP_QUEUE_LEN);
-    if (!queue) return NULL;
-
     uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     struct udp_socket *sock = NULL;
     for (int i = 0; i < UDP_MAX_SOCKETS; i++) {
@@ -652,13 +664,10 @@ udp_socket_t *udp_open(void) {
     if (sock) {
         sock->open = true;
         sock->port = 0;
-        sock->queue = queue;
-        sock->head = 0;
-        sock->count = 0;
+        sock->head = sock->tail = NULL;
+        sock->count = sock->bytes = 0;
     }
     spinlock_release_irqrestore(&net_lock, flags);
-
-    if (!sock) kfree(queue);
     return sock;
 }
 
@@ -676,15 +685,19 @@ void udp_close(udp_socket_t *sock) {
     if (!sock || !sock->open) return;
 
     uint64_t flags = spinlock_acquire_irqsave(&net_lock);
-    udp_datagram_t *queue = sock->queue;
+    udp_datagram_t *queue = sock->head;
     sock->open = false;
     sock->port = 0;
-    sock->queue = NULL;
-    sock->count = 0;
+    sock->head = sock->tail = NULL;
+    sock->count = sock->bytes = 0;
     spinlock_release_irqrestore(&net_lock, flags);
 
     sched_wakeup(sock); // Anyone still waiting on it finds it closed
-    kfree(queue);
+    while (queue) {     // What was never read
+        udp_datagram_t *next = queue->next;
+        kfree(queue);
+        queue = next;
+    }
 }
 
 int udp_poll(udp_socket_t *sock) {
@@ -744,14 +757,17 @@ int64_t udp_recvfrom(udp_socket_t *sock, void *buf, size_t len, uint32_t *src_ip
 
     // `buf` is kernel memory (the system call copies to the program), so
     // the datagram goes straight there, under the lock
-    const udp_datagram_t *front = &sock->queue[sock->head];
+    udp_datagram_t *front = sock->head;
     size_t n = front->len < len ? front->len : len;
     memcpy(buf, front->data, n);
     if (src_ip) *src_ip = front->ip;
     if (src_port) *src_port = front->port;
-    sock->head = (sock->head + 1) % UDP_QUEUE_LEN;
+    sock->head = front->next;
+    if (!sock->head) sock->tail = NULL;
     sock->count--;
+    sock->bytes -= UDP_DATAGRAM_OVERHEAD + front->len;
     spinlock_release_irqrestore(&net_lock, flags);
+    kfree(front);
     return (int64_t)n;
 }
 
