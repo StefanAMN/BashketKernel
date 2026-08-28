@@ -161,11 +161,27 @@ TEST(udp_sockets_over_loopback) {
     uint64_t no_socket = net_stats()->udp_no_socket, full = net_stats()->udp_queue_full;
     EXPECT_EQ(udp_sendto(client, NET_LOCAL_IP, 7999, "x", 1), 1);
     EXPECT_TRUE(net_stats()->udp_no_socket == no_socket + 1);
-    for (int i = 0; i < UDP_QUEUE_LEN + 3; i++) udp_sendto(client, NET_LOCAL_IP, 7000, "q", 1);
-    EXPECT_TRUE(net_stats()->udp_queue_full == full + 3);
+    // A burst of small datagrams all fit (the queue once held eight)
+    for (int i = 0; i < 100; i++) udp_sendto(client, NET_LOCAL_IP, 7000, "q", 1);
+    EXPECT_TRUE(net_stats()->udp_queue_full == full);
     int drained = 0;
     while (udp_recvfrom(server, buf, sizeof(buf), NULL, NULL, 2) == 1) drained++;
-    EXPECT_EQ(drained, UDP_QUEUE_LEN);
+    EXPECT_EQ(drained, 100);
+    // Large ones fill the budget, and exactly the excess is dropped
+    static char kilo[1000];
+    int fit = UDP_QUEUE_BYTES / (UDP_DATAGRAM_OVERHEAD + sizeof(kilo));
+    for (int i = 0; i < fit + 5; i++) udp_sendto(client, NET_LOCAL_IP, 7000, kilo, sizeof(kilo));
+    EXPECT_TRUE(net_stats()->udp_queue_full == full + 5);
+    drained = 0;
+    while (udp_recvfrom(server, big_back, sizeof(big_back), NULL, NULL, 2) == (int64_t)sizeof(kilo)) drained++;
+    EXPECT_EQ(drained, fit);
+    // Empty datagrams are not free either
+    full = net_stats()->udp_queue_full;
+    for (int i = 0; i < UDP_QUEUE_BYTES / UDP_DATAGRAM_OVERHEAD + 1; i++) udp_sendto(client, NET_LOCAL_IP, 7000, "", 0);
+    EXPECT_TRUE(net_stats()->udp_queue_full == full + 1);
+    while (udp_recvfrom(server, buf, sizeof(buf), NULL, NULL, 2) == 0) { }
+    // Unread datagrams are freed when the socket closes (the heap check below)
+    for (int i = 0; i < 5; i++) udp_sendto(client, NET_LOCAL_IP, 7000, kilo, sizeof(kilo));
 
     // An unbound socket cannot receive; a closed one frees its port and memory
     udp_socket_t *unbound = udp_open();

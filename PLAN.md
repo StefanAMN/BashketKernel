@@ -756,7 +756,10 @@ lists them. Built on the line editor (G2), with the name lookup passed
 in, so the editor stays a function of its input.
 **Check:** editor tests with a fixed list of names; a scripted session.
 
-### H3. Socket queues sized in bytes (S)
+### H3. Socket queues sized in bytes (S) — done
+
+Done as proposed; each datagram is charged 16 bytes on top of its payload,
+so empty ones cannot fill memory for free. The proposal:
 
 A UDP socket holds eight datagrams (repair 6), whatever their size: a
 burst of nine small ones loses one while 8 KiB would hold them all. The
@@ -786,8 +789,8 @@ plan:
    runs with interrupts off. One-shot mode reads the count off the clock.
 4. (Done in F5: PID 0 moves to a guarded kernel stack at boot.)
 5. (Done in F4: `kmalloc` and `kfree` no longer walk the heap.)
-6. A socket's queue holds eight datagrams (H3). (The ARP cache now asks
-   again about answers older than a minute: G3.)
+6. (Done in G3 and H3: ARP answers age, and a UDP socket holds 64 KiB
+   rather than eight datagrams.)
 7. The forged-frame case of `sigreturn` has no targeted test (the frame is
    sanitised, and the fuzzer makes random `sigreturn` calls).
 8. The `sysretq` non-canonical-address check cannot be demonstrated under
@@ -820,7 +823,7 @@ F1, F2, F3, F4, F5               done
         |
 G1, G2, G3                       done
         |
-H1, H2, H3                       next
+H1, H2, H3                       done
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
