@@ -49,7 +49,7 @@ USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker
 # sha256.o and date.o are the kernel tree's own lib/crypto/sha256.c and
 # lib/time/date.c, compiled again for user programs (login hashes passwords
 # with the one; date and ls turn seconds into dates with the other)
-USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/lineedit.o
+USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
@@ -74,7 +74,7 @@ $(BUILD)/user/lib/date.o: lib/time/date.c Makefile
 
 $(BUILD)/initrd/bin/%: $(BUILD)/user/%.o $(USER_LIB_OBJS) user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/lineedit.o -o $@
+	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o -o $@
 
 # USTAR archive of bin/ plus the static files under user/rootfs
 $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
@@ -641,6 +641,15 @@ test-jobs: iso
 		--expect '\nfirst\n' --expect '\nfirsx\n' --expect '\nfrom-a-pipe\n\$$ ' --forbid 'pipe.*\x1b\[K' \
 		'exec /bin/sh' 'echo first' '~\e[A^Hx\r' '@wait:1' 'echo echo from-a-pipe | sh' 'exit' > $(BUILD)/editing.log 2>&1 \
 		&& echo "line editing and history at the prompt: ok" || { echo "line editing: FAILED (see $(BUILD)/editing.log)"; exit 1; }
+	@# Wildcards: sorted matches with words around them, two patterns on a
+	@# line, no match kept as typed, quotes and hidden names respected
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect '\n<a /tmp/w/b1 /tmp/w/b2 /tmp/w/c3 z>\n' --expect '\n< a3 b1 b2 /tmp/w/a3 >\n' \
+		--expect '\n< none\* >\n' --expect '\n</tmp/w/\*>\n' --expect '\nremoved: 0\n' \
+		'exec /bin/sh' 'mkdir /tmp/w' 'cd /tmp/w' 'echo > b2 ; echo > a3 ; echo > c3 ; echo > b1 ; echo > .hid' \
+		'echo "<a" /tmp/w/[bc]* "z>"' 'echo "<"[ab]* /tmp/w/a? ">"' 'echo "<"none* ">"' 'echo "</tmp/w/*>"' \
+		'rm * ; rm .hid ; cd / ; rm /tmp/w' 'echo removed: $$?' 'exit' > $(BUILD)/wildcards.log 2>&1 \
+		&& echo "wildcards: ok" || { echo "wildcards: FAILED (see $(BUILD)/wildcards.log)"; exit 1; }
 
 check:
 	@python3 tools/undocumented.py --check > /dev/null \

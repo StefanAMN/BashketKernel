@@ -10,6 +10,8 @@
  * failed). A pipeline is one or more programs joined by '|'. Each may redirect
  * its input with "< file" and its output with "> file" or ">> file".
  * A program name without a '/' is looked up in the directories of $PATH.
+ * An unquoted word with *, ? or [...] is replaced by the names it matches,
+ * sorted (user/lib/glob.h); one that matches nothing stays as typed.
  * $NAME expands to an environment variable and $? to the last exit status;
  * "export NAME=value" sets one for the shell and everything it starts.
  *
@@ -30,8 +32,9 @@
  */
 #include "ulib.h"
 #include "lineedit.h"
+#include "glob.h"
 
-#define MAX_ARGS   16
+#define MAX_ARGS   64
 #define MAX_STAGES 8
 
 typedef struct {
@@ -45,7 +48,7 @@ typedef struct {
 /* Words are copied here while parsing, each followed by a NUL. Copying
  * (instead of cutting the input line up in place) keeps "a|b" simple: there
  * is no room in the line itself for a terminator between 'a' and '|'. */
-static char word_storage[512];
+static char word_storage[4096];
 static int last_status = 0;   /* Exit status of the previous command, for $? */
 static int script_fd = -1;    /* The script being run, or -1 when reading the terminal */
 
@@ -190,8 +193,9 @@ static int is_name_char(char c) {
 /* The next word of the line at *cursor (quotes and $variables applied),
  * stored in word_storage from *used on; moves *cursor past it. NULL if no
  * word starts here (the end of the line, an operator), a quote is not
- * closed, or the line's words do not fit in word_storage. */
-static char *next_word(const char **cursor, size_t *used) {
+ * closed, or the line's words do not fit in word_storage. *was_quoted (if
+ * not NULL) says whether it was in quotes, where wildcards are text. */
+static char *next_word(const char **cursor, size_t *used, int *was_quoted) {
     const char *p = *cursor;
     while (is_blank(*p)) p++;
 
@@ -199,6 +203,7 @@ static char *next_word(const char **cursor, size_t *used) {
     size_t len = 0;
     int quoted = (*p == '"');
     if (quoted) p++;
+    if (was_quoted) *was_quoted = quoted;
     const char *start = p;
 
     while (*p != '\0' && (quoted ? *p != '"' : (!is_blank(*p) && !is_operator(*p)))) {
@@ -245,6 +250,64 @@ static char *next_word(const char **cursor, size_t *used) {
     return word;
 }
 
+/* Replace the wildcard word `pattern` (the last word in word_storage,
+ * ending at *used) by the names it matches, sorted, appended to the
+ * stage's arguments. Only the last part of a path may have wildcards:
+ * "/tmp/notes?" looks in /tmp. No match, or wildcards in the directory part:
+ * the word stays as it is (as in POSIX sh). Returns 0, or -1 if the names
+ * do not fit (MAX_ARGS, word_storage). */
+static int expand_wildcard(char *pattern, stage_t *stage, size_t *used) {
+    char *slash = NULL;
+    for (char *c = pattern; *c; c++) if (*c == '/') slash = c;
+    const char *base = slash ? slash + 1 : pattern;
+    size_t dir_len = slash ? (size_t)(slash - pattern) + 1 : 0;  /* Kept with its '/' */
+    char dir[256];
+    if (dir_len >= sizeof(dir)) return -1;
+    memcpy(dir, pattern, dir_len);
+    dir[dir_len] = '\0';
+    if (glob_has_wildcard(dir)) {
+        stage->argv[stage->argc++] = pattern;
+        return 0;
+    }
+
+    /* The pattern stays where it is while the names are added after it;
+     * then the names move down over it */
+    size_t pattern_at = (size_t)(pattern - word_storage);
+    int first = stage->argc;
+    long fd = open(dir_len ? dir : ".", O_RDONLY);
+    struct dirent entry;
+    while (fd >= 0 && readdir((int)fd, &entry) == 1) {
+        if (!glob_match(base, entry.name)) continue;
+        size_t n = strlen(entry.name);
+        if (stage->argc >= MAX_ARGS || *used + dir_len + n + 1 > sizeof(word_storage)) {
+            close((int)fd);
+            return -1;
+        }
+        char *word = word_storage + *used;
+        memcpy(word, dir, dir_len);
+        memcpy(word + dir_len, entry.name, n + 1);
+        *used += dir_len + n + 1;
+        /* Sorted as they come: insert before the first that sorts after it */
+        int at = stage->argc++;
+        while (at > first && strcmp(stage->argv[at - 1], word) > 0) {
+            stage->argv[at] = stage->argv[at - 1];
+            at--;
+        }
+        stage->argv[at] = word;
+    }
+    if (fd >= 0) close((int)fd);
+    if (stage->argc == first) {                      /* Nothing matched */
+        stage->argv[stage->argc++] = pattern;
+        return 0;
+    }
+    /* Close the gap left by the pattern: every name after it moves back */
+    size_t gap = strlen(pattern) + 1;
+    for (size_t i = pattern_at; i + gap < *used; i++) word_storage[i] = word_storage[i + gap]; /* (Forwards: safe) */
+    *used -= gap;
+    for (int i = first; i < stage->argc; i++) stage->argv[i] -= gap;
+    return 0;
+}
+
 /* Split `line` into pipeline stages. Returns the number of stages, 0 for an
  * empty line, -1 on a syntax error. */
 static int parse(const char *line, stage_t *stages) {
@@ -265,16 +328,22 @@ static int parse(const char *line, stage_t *stages) {
             p++;
         } else if (*p == '<') {
             p++;
-            if (!(stage->in_path = next_word(&p, &used))) return -1;
+            if (!(stage->in_path = next_word(&p, &used, NULL))) return -1;
         } else if (*p == '>') {
             p++;
             stage->out_append = (*p == '>');
             if (stage->out_append) p++;
-            if (!(stage->out_path = next_word(&p, &used))) return -1;
+            if (!(stage->out_path = next_word(&p, &used, NULL))) return -1;
         } else {
             if (stage->argc >= MAX_ARGS) return -1;
-            if (!(stage->argv[stage->argc] = next_word(&p, &used))) return -1;
-            stage->argc++;
+            int quoted;
+            char *word = next_word(&p, &used, &quoted);
+            if (!word) return -1;
+            if (!quoted && glob_has_wildcard(word)) {
+                if (expand_wildcard(word, stage, &used) < 0) return -1;
+            } else {
+                stage->argv[stage->argc++] = word;
+            }
         }
     }
 
@@ -490,6 +559,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  prog args | prog2      pipe output into another program\n"
                "  a ; b, a && b, a || b  run b after a; only if a succeeded; only if it failed\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
+               "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not inside quotes)\n"
                "  cd [dir], pwd          change or print the current directory\n"
                "  export NAME=value      set an environment variable; $NAME uses it, $? is the last status\n"
                "  prog args &            run in the background; Ctrl-Z stops the running command\n"
