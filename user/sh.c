@@ -18,7 +18,8 @@
  * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
  * empty prompt leaves the shell. At the terminal the line can be edited
  * (the arrow keys, Home, End, Delete, Ctrl-A, -E, -K, -U, -W) and Up and
- * Down go through the lines entered before.
+ * Down go through the lines entered before. Tab completes a program name
+ * or a file name; a second Tab lists the choices.
  *
  * Jobs (only when reading commands from the terminal): a line ending in '&'
  * runs in the background, and Ctrl-Z stops the running command and returns
@@ -610,6 +611,73 @@ static int run_line(const char *line, int *should_exit) {
     return status;
 }
 
+/* Offer the names in directory `dir` that start with `start` to the line
+ * editor, with '/' after directories when `mark_dirs`. Hidden names only
+ * when `start` begins with '.'. */
+static void offer_directory(lineedit_t *e, const char *dir, const char *start, int mark_dirs) {
+    long fd = open(dir, O_RDONLY);
+    if (fd < 0) return;
+    size_t n = strlen(start);
+    struct dirent entry;
+    while (readdir((int)fd, &entry) == 1) {
+        if (strncmp(entry.name, start, n) != 0) continue;
+        if (entry.name[0] == '.' && start[0] != '.') continue;
+        if (mark_dirs && entry.type == DT_DIR) {
+            char name[LINEEDIT_NAME];
+            size_t len = strlen(entry.name);
+            if (len + 2 > sizeof(name)) continue;
+            memcpy(name, entry.name, len);
+            name[len] = '/';
+            name[len + 1] = '\0';
+            lineedit_add_match(e, name);
+        } else {
+            lineedit_add_match(e, entry.name);
+        }
+    }
+    close((int)fd);
+}
+
+/* Tab completion for the line editor (lineedit_complete_fn): a program
+ * name from the built-ins and the directories of $PATH, or anything else
+ * from the directory the word names (the current one if it has no '/') */
+static void complete_names(lineedit_t *e, const char *word, int command) {
+    const char *slash = NULL;
+    for (const char *c = word; *c; c++) if (*c == '/') slash = c;
+
+    if (command && !slash) {
+        static const char *const builtins[] = { "bg", "cd", "exit", "export", "fg", "help", "jobs", "pwd" };
+        size_t n = strlen(word);
+        for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+            if (strncmp(builtins[i], word, n) == 0) lineedit_add_match(e, builtins[i]);
+        }
+        const char *path = getenv("PATH");
+        while (path && *path) {                       /* Each directory of "dir:dir:..." */
+            char dir[128];
+            size_t len = 0;
+            while (path[len] && path[len] != ':') len++;
+            if (len > 0 && len < sizeof(dir)) {
+                memcpy(dir, path, len);
+                dir[len] = '\0';
+                offer_directory(e, dir, word, 0);
+            }
+            path += len;
+            if (*path == ':') path++;
+        }
+        return;
+    }
+
+    char dir[LINEEDIT_MAX];
+    if (slash) {                                      /* "/" itself, or the part before the last '/' */
+        size_t len = slash == word ? 1 : (size_t)(slash - word);
+        memcpy(dir, word, len);
+        dir[len] = '\0';
+    } else {
+        dir[0] = '.';
+        dir[1] = '\0';
+    }
+    offer_directory(e, dir, slash ? slash + 1 : word, 1);
+}
+
 int main(int argc, char **argv) {
     int should_exit = 0;
 
@@ -648,6 +716,7 @@ int main(int argc, char **argv) {
     /* At the terminal, lines are edited here, with a history (lineedit.h);
      * from a script or a pipe they are read as they come */
     static lineedit_t editor;
+    editor.complete = complete_names;
     int editing = interactive;
     static char line[256];
     while (!should_exit) {
