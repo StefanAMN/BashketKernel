@@ -751,8 +751,11 @@ plan:
    QEMU, which behaves like AMD CPUs there.
 9. The GitHub Actions workflow failed every run until 2026-10-20: the
    runner's gcc defaults to C17 and the code had come to depend on C23
-   (`bool` without `<stdbool.h>`). Both builds now pass `-std=gnu17`; the
-   next push is the first run that can get as far as `make check`.
+   (`bool` without `<stdbool.h>`). Both builds now pass `-std=gnu17`. The
+   first run after that built everything and failed on the runner's older
+   `ld`, which warns about assembly objects without a `.note.GNU-stack`
+   section (the local `ld` 2.46 no longer does); every `.S` file now has
+   one.
 10. (Done: the unused crypto was deleted in track E.)
 
 ---
