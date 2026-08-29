@@ -36,3 +36,7 @@ __sigreturn:
     mov eax, 302            // SYS_SIGRETURN
     syscall
     ud2
+
+// No executable stack: without this note the linker assumes this object
+// needs one (and binutils older than 2.45 warns, failing the CI build)
+.section .note.GNU-stack,"",@progbits

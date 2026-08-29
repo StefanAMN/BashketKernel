@@ -173,3 +173,7 @@ enter_user_mode:
     xor r15d, r15d
     swapgs                      // Leaving for ring 3: GS back to the user's base
     iretq
+
+// No executable stack: without this note the linker assumes this object
+// needs one (and binutils older than 2.45 warns, failing the CI build)
+.section .note.GNU-stack,"",@progbits
