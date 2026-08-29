@@ -803,6 +803,10 @@ plan:
    section (the local `ld` 2.46 no longer does); every `.S` file now has
    one.
 10. (Done: the unused crypto was deleted in track E.)
+11. (Found 2026-10-20, fixed: no lookup checked search permission. A 0700
+    directory protected nothing in it that was readable, so `/root` hid
+    nothing from anyone who knew a name. The path walk now takes the
+    caller's user id; the kernel's own lookups pass root.)
 
 ---
 

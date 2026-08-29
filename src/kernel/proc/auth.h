@@ -74,6 +74,13 @@ bool auth_may_access(uint32_t uid, const vnode_t *node, bool write);
 bool auth_may_execute(uint32_t uid, const vnode_t *node);
 
 /**
+ * @brief May `uid` look names up in the directory `dir` (its execute bit,
+ *        "search": needed for every directory a path passes through)?
+ *        Root may search any directory.
+ */
+bool auth_may_search(uint32_t uid, const vnode_t *dir);
+
+/**
  * @brief May `uid` remove `child` from `dir`? Write access to the directory,
  *        and (so that /tmp can be writable by all) owning the entry or the
  *        directory.
