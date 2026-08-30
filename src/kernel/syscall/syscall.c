@@ -167,7 +167,9 @@ int64_t syscall_handler(struct registers *regs) {
 
         case SYS_EXECVE: {
             const char *path = (const char *)regs->rdi;
-            return (int64_t)process_execve(path);
+            char *const *argv = (char *const *)regs->rsi;
+            char *const *envp = (char *const *)regs->rdx;
+            return (int64_t)process_execve_env(path, argv, envp);
         }
 
         case SYS_WAITPID: {
