@@ -71,12 +71,12 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     // (Symbolic links are followed; the lookup says why it failed: a loop of
     // links is ELOOP, a file used as a directory ENOTDIR)
     vnode_t *node = NULL;
-    int looked = vfs_lookup(base, path, true, &node);
+    int looked = vfs_lookup_as(uid, base, path, true, &node);
     if (looked < 0 && looked != -ENOENT) return looked;
     if (!node && (flags & O_CREAT)) {
         char leaf[VFS_NAME_MAX];
         vnode_t *parent = NULL;
-        int found = vfs_find_parent_at(base, path, &parent, leaf);
+        int found = vfs_find_parent_as(uid, base, path, &parent, leaf);
         if (found < 0) return found;
         if (!auth_may_access(uid, parent, true)) return -EACCES; // Creating changes the directory
         int err = vfs_create(parent, leaf, VFS_FILE, &node);

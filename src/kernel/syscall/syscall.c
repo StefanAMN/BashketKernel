@@ -328,10 +328,10 @@ static int64_t sys_mkdir(uint64_t user_path) {
 
     char name[VFS_NAME_MAX];
     vnode_t *parent = NULL;
-    int found = vfs_find_parent_at(sched_get_current_task()->cwd, path, &parent, name);
+    task_t *task = sched_get_current_task();
+    int found = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
     if (found < 0) return found;
 
-    task_t *task = sched_get_current_task();
     if (!auth_may_access(task->uid, parent, true)) return -EACCES;
 
     vnode_t *dir = NULL;
@@ -358,7 +358,7 @@ static int64_t sys_symlink(uint64_t user_target, uint64_t user_path) {
     task_t *task = sched_get_current_task();
     char name[VFS_NAME_MAX];
     vnode_t *parent = NULL;
-    int found = vfs_find_parent_at(task->cwd, path, &parent, name);
+    int found = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
     if (found < 0) return found;
     if (!auth_may_access(task->uid, parent, true)) return -EACCES;
     vnode_t *link = NULL;
@@ -383,8 +383,8 @@ static int64_t sys_link(uint64_t user_existing, uint64_t user_path) {
     task_t *task = sched_get_current_task();
     vnode_t *existing = NULL, *parent = NULL;
     char name[VFS_NAME_MAX];
-    int err = vfs_lookup(task->cwd, existing_path, false, &existing);  // A link to a link names the link: refused below
-    if (err == 0) err = vfs_find_parent_at(task->cwd, path, &parent, name);
+    int err = vfs_lookup_as(task->uid, task->cwd, existing_path, false, &existing);  // A link to a link names the link: refused below
+    if (err == 0) err = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
     if (err < 0) return err;
     if (!auth_may_access(task->uid, parent, true)) return -EACCES;
     return vfs_link(existing, parent, name);
@@ -398,7 +398,8 @@ static int64_t sys_readlink(uint64_t user_path, uint64_t user_buf, size_t size) 
     int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
     if (path_len < 0) return path_len;
     vnode_t *node = NULL;
-    int err = vfs_lookup(sched_get_current_task()->cwd, path, false, &node);
+    task_t *task = sched_get_current_task();
+    int err = vfs_lookup_as(task->uid, task->cwd, path, false, &node);
     if (err < 0) return err;
     int64_t n = vfs_readlink(node, target, size < sizeof(target) ? size : sizeof(target));
     if (n <= 0) return n;
@@ -419,7 +420,8 @@ static int64_t sys_unlink(uint64_t user_path) {
 
     char leaf[VFS_NAME_MAX];
     vnode_t *parent = NULL;
-    int found = vfs_find_parent_at(sched_get_current_task()->cwd, path, &parent, leaf);
+    task_t *caller = sched_get_current_task();
+    int found = vfs_find_parent_as(caller->uid, caller->cwd, path, &parent, leaf);
     if (found < 0) return found;
 
     vnode_t *child = vfs_find_child(parent, leaf);
@@ -440,8 +442,8 @@ static int64_t sys_rename(uint64_t user_old, uint64_t user_new) {
     task_t *task = sched_get_current_task();
     char old_name[VFS_NAME_MAX], new_name[VFS_NAME_MAX];
     vnode_t *old_parent = NULL, *new_parent = NULL;
-    int found = vfs_find_parent_at(task->cwd, old_path, &old_parent, old_name);
-    if (found == 0) found = vfs_find_parent_at(task->cwd, new_path, &new_parent, new_name);
+    int found = vfs_find_parent_as(task->uid, task->cwd, old_path, &old_parent, old_name);
+    if (found == 0) found = vfs_find_parent_as(task->uid, task->cwd, new_path, &new_parent, new_name);
     if (found < 0) return found;
 
     // Taking the entry out of one directory needs the right to remove it;
@@ -460,8 +462,9 @@ static int64_t lookup_for_change(uint64_t user_path, vnode_t **out) {
     char path[PATH_MAX];
     int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
     if (path_len < 0) return path_len;
-    *out = vfs_find(sched_get_current_task()->cwd, path);
-    return *out ? 0 : -ENOENT;
+    task_t *task = sched_get_current_task();
+    *out = NULL;
+    return vfs_lookup_as(task->uid, task->cwd, path, true, out);
 }
 
 // chmod(path, mode): set the permission bits. Only the owner or root.
@@ -652,8 +655,10 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
         // (Looked at here only to tell the caller *why*: exec checks again
         // itself, under the same lock as the loading.)
         vfs_lock();
-        vnode_t *program = vfs_find(sched_get_current_task()->cwd, path);
-        bool refused = program && program->type == VFS_FILE && !auth_may_execute(auth_current_uid(), program);
+        vnode_t *program = NULL;
+        int looked = vfs_lookup_as(auth_current_uid(), sched_get_current_task()->cwd, path, true, &program);
+        bool refused = looked == -EACCES ||
+                       (program && program->type == VFS_FILE && !auth_may_execute(auth_current_uid(), program));
         vfs_unlock();
         if (refused) result = -EACCES;
         else result = (process_exec(regs, path, argc ? argv : NULL, envp) == 0) ? 0 : -ENOENT;
@@ -724,9 +729,11 @@ static int64_t sys_chdir(uint64_t user_path) {
     if (path_len < 0) return path_len;
 
     task_t *task = sched_get_current_task();
-    vnode_t *dir = vfs_find(task->cwd, path);
-    if (!dir) return -ENOENT;
+    vnode_t *dir = NULL;
+    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &dir);
+    if (err < 0) return err;
     if (dir->type != VFS_DIRECTORY) return -ENOTDIR;
+    if (!auth_may_search(task->uid, dir)) return -EACCES;   // A directory you could look nothing up in
 
     task_set_cwd(task, dir == vfs_get_root() ? NULL : dir);
     return 0;
