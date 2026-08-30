@@ -116,6 +116,14 @@ file_t *file_open_socket(void);
 file_t *file_open_tcp(struct tcp_socket *tcp);
 
 /**
+ * @brief fstat(): describe an open file. A file or directory as vfs_stat
+ *        does (the console's node as the terminal); a pipe, socket or the
+ *        terminal by its type alone (no owner, size 0, mode 0600).
+ * @return 0, -EBADF for NULL, or vfs_stat's error.
+ */
+int file_stat(file_t *file, struct vfs_stat *out);
+
+/**
  * @brief Whether the file is the terminal (the console, opened at boot or
  *        as /dev/console): what isatty() asks.
  */

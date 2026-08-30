@@ -390,6 +390,41 @@ static int64_t sys_link(uint64_t user_existing, uint64_t user_path) {
     return vfs_link(existing, parent, name);
 }
 
+// Copy a description to the program at `user_st`. 0 or -EFAULT.
+static int64_t copy_stat_to_user(uint64_t user_st, const struct vfs_stat *st) {
+    if (!user_range_ok(user_st, sizeof(*st), true)) return -EFAULT;
+    user_access_begin();
+    memcpy((void *)user_st, st, sizeof(*st));
+    user_access_end();
+    return 0;
+}
+
+// stat(path, st) and lstat (follow_last false: a final link is described
+// itself): what the path names. Needs search permission on the way, not
+// the right to read the file. Caller holds the tree lock (the node is
+// used after the lookup).
+static int64_t sys_stat(uint64_t user_path, uint64_t user_st, bool follow_last) {
+    char path[PATH_MAX];
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+    task_t *task = sched_get_current_task();
+    vnode_t *node = NULL;
+    int err = vfs_lookup_as(task->uid, task->cwd, path, follow_last, &node);
+    if (err < 0) return err;
+    struct vfs_stat st;
+    err = vfs_stat(node, &st);
+    return err < 0 ? err : copy_stat_to_user(user_st, &st);
+}
+
+// fstat(fd, st): an open file, whatever kind (see file_stat)
+static int64_t sys_fstat(int fd, uint64_t user_st) {
+    file_t *file = fd_to_file(fd);
+    if (!file) return -EBADF;
+    struct vfs_stat st;
+    int err = file_stat(file, &st);
+    return err < 0 ? err : copy_stat_to_user(user_st, &st);
+}
+
 // readlink(path, buf, size): the target of the symbolic link at `path`
 // (not followed), not NUL-terminated. Returns its length, or -EINVAL if
 // `path` is not a link.
@@ -1167,6 +1202,9 @@ static int64_t dispatch(struct registers *regs) {
             if (regs->rdi > 1) return -EINVAL;
             system_shutdown(regs->rdi == 1);
 
+        case SYS_STAT:  { vfs_lock(); int64_t r = sys_stat(regs->rdi, regs->rsi, true); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_LSTAT: { vfs_lock(); int64_t r = sys_stat(regs->rdi, regs->rsi, false); vfs_unlock(); return r; }
+        case SYS_FSTAT: return sys_fstat((int)regs->rdi, regs->rsi);
         case SYS_ISATTY: {
             file_t *file = fd_to_file((int)regs->rdi);
             return file ? (file_is_terminal(file) ? 1 : 0) : -EBADF;
