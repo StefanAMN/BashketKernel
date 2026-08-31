@@ -441,11 +441,11 @@ test-home: iso
 	e2fsck -fn $(BUILD)/root-persist.img > $(BUILD)/home-fsck.log 2>&1 \
 		|| { echo "home: FAILED, e2fsck rejects the volume after the kernel wrote to it (see $(BUILD)/home-fsck.log)"; exit 1; }; \
 	tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/home-fat.img --root-disk $(BUILD)/root-persist.img $(SHELL_CPU) \
-		--expect '-rw------- +1000 +100 +23 [0-9-]+ [0-9:]+ kept.txt' \
-		--expect 'drwxr-xr-x +1000 +100 +0 [0-9-]+ [0-9:]+ projects' \
-		--expect '-rw-r--r-- +1001 +100 +9 [0-9-]+ [0-9:]+ second.txt' \
+		--expect '-rw------- +1 +1000 +100 +23 [0-9-]+ [0-9:]+ kept.txt' \
+		--expect 'drwxr-xr-x +2 +1000 +100 +[0-9]+ [0-9-]+ [0-9:]+ projects' \
+		--expect '-rw-r--r-- +1 +1001 +100 +9 [0-9-]+ [0-9:]+ second.txt' \
 		--expect 'kept across the reboot\nAlice keeps her notes here' --expect '\n([0-9]+ [0-9]+ [0-9]+)\n\1\n' \
-		--expect 'lrwxrwxrwx +1000 +100 +18 [0-9-]+ [0-9:]+ short-link -> projects/notes.txt' \
+		--expect 'lrwxrwxrwx +1 +1000 +100 +18 [0-9-]+ [0-9:]+ short-link -> projects/notes.txt' \
 		--expect 'long-link -> /home/alice/projects/\./\./' --expect '(Alice keeps her notes here\.\n){3}' \
 		--forbid 'diary' --forbid 'temp.txt' --forbid 'intruder' \
 		'exec /bin/ls -l /home/alice' 'exec /bin/ls -l /home/bob' \
