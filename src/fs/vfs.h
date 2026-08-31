@@ -26,11 +26,18 @@ struct vfs_stat {
     uint32_t uid, gid;
     uint64_t size;     // Bytes (a link: its target's length; a directory: what its filesystem
                        // says, 0 in memory; 0 for pipes, sockets, the terminal)
-    uint64_t ino;      // The filesystem's number for it (ext2 inode, FAT first cluster); 0: none
+    uint64_t ino;      // Its number on its filesystem (ext2 inode, FAT first cluster, in memory
+                       // the node's serial); 0: none. Same dev and ino: the same file.
     uint32_t links;    // Names it has (a directory: 2 plus its subdirectories)
     uint32_t mtime;    // Last written: seconds since 1970, UTC; 0: not known
+    uint32_t dev;      // Which filesystem: VFS_DEV_*; 0 for pipes, sockets, the terminal
+    uint32_t reserved;
 };
-_Static_assert(sizeof(struct vfs_stat) == 40, "user programs mirror this layout");
+_Static_assert(sizeof(struct vfs_stat) == 48, "user programs mirror this layout");
+
+#define VFS_DEV_MEMORY 1   // Nodes kept only in memory (/tmp, /dev, /proc, the rescue root)
+#define VFS_DEV_FAT    2
+#define VFS_DEV_EXT2   3
 
 #define VFS_NAME_MAX  128  // Size of a node's name, with its NUL: names are at most 127 bytes
 #define VFS_PATH_MAX  256  // Size of a path the kernel accepts, with its NUL
@@ -115,6 +122,7 @@ typedef struct vnode {
     struct vnode *next;         // Pointer to next sibling in directory listing
     bool mount_point;           // Put here by vfs_mount_dir: may not be removed or renamed
     struct vnode *covered;      // For a mount point: the directory of the same name it hides, if there was one
+    uint64_t serial;            // Given once at creation, never reused: stat's inode number in memory
 } vnode_t;
 
 /**

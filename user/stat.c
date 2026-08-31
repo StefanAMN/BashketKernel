@@ -33,9 +33,10 @@ int main(int argc, char **argv) {
         }
         char when[20] = "not known";
         if (st.mtime != 0) format_date(st.mtime, when);
-        printf("  File: %s\n  Type: %s  Size: %lu  Links: %u  Inode: %lu\n  Mode: %04o  Owner: %u  Group: %u\n  Modified: %s\n",
+        static const char *const filesystems[] = { "-", "memory", "FAT", "ext2" };
+        printf("  File: %s\n  Type: %s  Size: %lu  Links: %u  Inode: %lu  On: %s\n  Mode: %04o  Owner: %u  Group: %u\n  Modified: %s\n",
                argv[i], type_name(st.type), (unsigned long)st.size, st.links, (unsigned long)st.ino,
-               st.mode, st.uid, st.gid, when);
+               st.dev < 4 ? filesystems[st.dev] : "?", st.mode, st.uid, st.gid, when);
     }
     return status;
 }

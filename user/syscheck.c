@@ -2062,11 +2062,13 @@ static void check_stat(void) {
     CHECK(symlink("stat-target", "/tmp/stat-link") == 0);
     CHECK(lstat("/tmp/stat-link", &st) == 0 && st.type == S_LINK && st.size == 11);
     CHECK(stat("/tmp/stat-link", &st) == 0 && st.type == S_FILE && st.size == 12);
+    CHECK(stat("/tmp/stat-target", &other) == 0 && other.ino == st.ino && other.dev == st.dev && st.dev == 1); /* The same file */
+    CHECK(stat("/tmp", &other) == 0 && other.ino != st.ino);
     CHECK(unlink("/tmp/stat-link") == 0 && unlink("/tmp/stat-target") == 0);
 
     /* Open files that are not files */
     int p[2];
-    CHECK(pipe(p) == 0 && fstat(p[0], &st) == 0 && st.type == S_PIPE && st.size == 0);
+    CHECK(pipe(p) == 0 && fstat(p[0], &st) == 0 && st.type == S_PIPE && st.size == 0 && st.dev == 0);
     close(p[0]); close(p[1]);
     fd = open("/dev/console", O_RDONLY);
     CHECK(fd >= 0 && fstat((int)fd, &st) == 0 && st.type == S_TERMINAL);
