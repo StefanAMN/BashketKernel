@@ -1097,13 +1097,29 @@ static int ext2_file_opened(vnode_t *node, bool writable) {
     return ok ? 0 : -EIO;
 }
 
+// stat(): the link count and the inode number, as the disk has them (a
+// file's other names may be in directories never read)
+static int ext2_stat(vnode_t *node, struct vfs_stat *st) {
+    const ext2_node_t *info = (const ext2_node_t *)node->private_data;
+    if (!info) return 0;
+    struct ext2_inode inode;
+    mutex_lock(&ext2_mutex);
+    bool ok = read_inode(info->ino, &inode);
+    mutex_unlock(&ext2_mutex);
+    if (!ok) return -EIO;
+    st->dev = VFS_DEV_EXT2;
+    st->ino = info->ino;
+    st->links = inode.links;
+    return 0;
+}
+
 static const vnode_ops_t ext2_file_ops = { .read = ext2_file_read, .write = ext2_file_write,
                                            .truncate = ext2_file_truncate, .setattr = ext2_setattr,
-                                           .opened = ext2_file_opened };
+                                           .opened = ext2_file_opened, .stat = ext2_stat };
 static const vnode_ops_t ext2_dir_ops = { .create = ext2_dir_create, .remove = ext2_dir_remove,
                                           .rename = ext2_dir_rename, .load = ext2_dir_load, .setattr = ext2_setattr,
-                                          .symlink = ext2_dir_symlink, .link = ext2_dir_link };
-static const vnode_ops_t ext2_symlink_ops = { .setattr = ext2_setattr };
+                                          .symlink = ext2_dir_symlink, .link = ext2_dir_link, .stat = ext2_stat };
+static const vnode_ops_t ext2_symlink_ops = { .setattr = ext2_setattr, .stat = ext2_stat };
 
 // --- Putting right what a crash left behind -----------------------------------------
 //

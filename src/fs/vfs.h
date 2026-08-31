@@ -14,6 +14,31 @@
 #define VFS_DIRECTORY 2
 #define VFS_SYMLINK   3    // A symbolic link: `data` holds its target (`size` bytes, no NUL counted)
 
+// What stat() reports. The type is the node's (VFS_FILE, VFS_DIRECTORY,
+// VFS_SYMLINK) or, for an open file that is no node, one of these:
+#define STAT_PIPE     4
+#define STAT_SOCKET   5
+#define STAT_TERMINAL 6
+
+struct vfs_stat {
+    uint32_t type;
+    uint32_t mode;     // Permission bits (and PERM_SETUID)
+    uint32_t uid, gid;
+    uint64_t size;     // Bytes (a link: its target's length; a directory: what its filesystem
+                       // says, 0 in memory; 0 for pipes, sockets, the terminal)
+    uint64_t ino;      // Its number on its filesystem (ext2 inode, FAT first cluster, in memory
+                       // the node's serial); 0: none. Same dev and ino: the same file.
+    uint32_t links;    // Names it has (a directory: 2 plus its subdirectories)
+    uint32_t mtime;    // Last written: seconds since 1970, UTC; 0: not known
+    uint32_t dev;      // Which filesystem: VFS_DEV_*; 0 for pipes, sockets, the terminal
+    uint32_t reserved;
+};
+_Static_assert(sizeof(struct vfs_stat) == 48, "user programs mirror this layout");
+
+#define VFS_DEV_MEMORY 1   // Nodes kept only in memory (/tmp, /dev, /proc, the rescue root)
+#define VFS_DEV_FAT    2
+#define VFS_DEV_EXT2   3
+
 #define VFS_NAME_MAX  128  // Size of a node's name, with its NUL: names are at most 127 bytes
 #define VFS_PATH_MAX  256  // Size of a path the kernel accepts, with its NUL
 #define VFS_MAX_LINKS 8    // Symbolic links followed in one lookup before ELOOP
@@ -68,6 +93,11 @@ typedef struct vnode_ops {
     // true of the device now. NULL: always readable and writable. Whoever
     // provides it calls poll_notify() whenever the answer may change.
     int (*poll)(struct vnode *node);
+
+    // stat(): correct what the VFS filled in from the node (the link count,
+    // the inode number) with what the filesystem stores. May read the disk.
+    // 0 or a negative error number.
+    int (*stat)(struct vnode *node, struct vfs_stat *st);
 } vnode_ops_t;
 
 typedef struct vnode {
@@ -92,6 +122,7 @@ typedef struct vnode {
     struct vnode *next;         // Pointer to next sibling in directory listing
     bool mount_point;           // Put here by vfs_mount_dir: may not be removed or renamed
     struct vnode *covered;      // For a mount point: the directory of the same name it hides, if there was one
+    uint64_t serial;            // Given once at creation, never reused: stat's inode number in memory
 } vnode_t;
 
 /**
@@ -291,6 +322,14 @@ int vfs_lookup(vnode_t *base, const char *path, bool follow_last, vnode_t **out)
  *        them (UID_ROOT: no check), or the result is -EACCES.
  */
 int vfs_lookup_as(uint32_t uid, vnode_t *base, const char *path, bool follow_last, vnode_t **out);
+
+/**
+ * @brief Describe a node for stat(): type, permissions, owner, size, link
+ *        count, inode number and time (see struct vfs_stat). Takes the tree
+ *        lock; may read the disk (ops->stat).
+ * @return 0, or a negative error number (-EIO).
+ */
+int vfs_stat(vnode_t *node, struct vfs_stat *out);
 
 /**
  * @brief Make `name` in `parent` (NULL: the root) a symbolic link to

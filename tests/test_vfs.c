@@ -301,6 +301,44 @@ TEST(lookups_need_search_permission) {
     EXPECT_EQ(vfs_unlink(tmp, "closed"), 0);
 }
 
+// vfs_stat in memory: type, owner, size, the link count of a directory
+// (one more for each subdirectory), a link described itself
+TEST(stat_describes_nodes) {
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    vnode_t *dir = NULL, *file = NULL, *link = NULL;
+    struct vfs_stat st;
+    EXPECT_EQ(vfs_create(tmp, "described", VFS_DIRECTORY, &dir), 0);
+    EXPECT_EQ(vfs_create(dir, "f", VFS_FILE, &file), 0);
+    EXPECT_EQ(vfs_write(file, 0, 5, "hello"), 5);
+    file->uid = 1000;
+    file->gid = 100;
+    file->mode = 0640;
+    file->mtime = 1792454400;
+    EXPECT_EQ(vfs_stat(file, &st), 0);
+    EXPECT_TRUE(st.type == VFS_FILE && st.size == 5 && st.uid == 1000 && st.gid == 100 && st.mode == 0640);
+    EXPECT_TRUE(st.links == 1 && st.mtime == 1792454400 && st.dev == VFS_DEV_MEMORY);
+    uint64_t file_ino = st.ino;
+
+    EXPECT_EQ(vfs_stat(dir, &st), 0);
+    EXPECT_TRUE(st.type == VFS_DIRECTORY && st.links == 2);
+    EXPECT_TRUE(st.ino != 0 && file_ino != 0 && st.ino != file_ino);           // Each node its own number
+    EXPECT_EQ(vfs_create(dir, "sub1", VFS_DIRECTORY, NULL), 0);
+    EXPECT_EQ(vfs_create(dir, "sub2", VFS_DIRECTORY, NULL), 0);
+    EXPECT_EQ(vfs_stat(dir, &st), 0);
+    EXPECT_EQ(st.links, 4);
+
+    EXPECT_EQ(vfs_symlink(dir, "l", "f", &link), 0);
+    EXPECT_EQ(vfs_stat(link, &st), 0);
+    EXPECT_TRUE(st.type == VFS_SYMLINK && st.size == 1);                     // The target, "f"
+    EXPECT_EQ(vfs_stat(NULL, &st), -EINVAL);
+
+    EXPECT_EQ(vfs_unlink(dir, "l"), 0);
+    EXPECT_EQ(vfs_unlink(dir, "sub1"), 0);
+    EXPECT_EQ(vfs_unlink(dir, "sub2"), 0);
+    EXPECT_EQ(vfs_unlink(dir, "f"), 0);
+    EXPECT_EQ(vfs_unlink(tmp, "described"), 0);
+}
+
 TEST(symbolic_links_in_memory) {
     vnode_t *tmp = vfs_find(NULL, "/tmp");
     vnode_t *dir = NULL, *file = NULL, *link = NULL;
@@ -353,4 +391,5 @@ void test_suite_vfs(void) {
     RUN_TEST(initrd_stops_at_the_end_of_the_archive);
     RUN_TEST(symbolic_links_in_memory);
     RUN_TEST(lookups_need_search_permission);
+    RUN_TEST(stat_describes_nodes);
 }

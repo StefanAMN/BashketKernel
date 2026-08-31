@@ -12,6 +12,7 @@
 #include "auth.h"
 
 static vnode_t *vfs_root = NULL;
+static uint64_t next_serial = 1;         // For vnode_t.serial (under the tree lock, but for the root)
 
 void vfs_init(void) {
     if (vfs_root != NULL) return;
@@ -19,6 +20,7 @@ void vfs_init(void) {
     vfs_root = (vnode_t *)kmalloc(sizeof(vnode_t));
     if (!vfs_root) panic("VFS: no memory for the root directory");
     memset(vfs_root, 0, sizeof(vnode_t));
+    vfs_root->serial = next_serial++;
 
     vfs_root->name[0] = '/';
     vfs_root->name[1] = '\0';
@@ -189,6 +191,7 @@ static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t
     vnode_t *node = (vnode_t *)kmalloc(sizeof(vnode_t));
     if (!node) return NULL;
     memset(node, 0, sizeof(vnode_t));
+    node->serial = next_serial++;
     memcpy(node->name, name, strlen(name) + 1);
 
     node->type = type;
@@ -285,6 +288,7 @@ static int vfs_mount_dir_unlocked(vnode_t *parent, const char *name, vnode_t **o
     vnode_t *node = (vnode_t *)kmalloc(sizeof(vnode_t));
     if (!node) return -ENOMEM;
     memset(node, 0, sizeof(vnode_t));
+    node->serial = next_serial++;
     strncpy(node->name, name, sizeof(node->name) - 1);
     node->type = VFS_DIRECTORY;
     node->parent = parent;
@@ -676,6 +680,31 @@ int vfs_lookup_as(uint32_t uid, vnode_t *base, const char *path, bool follow_las
     int result = walk(base, path, follow_last, uid, out);
     vfs_unlock();
     return result;
+}
+
+int vfs_stat(vnode_t *node, struct vfs_stat *out) {
+    if (!node || !out) return -EINVAL;
+    vfs_lock();
+    memset(out, 0, sizeof(*out));
+    out->type = node->type;
+    out->mode = node->mode;
+    out->uid = node->uid;
+    out->gid = node->gid;
+    out->size = node->size;
+    out->mtime = node->mtime;
+    out->dev = VFS_DEV_MEMORY;                             // (A filesystem's op says otherwise)
+    out->ino = node->serial;
+    out->links = 1;
+    if (node->type == VFS_DIRECTORY) {                     // Its own ".", its entry, and each child's ".."
+        vfs_load_dir(node);                                // (Counting needs the children known)
+        out->links = 2;
+        for (vnode_t *child = node->children; child; child = child->next) {
+            if (child->type == VFS_DIRECTORY) out->links++;
+        }
+    }
+    int err = (node->ops && node->ops->stat) ? node->ops->stat(node, out) : 0;
+    vfs_unlock();
+    return err;
 }
 
 int vfs_symlink(vnode_t *parent, const char *name, const char *target, vnode_t **out) {

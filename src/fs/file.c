@@ -172,6 +172,20 @@ file_t *file_open_tcp(struct tcp_socket *tcp) {
 
 // An open file can be shared by processes on different CPUs (fork copies
 // the descriptor table), so the count of holders is changed atomically
+int file_stat(file_t *file, struct vfs_stat *out) {
+    if (!file || !out) return -EBADF;
+    if (file->kind == FILE_VNODE) {
+        int err = vfs_stat(file->node, out);
+        if (err == 0 && dev_is_console(file->node)) out->type = STAT_TERMINAL;
+        return err;
+    }
+    memset(out, 0, sizeof(*out));
+    out->links = 1;
+    out->mode = 0600;                                      // Its holders may read and write it
+    out->type = file->kind == FILE_PIPE ? STAT_PIPE : file->kind == FILE_CONSOLE ? STAT_TERMINAL : STAT_SOCKET;
+    return 0;
+}
+
 bool file_is_terminal(const file_t *file) {
     if (!file) return false;
     return file->kind == FILE_CONSOLE || (file->kind == FILE_VNODE && dev_is_console(file->node));

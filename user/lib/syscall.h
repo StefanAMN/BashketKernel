@@ -57,6 +57,9 @@
 #define SYS_CLOCK_NS 228
 #define SYS_REALTIME 311
 #define SYS_ISATTY   313
+#define SYS_STAT     314
+#define SYS_LSTAT    315
+#define SYS_FSTAT    316
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
 #define SYS_SHMGET   29
@@ -187,6 +190,25 @@ struct dirent {
     uint32_t mtime;     /* Last written: seconds since 1970, UTC (0 if not known) */
     uint32_t reserved;
     char name[128];
+};
+
+/* What stat, lstat and fstat report (the kernel's struct vfs_stat) */
+#define S_FILE     1
+#define S_DIR      2
+#define S_LINK     3
+#define S_PIPE     4
+#define S_SOCKET   5
+#define S_TERMINAL 6
+struct stat {
+    uint32_t type;      /* One of the S_ types above */
+    uint32_t mode;      /* Permission bits (as in struct dirent) */
+    uint32_t uid, gid;  /* Owner and group */
+    uint64_t size;      /* Bytes; a link: its target's length; 0 for pipes, sockets and the terminal */
+    uint64_t ino;       /* Its number on its filesystem (ext2: inode; FAT: first cluster); 0: none */
+    uint32_t links;     /* Names it has; a directory: 2 plus its subdirectories */
+    uint32_t mtime;     /* Last written: seconds since 1970, UTC (0 if not known) */
+    uint32_t dev;       /* Which filesystem: 1 memory, 2 FAT, 3 ext2; 0 for pipes, sockets, the terminal */
+    uint32_t reserved;  /* (Same dev and ino, nonzero: the same file) */
 };
 
 #define PROT_READ  1
