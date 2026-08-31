@@ -1,12 +1,13 @@
 /**
  * @file keyboard.c
- * @brief Implementation of PS/2 Keyboard Driver and Scancode Mapper
+ * @brief Implementation of PS/2 Keyboard Driver & Serial Input Multiplexer
  */
 
 #include "keyboard.h"
 #include "io.h"
 #include "interrupts.h"
 #include "sched.h"
+#include "serial.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -50,22 +51,36 @@ static void keyboard_irq_handler(struct registers *regs) {
     // Ignore key release codes (bit 7 set)
     if (scancode & 0x80) return;
 
-    char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
-    if (c != 0) {
-        size_t next_head = (kbd_head + 1) % KEYBOARD_BUFFER_SIZE;
-        if (next_head != kbd_tail) {
-            kbd_buffer[kbd_head] = c;
-            kbd_head = next_head;
+    if (scancode < 128) {
+        char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
+        if (c != 0) {
+            size_t next_head = (kbd_head + 1) % KEYBOARD_BUFFER_SIZE;
+            if (next_head != kbd_tail) {
+                kbd_buffer[kbd_head] = c;
+                kbd_head = next_head;
+            }
         }
     }
 }
 
 void keyboard_init(void) {
     register_irq_handler(1, keyboard_irq_handler); // IRQ 1 = Interrupt 33
+
+    // Explicitly unmask IRQ 1 (Keyboard) on 8259 Master PIC
+    uint8_t mask = inb(0x21);
+    outb(0x21, mask & ~(1 << 1));
+
+    // Clear any pending/stale scancode in PS/2 controller buffer
+    while (inb(0x64) & 1) {
+        (void)inb(0x60);
+    }
 }
 
 bool keyboard_has_char(void) {
-    return kbd_head != kbd_tail;
+    if (kbd_head != kbd_tail) {
+        return true;
+    }
+    return serial_has_char();
 }
 
 char keyboard_getchar(void) {
@@ -73,7 +88,18 @@ char keyboard_getchar(void) {
         sched_yield();
     }
 
-    char c = kbd_buffer[kbd_tail];
-    kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
-    return c;
+    if (kbd_head != kbd_tail) {
+        char c = kbd_buffer[kbd_tail];
+        kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
+        return c;
+    }
+
+    if (serial_has_char()) {
+        char c = serial_getchar();
+        if (c == '\r') c = '\n';
+        if (c == 127) c = '\b';
+        return c;
+    }
+
+    return 0;
 }

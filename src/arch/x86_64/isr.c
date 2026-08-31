@@ -57,7 +57,7 @@ void isr_handler(struct registers *regs) {
 
         if (regs->int_no == 14) {
             uint64_t cr2;
-            asm volatile("mov %0, cr2" : "=r"(cr2));
+            asm volatile("mov %0, %%cr2" : "=r"(cr2));
             kprintf("Faulting Address (CR2): 0x%zx\n", cr2);
             kprintf("Fault Causes: %s, %s, %s, %s\n",
                     (regs->err_code & 1) ? "Page-protection violation" : "Page not present",
