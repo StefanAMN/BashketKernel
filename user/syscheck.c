@@ -4,6 +4,7 @@
 #include "password.h"
 #include "lineedit.h"
 #include "glob.h"
+#include "lines.h"
 
 static int failures = 0;
 
@@ -1987,6 +1988,37 @@ static void check_poll(void) {
     close(a[0]); close(a[1]); close(b[0]);
 }
 
+/* Run a program with up to three arguments, its output thrown away; its
+ * exit status, or -1 */
+static int run_quietly(const char *path, const char *a1, const char *a2, const char *a3) {
+    long pid = fork();
+    if (pid == 0) {
+        char *args[] = { (char *)path, (char *)a1, (char *)a2, (char *)a3, NULL };
+        dup2((int)open("/dev/null", O_WRONLY), 1);
+        dup2((int)open("/dev/null", O_WRONLY), 2);
+        execv(path, args);
+        exit(127);
+    }
+    int status = -1;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid) return -1;
+    return status;
+}
+
+/* Whether two files hold the same bytes */
+static int same_contents(const char *a, const char *b) {
+    static char x[4096], y[4096];
+    long fa = open(a, O_RDONLY), fb = open(b, O_RDONLY);
+    int same = fa >= 0 && fb >= 0;
+    while (same) {
+        long n = read((int)fa, x, sizeof(x)), m = read((int)fb, y, sizeof(y));
+        if (n != m || n < 0 || memcmp(x, y, (size_t)n) != 0) same = 0;
+        if (n <= 0) break;
+    }
+    if (fa >= 0) close((int)fa);
+    if (fb >= 0) close((int)fb);
+    return same;
+}
+
 /* Links: symbolic ones in memory and on the disk, hard ones on the disk
  * only; reading a link's target; the errors */
 static void check_links(void) {
@@ -2025,6 +2057,8 @@ static void check_links(void) {
     fd = open("/root/one", O_WRONLY | O_CREAT | O_TRUNC);
     CHECK(fd >= 0 && write((int)fd, "same", 4) == 4);
     close((int)fd);
+    CHECK(run_quietly("/bin/cp", "/bin/syscheck", "/root/copy", NULL) == 0);   /* cp onto the disk */
+    CHECK(same_contents("/bin/syscheck", "/root/copy") && unlink("/root/copy") == 0);
     CHECK(link("/root/one", "/root/two") == 0);
     struct stat one, two;                                         /* One inode, two names */
     CHECK(stat("/root/one", &one) == 0 && stat("/root/two", &two) == 0);
@@ -2084,6 +2118,41 @@ static void check_stat(void) {
     CHECK(stat("/etc/motd", (struct stat *)0xffffffff80000000) == -EFAULT);
     CHECK(stat((const char *)0xffffffff80000000, &st) == -EFAULT);
     CHECK(fstat(1, (struct stat *)8) == -EFAULT);
+}
+
+/* The line reader the text tools use, and cp: a line longer than its
+ * buffer, a last line without '\n', empty lines; a large file copied
+ * exactly, its mode kept, into a directory, never onto itself */
+static void check_text_tools(void) {
+    /* (A file, not a pipe: this is more than a pipe holds, and nobody
+     * would be reading it yet) */
+    long fd = open("/tmp/lines", O_RDWR | O_CREAT | O_TRUNC);
+    static char longline[6000];
+    memset(longline, 'x', sizeof(longline));
+    CHECK(fd >= 0 && write((int)fd, longline, sizeof(longline)) == (long)sizeof(longline));
+    CHECK(write((int)fd, "\n\nlast", 6) == 6);
+    CHECK(lseek((int)fd, 0, SEEK_SET) == 0);
+    static lines_t in;
+    lines_open(&in, (int)fd);
+    CHECK(lines_next(&in) == 6000 && in.line[5999] == 'x' && in.line[6000] == '\0');
+    CHECK(lines_next(&in) == 0);                                    /* An empty line */
+    CHECK(lines_next(&in) == 4 && strcmp(in.line, "last") == 0);  /* No '\n' at the end */
+    CHECK(lines_next(&in) == -1 && lines_next(&in) == -1);
+    lines_close(&in);
+    close((int)fd);
+    CHECK(unlink("/tmp/lines") == 0);
+
+    struct stat a, b;
+    CHECK(run_quietly("/bin/cp", "/bin/syscheck", "/tmp/copy", NULL) == 0);
+    CHECK(same_contents("/bin/syscheck", "/tmp/copy"));
+    CHECK(stat("/bin/syscheck", &a) == 0 && stat("/tmp/copy", &b) == 0 && b.mode == a.mode && b.size == a.size);
+    CHECK(mkdir("/tmp/into") == 0 && run_quietly("/bin/cp", "/tmp/copy", "/tmp/into", NULL) == 0);
+    CHECK(same_contents("/bin/syscheck", "/tmp/into/copy"));
+    CHECK(run_quietly("/bin/cp", "/tmp/copy", "/tmp/into/../copy", NULL) == 1);   /* Itself, by another path */
+    CHECK(stat("/tmp/copy", &b) == 0 && b.size == a.size);                           /* ... and not emptied */
+    CHECK(run_quietly("/bin/cp", "/tmp/into", "/tmp/x", NULL) == 1);                 /* A directory */
+    CHECK(run_quietly("/bin/cp", "/no/such", "/tmp/x", NULL) == 1);
+    CHECK(unlink("/tmp/into/copy") == 0 && unlink("/tmp/into") == 0 && unlink("/tmp/copy") == 0);
 }
 
 /* Feed every byte of `keys` to the editor; the result of the last one */
@@ -2517,6 +2586,7 @@ int main(void) {
     check_line_editing();
     check_wildcards();
     check_stat();
+    check_text_tools();
     check_groups_and_setuid();
     check_pipes();
 
