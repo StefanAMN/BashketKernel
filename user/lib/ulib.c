@@ -532,6 +532,9 @@ long isatty(int fd) { return syscall1(SYS_ISATTY, fd); }
 long stat(const char *path, struct stat *st)  { return syscall2(SYS_STAT, (long)path, (long)st); }
 long lstat(const char *path, struct stat *st) { return syscall2(SYS_LSTAT, (long)path, (long)st); }
 long fstat(int fd, struct stat *st)           { return syscall2(SYS_FSTAT, fd, (long)st); }
+long truncate(const char *path, unsigned long length) { return syscall2(SYS_TRUNCATE, (long)path, (long)length); }
+long ftruncate(int fd, unsigned long length)          { return syscall2(SYS_FTRUNCATE, fd, (long)length); }
+long utime(const char *path, unsigned long seconds)   { return syscall2(SYS_UTIME, (long)path, (long)seconds); }
 
 long reboot(int restart) { return syscall1(SYS_REBOOT, restart); }
 

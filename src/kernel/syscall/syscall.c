@@ -425,6 +425,72 @@ static int64_t sys_fstat(int fd, uint64_t user_st) {
     return err < 0 ? err : copy_stat_to_user(user_st, &st);
 }
 
+#define UTIME_NOW ((uint64_t)-1)
+
+// Change a file's length on behalf of user `uid` (who has the right to
+// write it): as a write would, it takes a set-uid bit away from a file
+// changed by anyone but root. Caller holds the tree lock.
+static int64_t resize_file(vnode_t *node, uint64_t length, uint32_t uid) {
+    if (length > 0x7FFFFFFFu) return -EFBIG;               // (What ext2 here can hold, and more than any disk)
+    if (uid != UID_ROOT && (node->mode & PERM_SETUID)) {
+        node->mode &= (uint16_t)~PERM_SETUID;
+        if (node->ops && node->ops->setattr) node->ops->setattr(node);
+    }
+    return vfs_truncate(node, (size_t)length);
+}
+
+// truncate(path, length): a file the caller may write, made `length` bytes
+// long. Caller holds the tree lock.
+static int64_t sys_truncate(uint64_t user_path, uint64_t length) {
+    char path[PATH_MAX];
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+    task_t *task = sched_get_current_task();
+    vnode_t *node = NULL;
+    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &node);
+    if (err < 0) return err;
+    if (node->type == VFS_DIRECTORY) return -EISDIR;
+    if (node->type != VFS_FILE) return -EINVAL;
+    if (node->read_only) return -EROFS;
+    if (!auth_may_access(task->uid, node, true)) return -EACCES;
+    return resize_file(node, length, task->uid);
+}
+
+// ftruncate(fd, length): the same for a file opened for writing
+static int64_t sys_ftruncate(int fd, uint64_t length) {
+    file_t *file = fd_to_file(fd);
+    if (!file) return -EBADF;
+    if (file->kind != FILE_VNODE || !file->writable || file->node->type != VFS_FILE) return -EINVAL;
+    vfs_lock();
+    int64_t r = resize_file(file->node, length, sched_get_current_task()->uid);
+    vfs_unlock();
+    return r;
+}
+
+// utime(path, seconds): set the modification time. To a time of one's
+// choosing: the owner or root (EPERM); to now (UTIME_NOW): also anyone who
+// may write the file (EACCES). Times from 1980 to 2105 (EINVAL), as the
+// clock. Caller holds the tree lock.
+static int64_t sys_utime(uint64_t user_path, uint64_t seconds) {
+    char path[PATH_MAX];
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+    task_t *task = sched_get_current_task();
+    vnode_t *node = NULL;
+    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &node);
+    if (err < 0) return err;
+    bool privileged = task->uid == UID_ROOT || task->uid == node->uid;
+    if (seconds == UTIME_NOW) {
+        if (!privileged && !auth_may_access(task->uid, node, true)) return -EACCES;
+        seconds = walltime_seconds();
+    } else {
+        if (!privileged) return -EPERM;
+        if (seconds < WALLTIME_MIN_SECONDS || seconds > WALLTIME_MAX_SECONDS) return -EINVAL;
+    }
+    if (node->read_only) return -EROFS;
+    return vfs_set_mtime(node, (uint32_t)seconds);
+}
+
 // readlink(path, buf, size): the target of the symbolic link at `path`
 // (not followed), not NUL-terminated. Returns its length, or -EINVAL if
 // `path` is not a link.
@@ -1205,6 +1271,9 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_STAT:  { vfs_lock(); int64_t r = sys_stat(regs->rdi, regs->rsi, true); vfs_unlock(); return r; } // Look up, then act: one step
         case SYS_LSTAT: { vfs_lock(); int64_t r = sys_stat(regs->rdi, regs->rsi, false); vfs_unlock(); return r; }
         case SYS_FSTAT: return sys_fstat((int)regs->rdi, regs->rsi);
+        case SYS_TRUNCATE: { vfs_lock(); int64_t r = sys_truncate(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_FTRUNCATE: return sys_ftruncate((int)regs->rdi, regs->rsi);
+        case SYS_UTIME: { vfs_lock(); int64_t r = sys_utime(regs->rdi, regs->rsi); vfs_unlock(); return r; }
         case SYS_ISATTY: {
             file_t *file = fd_to_file((int)regs->rdi);
             return file ? (file_is_terminal(file) ? 1 : 0) : -EBADF;

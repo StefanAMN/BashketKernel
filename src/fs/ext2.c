@@ -371,20 +371,22 @@ static uint32_t file_block(struct ext2_inode *inode, uint32_t index, bool alloc,
 }
 
 // Free every block listed in a block of numbers, `depth` levels deep, and
-// the block itself
-static void free_tree(uint32_t block, int depth) {
-    if (!valid_block(block)) return;
+// the block itself. Returns how many blocks that was.
+static uint32_t free_tree(uint32_t block, int depth) {
+    if (!valid_block(block)) return 0;
+    uint32_t count = 1;
     if (depth > 0) {
         // The numbers are copied out first: freeing uses the scratch blocks
         uint32_t *numbers = kmalloc(vol.block_size);
         if (numbers && read_block(block, numbers)) {
             for (uint32_t i = 0; i < vol.pointers_per_block; i++) {
-                if (numbers[i]) free_tree(numbers[i], depth - 1);
+                if (numbers[i]) count += free_tree(numbers[i], depth - 1);
             }
         }
         kfree(numbers);
     }
     free_block(block);
+    return count;
 }
 
 // Give back everything a file occupies. The inode is changed in memory;
@@ -956,9 +958,8 @@ static int64_t ext2_file_write(vnode_t *node, size_t offset, const void *buf, si
     return (int64_t)done;
 }
 
-// vnode_ops_t.truncate: cut the file to nothing and free its blocks.
-// Returns 0 or -EIO.
-static int ext2_file_truncate(vnode_t *node) {
+// Cut a file to nothing and free its blocks. Returns 0 or -EIO.
+static int truncate_to_nothing(vnode_t *node) {
     uint32_t ino = ino_of(node);
     struct ext2_inode inode;
     int err = 0;
@@ -984,6 +985,149 @@ static int ext2_file_truncate(vnode_t *node) {
     }
     mutex_unlock(&ext2_mutex);
     return err;
+}
+
+// What a partial truncation takes out of the tree of block numbers: whole
+// subtrees, and the numbers past the cut in tables that stay (copied, to
+// be freed once the tables and the inode no longer list them)
+typedef struct {
+    uint32_t roots[DIRECT_BLOCKS + 3];   // Direct blocks, then whole indirect trees
+    int depths[DIRECT_BLOCKS + 3];
+    int count;
+    uint32_t *tails[2];                  // Copies of the tables cut part way...
+    uint32_t from[2];                    // ...whose entries from here on go
+    int tail_depths[2];
+    int tail_count;
+} cut_t;
+
+// Cut the table `table` (a block of numbers) at entry `from`: copy it into
+// the cut list for freeing later, zero the entries from `from` on, and
+// write it back. Entries are trees `depth` levels deep. Returns false on a
+// disk error or no memory.
+static bool cut_table(cut_t *cut, uint32_t table, uint32_t from, int depth) {
+    if (!valid_block(table) || cut->tail_count == 2) return false;
+    uint32_t *copy = kmalloc(vol.block_size);
+    if (!copy || !read_block(table, copy)) { kfree(copy); return false; }
+    uint32_t *numbers = kmalloc(vol.block_size);
+    if (!numbers) { kfree(copy); return false; }
+    memcpy(numbers, copy, vol.block_size);
+    for (uint32_t i = from; i < vol.pointers_per_block; i++) numbers[i] = 0;
+    bool ok = write_block(table, numbers);
+    kfree(numbers);
+    if (!ok) { kfree(copy); return false; }
+    cut->tails[cut->tail_count] = copy;
+    cut->from[cut->tail_count] = from;
+    cut->tail_depths[cut->tail_count++] = depth;
+    return true;
+}
+
+// Take a whole subtree out of the file (its number already cleared by the
+// caller), to be freed later
+static void cut_whole(cut_t *cut, uint32_t root, int depth) {
+    if (!root) return;
+    cut->roots[cut->count] = root;
+    cut->depths[cut->count++] = depth;
+}
+
+// vnode_ops_t.truncate: cut the file to `size` bytes. In order: the tables
+// of block numbers that stay lose their entries past the cut, the inode is
+// written with its new size and pointers, and only then are the blocks
+// marked free (a crash leaks them, never leaves the file listing free
+// blocks). The rest of the new last block is zeroed. Returns 0, -EIO or
+// -ENOMEM.
+static int ext2_file_truncate(vnode_t *node, size_t size) {
+    if (size == 0) return truncate_to_nothing(node);
+    uint32_t ino = ino_of(node);
+    uint32_t p = vol.pointers_per_block;
+    uint32_t keep = (uint32_t)((size + vol.block_size - 1) / vol.block_size);  // Blocks 0..keep-1 stay
+    struct ext2_inode inode;
+    cut_t cut;
+    memset(&cut, 0, sizeof(cut));
+    int err = 0;
+
+    mutex_lock(&ext2_mutex);
+    if (!read_inode(ino, &inode)) { mutex_unlock(&ext2_mutex); return -EIO; }
+    if (size >= inode.size) { mutex_unlock(&ext2_mutex); return 0; }
+
+    // The rest of the last block that stays reads as zeros from now on
+    bool error = false;
+    uint32_t last = file_block(&inode, keep - 1, false, 0, &error);
+    if (last && size % vol.block_size) {
+        if (!read_block(last, data_block)) err = -EIO;
+        memset(data_block + size % vol.block_size, 0, vol.block_size - size % vol.block_size);
+        if (err == 0 && !write_block(last, data_block)) err = -EIO;
+    }
+
+    // Direct blocks
+    for (uint32_t i = keep; err == 0 && i < DIRECT_BLOCKS; i++) {
+        cut_whole(&cut, inode.block[i], 0);
+        inode.block[i] = 0;
+    }
+    // The singly indirect tree: blocks DIRECT_BLOCKS .. DIRECT_BLOCKS + p - 1
+    uint32_t base = DIRECT_BLOCKS;
+    if (err == 0 && inode.block[12]) {
+        if (keep <= base) { cut_whole(&cut, inode.block[12], 1); inode.block[12] = 0; }
+        else if (keep < base + p && !cut_table(&cut, inode.block[12], keep - base, 0)) err = -EIO;
+    }
+    // The doubly indirect tree: the next p * p blocks
+    base += p;
+    if (err == 0 && inode.block[13]) {
+        if (keep <= base) {
+            cut_whole(&cut, inode.block[13], 2);
+            inode.block[13] = 0;
+        } else if (keep < base + p * p) {
+            uint32_t j = keep - base, t = j / p;            // Top entry t holds the first block cut
+            bool middle_whole = (j % p == 0);
+            if (!cut_table(&cut, inode.block[13], middle_whole ? t : t + 1, 1)) err = -EIO;
+            if (err == 0 && !middle_whole) {
+                bool e = false;
+                uint32_t middle = table_entry(inode.block[13], t, indirect2_block, false, 0, &inode, &e);
+                if (e) err = -EIO;
+                else if (middle && !cut_table(&cut, middle, j % p, 0)) err = -EIO;
+            }
+        }
+    }
+    // The triply indirect tree is never written (see file_block): all of it goes
+    if (err == 0 && inode.block[14]) { cut_whole(&cut, inode.block[14], 3); inode.block[14] = 0; }
+
+    // The inode, then the freeing (and the inode's count of its blocks)
+    if (err == 0) {
+        inode.size = (uint32_t)size;
+        inode.mtime = inode.ctime = walltime_seconds();
+        if (!write_inode(ino, &inode)) err = -EIO;
+    }
+    if (err == 0) {
+        uint32_t freed = 0;
+        for (int i = 0; i < cut.count; i++) freed += free_tree(cut.roots[i], cut.depths[i]);
+        for (int t = 0; t < cut.tail_count; t++) {
+            for (uint32_t i = cut.from[t]; i < p; i++) {
+                if (cut.tails[t][i]) freed += free_tree(cut.tails[t][i], cut.tail_depths[t]);
+            }
+        }
+        uint32_t sectors = freed * vol.sectors_per_block;
+        inode.sectors = inode.sectors > sectors ? inode.sectors - sectors : 0;
+        if (!write_inode(ino, &inode)) err = -EIO;
+        node->size = size;
+        node->mtime = inode.mtime;
+    }
+    for (int t = 0; t < cut.tail_count; t++) kfree(cut.tails[t]);
+    mutex_unlock(&ext2_mutex);
+    return err;
+}
+
+// vnode_ops_t.touch: write node->mtime into the inode. 0 or -EIO.
+static int ext2_touch(vnode_t *node) {
+    struct ext2_inode inode;
+    uint32_t ino = ino_of(node);
+    mutex_lock(&ext2_mutex);
+    bool ok = read_inode(ino, &inode);
+    if (ok) {
+        inode.mtime = node->mtime;
+        inode.ctime = walltime_seconds();
+        ok = write_inode(ino, &inode);
+    }
+    mutex_unlock(&ext2_mutex);
+    return ok ? 0 : -EIO;
 }
 
 // vnode_ops_t.symlink: a symbolic link `name` in `dir` to `target`: its
@@ -1115,10 +1259,11 @@ static int ext2_stat(vnode_t *node, struct vfs_stat *st) {
 
 static const vnode_ops_t ext2_file_ops = { .read = ext2_file_read, .write = ext2_file_write,
                                            .truncate = ext2_file_truncate, .setattr = ext2_setattr,
-                                           .opened = ext2_file_opened, .stat = ext2_stat };
+                                           .opened = ext2_file_opened, .stat = ext2_stat, .touch = ext2_touch };
 static const vnode_ops_t ext2_dir_ops = { .create = ext2_dir_create, .remove = ext2_dir_remove,
                                           .rename = ext2_dir_rename, .load = ext2_dir_load, .setattr = ext2_setattr,
-                                          .symlink = ext2_dir_symlink, .link = ext2_dir_link, .stat = ext2_stat };
+                                          .symlink = ext2_dir_symlink, .link = ext2_dir_link, .stat = ext2_stat,
+                                          .touch = ext2_touch };
 static const vnode_ops_t ext2_symlink_ops = { .setattr = ext2_setattr, .stat = ext2_stat };
 
 // --- Putting right what a crash left behind -----------------------------------------
