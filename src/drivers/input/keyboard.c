@@ -34,6 +34,18 @@ static const char scancode_ascii_shift[128] = {
     '*', 0, ' '
 };
 
+static void ps2_wait_write(void) {
+    while (inb(0x64) & 2) {
+        asm volatile("pause");
+    }
+}
+
+static void ps2_wait_read(void) {
+    while (!(inb(0x64) & 1)) {
+        asm volatile("pause");
+    }
+}
+
 static void keyboard_irq_handler(struct registers *regs) {
     (void)regs;
     uint8_t scancode = inb(0x60);
@@ -66,11 +78,31 @@ static void keyboard_irq_handler(struct registers *regs) {
 void keyboard_init(void) {
     register_irq_handler(1, keyboard_irq_handler); // IRQ 1 = Interrupt 33
 
-    // Explicitly unmask IRQ 1 (Keyboard) on 8259 Master PIC
+    // 1. Enable first PS/2 port (Keyboard)
+    ps2_wait_write();
+    outb(0x64, 0xAE);
+
+    // 2. Read PS/2 Controller Command Byte (0x20)
+    ps2_wait_write();
+    outb(0x64, 0x20);
+    ps2_wait_read();
+    uint8_t config = inb(0x60);
+
+    // 3. Enable IRQ 1 (bit 0 = 1) and enable first PS/2 port (bit 4 = 0)
+    config |= 0x01;
+    config &= ~(0x10);
+
+    // 4. Write updated Controller Command Byte (0x60)
+    ps2_wait_write();
+    outb(0x64, 0x60);
+    ps2_wait_write();
+    outb(0x60, config);
+
+    // 5. Explicitly unmask IRQ 1 (Keyboard) on 8259 Master PIC
     uint8_t mask = inb(0x21);
     outb(0x21, mask & ~(1 << 1));
 
-    // Clear any pending/stale scancode in PS/2 controller buffer
+    // 6. Clear any pending/stale scancode in PS/2 controller data buffer
     while (inb(0x64) & 1) {
         (void)inb(0x60);
     }
@@ -78,6 +110,9 @@ void keyboard_init(void) {
 
 bool keyboard_has_char(void) {
     if (kbd_head != kbd_tail) {
+        return true;
+    }
+    if (inb(0x64) & 1) {
         return true;
     }
     return serial_has_char();
@@ -92,6 +127,16 @@ char keyboard_getchar(void) {
         char c = kbd_buffer[kbd_tail];
         kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
         return c;
+    }
+
+    if (inb(0x64) & 1) {
+        uint8_t scancode = inb(0x60);
+        if (scancode == 0x2A || scancode == 0x36) shift_pressed = true;
+        else if (scancode == 0xAA || scancode == 0xB6) shift_pressed = false;
+        else if (!(scancode & 0x80) && scancode < 128) {
+            char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
+            if (c != 0) return c;
+        }
     }
 
     if (serial_has_char()) {

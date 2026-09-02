@@ -7,9 +7,9 @@
 #include "kprintf.h"
 #include "io.h"
 #include "pic.h"
+#include "lapic.h"
 #include <stddef.h>
 
-// Hardware IRQ Handler function pointer type
 typedef void (*irq_handler_t)(struct registers *regs);
 
 static irq_handler_t irq_handlers[16] = {0};
@@ -80,12 +80,13 @@ void isr_handler(struct registers *regs) {
             irq_handlers[irq](regs);
         }
 
-        // Send EOI (End of Interrupt) to PIC
+        // Send End of Interrupt (EOI) to Local APIC
+        lapic_eoi();
+
+        // Send End of Interrupt (EOI) to 8259 PIC
         if (regs->int_no >= 40) {
-            // Send EOI to Slave PIC
             outb(PIC2_COMMAND, 0x20);
         }
-        // Send EOI to Master PIC
         outb(PIC1_COMMAND, 0x20);
     } else {
         kprintf("Unhandled Interrupt Vector: %zd\n", regs->int_no);
