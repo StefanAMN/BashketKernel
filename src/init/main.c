@@ -100,6 +100,9 @@ static void shell_task_entry(void) {
     while (1) {
         if (keyboard_has_char()) {
             char c = keyboard_getchar();
+            if (c == 0) {
+                continue;
+            }
             if (c == '\n') {
                 kprintf("\n");
                 line_buf[line_pos] = '\0';
