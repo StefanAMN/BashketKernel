@@ -55,7 +55,7 @@ so the numbering has gaps.
 ---
 
 ### 3. Memory Management: PMM, VMM & Kernel Heap (Phase 3)
-**Status: real.** Bitmap frame allocator, 4-level paging, and a heap with boundary tags and free lists by size class: `kmalloc` and `kfree` take the same time whatever the number of blocks in use (tested), and freed neighbours merge at once. Freed memory is filled with 0x6b and `kmalloc` checks that what it hands out still is: a write after free panics, naming the block and the offset, and a read after free sees an obvious pattern (`heap_catches_writes_after_free`). The slab caches are not covered. `kheap_check` verifies the whole structure for the tests.
+**Status: real.** Bitmap frame allocator, 4-level paging, and a heap with boundary tags and free lists by size class: `kmalloc` and `kfree` take the same time whatever the number of blocks in use (tested), and freed neighbours merge at once. Freed memory is filled with 0x6b and `kmalloc` checks that what it hands out still is: a write after free panics, naming the block and the offset, and a read after free sees an obvious pattern (`heap_catches_writes_after_free`). The slab caches do the same for their objects (K1). `kheap_check` verifies the whole structure for the tests.
 
 **Goal:** Physical frame bitmap allocator, 4-level x86_64 page tables, kernel heap allocator.
 
@@ -143,7 +143,7 @@ so the numbering has gaps.
 ---
 
 ### 8. Advanced Memory Management (Phase 8)
-**Status: partial.** The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects. `fork` shares pages copy-on-write. `mmap` and `brk` only promise memory: a page gets its frame when it is first touched (so does the user stack, up to 8 MiB), and the calls fail when more would be promised than is free. A file can be mapped privately (`mmap` with a descriptor): each page is read from the file when first touched, and writes stay in the process. `munmap` can remove part of a mapping. Not done: shared file mappings and writing changes back, a page cache (two processes mapping one file each read their own copy), and loading executables this way. See `src/mm/region.h` and `region.c`, `src/mm/mmap.c`, `src/mm/cow.c`, and `try_promised_page` in `src/arch/x86_64/isr.c`.
+**Status: partial.** The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects; freed objects are poisoned and checked when handed out again, so a write after free panics, naming the cache (`slab_catches_writes_after_free`). `fork` shares pages copy-on-write. `mmap` and `brk` only promise memory: a page gets its frame when it is first touched (so does the user stack, up to 8 MiB), and the calls fail when more would be promised than is free. A file can be mapped privately (`mmap` with a descriptor): each page is read from the file when first touched, and writes stay in the process. `munmap` can remove part of a mapping. Not done: shared file mappings and writing changes back, a page cache (two processes mapping one file each read their own copy), and loading executables this way. See `src/mm/region.h` and `region.c`, `src/mm/mmap.c`, `src/mm/cow.c`, and `try_promised_page` in `src/arch/x86_64/isr.c`.
 
 **Goal:** Slab object allocator, Copy-On-Write (COW), Anonymous memory mapping (`mmap`).
 

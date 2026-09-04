@@ -132,9 +132,42 @@ TEST(slab_rejects_bad_requests) {
     EXPECT_TRUE(pmm_get_free_frames() == frames_before);
 }
 
+// Freed objects are poisoned past their link: a read after free sees the
+// pattern, and a write after free is found by the kmem_cache_alloc that
+// hands the object out again (here counted; anywhere else it is a panic).
+// A fresh page's objects start poisoned too.
+TEST(slab_catches_writes_after_free) {
+    size_t damage = kmem_cache_poison_damage();
+    kmem_cache_t *cache = kmem_cache_create("poison-test", 64, 8);
+    uint8_t *keep = kmem_cache_alloc(cache), *victim = kmem_cache_alloc(cache);
+    EXPECT_TRUE(keep != NULL && victim != NULL);
+    if (!keep || !victim) return;
+    EXPECT_TRUE(victim[8] == 0x6b && victim[63] == 0x6b);        // Never used: poisoned from the start
+    EXPECT_EQ(kmem_cache_poison_damage(), damage);
+
+    for (int i = 0; i < 64; i++) victim[i] = 0x11;
+    EXPECT_TRUE(kmem_cache_free(cache, victim));                  // `keep` keeps the page
+    EXPECT_TRUE(victim[8] == 0x6b && victim[40] == 0x6b && victim[63] == 0x6b);
+
+    victim[40] = 0;                                               // The bug
+    kmem_cache_poison_damage_is_fatal(false);
+    uint8_t *again = kmem_cache_alloc(cache);                     // The same slot, first on the free list
+    kmem_cache_poison_damage_is_fatal(true);
+    EXPECT_TRUE(again == victim);
+    EXPECT_EQ(kmem_cache_poison_damage(), damage + 1);
+
+    EXPECT_TRUE(kmem_cache_free(cache, again));                   // Poisoned afresh: nothing to report
+    uint8_t *clean = kmem_cache_alloc(cache);
+    EXPECT_TRUE(clean == victim);
+    EXPECT_EQ(kmem_cache_poison_damage(), damage + 1);
+    EXPECT_TRUE(kmem_cache_free(cache, clean) && kmem_cache_free(cache, keep));
+    kmem_cache_destroy(cache);
+}
+
 void test_suite_slab(void) {
     kprintf("Suite: Slab Allocator\n");
     RUN_TEST(slab_allocates_distinct_objects_and_returns_pages);
     RUN_TEST(slab_honours_alignment);
     RUN_TEST(slab_rejects_bad_requests);
+    RUN_TEST(slab_catches_writes_after_free);
 }
