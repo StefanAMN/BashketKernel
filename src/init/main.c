@@ -103,11 +103,13 @@ static void shell_task_entry(void) {
             if (c == 0) {
                 continue;
             }
-            if (c == '\n') {
+            if (c == '\n' || c == '\r') {
                 kprintf("\n");
                 line_buf[line_pos] = '\0';
-                shell_run_cmd(line_buf);
-                line_pos = 0;
+                if (line_pos > 0) {
+                    shell_run_cmd(line_buf);
+                    line_pos = 0;
+                }
                 kprintf("BashketOS> ");
             } else if (c == '\b') {
                 if (line_pos > 0) {
