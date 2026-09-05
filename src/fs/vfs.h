@@ -81,6 +81,12 @@ typedef struct vnode_ops {
     // directory marked `unloaded`.
     int (*load)(struct vnode *dir);
 
+    // Bring the directory's children up to date with something that
+    // changes by itself (/proc and its processes). Called with the tree
+    // lock held every time anything looks inside the directory (a lookup
+    // by name, a listing), before it looks; may attach and remove nodes.
+    void (*refresh)(struct vnode *dir);
+
     // Record the node's owner, group and permission bits (as the vnode has
     // them now) where the filesystem keeps them. A filesystem without this
     // cannot store them: what it shows for them is fixed.
@@ -408,8 +414,9 @@ bool vfs_forget_directory(vnode_t *dir);
 
 /**
  * @brief Make sure a directory's children have been read from its storage
- *        (see vnode_ops_t.load). Call, holding the tree lock, before
- *        walking dir->children directly.
+ *        (see vnode_ops_t.load), and are up to date if they change by
+ *        themselves (vnode_ops_t.refresh). Call, holding the tree lock,
+ *        before walking dir->children directly.
  */
 void vfs_load_dir(vnode_t *dir);
 
