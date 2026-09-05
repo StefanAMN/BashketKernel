@@ -40,8 +40,11 @@ extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *
 
 static void mouse_irq_handler(struct registers *regs) {
     (void)regs;
-    while (inb(0x64) & 1) {
-        (void)inb(0x60);
+    while (1) {
+        uint8_t status = inb(0x64);
+        if (!(status & 0x01)) break; // No data available
+        if (!(status & 0x20)) break; // Data belongs to keyboard! Do not read!
+        (void)inb(0x60);             // Drain mouse data byte
     }
 }
 
