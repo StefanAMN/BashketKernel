@@ -330,7 +330,7 @@ so the numbering has gaps.
 ---
 
 ### 24. Virtual Process Filesystem (/proc) (Phase 24)
-**Status: real.** `/proc/version`, `uptime`, `meminfo`, `tasks` and `cpuinfo` are generated from live kernel state on every read.
+**Status: real.** `/proc/version`, `uptime`, `meminfo`, `tasks`, `cpuinfo`, `kmsg` and `mounts` are generated from live kernel state on every read. `/proc/<pid>/` has a directory per task with `status` (name, state, user and group, parent, process group, heap and mapped memory) and `cmdline` (the arguments it was started with, NUL-separated); `/proc/self` is a link to the reader's own. The VFS keeps the whole tree in memory, so the directories are kept in step with the task list by a `refresh` operation on `/proc`, run on every lookup and listing there; the nodes hold only a pid and each read looks the task up under the scheduler lock, so a reaped task reads as ENOENT rather than through a freed pointer. Nothing under `/proc` can be removed. `ps` reads `/proc/<pid>/status` (`tests/test_procfs.c`, syscheck's `check_proc`).
 
 **Goal:** Virtual `/proc` filesystem exposing system diagnostics (`/proc/meminfo`, `/proc/cpuinfo`, `/proc/uptime`).
 
