@@ -815,6 +815,59 @@ syscheck; the ext2 image passes `e2fsck` afterwards.
 
 ---
 
+## Track J — Catching use after free; words and files the shell can make
+
+Proposed on 2026-10-20, after track I. J1 comes from the `readlink` race
+of repair 12, which no test could show; J2 and J3 from what `make
+test-tools` first assumed the shell could do; J4 from `cp` and the
+editor having to recreate a file to shorten it.
+
+### J1. Freed heap memory is poisoned and checked (S)
+
+`kfree` fills what it frees with a fixed byte (beyond the free-list
+links), and so does heap growth; `kmalloc` checks that what it hands out
+still holds that byte. A difference is a write after free: the kernel
+panics, naming the block and the first changed offset. A read after free
+then sees an obvious pattern rather than plausible data. `kheap_check`
+verifies every free block. The cost is a pass over each block freed and
+allocated, which the heap benchmark (F4) will show.
+**Check:** a unit test that writes into freed memory and sees it
+reported (the panic made a report for the test); the benchmark before
+and after; `make check` passes with it on, which is itself the test that
+nothing writes after freeing.
+
+### J2. Words with quoted parts, and single quotes (S)
+
+`"<"x` is one word in POSIX sh and two here; `'$HOME'` is not expanded
+there and is here (no single quotes). The word reader joins quoted and
+unquoted parts until a blank or an operator, and learns single quotes
+(no expansion at all inside). Wildcards stay text in either kind of
+quote.
+**Check:** a scripted session: joined words, both quotes, a quote inside
+the other kind, an unclosed quote refused.
+
+### J3. Command substitution, `$(...)` (S)
+
+`echo "today: $(date)"`: the command runs in a child of the shell with
+its output in a pipe, and the output (trailing newlines removed) takes
+the place of `$(...)`, inside double quotes as one word, outside them
+split at blanks. Nesting works because the child is a shell. Output
+longer than a line (4 KiB) is refused rather than cut.
+**Check:** a scripted session: in quotes and not, nested, a failing
+command (its status in `$?`), too much output.
+
+### J4. `truncate`, `ftruncate` and file times (S)
+
+Two system calls to set a file's length (shorter: the end is gone;
+longer: zeros), on memory, FAT and ext2, permission as for writing;
+and `utime` to set a file's modification time (the owner or root), so
+that `touch` can exist. `/bin/touch` and `/bin/truncate`.
+**Check:** unit tests on each filesystem (blocks freed on ext2 and FAT,
+counted, `e2fsck` and `fsck.fat` happy); syscheck from ring 3, as root
+and as a user without the right.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -877,6 +930,8 @@ G1, G2, G3                       done
 H1, H2, H3                       done
         |
 I1 -> I2                         done
+        |
+J1, J2 -> J3, J4                 next
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
