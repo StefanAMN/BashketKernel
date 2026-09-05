@@ -283,6 +283,7 @@ void ed25519_sign(uint8_t signature[64], const uint8_t *message, size_t message_
     for (int i = 0; i < 32; i++) {
         S[i] = (r_hash[i] + hram[i] * hash[i]) & 0xFF;
     }
+    S[31] &= 0x1F;
 
     memcpy(signature + 32, S, 32);
 }

@@ -42,8 +42,8 @@ static void md5_transform(uint32_t state[4], const uint8_t block[64]) {
     STEP(F, b, c, d, a, x[11], 22, 0x895cd7be);
     STEP(F, a, b, c, d, x[12], 7, 0x6b901122);
     STEP(F, d, a, b, c, x[13], 12, 0xfd987193);
-    STEP(F, c, d, a, b, x[14], 17, 0x86d3d2d4);
-    STEP(F, b, c, d, a, x[15], 22, 0x4787c62a);
+    STEP(F, c, d, a, b, x[14], 17, 0xa679438e);
+    STEP(F, b, c, d, a, x[15], 22, 0x49b40821);
 
     /* Round 2 */
     STEP(G, a, b, c, d, x[1], 5, 0xf61e2562);

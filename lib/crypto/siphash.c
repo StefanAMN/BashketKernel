@@ -32,7 +32,7 @@ uint64_t siphash24(const uint8_t key[16], const uint8_t *data, size_t len) {
     uint64_t k1 = load64_le(key + 8);
 
     uint64_t v0 = k0 ^ 0x736f6d6570736575ULL;
-    uint64_t v1 = k1 ^ 0x646f72616d646f6dULL;
+    uint64_t v1 = k1 ^ 0x646f72616e646f6dULL;
     uint64_t v2 = k0 ^ 0x6c7967656e657261ULL;
     uint64_t v3 = k1 ^ 0x7465646279746573ULL;
 

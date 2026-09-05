@@ -129,12 +129,18 @@ TEST(crypto_chacha20_test) {
 }
 
 TEST(crypto_poly1305_test) {
-    uint8_t key[32] = {0};
-    uint8_t msg[14] = "Test Poly1305";
+    uint8_t key[32] = {
+        0x85,0xd6,0xbe,0x78,0x57,0x55,0x6d,0x33,0x7f,0x44,0x52,0xfe,0x42,0xd5,0x06,0xa8,
+        0x01,0x03,0x80,0x8a,0xfb,0x0d,0xb2,0xfd,0x4a,0xbf,0xf6,0xaf,0x41,0x49,0xf5,0x1b
+    };
+    const uint8_t msg[] = "Cryptographic Forum Research Group";
     uint8_t mac[16];
 
-    poly1305_mac(key, msg, 14, mac);
-    EXPECT_TRUE(mac[0] != 0 || mac[1] != 0);
+    poly1305_mac(key, msg, 34, mac);
+    EXPECT_EQ(mac[0], 0xa8);
+    EXPECT_EQ(mac[1], 0x06);
+    EXPECT_EQ(mac[2], 0x1d);
+    EXPECT_EQ(mac[15], 0xa9);
 }
 
 TEST(crypto_hmac_test) {
@@ -158,12 +164,12 @@ TEST(crypto_hkdf_test) {
 
     hkdf_sha256(salt, 13, ikm, 22, info, 10, okm, 42);
 
-    // Expected OKM starts with 3cb743b916
+    // Expected OKM starts with 3cb25f25fa
     EXPECT_EQ(okm[0], 0x3c);
-    EXPECT_EQ(okm[1], 0xb7);
-    EXPECT_EQ(okm[2], 0x43);
-    EXPECT_EQ(okm[3], 0xb9);
-    EXPECT_EQ(okm[4], 0x16);
+    EXPECT_EQ(okm[1], 0xb2);
+    EXPECT_EQ(okm[2], 0x5f);
+    EXPECT_EQ(okm[3], 0x25);
+    EXPECT_EQ(okm[4], 0xfa);
 }
 
 TEST(crypto_crc32_test) {

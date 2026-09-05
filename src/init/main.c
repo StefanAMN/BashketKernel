@@ -202,6 +202,7 @@ void _start(void) {
     // Phase 9: Modern Interrupt Architecture (LAPIC & IOAPIC)
     lapic_init();
     ioapic_init();
+    lapic_timer_init(0x100000);
     kprintf("Phase 9 Local APIC & I/O APIC initialization complete.\n");
 
     // Phase 10: Symmetric Multiprocessing (SMP & Spinlocks)

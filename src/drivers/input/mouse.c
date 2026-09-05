@@ -6,18 +6,10 @@
 #include "mouse.h"
 #include "kprintf.h"
 #include "idt.h"
+#include "interrupts.h"
+#include "io.h"
 
 static mouse_state_t current_mouse_state = { .x = 640, .y = 400, .left_button = false, .right_button = false, .middle_button = false };
-
-static inline void outb(uint16_t port, uint8_t val) {
-    asm volatile("out dx, al" : : "a"(val), "d"(port));
-}
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    asm volatile("in al, dx" : "=a"(ret) : "d"(port));
-    return ret;
-}
 
 static void mouse_wait(uint8_t type) {
     uint32_t timeout = 100000;
@@ -44,7 +36,18 @@ static uint8_t mouse_read(void) {
     return inb(0x60);
 }
 
+extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
+
+static void mouse_irq_handler(struct registers *regs) {
+    (void)regs;
+    while (inb(0x64) & 1) {
+        (void)inb(0x60);
+    }
+}
+
 void mouse_init(void) {
+    register_irq_handler(12, mouse_irq_handler);
+
     // Enable PS/2 auxiliary mouse controller port
     mouse_wait(1);
     outb(0x64, 0xA8);

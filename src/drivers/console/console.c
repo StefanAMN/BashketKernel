@@ -54,6 +54,18 @@ void console_putchar(char c) {
         cursor_x = 0;
         return;
     }
+
+    if (c == '\b') {
+        if (cursor_x >= 8) {
+            cursor_x -= 8;
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    putpixel(cursor_x + x, cursor_y + y, BG_COLOR);
+                }
+            }
+        }
+        return;
+    }
     
     unsigned char uc = (unsigned char)c;
     if (uc > 127) uc = '?'; // Basic font only goes up to 127

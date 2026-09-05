@@ -36,9 +36,16 @@ void ioapic_init(void) {
     // Mask legacy 8259 PIC to avoid IRQ routing conflicts
     pic_disable();
 
-    // Route legacy ISA IRQs: IRQ 0 (Timer -> Vector 32), IRQ 1 (Keyboard -> Vector 33)
+    // Route legacy ISA IRQs:
+    // IRQ 0 (Timer -> Vector 32), IRQ 1 (Keyboard -> Vector 33)
+    // IRQ 2 (Timer ACPI override -> Vector 32)
+    // IRQ 4 (COM1 Serial -> Vector 36)
+    // IRQ 12 (PS/2 Mouse -> Vector 44)
     ioapic_route_irq(0, 32, 0);
     ioapic_route_irq(1, 33, 0);
+    ioapic_route_irq(2, 32, 0);
+    ioapic_route_irq(4, 36, 0);
+    ioapic_route_irq(12, 44, 0);
 
     kprintf("IOAPIC Init: Controller mapped (Max Redirection Lines: %u)\n", max_redirection_entries);
 }
