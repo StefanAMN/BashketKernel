@@ -60,8 +60,23 @@ size_t kheap_get_failed_allocations(void);
 /**
  * @brief For tests: walk every block and every free list and check that
  *        they agree (sizes chain up, no two free blocks touch, each free
- *        block is on the right list exactly once, the byte count is right).
+ *        block is on the right list exactly once, the byte count is right,
+ *        and every free block still holds its poison).
  */
 bool kheap_check(void);
+
+#ifdef KERNEL_TESTS
+/**
+ * @brief For tests: how many blocks kmalloc has found written after they
+ *        were freed (each is a kernel panic unless switched off below).
+ */
+size_t kheap_poison_damage(void);
+
+/**
+ * @brief For tests: whether such a block panics (the default) or is only
+ *        counted, so that a test can do it on purpose.
+ */
+void kheap_poison_damage_is_fatal(bool fatal);
+#endif
 
 #endif // HEAP_H

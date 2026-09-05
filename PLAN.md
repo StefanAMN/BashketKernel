@@ -822,7 +822,12 @@ of repair 12, which no test could show; J2 and J3 from what `make
 test-tools` first assumed the shell could do; J4 from `cp` and the
 editor having to recreate a file to shorten it.
 
-### J1. Freed heap memory is poisoned and checked (S)
+### J1. Freed heap memory is poisoned and checked (S) — done
+
+Done as proposed. A small kmalloc/kfree pair costs about 0.3 µs more (the
+F4 benchmark: 792 to 1385 µs alone, 695 to 1007 µs with 3000 blocks in
+use); it still does not depend on the blocks in use. `make check` found
+no write after free anywhere. The proposal:
 
 `kfree` fills what it frees with a fixed byte (beyond the free-list
 links), and so does heap growth; `kmalloc` checks that what it hands out
