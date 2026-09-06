@@ -76,12 +76,15 @@ task_t *task_create(const char *name, void (*entry)(void)) {
     t->state = TASK_READY;
     t->pml4_phys = NULL; // Shares kernel PML4 address space
 
-    // Build initial 16-byte aligned stack frame for ctx_switch
+    // Build initial stack frame for ctx_switch conforming to System V AMD64 ABI.
+    // At function entry point, (RSP + 8) must be a multiple of 16 (i.e. RSP % 16 == 8).
+    // With stack_raw 16-byte aligned, task_exit sits at (stack_raw - 8).
+    // When ctx_switch pops callee-saved registers and ret pops entry, RSP becomes
+    // stack_raw - 8, perfectly satisfying the 16-byte alignment requirement.
     uint64_t stack_raw = (uint64_t)t->kernel_stack + KERNEL_STACK_SIZE;
     stack_raw &= ~0xFULL; // Align to 16-byte boundary
     uint64_t *stack_top = (uint64_t *)stack_raw;
 
-    *(--stack_top) = 0;                    // Alignment padding word
     *(--stack_top) = (uint64_t)task_exit;  // Return address if entry returns
     *(--stack_top) = (uint64_t)entry;      // Target entry point (popped by ret in ctx_switch)
     *(--stack_top) = 0x202;                // RFLAGS (Interrupts enabled 0x200 | bit 1 set)

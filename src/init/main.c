@@ -177,6 +177,7 @@ void _start(void) {
     kprintf("HHDM Offset: %p\n", (void *)pmm_get_hhdm_offset());
     vmm_init();
     kheap_init();
+    console_enable_backbuffer();
     kprintf("Phase 3 Memory Management initialization complete.\n");
 
     // Phase 4: Multitasking & Scheduler
