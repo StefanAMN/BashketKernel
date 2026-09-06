@@ -495,6 +495,65 @@ TEST(ext2_links) {
     EXPECT_TRUE(ext2_free_blocks() == blocks_before && ext2_free_inodes() == inodes_before);
 }
 
+// Cutting a file to any length, through every level of its block tree,
+// and growing it again: the start kept, zeros after it, every block given
+// back by the end
+TEST(ext2_truncate_to_any_length) {
+    uint32_t blocks_before = ext2_free_blocks(), inodes_before = ext2_free_inodes();
+    static uint8_t data[400000], back[400000];
+    for (size_t i = 0; i < sizeof(data); i++) data[i] = (uint8_t)(i * 7 + (i >> 10));
+    file_t *file = NULL;
+    EXPECT_EQ(file_open("/root/cut.bin", O_WRONLY | O_CREAT, &file), 0);
+    if (!file) return;
+    size_t written = 0;
+    while (written < sizeof(data)) {
+        int64_t n = file_write(file, data + written, sizeof(data) - written);
+        if (n <= 0) break;
+        written += (size_t)n;
+    }
+    file_close(file);
+    EXPECT_EQ(written, sizeof(data));
+    vnode_t *node = vfs_find(NULL, "/root/cut.bin");
+    uint32_t full = ext2_free_blocks();
+
+    // Shorter and shorter: through the doubly indirect tree (with 1 KiB
+    // blocks it starts at 268 KiB), the singly indirect one, the direct blocks
+    static const size_t lengths[] = { 300000, 300001, 100000, 5000, 1 };
+    uint32_t last_free = full;
+    for (size_t k = 0; k < sizeof(lengths) / sizeof(lengths[0]); k++) {
+        EXPECT_EQ(vfs_truncate(node, lengths[k]), 0);
+        EXPECT_EQ(node->size, lengths[k]);
+        EXPECT_TRUE(ext2_free_blocks() >= last_free);
+        last_free = ext2_free_blocks();
+    }
+    EXPECT_TRUE(last_free > full);
+
+    // Grown again past every level by one byte written at the far end: the
+    // first byte kept, then zeros, also in the rest of the block that was
+    // cut through (where the old data still was on the disk)
+    EXPECT_EQ(vfs_write(node, 349999, 1, "\0"), 1u);
+    EXPECT_TRUE(vfs_forget_directory(vfs_find(NULL, "/root")));           // Read it back from the disk
+    node = vfs_find(NULL, "/root/cut.bin");
+    EXPECT_TRUE(node && node->size == 350000);
+    EXPECT_EQ(file_open("/root/cut.bin", O_RDONLY, &file), 0);
+    if (file) {
+        size_t got = 0;
+        int64_t n;
+        while (got < 350000 && (n = file_read(file, back + got, 350000 - got)) > 0) got += (size_t)n;
+        file_close(file);
+        EXPECT_EQ(got, 350000u);
+        bool zeros = true;
+        for (size_t i = 1; i < 350000; i++) if (back[i] != 0) zeros = false;
+        EXPECT_TRUE(back[0] == data[0] && zeros);
+    }
+    EXPECT_EQ(vfs_truncate(node, 360000), 0);                                // Grown by vfs_truncate too
+    EXPECT_EQ(node->size, 360000u);
+
+    EXPECT_EQ(vfs_truncate(node, 0), 0);
+    EXPECT_EQ(test_remove("/root", "cut.bin"), 0);
+    EXPECT_TRUE(ext2_free_blocks() == blocks_before && ext2_free_inodes() == inodes_before);
+}
+
 void test_suite_ext2(void) {
     kprintf("Suite: ext2\n");
     if (!ext2_mounted()) {
@@ -507,6 +566,7 @@ void test_suite_ext2(void) {
     RUN_TEST(ext2_directories);
     RUN_TEST(ext2_rename_and_move);
     RUN_TEST(ext2_links);
+    RUN_TEST(ext2_truncate_to_any_length);
     RUN_TEST(mount_points_cover_a_disk_directory);
     RUN_TEST(mount_points_in_memory);
     RUN_TEST(ext2_check_repairs_an_interrupted_write);

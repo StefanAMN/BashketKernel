@@ -207,6 +207,22 @@ TEST(fat32_cluster_accounting) {
     EXPECT_EQ(load("/disk/big.bin", back, sizeof(back)), (int64_t)sizeof(back));
     EXPECT_EQ(memcmp(back, data, sizeof(data)), 0);
 
+    // Cut to 19 900 bytes (inside a cluster): 39 clusters stay, 59 are free
+    // again; the start is intact. Grown to 30 000 by one byte written at
+    // the end: 20 more clusters, zeros between, also in the rest of the
+    // cluster that was cut through (where the old data still was)
+    vnode_t *big = vfs_find(NULL, "/disk/big.bin");
+    EXPECT_EQ(vfs_truncate(big, 19900), 0);
+    EXPECT_EQ(big->size, 19900u);
+    EXPECT_EQ(fat32_free_clusters(), free_at_start - 39);
+    EXPECT_EQ(vfs_write(big, 29999, 1, "\0"), 1u);
+    EXPECT_EQ(fat32_free_clusters(), free_at_start - 59);
+    EXPECT_EQ(load("/disk/big.bin", back, sizeof(back)), 30000);
+    EXPECT_EQ(memcmp(back, data, 19900), 0);
+    bool zeros = true;
+    for (size_t i = 19900; i < 30000; i++) if (back[i] != 0) zeros = false;
+    EXPECT_TRUE(zeros);                                             // (make test-disk checks the disk itself)
+
     // One write call larger than the driver takes at once is cut short, not refused
     static uint8_t huge[100000];
     EXPECT_EQ(file_open("/disk/big.bin", O_WRONLY | O_TRUNC, &file), 0);

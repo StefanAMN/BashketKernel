@@ -1546,6 +1546,9 @@ static void checks_as_alice(void) {
     CHECK(open("/etc/passwd", O_RDONLY) == -EACCES);
     struct stat st;                                     /* Describing it needs no right to read it */
     CHECK(stat("/etc/passwd", &st) == 0 && st.mode == 0600 && st.uid == 0);
+    CHECK(truncate("/etc/motd", 0) == -EACCES);         /* Cutting is writing */
+    CHECK(utime("/etc/motd", UTIME_NOW) == -EACCES);    /* "Now" needs the right to write ... */
+    CHECK(utime("/etc/motd", 1000000000UL) == -EPERM);  /* ... any other time, to own it */
     CHECK(open("/dev/vda", O_RDWR) == -EACCES);
     CHECK(open("/bin/evil", O_WRONLY | O_CREAT) == -EACCES);
     CHECK(open("/disk/evil.txt", O_WRONLY | O_CREAT) == -EACCES);
@@ -1572,6 +1575,7 @@ static void checks_as_alice(void) {
     CHECK(write((int)fd, "hers", 4) == 4);
     close((int)fd);
     CHECK(chmod("/tmp/alice.txt", 0600) == 0);          /* The owner may */
+    CHECK(utime("/tmp/alice.txt", 1000000000UL) == 0);  /* Her own file: any time she likes */
     CHECK(chown("/tmp/alice.txt", 1001, KEEP_ID) == -EPERM);     /* ... but may not give it away */
     fd = open("/tmp/alice.txt", O_RDONLY);
     CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 4);
@@ -2120,6 +2124,38 @@ static void check_stat(void) {
     CHECK(fstat(1, (struct stat *)8) == -EFAULT);
 }
 
+/* truncate, ftruncate and utime: lengths both ways, what they refuse */
+static void check_truncate(void) {
+    struct stat st;
+    char buf[16];
+    long fd = open("/tmp/len", O_RDWR | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "0123456789", 10) == 10);
+    CHECK(ftruncate((int)fd, 4) == 0 && fstat((int)fd, &st) == 0 && st.size == 4);
+    CHECK(truncate("/tmp/len", 12) == 0 && stat("/tmp/len", &st) == 0 && st.size == 12);
+    CHECK(lseek((int)fd, 0, SEEK_SET) == 0 && read((int)fd, buf, sizeof(buf)) == 12);
+    CHECK(memcmp(buf, "0123\0\0\0\0\0\0\0\0", 12) == 0);              /* Cut data does not come back */
+    close((int)fd);
+    fd = open("/tmp/len", O_RDONLY);
+    CHECK(ftruncate((int)fd, 0) == -EINVAL);                            /* Not open for writing */
+    close((int)fd);
+    int p[2];
+    CHECK(pipe(p) == 0 && ftruncate(p[1], 0) == -EINVAL);
+    close(p[0]); close(p[1]);
+    CHECK(ftruncate(99, 0) == -EBADF);
+    fd = open("/dev/null", O_WRONLY);                                  /* A device has no length */
+    CHECK(fd >= 0 && ftruncate((int)fd, 100) == -EINVAL && truncate("/dev/zero", 0) == -EINVAL);
+    close((int)fd);
+    CHECK(truncate("/tmp", 0) == -EISDIR && truncate("/no/such", 0) == -ENOENT);
+    CHECK(truncate("/tmp/len", 0x100000000UL) == -EFBIG);
+    CHECK(truncate((const char *)0xffffffff80000000, 0) == -EFAULT);
+
+    CHECK(utime("/tmp/len", 1000000000UL) == 0 && stat("/tmp/len", &st) == 0 && st.mtime == 1000000000U);
+    CHECK(utime("/tmp/len", UTIME_NOW) == 0 && stat("/tmp/len", &st) == 0 && st.mtime > 1700000000U);
+    CHECK(utime("/tmp/len", 100UL) == -EINVAL);                         /* Before 1980 */
+    CHECK(utime("/no/such", UTIME_NOW) == -ENOENT);
+    CHECK(unlink("/tmp/len") == 0);
+}
+
 /* The line reader the text tools use, and cp: a line longer than its
  * buffer, a last line without '\n', empty lines; a large file copied
  * exactly, its mode kept, into a directory, never onto itself */
@@ -2646,6 +2682,7 @@ int main(void) {
     check_line_editing();
     check_wildcards();
     check_stat();
+    check_truncate();
     check_text_tools();
     check_shell_words();
     check_groups_and_setuid();
