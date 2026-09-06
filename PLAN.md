@@ -841,7 +841,12 @@ reported (the panic made a report for the test); the benchmark before
 and after; `make check` passes with it on, which is itself the test that
 nothing writes after freeing.
 
-### J2. Words with quoted parts, and single quotes (S)
+### J2. Words with quoted parts, and single quotes (S) — done
+
+Done as proposed, but simpler for wildcards: a word with any quoted part
+is not expanded at all (POSIX would expand `"dir"/*`; doing that needs
+the matcher to know which characters were quoted). The H1 test had
+relied on `"<"x` being two words and was corrected. The proposal:
 
 `"<"x` is one word in POSIX sh and two here; `'$HOME'` is not expanded
 there and is here (no single quotes). The word reader joins quoted and
