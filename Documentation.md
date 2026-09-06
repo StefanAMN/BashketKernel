@@ -128,7 +128,7 @@ so the numbering has gaps.
 ---
 
 ### 7. Interactive Shell & Keyboard Input (Phase 7)
-**Status: real.** Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines, redirection and command lists (`;`, `&&`, `||`), wildcards (`*`, `?`, `[...]`), double and single quotes (parts of a word join, as in `"a b"c`), the usual text tools (`cp`, `head`, `tail`, `grep`, `sort`, reading lines of any length with `user/lib/lines.c`), and at the terminal line editing with a history and Tab completion (the arrow keys, Home, End, Ctrl-A/E/K/U/W; `user/lib/lineedit.c`), built only on system calls. Input comes from the PS/2 keyboard and the serial line at once; a machine with no PS/2 controller boots anyway, with the serial line as its only keyboard (`make test-kshell` boots one).
+**Status: real.** Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines, redirection and command lists (`;`, `&&`, `||`), wildcards (`*`, `?`, `[...]`), double and single quotes (parts of a word join, as in `"a b"c`), command substitution (`$(...)`), the usual text tools (`cp`, `head`, `tail`, `grep`, `sort`, reading lines of any length with `user/lib/lines.c`), and at the terminal line editing with a history and Tab completion (the arrow keys, Home, End, Ctrl-A/E/K/U/W; `user/lib/lineedit.c`), built only on system calls. Input comes from the PS/2 keyboard and the serial line at once; a machine with no PS/2 controller boots anyway, with the serial line as its only keyboard (`make test-kshell` boots one).
 
 **Goal:** PS/2 keyboard scancode decoding, interactive shell commands (`ls`, `cat`, `echo`).
 
