@@ -414,7 +414,11 @@ code comments and commit messages; `git log` is the full history.
   fork is paid later, by whoever writes first, and a process that cannot
   get a frame then is killed mid-instruction. `fork` now fails while free
   memory is below a reserve. The low-memory test had passed for weeks by
-  where the last allocation happened to land; growing a struct moved it.
+  where the last allocation happened to land; growing a struct moved it. With swap, the
+  reserve must be made, not only checked: pages shared by another
+  process's fork cannot be swapped, so free memory could sit below the
+  reserve while the forking process had pages of its own to give. Fork now
+  swaps some of the caller's out first (`test-swap` failed 2 runs in 5).
 - **Keys that send signals are read in interrupt handlers**, so what they
   consult (the foreground group, raw mode) is plain words, not something
   behind a lock ranked below the keyboard's.
