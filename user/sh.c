@@ -15,7 +15,7 @@
  * Compound commands, on one line or over several (the prompt asks for the
  * rest with "> "), nested as deep as wanted:
  *   if LIST; then LIST; [elif LIST; then LIST;] [else LIST;] fi
- *   while LIST; do LIST; done
+ *   while LIST; do LIST; done      (until LIST: as long as it fails)
  *   for NAME in WORDS; do LIST; done
  * with break [N] and continue [N] inside loops, and the built-in test
  * EXPR (or [ EXPR ]) for conditions: -e -f -d PATH, -z -n STRING, a = b,
@@ -719,6 +719,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  prog args | prog2      pipe output into another program\n"
                "  a ; b, a && b, a || b  run b after a; only if a succeeded; only if it failed\n"
                "  if c; then a; else b; fi     while c; do a; done     for x in 1 2 3; do echo $x; done\n"
+               "  until c; do a; done          (runs a as long as c fails)\n"
                "  [ -f FILE ], [ $x = y ], [ 3 -lt 4 ], [ ! ... ]   conditions (test); break, continue\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
                "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
@@ -742,14 +743,14 @@ static int run_pipeline_text(const char *line, int *should_exit) {
  * quotes and $( ), and the segments are parsed into a tree: a simple
  * command (run by run_pipeline_text), or an if, while or for holding lists
  * of further commands. A segment starting with a keyword (if, then, elif,
- * else, fi, while, do, done, for) is structure: "then echo a" is the
+ * else, fi, while, until, do, done, for) is structure: "then echo a" is the
  * keyword and the first command of the body. A text that stops inside an
  * if/while/for (or after '&&' or '||') is incomplete: at the prompt and in
  * a script the next line is added to it. */
 
 enum { JOIN_ALWAYS, JOIN_IF_OK, JOIN_IF_FAILED };      /* How a command follows the one before */
 enum { PARSE_OK, PARSE_SYNTAX, PARSE_INCOMPLETE };
-enum { NODE_SIMPLE, NODE_IF, NODE_WHILE, NODE_FOR };
+enum { NODE_SIMPLE, NODE_IF, NODE_WHILE, NODE_UNTIL, NODE_FOR };
 #define RUN_INCOMPLETE (-1)                             /* run_text: more lines are needed */
 
 typedef struct segment {
@@ -769,7 +770,7 @@ struct node {
     int kind;                 /* NODE_* */
     char *text;               /* NODE_SIMPLE: the command; NODE_FOR: the words to loop over */
     char name[32];            /* NODE_FOR: the variable */
-    cmd_list_t cond, body;    /* if: condition, then-part; while: condition, body; for: body */
+    cmd_list_t cond, body;    /* if: condition, then-part; while, until: condition, body; for: body */
     cmd_list_t other;         /* if: the else-part (an elif is an else holding one if) */
 };
 
@@ -963,10 +964,11 @@ static node_t *parse_if(void) {
     return node;
 }
 
-/* The rest of a while (after "while"): condition, "do", body, "done". The
- * node, or NULL with parse_state set. */
-static node_t *parse_while(void) {
-    node_t *node = new_node(NODE_WHILE);
+/* The rest of a while or until loop (after the keyword; `kind` says
+ * which): condition, "do", body, "done". The node, or NULL with
+ * parse_state set. */
+static node_t *parse_while(int kind) {
+    node_t *node = new_node(kind);
     if (!node) return NULL;
     parse_list(&node->cond, 1);
     if (expect_keyword("do", 0)) parse_list(&node->body, 1);
@@ -1014,7 +1016,8 @@ static node_t *parse_command(void) {
     char word[32];
     first_word(segs[seg_pos].text, word);
     if (take_keyword("if", 0)) return parse_if();
-    if (take_keyword("while", 0)) return parse_while();
+    if (take_keyword("while", 0)) return parse_while(NODE_WHILE);
+    if (take_keyword("until", 0)) return parse_while(NODE_UNTIL);
     if (strcmp(word, "for") == 0) return parse_for();
 
     node_t *node = new_node(NODE_SIMPLE);
@@ -1115,9 +1118,10 @@ static int exec_node(node_t *node, int *should_exit) {
     if (node->kind == NODE_FOR) {
         status = exec_for(node, should_exit);
     } else {
-        for (;;) {
+        for (;;) {                                         /* while: as long as the condition succeeds; until: fails */
             int cond = exec_list(&node->cond, should_exit);
-            if (*should_exit || interrupted || leave_loop() || cond != 0) break;
+            int stop = node->kind == NODE_WHILE ? cond != 0 : cond == 0;
+            if (*should_exit || interrupted || leave_loop() || stop) break;
             status = exec_list(&node->body, should_exit);
             if (*should_exit || interrupted || leave_loop()) break;
         }
