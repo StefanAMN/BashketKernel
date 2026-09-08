@@ -2275,6 +2275,10 @@ static void check_shell_control(void) {
     CHECK(sh_prints("for f in $(echo p q) 'r s'; do echo [$f]; done", "[p]\n[q]\n[r s]\n"));
     CHECK(sh_prints("export I=x; while [ \"$I\" != xxx ]; do export I=\"$I\"x; echo $I; done", "xx\nxxx\n"));
     CHECK(sh_prints("while false; do echo never; done; echo s=$?", "s=0\n"));
+    CHECK(sh_prints("export I=x; until [ \"$I\" = xxx ]; do export I=\"$I\"x; echo $I; done", "xx\nxxx\n"));
+    CHECK(sh_prints("until true; do echo never; done; echo s=$?", "s=0\n"));
+    CHECK(sh_prints("until false; do until false; do break 2; done; done; echo out", "out\n"));
+    CHECK(sh_ends("until false; do; done", "", 2));
     CHECK(sh_prints("for x in a b c d; do if [ $x = b ]; then continue; fi; if [ $x = d ]; then break; fi; echo $x; done",
                     "a\nc\n"));
     CHECK(sh_prints("for i in 1 2; do for j in a b c; do if [ $j = b ]; then continue 2; fi; echo $i$j; done; done",
