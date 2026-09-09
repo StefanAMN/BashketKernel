@@ -1,5 +1,8 @@
 #include "test.h"
 #include "sched.h"
+#include "heap.h"
+#include "pmm.h"
+#include "pit.h"
 
 static volatile int task1_counter = 0;
 static volatile int task2_counter = 0;
@@ -34,7 +37,90 @@ TEST(multitasking_cooperative) {
     EXPECT_EQ(task2_counter, 5);
 }
 
+TEST(zombie_reaping) {
+    // dummy1 and dummy2 from the previous test have exited by now
+    size_t free_with_zombies = pmm_get_free_frames();
+    size_t reaped = sched_reap();
+    EXPECT_TRUE(reaped >= 2);
+    // Each reaped task gives back its 4 kernel stack frames
+    EXPECT_TRUE(pmm_get_free_frames() >= free_with_zombies + reaped * 4);
+    EXPECT_EQ(sched_reap(), (size_t)0);
+}
+
+// Heap stress under preemption: these tasks never yield, so every task switch
+// between them is the timer interrupt landing at an arbitrary instruction.
+#define STRESS_TASKS 4
+#define STRESS_ITERATIONS 20000
+
+static volatile int stress_done = 0;
+static volatile int stress_corrupt = 0;
+
+static void heap_stress_task(void) {
+    uint32_t seed = 0x9E3779B9u ^ (uint32_t)(uint64_t)&seed;
+    uint8_t *held[8] = {0};
+    size_t held_size[8] = {0};
+
+    for (int i = 0; i < STRESS_ITERATIONS; i++) {
+        seed = seed * 1664525u + 1013904223u;
+        size_t slot = (seed >> 8) % 8;
+
+        if (held[slot]) {
+            // The block must still hold the pattern written at allocation
+            uint8_t want = (uint8_t)(uint64_t)held[slot];
+            if (held[slot][0] != want || held[slot][held_size[slot] - 1] != want) {
+                stress_corrupt++;
+            }
+            kfree(held[slot]);
+            held[slot] = NULL;
+        } else {
+            size_t size = 16 + ((seed >> 16) % 2000);
+            held[slot] = kmalloc(size);
+            if (held[slot]) {
+                held_size[slot] = size;
+                held[slot][0] = (uint8_t)(uint64_t)held[slot];
+                held[slot][size - 1] = (uint8_t)(uint64_t)held[slot];
+            }
+        }
+    }
+
+    for (size_t slot = 0; slot < 8; slot++) {
+        if (held[slot]) kfree(held[slot]);
+    }
+    __atomic_fetch_add(&stress_done, 1, __ATOMIC_SEQ_CST);
+}
+
+TEST(heap_stress_under_preemption) {
+    sched_reap();
+    size_t heap_before = kheap_get_allocated_bytes();
+    uint64_t ticks_before = pit_get_ticks();
+
+    for (int i = 0; i < STRESS_TASKS; i++) {
+        EXPECT_TRUE(task_create("heap_stress", heap_stress_task) != NULL);
+    }
+    while (stress_done < STRESS_TASKS) {
+        sched_yield();
+    }
+
+    EXPECT_EQ(stress_corrupt, 0);
+    // The run must have been long enough to be preempted many times
+    EXPECT_TRUE(pit_get_ticks() - ticks_before >= 5);
+
+    // Once the tasks are reaped, every byte they allocated (and their task
+    // structs) must be back: a lost or doubled list update would show here.
+    // A task bumps stress_done just before it exits, so give the last ones
+    // a moment to actually become zombies.
+    size_t reaped = 0;
+    for (int tries = 0; tries < 1000 && reaped < STRESS_TASKS; tries++) {
+        reaped += sched_reap();
+        sched_yield();
+    }
+    EXPECT_EQ(reaped, (size_t)STRESS_TASKS);
+    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
+}
+
 void test_suite_sched(void) {
     kprintf("Suite: Phase 4 Multitasking & Cooperative Scheduler\n");
     RUN_TEST(multitasking_cooperative);
+    RUN_TEST(zombie_reaping);
+    RUN_TEST(heap_stress_under_preemption);
 }

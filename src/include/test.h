@@ -14,8 +14,11 @@ extern int tests_failed;
 
 #define EXPECT_EQ(actual, expected) \
     do { \
-        if ((actual) != (expected)) { \
-            kprintf("    [FAIL] %s:%d: Expected %d, got %d\n", __FILE__, __LINE__, (int)(expected), (int)(actual)); \
+        /* Evaluate each argument once: they may have side effects */ \
+        __typeof__(actual) actual_ = (actual); \
+        __typeof__(expected) expected_ = (expected); \
+        if ((long long)actual_ != (long long)expected_) { \
+            kprintf("    [FAIL] %s:%d: Expected %d, got %d\n", __FILE__, __LINE__, (int)expected_, (int)actual_); \
             tests_failed++; \
         } else { \
             tests_passed++; \

@@ -5,6 +5,15 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "spinlock.h"
+
+// Keeps output from two tasks (or a task and an interrupt handler) from
+// interleaving mid-line. This is a leaf lock: nothing is acquired under it.
+static spinlock_t kprintf_lock = SPINLOCK_INIT;
+
+void kprintf_force_unlock(void) {
+    spinlock_release(&kprintf_lock);
+}
 
 static void print_uint(uint64_t val, int base) {
     char buf[32];
@@ -41,7 +50,9 @@ static void print_int(int64_t val) {
 void kprintf(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    
+
+    uint64_t flags = spinlock_acquire_irqsave(&kprintf_lock);
+
     for (const char* p = fmt; *p != '\0'; p++) {
         if (*p != '%') {
             serial_putchar(*p);
@@ -108,11 +119,15 @@ void kprintf(const char* fmt, ...) {
                 break;
         }
     }
-    
+
+    spinlock_release_irqrestore(&kprintf_lock, flags);
+
     va_end(args);
 }
 
 void panic(const char* msg) {
+    asm volatile("cli");
+    kprintf_force_unlock();
     kprintf("\n\n!!! KERNEL PANIC !!!\n");
     kprintf("%s\n", msg);
     kprintf("System halted.\n");

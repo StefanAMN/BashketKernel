@@ -8,6 +8,7 @@
 #include "interrupts.h"
 #include "sched.h"
 #include "serial.h"
+#include "spinlock.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -16,6 +17,10 @@ static char kbd_buffer[KEYBOARD_BUFFER_SIZE];
 static size_t kbd_head = 0;
 static size_t kbd_tail = 0;
 static bool shift_pressed = false;
+
+// Guards the ring buffer, the shift state and the PS/2 data port, which the
+// IRQ handler and the polling path in keyboard_getchar both use.
+static spinlock_t kbd_lock = SPINLOCK_INIT;
 
 // PS/2 Set 1 Scancode Mapping Table (Normal)
 static const char scancode_ascii[128] = {
@@ -51,8 +56,8 @@ static void ps2_wait_read(void) {
     }
 }
 
-static void keyboard_irq_handler(struct registers *regs) {
-    (void)regs;
+// Caller must hold kbd_lock.
+static void keyboard_handle_port(void) {
     uint8_t status = inb(0x64);
     if (!(status & 0x01)) return; // No data in output buffer
     if (status & 0x20) return;    // Data is from AUX mouse, not keyboard
@@ -82,6 +87,13 @@ static void keyboard_irq_handler(struct registers *regs) {
             }
         }
     }
+}
+
+static void keyboard_irq_handler(struct registers *regs) {
+    (void)regs;
+    uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
+    keyboard_handle_port();
+    spinlock_release_irqrestore(&kbd_lock, flags);
 }
 
 void keyboard_init(void) {
@@ -117,40 +129,37 @@ void keyboard_init(void) {
     }
 }
 
-bool keyboard_has_char(void) {
+// Take one character out of the ring buffer. Returns 0 if it is empty.
+static char kbd_buffer_pop(void) {
+    char c = 0;
+    uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
+    // Pick up a scancode the controller is holding but has not delivered an
+    // interrupt for (polling fallback), using the same decoder as the IRQ.
+    keyboard_handle_port();
     if (kbd_head != kbd_tail) {
-        return true;
+        c = kbd_buffer[kbd_tail];
+        kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
     }
-    uint8_t status = inb(0x64);
-    if ((status & 0x21) == 0x01) { // Keyboard data ready (bit 0 = 1, bit 5 = 0)
-        return true;
-    }
-    return serial_has_char();
+    spinlock_release_irqrestore(&kbd_lock, flags);
+    return c;
+}
+
+bool keyboard_has_char(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
+    keyboard_handle_port();
+    bool has = (kbd_head != kbd_tail);
+    spinlock_release_irqrestore(&kbd_lock, flags);
+
+    return has || serial_has_char();
 }
 
 char keyboard_getchar(void) {
     while (1) {
-        if (kbd_head != kbd_tail) {
-            char c = kbd_buffer[kbd_tail];
-            kbd_tail = (kbd_tail + 1) % KEYBOARD_BUFFER_SIZE;
-            if (c != 0) return c;
-        }
-
-        uint8_t status = inb(0x64);
-        if ((status & 0x21) == 0x01) { // Only read port 0x60 if it is keyboard data
-            uint8_t scancode = inb(0x60);
-            if (scancode == 0x2A || scancode == 0x36) {
-                shift_pressed = true;
-            } else if (scancode == 0xAA || scancode == 0xB6) {
-                shift_pressed = false;
-            } else if (!(scancode & 0x80) && scancode < 128) {
-                char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
-                if (c != 0) return c;
-            }
-        }
+        char c = kbd_buffer_pop();
+        if (c != 0) return c;
 
         if (serial_has_char()) {
-            char c = serial_getchar();
+            c = serial_getchar();
             if (c == '\r') c = '\n';
             if (c == 127) c = '\b';
             if (c != 0) return c;
@@ -159,4 +168,3 @@ char keyboard_getchar(void) {
         sched_yield();
     }
 }
-

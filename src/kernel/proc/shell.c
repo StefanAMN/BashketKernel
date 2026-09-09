@@ -28,6 +28,33 @@ static int parse_int(const char *str) {
     return val;
 }
 
+// Deliberate crashes, for checking that each fault is caught and reported.
+// noinline + volatile keep the compiler from optimizing the faults away.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winfinite-recursion" // That is the point
+__attribute__((noinline)) static uint64_t crash_recurse(uint64_t depth) {
+    volatile uint8_t pad[512];
+    pad[0] = (uint8_t)depth;
+    return crash_recurse(depth + 1) + pad[0];
+}
+#pragma GCC diagnostic pop
+
+static void shell_crash(const char *kind) {
+    if (strcmp(kind, "div0") == 0) {
+        volatile int zero = 0;
+        volatile int one = 1; // 1 / x with a constant 1 compiles to a compare, not a divide
+        volatile int result = one / zero;
+        (void)result;
+    } else if (strcmp(kind, "pf") == 0) {
+        volatile uint64_t *unmapped = (volatile uint64_t *)0xFFFFB00000000000ULL;
+        *unmapped = 1;
+    } else if (strcmp(kind, "stack") == 0) {
+        crash_recurse(0);
+    } else {
+        kprintf("usage: crash div0|pf|stack\n");
+    }
+}
+
 void shell_run_cmd(const char *cmdline) {
     if (!cmdline || cmdline[0] == '\0') return;
 
@@ -53,6 +80,7 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("  exec <path>     - Execute ELF binary program\n");
         kprintf("  kill <pid>      - Send SIGKILL signal to process\n");
         kprintf("  clear           - Clear screen\n");
+        kprintf("  crash <kind>    - Trigger a fault on purpose (div0, pf, stack)\n");
     } else if (strcmp(cmdline, "ls") == 0) {
         vnode_t *root = vfs_get_root();
         if (!root || !root->children) {
@@ -107,7 +135,7 @@ void shell_run_cmd(const char *cmdline) {
         sched_print_tasks();
     } else if (strcmp(cmdline, "uptime") == 0) {
         uint64_t ticks = pit_get_ticks();
-        uint64_t seconds = ticks / 100;
+        uint64_t seconds = ticks / TIMER_HZ;
         kprintf("Uptime: %zu seconds (%zu ticks)\n", seconds, ticks);
     } else if (strcmp(cmdline, "date") == 0) {
         struct rtc_time t;
@@ -173,6 +201,8 @@ void shell_run_cmd(const char *cmdline) {
     } else if (strncmp(cmdline, "kill ", 5) == 0) {
         int pid = parse_int(cmdline + 5);
         process_kill(pid, SIGKILL);
+    } else if (strncmp(cmdline, "crash ", 6) == 0) {
+        shell_crash(cmdline + 6);
     } else if (strcmp(cmdline, "clear") == 0) {
         kprintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
     } else {

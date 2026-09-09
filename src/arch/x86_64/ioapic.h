@@ -24,4 +24,19 @@ void ioapic_init(void);
  */
 void ioapic_route_irq(uint8_t irq, uint8_t vector, uint32_t apic_id);
 
+/**
+ * @brief Route a legacy ISA IRQ to vector 32 + irq on the boot CPU, using the
+ * pin, polarity and trigger mode the ACPI MADT gives for it.
+ */
+void ioapic_route_isa_irq(uint8_t irq);
+
+/**
+ * @brief Program one I/O APIC redirection entry.
+ * @param pin I/O APIC input pin (GSI).
+ * @param vector IDT vector to deliver.
+ * @param mode Extra low-word bits (bit 13 active low, bit 15 level triggered).
+ * @param apic_id Destination Local APIC ID.
+ */
+void ioapic_route_pin(uint8_t pin, uint8_t vector, uint32_t mode, uint32_t apic_id);
+
 #endif // IOAPIC_H

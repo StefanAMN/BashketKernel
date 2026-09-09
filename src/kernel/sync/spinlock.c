@@ -14,3 +14,14 @@ void spinlock_acquire(spinlock_t *lock) {
 void spinlock_release(spinlock_t *lock) {
     __atomic_clear(&lock->locked, __ATOMIC_RELEASE);
 }
+
+uint64_t spinlock_acquire_irqsave(spinlock_t *lock) {
+    uint64_t flags = irq_save();
+    spinlock_acquire(lock);
+    return flags;
+}
+
+void spinlock_release_irqrestore(spinlock_t *lock, uint64_t flags) {
+    spinlock_release(lock);
+    irq_restore(flags);
+}

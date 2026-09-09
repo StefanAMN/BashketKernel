@@ -8,6 +8,10 @@
 
 #include <stdint.h>
 
+// Scheduler tick rate. The PIT is the only tick source; anything that
+// converts ticks to time must use this constant.
+#define TIMER_HZ 100
+
 /**
  * @brief Initialize 8254 PIT Channel 0 at specified frequency (e.g. 100 Hz).
  * @param frequency_hz Frequency in Hertz.

@@ -43,6 +43,12 @@ task_t *sched_get_current_task(void);
 void task_exit(void);
 
 /**
+ * @brief Free the task structs and kernel stacks of all exited tasks.
+ * @return Number of tasks reaped.
+ */
+size_t sched_reap(void);
+
+/**
  * @brief Display process list table for ps shell command.
  */
 void sched_print_tasks(void);

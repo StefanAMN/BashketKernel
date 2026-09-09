@@ -8,6 +8,7 @@
 #include "io.h"
 #include "pic.h"
 #include "lapic.h"
+#include "kstack.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -50,10 +51,19 @@ void register_irq_handler(uint8_t irq, irq_handler_t handler) {
 
 void isr_handler(struct registers *regs) {
     if (regs->int_no < 32) {
-        // CPU Exception (0..31)
+        // CPU Exception (0..31). The fault may have happened while the
+        // interrupted code held the kprintf lock, so take it away first.
+        kprintf_force_unlock();
         kprintf("\n=================================================\n");
         kprintf("CPU EXCEPTION: %s (Interrupt %zd)\n", exception_messages[regs->int_no], regs->int_no);
         kprintf("Error Code: 0x%zx\n", regs->err_code);
+
+        if (regs->int_no == 8) {
+            kprintf("A double fault usually means the kernel stack is unusable.\n");
+            if (kstack_is_guard_page(regs->rsp) || kstack_is_guard_page(regs->rsp - 8)) {
+                kprintf("RSP is in a stack guard page: KERNEL STACK OVERFLOW.\n");
+            }
+        }
 
         if (regs->int_no == 14) {
             uint64_t cr2;
@@ -64,6 +74,9 @@ void isr_handler(struct registers *regs) {
                     (regs->err_code & 2) ? "Write access" : "Read access",
                     (regs->err_code & 4) ? "User mode" : "Kernel mode",
                     (regs->err_code & 16) ? "Instruction fetch" : "Data access");
+            if (kstack_is_guard_page(cr2)) {
+                kprintf("Faulting address is a stack guard page: KERNEL STACK OVERFLOW.\n");
+            }
         }
 
         kprintf("RIP: 0x%zx  CS: 0x%zx  RFLAGS: 0x%zx\n", regs->rip, regs->cs, regs->rflags);

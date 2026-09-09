@@ -5,12 +5,20 @@
 
 #include "pmm.h"
 #include "kprintf.h"
+#include "spinlock.h"
 
 static uint8_t *bitmap = NULL;
 static size_t total_frames = 0;
 static size_t free_frames = 0;
 static size_t used_frames = 0;
 static uint64_t hhdm_off = 0;
+
+// Frame where the next search starts. Everything below it was in use the last
+// time we looked, so allocation does not rescan the bitmap from the beginning.
+static size_t next_free_hint = 1;
+
+// The bitmap is shared by every task and by interrupt context.
+static spinlock_t pmm_lock = SPINLOCK_INIT;
 
 static inline void bitmap_set(size_t bit) {
     bitmap[bit / 8] |= (1 << (bit % 8));
@@ -29,13 +37,24 @@ size_t pmm_get_total_frames(void) { return total_frames; }
 size_t pmm_get_free_frames(void)  { return free_frames; }
 size_t pmm_get_used_frames(void)  { return used_frames; }
 
+// RAM that exists and that we could ever hand out. Reserved and MMIO entries
+// are excluded on purpose: firmware reports reserved regions far above the end
+// of RAM (around 1 TiB on QEMU), and sizing the bitmap from those made a 2 GiB
+// machine look like it had 1 TiB.
+static bool entry_is_ram(const struct limine_memmap_entry *entry) {
+    return entry->type == LIMINE_MEMMAP_USABLE ||
+           entry->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE;
+}
+
 void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     hhdm_off = hhdm_offset;
     uint64_t highest_addr = 0;
 
-    // Determine highest physical memory address to size the bitmap
+    // Determine the highest RAM address to size the bitmap
     for (size_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
+        if (!entry_is_ram(entry)) continue;
+
         uint64_t top = entry->base + entry->length;
         if (top > highest_addr) {
             highest_addr = top;
@@ -66,7 +85,12 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     used_frames = total_frames;
     free_frames = 0;
 
-    // Mark USABLE RAM regions as free in bitmap
+    // Mark USABLE RAM regions as free in bitmap.
+    //
+    // Nothing else needs reserving by hand. The kernel image, the boot stack
+    // and the page tables Limine built are not in USABLE entries (they are
+    // EXECUTABLE_AND_MODULES and BOOTLOADER_RECLAIMABLE), so they stay marked
+    // used from the loop above.
     for (size_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE) {
@@ -98,57 +122,27 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         }
     }
 
-    // Frame 0 is reserved
-    if (!bitmap_test(0)) {
+    // Frame 0 is reserved so that physical address 0 can mean "no frame"
+    if (total_frames > 0 && !bitmap_test(0)) {
         bitmap_set(0);
         used_frames++;
         free_frames--;
     }
 
-    // Reserve physical frames containing the active boot stack pointer
-    uint64_t current_rsp;
-    asm volatile("mov %0, rsp" : "=r"(current_rsp));
-    uint64_t stack_phys = (current_rsp >= hhdm_off) ? (current_rsp - hhdm_off) : (current_rsp & 0x7FFFFFFF);
-    size_t stack_start_frame = (stack_phys / PAGE_SIZE) > 16 ? (stack_phys / PAGE_SIZE) - 16 : 0;
-    size_t stack_end_frame = (stack_phys / PAGE_SIZE) + 16;
-
-    for (size_t f = stack_start_frame; f <= stack_end_frame && f < total_frames; f++) {
-        if (!bitmap_test(f)) {
-            bitmap_set(f);
-            used_frames++;
-            free_frames--;
-        }
-    }
-
-    // Reserve physical frames containing kernel text/rodata/data/bss sections
-    extern char __kernel_start[];
-    extern char __kernel_end[];
-    uint64_t kstart_phys = (uint64_t)__kernel_start >= hhdm_off ? ((uint64_t)__kernel_start - hhdm_off) : ((uint64_t)__kernel_start & 0x7FFFFFFF);
-    uint64_t kend_phys = (uint64_t)__kernel_end >= hhdm_off ? ((uint64_t)__kernel_end - hhdm_off) : ((uint64_t)__kernel_end & 0x7FFFFFFF);
-
-    size_t kstart_frame = kstart_phys / PAGE_SIZE;
-    size_t kend_frame = (kend_phys + PAGE_SIZE - 1) / PAGE_SIZE;
-
-    for (size_t f = kstart_frame; f <= kend_frame && f < total_frames; f++) {
-        if (!bitmap_test(f)) {
-            bitmap_set(f);
-            used_frames++;
-            free_frames--;
-        }
-    }
+    next_free_hint = 1;
 
     kprintf("PMM Init: Total Frames: %zu (%zu MB), Free Frames: %zu (%zu MB)\n",
             total_frames, (total_frames * PAGE_SIZE) / (1024 * 1024),
             free_frames, (free_frames * PAGE_SIZE) / (1024 * 1024));
 }
 
-void *pmm_alloc_frames(size_t count) {
-    if (count == 0) return NULL;
-
+// Search [from, to) for `count` consecutive free frames. Returns the first
+// frame of the run, or 0 if there is none (frame 0 is never allocatable).
+static size_t find_free_run(size_t from, size_t to, size_t count) {
     size_t consecutive = 0;
     size_t start_frame = 0;
 
-    for (size_t i = 1; i < total_frames; i++) {
+    for (size_t i = from; i < to; i++) {
         if (!bitmap_test(i)) {
             if (consecutive == 0) {
                 start_frame = i;
@@ -156,20 +150,42 @@ void *pmm_alloc_frames(size_t count) {
             consecutive++;
 
             if (consecutive == count) {
-                for (size_t f = 0; f < count; f++) {
-                    bitmap_set(start_frame + f);
-                }
-                used_frames += count;
-                free_frames -= count;
-                return (void *)(start_frame * PAGE_SIZE);
+                return start_frame;
             }
         } else {
             consecutive = 0;
         }
     }
 
-    kprintf("PMM ERROR: Out of physical memory for %zu frames!\n", count);
-    return NULL;
+    return 0;
+}
+
+void *pmm_alloc_frames(size_t count) {
+    if (count == 0 || bitmap == NULL) return NULL;
+
+    uint64_t flags = spinlock_acquire_irqsave(&pmm_lock);
+
+    // Start at the hint, then wrap around once to cover the frames below it
+    size_t start_frame = find_free_run(next_free_hint, total_frames, count);
+    if (start_frame == 0) {
+        start_frame = find_free_run(1, total_frames, count);
+    }
+
+    if (start_frame == 0) {
+        spinlock_release_irqrestore(&pmm_lock, flags);
+        kprintf("PMM ERROR: Out of physical memory for %zu frames!\n", count);
+        return NULL;
+    }
+
+    for (size_t f = 0; f < count; f++) {
+        bitmap_set(start_frame + f);
+    }
+    used_frames += count;
+    free_frames -= count;
+    next_free_hint = start_frame + count;
+
+    spinlock_release_irqrestore(&pmm_lock, flags);
+    return (void *)(start_frame * PAGE_SIZE);
 }
 
 void *pmm_alloc_frame(void) {
@@ -177,17 +193,35 @@ void *pmm_alloc_frame(void) {
 }
 
 void pmm_free_frames(void *phys_addr, size_t count) {
-    if (phys_addr == NULL || count == 0) return;
+    if (phys_addr == NULL || count == 0 || bitmap == NULL) return;
 
     size_t start_frame = (uint64_t)phys_addr / PAGE_SIZE;
+    size_t bad_frame = 0;
+
+    uint64_t flags = spinlock_acquire_irqsave(&pmm_lock);
 
     for (size_t f = 0; f < count; f++) {
         size_t frame = start_frame + f;
-        if (frame < total_frames && bitmap_test(frame)) {
-            bitmap_clear(frame);
-            used_frames--;
-            free_frames++;
+        if (frame == 0 || frame >= total_frames || !bitmap_test(frame)) {
+            // Out of range, or already free: a double free or a bad pointer.
+            // Remember it and report after the lock is dropped.
+            if (bad_frame == 0) bad_frame = frame ? frame : (size_t)-1;
+            continue;
         }
+
+        bitmap_clear(frame);
+        used_frames--;
+        free_frames++;
+        if (frame < next_free_hint) {
+            next_free_hint = frame;
+        }
+    }
+
+    spinlock_release_irqrestore(&pmm_lock, flags);
+
+    if (bad_frame != 0) {
+        kprintf("PMM WARNING: Freeing frame %zu which is not allocated (double free?)\n",
+                bad_frame == (size_t)-1 ? (size_t)0 : bad_frame);
     }
 }
 

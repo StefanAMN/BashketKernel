@@ -56,6 +56,14 @@ bool vmm_map_page(uint64_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags);
 bool vmm_unmap_page(uint64_t *pml4, uint64_t virt);
 
 /**
+ * @brief Look up the physical frame a 4 KiB virtual page is mapped to.
+ * @param pml4 Pointer to PML4 table (pass NULL for kernel PML4).
+ * @param virt 64-bit Virtual page address.
+ * @return Physical frame address, or 0 if the page is not mapped.
+ */
+uint64_t vmm_get_phys(uint64_t *pml4, uint64_t virt);
+
+/**
  * @brief Invalidate TLB cache entry for virtual address using `invlpg`.
  * @param virt Virtual address to invalidate.
  */

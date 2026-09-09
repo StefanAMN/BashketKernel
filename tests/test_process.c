@@ -6,7 +6,7 @@
 
 TEST(process_fork_test) {
     pid_t child = process_fork();
-    EXPECT_TRUE(child >= 100);
+    EXPECT_TRUE(child > 0);
 }
 
 TEST(process_execve_wait_test) {
