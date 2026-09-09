@@ -977,6 +977,52 @@ test. The helper now starts the shell with 0, 1 and 2 only.
 
 ---
 
+### L2. Shell variables, and a setting for one command (S)
+
+`/bin/sh` knows only the environment (`export NAME=value`). Add
+`NAME=value` on its own (a variable of the shell, not passed to
+programs; `$NAME` finds it, the environment second), `unset`, and
+`NAME=value command` (in that command's environment only). Expansion
+is the same as for any word, so `X=$(date)` and `X="a b"` work.
+**Check:** syscheck (`check_shell_variables`): the three forms, that a
+plain variable is not seen by a child, that the prefix form does not
+outlive its command, `unset`, and names that are not names (`1x=y` is a
+command).
+
+### L3. `uniq`, `cut` and `tr` (S)
+
+Three more line tools on `user/lib/lines.c`, as POSIX describes them in
+their basic forms: `uniq [-c] [-d]`, `cut -d C -f LIST` and `cut -c LIST`
+(LIST: `N`, `N-M`, `N-`, `-M`, comma separated), `tr [-d] SET1 [SET2]`
+with ranges (`a-z`). **Check:** `make test-tools` and syscheck, with
+input lines longer than any fixed buffer and input without a final
+newline.
+
+### L4. Supplementary groups (M)
+
+A process is in one group; a user in several groups (`/etc/group`) can
+only use one. Add a list of up to 16 more per process, copied by `fork`,
+kept by `execve`; `setgroups` (root only) and `getgroups`; the
+permission check counts a match with any of them. `/bin/login` and
+`su` read `/etc/group` and set the list; `id` prints it. **Check:**
+unit tests in `tests/` for the permission check; syscheck for the calls
+(non-root refused, too many refused, fork copies); `make test-login`: a
+user reads a file through a second group.
+
+### L5. DHCP lease renewal (S)
+
+`dhcp` takes an address and exits; the lease runs out unnoticed. With
+`-d` it stays, and renews at half the lease time (T1) by a unicast
+REQUEST to the server that gave it, falling back to a broadcast at 7/8
+(T2) and to starting over when the lease ends, as RFC 2131 section 4.4.5
+says. **Check:** `tools/test_net.py` against QEMU's DHCP server with a
+short lease is not possible (QEMU's lease is fixed at a day), so the
+timing is computed by a function tested on its own, and a scripted run
+renews at once (`dhcp -d -t SECONDS` overrides T1 for the test) and
+sees QEMU acknowledge it.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1045,6 +1091,7 @@ J1, J2 -> J3, J4                 done
 K1, K2, K3, K4                   done (in parallel)
         |
 L1                               done
+L2, L3, L4, L5                   in parallel
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
