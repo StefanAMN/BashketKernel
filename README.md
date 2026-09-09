@@ -2,46 +2,56 @@
 
 BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed for learning kernel architecture, memory management, scheduling, storage, and modern hardware drivers.
 
-## Feature Roadmap & Status (All 38 Phases Completed)
+## Status
 
-- **Phase 1: Boot & Console System** — Framebuffer console rendering, COM1 serial logging (`kprintf`).
-- **Phase 2: CPU Architecture & Interrupts** — GDT, TSS, IDT, ISR assembly stubs, 8259 PIC remapping.
-- **Phase 3: Memory Management** — Limine PMM frame allocator, 4-level paging VMM, higher-half mapping, first-fit kernel heap (`kmalloc`/`kfree`).
-- **Phase 4: Multitasking & Scheduler** — Preemptive round-robin scheduler, assembly context switching (`ctx_switch.S`), 8254 PIT timer at 100 Hz.
-- **Phase 5: Userspace & System Calls** — `syscall`/`sysret` MSR configuration, assembly entry trampoline, 18 POSIX system calls, ELF64 binary executable loader.
-- **Phase 6: Virtual Filesystem (VFS)** — Hierarchical VFS tree nodes, file unlinking (`vfs_unlink`), metadata querying (`vfs_stat`), file writing (`vfs_write`), directory operations, USTAR tar ramdisk parser.
-- **Phase 7: Interactive Kernel Shell** — PS/2 keyboard driver, scancode mapping, interactive shell with coreutils (`help`, `ls`, `cat`, `echo`, `mem`, `ps`, `uptime`, `date`, `env`, `export`, `unset`, `dmesg`, `mount`, `bench`, `touch`, `mkdir`, `rm`, `exec`, `kill`, `clear`).
-- **Phase 8: Advanced Memory Management** — Slab cache object allocator (`kmem_cache_t`), Copy-on-Write (COW) frame refcounting, virtual `mmap`/`munmap` API.
-- **Phase 9: Modern Interrupt Architecture** — Local APIC (LAPIC) driver and I/O APIC (IOAPIC) driver replacing 8259 PIC.
-- **Phase 10: Symmetric Multiprocessing (SMP)** — Per-CPU context structures, multi-core BSP initialization, atomic spinlock primitives (`spinlock_t`).
-- **Phase 11: Real Block Storage & Persistent Filesystem** — VirtIO Block Device driver (`virtio-blk`), FAT32 File System driver (`fat32`).
-- **Phase 12: UNIX Process Lifecycle & Signals** — Process fork (`process_fork`), binary execution (`process_execve`), child waiting (`process_waitpid`), UNIX signals (`SIGKILL`, `SIGINT`).
-- **Phase 13: PCI Bus & VirtIO Network Stack** — PCI Configuration Space bus scanner, VirtIO Network Card driver (`virtio-net`).
-- **Phase 14: Custom x86_64 Bare-Metal Bootloader** — Stage 1 MBR bootsector, 64-bit Long Mode CPU capability verification (`CPUID`).
-- **Phase 15: PS/2 Mouse Driver & Framebuffer Canvas** — PS/2 auxiliary mouse driver (IRQ 12 / Vector 44), 3-byte packet decoder, graphical cursor renderer.
-- **Phase 16: Userland Environment & ELF Programs** — Built-in user binary suite (`/bin/hello`, `/bin/calc`), execution pipeline.
-- **Phase 17: Real-Time Clock & CMOS Driver** — CMOS register access (`0x70`/`0x71`), wall-clock UTC time reading, shell `date` utility.
-- **Phase 18: Process Environment Variables** — Process environment table, `env_get`, `env_set`, `env_unset`, `$VAR` shell expansion.
-- **Phase 19: Inter-Process Communication & Pipes** — 4 KiB IPC ring-buffer stream pipes (`pipe_create`, `pipe_read`, `pipe_write`).
-- **Phase 20: Terminal ANSI Color Decoder** — ANSI escape color decoder mapping ANSI 30..37 indices to RGB colors.
-- **Phase 21: Dynamic RamFS & VFS Write Operations** — `/tmp` RAM filesystem, dynamic memory file growth, `vfs_write`.
-- **Phase 22: Priority-Based Scheduler & Multi-Level Queues** — Execution priority levels (`PRIO_HIGH`, `PRIO_NORMAL`, `PRIO_LOW`), `task_set_priority`.
-- **Phase 23: Counting Semaphores & Thread Sync** — Counting semaphores (`sem_t`, `sem_wait`, `sem_post`), atomic spinlock protection.
-- **Phase 24: Pseudo-Filesystem ProcFS (`/proc`)** — Virtual `/proc` directory mounting `/proc/version`, `/proc/cpuinfo`.
-- **Phase 25: Virtual Terminal TTY Device** — Virtual TTY input/output ring buffer stream device.
-- **Phase 26: Hardware FPU & SSE State Management** — Control registers CR0/CR4 configuration, `fninit`, x87 FPU, MMX, and SSE hardware extensions enabled.
-- **Phase 27: Virtual Memory Swap Manager** — Swap slot bitmap allocator, frame swap-out & swap-in manager.
-- **Phase 28: ELF Dynamic Relocation Loader** — Dynamic symbol relocations (`R_X86_64_RELATIVE`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`).
-- **Phase 29: UDP/IP Network Socket Stack** — Socket layer (`socket_create`, `socket_sendto`), Internet checksumming.
-- **Phase 30: Desktop Window Manager & GUI Compositor** — Graphical GUI window creation (`window_create`), canvas buffer allocation.
-- **Phase 31: User Account Authentication** — User account authentication (`auth_login`), UID/GID context management.
-- **Phase 32: Kernel Ring Buffer & dmesg** — Kernel syslog ring buffer (`klog_write`), `dmesg` shell command.
-- **Phase 33: High-Resolution Timers & Nanosleep** — Nanosecond precision sleep (`nanosleep`), HRT timer queue.
-- **Phase 34: VFS Mount Manager** — Path mount points (`vfs_mount`), mount table management, shell `mount` command.
-- **Phase 35: POSIX Shared Memory (SHM)** — Inter-process shared physical frame regions (`shm_create`, `shm_get`, `shm_destroy`).
-- **Phase 36: Cryptographic Primitives** — Production-grade Kernel Crypto Suite: SHA-1, SHA-256, SHA-512, MD5, BLAKE2s, SipHash-2-4, AES-128/256, AES-XTS, AES-GCM, ChaCha20, Poly1305, HMAC, HKDF, Ed25519, CRC32/CRC32C.
-- **Phase 37: Virtual Hardware Devices (/dev)** — Virtual character devices (`/dev/null`, `/dev/zero`, `/dev/random`), RDTSC pseudo-random number generator (`get_random_u32`).
-- **Phase 38: Kernel Performance Benchmark Suite** — Memory copy speed benchmark, CPU MIPS loop test, shell `bench` command (`bench_run_all`).
+The kernel boots under QEMU into a kernel-mode shell. Phases 1 to 4 are solid;
+much of what follows is placeholder code. `PLAN.md` is the plan for closing
+that gap.
+
+- **real**: implemented and exercised at runtime.
+- **partial**: some of it works; the note says what does not.
+- **stub**: an interface with placeholder behaviour behind it.
+
+| Phase | Subsystem | Status | Notes |
+|---|---|---|---|
+| 1 | Boot, console, serial | real | Framebuffer console, COM1 serial, `kprintf`. |
+| 2 | GDT, TSS, IDT, interrupts | real | Double faults run on their own stack (IST1). |
+| 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap. One address space only. |
+| 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. 100 Hz PIT tick. |
+| 5 | Userspace and syscalls | partial | The dispatcher and an ELF header parser exist. The `syscall` entry path is broken and nothing runs in ring 3 yet. |
+| 6 | VFS and initrd | partial | In-memory VFS tree works. The USTAR parser is never called; no initrd is loaded. |
+| 7 | Shell | real | Runs as a kernel thread, not a user program. |
+| 8 | Slab, COW, mmap | partial | Slab allocator works. COW is a refcount table with no fault handler. `mmap` maps into the kernel address space. |
+| 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |
+| 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
+| 11 | virtio-blk and FAT32 | stub | A RAM buffer and an in-memory file table. No virtqueues, no on-disk format. |
+| 12 | fork, exec, wait, signals | stub | `fork` starts a kernel thread; `exec`, `waitpid` and `kill` only print. |
+| 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
+| 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
+| 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
+| 16 | User programs | stub | `/bin/hello` and `/bin/calc` are bare ELF headers with no code. |
+| 17 | RTC | real | Reads date and time from CMOS. |
+| 18 | Environment variables | real | One global table, not per process. |
+| 19 | Pipes | partial | A ring buffer with no blocking and no file descriptors. |
+| 20 | ANSI colors | stub | A lookup from color code to RGB. No escape-sequence parser. |
+| 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |
+| 22 | Priority scheduling | stub | Priorities are stored; the scheduler ignores them. |
+| 23 | Semaphores | partial | Correct counting, but waiters spin with `sched_yield` instead of blocking. |
+| 24 | ProcFS | stub | Two static text files. |
+| 25 | TTY | stub | A ring buffer. No line discipline. |
+| 26 | FPU/SSE | partial | CR0/CR4 are set up. No per-task state is saved. |
+| 27 | Swap | stub | A slot bitmap. No page is ever written out. |
+| 28 | ELF dynamic relocation | stub | Recognises relocation types and returns 0. |
+| 29 | UDP/IP sockets | stub | Internet checksum works. No packets are built or sent. |
+| 30 | Window manager | stub | Allocates a pixel buffer. Nothing is composited. |
+| 31 | User authentication | stub | Accepts `root` with any password. |
+| 32 | Kernel log, `dmesg` | real | 4 KiB ring buffer. |
+| 33 | High-resolution timers | stub | `nanosleep` polls the 100 Hz tick. |
+| 34 | Mount table | partial | Records mount points; path lookup does not use them. |
+| 35 | Shared memory | partial | Keyed kernel heap buffers. Not mapped into processes. |
+| 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |
+| 37 | /dev devices | stub | Static files. `/dev/random` contains the text `RND`. |
+| 38 | Benchmarks | real | Memory copy and CPU loop timing. |
 
 ---
 
@@ -84,7 +94,7 @@ src/
 
 ## Unit Testing Framework
 
-BashketKernel features a built-in unit test framework with **342 automated kernel unit tests** covering all 38 phases. All tests execute automatically during kernel boot.
+BashketKernel has a built-in unit test framework (`tests/`). All tests run during kernel boot and print a summary on the serial console. Tests for stub subsystems only check the placeholder behaviour.
 
 ---
 
@@ -93,6 +103,7 @@ BashketKernel features a built-in unit test framework with **342 automated kerne
 To compile and run BashketKernel, you need:
 - A C compiler suite (`gcc`, `make`, `ld`)
 - `xorriso` (for building the bootable ISO image)
+- `git` (the first build downloads Limine v8.7.0 into `limine/`)
 - `qemu-system-x86_64` (for hardware emulation)
 - `gdb` (optional, for debugging)
 
@@ -129,3 +140,8 @@ To start QEMU in suspended mode waiting for GDB:
 make run-gdb
 ```
 *(In a separate terminal, run `gdb build/kernel.elf` and type `target remote :1234`)*
+
+### 4. Triggering faults on purpose
+The shell command `crash div0`, `crash pf` or `crash stack` raises a divide
+error, a page fault or a kernel stack overflow, to check that each one is
+caught and reported on the serial console.

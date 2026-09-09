@@ -1,7 +1,7 @@
 # Project Rules
 
-This is a **learning-first** x86_64 kernel project (see `plan.md` for the
-full roadmap). The kernel is the excuse; the understanding is the
+This is a **learning-first** x86_64 kernel project (see `PLAN.md` for the
+current plan). The kernel is the excuse; the understanding is the
 deliverable. These rules apply to any agent working in this repo — read them
 before writing code, not just before committing it.
 
@@ -25,7 +25,7 @@ before writing code, not just before committing it.
   against a specific class of kernel bug.
 
 ## Working Incrementally
-- **One phase at a time**, per the roadmap in `plan.md` (Phase 1: boot &
+- **One phase at a time**, per `PLAN.md` (Phase 1: boot &
   console → Phase 2: GDT/IDT/interrupts → Phase 3: memory management →
   Phase 4: multitasking → Phase 5: userspace & syscalls → Phase 6:
   filesystem → Phase 7: shell). Do not preemptively build later-phase
@@ -39,7 +39,7 @@ before writing code, not just before committing it.
   crashed; confirm the behavior matches what was predicted.
 
 ## Development & Learning Workflow
-- **Autonomous Kernel Development:** Focus directly on further developing the kernel according to `plan.md`. The human developer handles learning independently, so the AI agent does not block development or wait for human learning gates (Explain-Back, Delete-and-Rederive).
+- **Autonomous Kernel Development:** Focus directly on further developing the kernel according to `PLAN.md`. The human developer handles learning independently, so the AI agent does not block development or wait for human learning gates (Explain-Back, Delete-and-Rederive).
 - **Curated Learning Documentation:** As new features are implemented, the AI agent maintains and updates `Documentation.md` in the project root. This file provides a structured, ordered guide of what concepts and features to learn and in what recommended sequence.
 
 ## AI-Specific Review Checklist (apply this to your own output before handing it over)
@@ -74,7 +74,7 @@ primary source, note that it's the kind of entry that belongs in
   especially around magic numbers, bit layouts, and hardware/ABI quirks.
 - Keep the repo layout intact:
   ```
-  /plan.md
+  /PLAN.md
   /docs/            <- human-written lesson docs + ai-was-wrong.md
   /src/             <- kernel source
   /user/            <- userspace programs (later phases)
