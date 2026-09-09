@@ -2200,7 +2200,9 @@ static int sh_capture(const char *command, char *out, size_t size) {
         dup2(p[1], 1);
         close(p[0]);
         close(p[1]);
-        dup2((int)open("/dev/null", O_WRONLY), 2);
+        int null = (int)open("/dev/null", O_WRONLY);
+        dup2(null, 2);
+        close(null);    /* The shell starts with 0, 1 and 2 only, as from a terminal */
         char *args[] = { "/bin/sh", "-c", (char *)command, NULL };
         execv("/bin/sh", args);
         exit(127);
@@ -2255,6 +2257,32 @@ static void check_shell_words(void) {
 static int sh_ends(const char *command, const char *expected, int status) {
     static char out[512];
     return sh_capture(command, out, sizeof(out)) == status && strcmp(out, expected) == 0;
+}
+
+/* The shell's redirections of any descriptor: N> N>> N< and N>&M, applied
+ * left to right after the pipe (sh_capture sends standard error to
+ * /dev/null, so whatever reaches the output went through a copy) */
+static void check_shell_redirects(void) {
+    static char out[128];
+    CHECK(sh_capture("ls /no/such 2>&1", out, sizeof(out)) == 1 && strncmp(out, "ls: ", 4) == 0);
+    CHECK(sh_capture("ls /no/such 2>&1 | cat", out, sizeof(out)) == 0 && strncmp(out, "ls: ", 4) == 0);
+    CHECK(sh_capture("ls /no/such > /tmp/redir 2>&1; cat /tmp/redir", out, sizeof(out)) == 0 &&
+          strncmp(out, "ls: ", 4) == 0);
+    /* The order matters: here 2 copies the output before it is the file */
+    CHECK(sh_capture("ls /no/such 2>&1 > /tmp/redir; echo end; cat /tmp/redir", out, sizeof(out)) == 0 &&
+          strncmp(out, "ls: ", 4) == 0 && strcmp(out + strlen(out) - 4, "end\n") == 0);
+    CHECK(sh_prints("echo e 1>&2", ""));
+    CHECK(sh_prints("echo a 2>/tmp/redir 1>&2; echo b 2>>/tmp/redir 1>&2; cat /tmp/redir", "a\nb\n"));
+    CHECK(sh_prints("echo 2>/tmp/redir x; cat /tmp/redir", "x\n"));     /* The digit is not a word */
+    CHECK(sh_prints("echo x2>/tmp/redir; cat /tmp/redir", "x2\n"));     /* ... unless it is part of one */
+    CHECK(sh_prints("echo w 3>/tmp/redir 1>&3; cat /tmp/redir", "w\n"));  /* open() picks 3 itself */
+    CHECK(sh_prints("cat 3</tmp/redir 0<&3", "w\n"));
+    CHECK(sh_ends("echo z 2>&7", "", 1));                               /* Not open */
+    CHECK(sh_ends("cat 0<&3 3</tmp/redir", "", 1));                       /* Not yet open */
+    CHECK(sh_ends("echo q 2>&1x", "", 2));
+    CHECK(sh_ends("echo q 2>&", "", 2));
+    CHECK(sh_ends("echo q 2>", "", 2));
+    CHECK(unlink("/tmp/redir") == 0);
 }
 
 /* The shell's if, while and for, break and continue, and test / [ */
@@ -2850,6 +2878,7 @@ int main(void) {
     check_text_tools();
     check_shell_words();
     check_shell_control();
+    check_shell_redirects();
     check_proc();
     check_groups_and_setuid();
     check_pipes();

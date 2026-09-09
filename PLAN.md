@@ -960,6 +960,23 @@ a child's `cmdline`; `ps` unchanged in what it prints.
 
 ---
 
+## Track L — Small things a shell user reaches for
+
+### L1. Redirecting any descriptor: `2> file`, `2>&1` (S) — done
+
+`/bin/sh` could only point standard input and output somewhere, so error
+messages could neither be kept nor sent down a pipe. A digit before `<`
+or `>` now names the descriptor, and `N>&M` makes N a copy of M. A stage
+keeps its redirections as a list in the order written, because the order
+is the meaning: `a > f 2>&1` sends both to f, `a 2>&1 > f` only the
+output. **Check:** `check_shell_redirects` in syscheck (both orders, the
+pipe, `>>`, descriptors other than 0 to 2, a copy of a closed one, the
+malformed forms). Its first sabotage passed: the test helper leaked a
+descriptor into the shell, so `open` never handed out 3, the case under
+test. The helper now starts the shell with 0, 1 and 2 only.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1026,6 +1043,8 @@ I1 -> I2                         done
 J1, J2 -> J3, J4                 done
         |
 K1, K2, K3, K4                   done (in parallel)
+        |
+L1                               done
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
