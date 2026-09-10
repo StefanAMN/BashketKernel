@@ -26,15 +26,20 @@ The same two directions over TCP:
 Then a second boot, on a network whose addresses are not the ones the kernel
 starts with: /bin/dhcp must obtain an address from QEMU's DHCP server and the
 machine must work with it; /bin/host must get an answer from a DNS server
-(a small one in this script, so that no real name service is needed).
+(a small one in this script, so that no real name service is needed). The
+lease is renewed twice (dhcp -d -t 1 -n 2), and QEMU's capture of the
+traffic must show each renewal as a REQUEST sent to the server alone,
+naming the address held, and answered with an ACK.
 
 Exit status 0 if all of it worked.
 """
 
 import os
 import socket
+import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -79,6 +84,55 @@ def dns_reply(query, known):
     return header + question + answer
 
 
+def udp_packets(pcap_path):
+    """The UDP/IPv4 packets of a pcap file written by QEMU's filter-dump:
+    (source ip, destination ip, source port, destination port, payload)."""
+    with open(pcap_path, "rb") as f:
+        data = f.read()
+    packets, pos = [], 24                       # After the file header
+    while pos + 16 <= len(data):
+        length = struct.unpack_from("<I", data, pos + 8)[0]
+        frame = data[pos + 16:pos + 16 + length]
+        pos += 16 + length
+        if len(frame) < 42 or frame[12:14] != b"\x08\x00" or frame[23] != 17:
+            continue                            # Not IPv4, or not UDP
+        header = (frame[14] & 0x0F) * 4
+        udp = frame[14 + header:]
+        source_port, destination_port = struct.unpack_from(">HH", udp, 0)
+        packets.append((socket.inet_ntoa(frame[26:30]), socket.inet_ntoa(frame[30:34]),
+                        source_port, destination_port, udp[8:]))
+    return packets
+
+
+def dhcp_type(payload):
+    """The DHCP message type (option 53) of a payload, or None"""
+    pos = 240
+    while pos + 1 < len(payload) and payload[pos] != 255:
+        if payload[pos] == 0:
+            pos += 1
+            continue
+        if payload[pos] == 53:
+            return payload[pos + 2]
+        pos += 2 + payload[pos + 1]
+    return None
+
+
+def unicast_renewals(pcap_path, client, server):
+    """How many REQUESTs went from `client` to `server` alone (not broadcast),
+    naming `client` as the address held, and were answered by an ACK"""
+    packets = udp_packets(pcap_path)
+    answered = 0
+    for source, destination, source_port, destination_port, payload in packets:
+        if (source, destination, source_port, destination_port) != (client, server, 68, 67):
+            continue
+        if dhcp_type(payload) != 3 or socket.inet_ntoa(payload[12:16]) != client:
+            continue
+        xid = payload[4:8]
+        if any(p[2] == 67 and p[3] == 68 and p[4][4:8] == xid and dhcp_type(p[4]) == 5 for p in packets):
+            answered += 1
+    return answered
+
+
 def dhcp_and_dns(extra):
     """The second boot: an address by DHCP, a name by DNS."""
     dns_port = free_udp_port()
@@ -101,12 +155,16 @@ def dhcp_and_dns(extra):
 
     threading.Thread(target=serve, daemon=True).start()
 
+    capture = tempfile.NamedTemporaryFile(suffix=".pcap", delete=False)
+    capture.close()
     command = [os.path.join(HERE, "qemu_shell.py"), "--quiet", "--timeout", "60",
-               "--net-option", "net=192.168.76.0/24", "--net-option", "dhcpstart=192.168.76.9"] + extra + [
+               "--net-option", "net=192.168.76.0/24", "--net-option", "dhcpstart=192.168.76.9",
+               "--qemu-arg=-object", f"--qemu-arg=filter-dump,id=capture,netdev=n0,file={capture.name}"] + extra + [
         "exec /bin/dhcp show",
         "exec /bin/ping 192.168.76.2 1",        # Not reachable with the address the kernel starts with
         "exec /bin/dhcp",
         "exec /bin/dhcp show",
+        "exec /bin/dhcp -d -t 1 -n 2",          # Renew twice, a second after each lease, then exit
         "exec /bin/ping 192.168.76.2 1",
         f"exec /bin/host kernel.test 192.168.76.2 {dns_port}",
         f"exec /bin/host nowhere.test 192.168.76.2 {dns_port}",
@@ -114,6 +172,8 @@ def dhcp_and_dns(extra):
     result = subprocess.run(command, capture_output=True)
     output = result.stdout.decode("utf-8", errors="replace")
     stop.set()
+    renewals = unicast_renewals(capture.name, "192.168.76.9", "192.168.76.2")
+    os.unlink(capture.name)
 
     problems = []
     if "interface: address 10.0.2.15" not in output:
@@ -122,6 +182,10 @@ def dhcp_and_dns(extra):
         problems.append("DHCP: no lease, or not the one QEMU's server gives")
     if "interface: address 192.168.76.9" not in output:
         problems.append("DHCP: the lease was not applied to the interface")
+    if output.count("dhcp: renewed by the server (192.168.76.2), lease of 86400 seconds") != 2:
+        problems.append("DHCP: dhcp -d did not report two renewals by the server")
+    if renewals != 2:
+        problems.append(f"DHCP: the capture shows {renewals} renewals sent to the server alone and acknowledged, not 2")
     if output.count("1 sent, 1 answered") != 1 or output.count("1 sent, 0 answered") != 1:
         problems.append("DHCP: the gateway should answer after the lease and only then")
     if "kernel.test has address 203.0.113.7" not in output:
@@ -310,7 +374,7 @@ def main():
             print("network: FAILED:", problem)
         return 1
     megabytes = TCP_ECHO_BYTES // (1024 * 1024)
-    print(f"network (UDP both ways; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed; DHCP lease; DNS lookup): ok")
+    print(f"network (UDP both ways; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed; DHCP lease, renewed twice; DNS lookup): ok")
     return 0
 
 
