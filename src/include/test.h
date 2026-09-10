@@ -43,6 +43,7 @@ extern int tests_failed;
         test_##name(); \
     } while (0)
 
-void run_all_tests(void);
+// Returns true if every expectation passed.
+bool run_all_tests(void);
 
 #endif // TEST_H

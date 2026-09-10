@@ -50,12 +50,12 @@ uint64_t siphash24(const uint8_t key[16], const uint8_t *data, size_t len) {
 
     uint64_t b = (uint64_t)(len & 0xFF) << 56;
     switch (len & 7) {
-        case 7: b |= (uint64_t)ptr[6] << 48;
-        case 6: b |= (uint64_t)ptr[5] << 40;
-        case 5: b |= (uint64_t)ptr[4] << 32;
-        case 4: b |= (uint64_t)ptr[3] << 24;
-        case 3: b |= (uint64_t)ptr[2] << 16;
-        case 2: b |= (uint64_t)ptr[1] << 8;
+        case 7: b |= (uint64_t)ptr[6] << 48; /* fall through */
+        case 6: b |= (uint64_t)ptr[5] << 40; /* fall through */
+        case 5: b |= (uint64_t)ptr[4] << 32; /* fall through */
+        case 4: b |= (uint64_t)ptr[3] << 24; /* fall through */
+        case 3: b |= (uint64_t)ptr[2] << 16; /* fall through */
+        case 2: b |= (uint64_t)ptr[1] << 8; /* fall through */
         case 1: b |= (uint64_t)ptr[0];
         case 0: break;
     }

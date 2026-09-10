@@ -58,6 +58,7 @@
 #include "dev.h"
 #include "bench.h"
 #include "acpi.h"
+#include "io.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -290,8 +291,14 @@ void _start(void) {
     dev_init();
     kprintf("Phase 37 Virtual Hardware Devices initialization complete.\n");
 
-    // Run Kernel Unit Tests (Phases 1 - 38)
-    run_all_tests();
+#ifdef KERNEL_TESTS
+    // Test build (`make test`): run the unit tests, report the verdict to
+    // QEMU through the isa-debug-exit device, and stop.
+    bool tests_ok = run_all_tests();
+    outb(0xf4, tests_ok ? 0x10 : 0x11);
+    kprintf("isa-debug-exit device not present; halting.\n");
+    hcf();
+#endif
 
     // Create interactive shell task
     task_create("shell", shell_task_entry);

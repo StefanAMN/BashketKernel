@@ -94,7 +94,7 @@ src/
 
 ## Unit Testing Framework
 
-BashketKernel has a built-in unit test framework (`tests/`). All tests run during kernel boot and print a summary on the serial console. Tests for stub subsystems only check the placeholder behaviour.
+BashketKernel has a built-in unit test framework (`tests/`). `make test` builds a separate test kernel, boots it headless in QEMU, and exits non-zero if any test fails. The normal kernel (`make run`) does not include the tests. Tests for stub subsystems only check the placeholder behaviour.
 
 ---
 

@@ -20,19 +20,17 @@ status table says which subsystems are real, partial or stub; keep it true.
 
 ```
 make iso          # build/kernel.elf + build/BashketKernel.iso (fetches Limine once)
-make run          # QEMU with serial on stdio
+make test         # separate test kernel in build-test/, exit 0 only if all pass
+make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
+
+tools/qemu_shell.py --quiet 'ps' 'mem'    # boot headless, type shell commands (<1 s)
+tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 ```
 
-Headless boot with scripted shell input (serial is the shell's stdin):
-
-```
-(sleep 13; printf 'ps\nmem\n'; sleep 2) | timeout 20 qemu-system-x86_64 -m 2G \
-  -cdrom build/BashketKernel.iso -boot d -display none -serial stdio -no-reboot
-```
-
-Boot plus the test suite takes about 10 seconds under TCG. Look for
-`Failed: 0` in the summary and for `CPU EXCEPTION` anywhere.
+Two project skills in `.claude/skills/` hold the full procedures:
+`kernel-test` (verify a change) and `kernel-debug` (faults, hangs, interrupts).
+Use them rather than improvising QEMU command lines.
 
 ## Findings worth keeping
 

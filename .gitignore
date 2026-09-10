@@ -4,3 +4,5 @@ iso_root/
 src/*.o
 limine/
 build/
+build-test/
+__pycache__/
