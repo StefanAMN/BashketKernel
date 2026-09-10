@@ -106,6 +106,17 @@ int setenv(const char *name, const char *value) {
     return 0;
 }
 
+int unsetenv(const char *name) {
+    size_t len = strlen(name);
+    char **out = environ;
+    for (char **e = environ; e && *e; e++) {
+        if (strncmp(*e, name, len) == 0 && (*e)[len] == '=') continue;   /* (The string is not freed: it may be on the stack) */
+        *out++ = *e;
+    }
+    if (out) *out = NULL;
+    return 0;
+}
+
 /* --- Memory -------------------------------------------------------------- */
 
 void *sbrk(long increment) {
