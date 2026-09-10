@@ -32,8 +32,14 @@
  * word with *, ? or [...] and no quoted part is replaced by the names it
  * matches, sorted (user/lib/glob.h); one that matches nothing stays as
  * typed.
- * $NAME expands to an environment variable and $? to the last exit status;
- * "export NAME=value" sets one for the shell and everything it starts.
+ * $NAME expands to a variable and $? to the last exit status. "NAME=value"
+ * on its own sets a variable of the shell, which programs do not see;
+ * "export NAME=value" (or "export NAME" for one already set) puts it in
+ * the environment, which the shell and everything it starts share; "unset
+ * NAME" forgets it. "NAME=value program" sets it in that program's
+ * environment only. A value is expanded like any word, but is neither
+ * split nor matched against file names: X=$(ls) keeps the newlines, X=*
+ * a star. A for loop's variable is the shell's own.
  *
  * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
  * empty prompt leaves the shell. At the terminal the line can be edited
@@ -58,6 +64,7 @@
 #define MAX_ARGS      64
 #define MAX_STAGES    8
 #define MAX_REDIRECTS 8
+#define MAX_ASSIGNMENTS 8
 
 enum { REDIRECT_IN, REDIRECT_OUT, REDIRECT_APPEND, REDIRECT_COPY };
 
@@ -73,6 +80,8 @@ typedef struct {
     int argc;
     redirect_t redirects[MAX_REDIRECTS];  /* In the order written: the order matters */
     int redirect_count;
+    char *assignments[MAX_ASSIGNMENTS];   /* "NAME=value" words before the program's name */
+    int assignment_count;
 } stage_t;
 
 /* Words are copied here while parsing, each followed by a NUL. Copying
@@ -220,6 +229,87 @@ static int is_name_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
+/* --- Variables ---------------------------------------------------------------
+ *
+ * A variable is either the shell's own (set by NAME=value, seen by $NAME
+ * and nobody else) or in the environment (export, and passed to every
+ * program). A name is in one place at most: setting an exported variable
+ * changes the environment, and export moves a variable there. */
+
+#define MAX_VARIABLES 64
+static char *variables[MAX_VARIABLES];   /* "NAME=value", malloc'd; NULL: a free entry */
+
+/* Whether `text` up to `end` (or its NUL, whichever is first) is a variable
+ * name: a letter or '_', then letters, digits and '_'. ("1x=y" is a
+ * command, not an assignment.) */
+static int is_name(const char *text, const char *end) {
+    if (text == end || !((*text >= 'a' && *text <= 'z') || (*text >= 'A' && *text <= 'Z') || *text == '_')) return 0;
+    for (; *text && text != end; text++) {
+        if (!is_name_char(*text)) return 0;
+    }
+    return 1;
+}
+
+/* The shell's own entry for `name`, or NULL */
+static char **variable_entry(const char *name) {
+    size_t len = strlen(name);
+    for (int i = 0; i < MAX_VARIABLES; i++) {
+        if (variables[i] && strncmp(variables[i], name, len) == 0 && variables[i][len] == '=') return &variables[i];
+    }
+    return NULL;
+}
+
+/* The value of `name`: the shell's own variable, else the environment's;
+ * NULL if it is set in neither */
+static const char *get_variable(const char *name) {
+    char **entry = variable_entry(name);
+    if (entry) return *entry + strlen(name) + 1;
+    return getenv(name);
+}
+
+/* Set `name` to `value`: in the environment if it is exported, else as the
+ * shell's own. 0, or -1 (a message printed) if out of memory or room. */
+static int set_variable(const char *name, const char *value) {
+    if (getenv(name)) return setenv(name, value);
+    size_t name_len = strlen(name), value_len = strlen(value);
+    char *text = malloc(name_len + value_len + 2);
+    if (!text) return -1;
+    memcpy(text, name, name_len);
+    text[name_len] = '=';
+    memcpy(text + name_len + 1, value, value_len + 1);
+    char **entry = variable_entry(name);
+    for (int i = 0; !entry && i < MAX_VARIABLES; i++) if (!variables[i]) entry = &variables[i];
+    if (!entry) {
+        free(text);
+        fprintf(2, "sh: %s: too many variables\n", name);
+        return -1;
+    }
+    free(*entry);
+    *entry = text;
+    return 0;
+}
+
+/* Forget `name`, both the shell's own and the environment's */
+static void unset_variable(const char *name) {
+    char **entry = variable_entry(name);
+    if (entry) {
+        free(*entry);
+        *entry = NULL;
+    }
+    unsetenv(name);
+}
+
+/* Move the shell's own variable `name` into the environment (nothing to
+ * do if it has none). 0, or -1 if out of memory. */
+static int export_variable(const char *name) {
+    char **entry = variable_entry(name);
+    if (!entry) return 0;
+    if (setenv(name, *entry + strlen(name) + 1) != 0) return -1;
+    free(*entry);
+    *entry = NULL;
+    return 0;
+}
+
 /* Append the value of the variable at *p ($NAME or $?, *p just after the
  * '$') to `word` (length *len, in word_storage from `used`), and move *p
  * past its name. An unset variable is nothing. 0, or -1 if it does not fit. */
@@ -238,7 +328,7 @@ static int append_variable(const char **p, char *word, size_t *len, size_t used)
     } else {
         while (is_name_char(**p) && n < sizeof(name) - 1) name[n++] = *(*p)++;
         name[n] = '\0';
-        value = getenv(name);
+        value = get_variable(name);
     }
     for (; value && *value; value++) {
         if (used + *len + 1 >= sizeof(word_storage)) return -1;
@@ -253,6 +343,12 @@ static int run_line(const char *line, int *should_exit);
 #define WORD_SPLIT  2         /* next_word: holds FIELD_BREAKs, to be split into words */
 #define FIELD_BREAK '\x1f'    /* Where unquoted $(...) output had blanks (0x1f in output counts as one) */
 #define SUBST_MAX   4096      /* Most output a $(...) may give */
+
+/* Set while next_word reads NAME=value: the value is one word whatever a
+ * $(...) in it prints, as in other Bourne shells (X=$(ls) keeps the
+ * newlines) */
+static int reading_assignment = 0;
+static unsigned substitutions_run = 0;   /* $(...)s run so far: did a command line have one? */
 
 /* The ')' that closes the "$(" just before `p`, skipping nested ones and
  * quoted text; NULL if there is none */
@@ -282,6 +378,7 @@ static long substitute(const char *command, char *out, size_t size) {
         close(p[0]);
         close(p[1]);
         interactive = 0;                      /* The child runs the command, not jobs */
+        reading_assignment = 0;               /* (Its own words split as usual) */
         int should_exit = 0;
         exit(run_line(command, &should_exit));
     }
@@ -302,6 +399,7 @@ static long substitute(const char *command, char *out, size_t size) {
     int status = -1;
     while (waitpid(pid, &status, 0) == -EINTR) { }
     last_status = status;
+    substitutions_run++;
     if (too_long) {
         fprintf(2, "sh: $(%s): more than %lu bytes of output\n", command, (unsigned long)(size - 1));
         return -1;
@@ -355,13 +453,14 @@ static char *next_word(const char **cursor, size_t *used, int *flags) {
             static char output[SUBST_MAX + 1];
             long n = substitute(command, output, sizeof(output));
             if (n < 0) return NULL;
+            int whole = quote || reading_assignment;   /* Taken as it is: no splitting */
             for (long i = 0; i < n; i++) {
                 char o = output[i];
-                if (!quote && (is_blank(o) || o == '\n' || o == FIELD_BREAK)) o = FIELD_BREAK;
+                if (!whole && (is_blank(o) || o == '\n' || o == FIELD_BREAK)) o = FIELD_BREAK;
                 if (*used + len + 1 >= sizeof(word_storage)) return NULL;
                 word[len++] = o;
             }
-            if (!quote) split = 1;
+            if (!whole) split = 1;
         } else if (c == '$' && quote != '\'' && (is_name_char(p[1]) || p[1] == '?')) {
             p++;
             if (append_variable(&p, word, &len, *used) < 0) return NULL;
@@ -507,9 +606,20 @@ static int parse_redirect(const char **p, size_t *used, stage_t *stage) {
     return 0;
 }
 
+/* Whether the text at `p` starts an assignment word: NAME=, the name
+ * unquoted */
+static int is_assignment(const char *p) {
+    const char *equals = p;
+    while (is_name_char(*equals)) equals++;
+    return *equals == '=' && is_name(p, equals);
+}
+
 /* Split `line` into pipeline stages. Returns the number of stages, 0 for an
- * empty line, -1 on a syntax error. */
-static int parse(const char *line, stage_t *stages) {
+ * empty line, -1 on a syntax error. With `assignments`, NAME=value words
+ * before a stage's program name go to its assignments; a line of nothing
+ * else is one stage with no arguments (argc 0). Without (the words of a
+ * for), they are words like any other. */
+static int parse(const char *line, stage_t *stages, int assignments) {
     size_t used = 0;
     int count = 0;
     stage_t *stage = &stages[0];
@@ -530,6 +640,15 @@ static int parse(const char *line, stage_t *stages) {
             /* (A digit right before '<' or '>' names a descriptor, as in
              * every Bourne shell: "echo 2>f" writes nothing to f) */
             if (parse_redirect(&p, &used, stage) < 0) return -1;
+        } else if (assignments && stage->argc == 0 && is_assignment(p)) {
+            /* The value is expanded but neither split nor matched as a
+             * wildcard: X=* stores a star */
+            if (stage->assignment_count >= MAX_ASSIGNMENTS) return -1;
+            reading_assignment = 1;
+            char *word = next_word(&p, &used, NULL);
+            reading_assignment = 0;
+            if (!word) return -1;
+            stage->assignments[stage->assignment_count++] = word;
         } else {
             if (stage->argc >= MAX_ARGS) return -1;
             int flags;
@@ -545,6 +664,11 @@ static int parse(const char *line, stage_t *stages) {
         }
     }
 
+    if (stage->argc == 0 && stage->assignment_count > 0) {
+        /* Only assignments: they change the shell. A pipe or a redirection
+         * would have nothing to apply to. */
+        return count == 0 && stage->redirect_count == 0 ? 1 : -1;
+    }
     if (stage->argc == 0) return count == 0 ? 0 : -1; /* Empty line, or "a |" */
     return count + 1; /* argv arrays are NULL-terminated by the memset */
 }
@@ -578,6 +702,17 @@ static void exec_stage(stage_t *stage) {
             redirect_or_die(r->path, O_WRONLY | O_CREAT | O_APPEND, r->fd);
         } else if (dup2(r->from, r->fd) < 0) {
             fprintf(2, "sh: %d: bad file descriptor\n", r->from);
+            exit(1);
+        }
+    }
+
+    /* NAME=value before the program: in its environment only (the child's
+     * copy of it; the shell's is untouched). PATH set so is used below. */
+    for (int i = 0; i < stage->assignment_count; i++) {
+        char *equals = strchr(stage->assignments[i], '=');
+        *equals = '\0';
+        if (setenv(stage->assignments[i], equals + 1) != 0) {
+            fprintf(2, "sh: out of memory\n");
             exit(1);
         }
     }
@@ -695,12 +830,26 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     }
     line = text;
 
-    int count = parse(line, stages);
+    unsigned substitutions_before = substitutions_run;
+    int count = parse(line, stages, 1);
     if (count < 0) {
         fprintf(2, "sh: syntax error\n");
         return 2;
     }
     if (count == 0) return last_status;   /* Nothing to run: $? as it is (or as a $(...) left it) */
+
+    /* NAME=value alone sets the shell's variables. Its status is that of
+     * the last $(...) in it, as in other shells (X=$(false) fails), or 0. */
+    if (stages[0].argc == 0) {
+        for (int i = 0; i < stages[0].assignment_count; i++) {
+            char *equals = strchr(stages[0].assignments[i], '=');
+            *equals = '\0';
+            if (set_variable(stages[0].assignments[i], equals + 1) != 0) return 1;
+        }
+        return substitutions_run != substitutions_before ? last_status : 0;
+    }
+    /* (Before a built-in, NAME=value has no effect: none of them reads the
+     * environment. Before a program it is set in the program's alone.) */
 
     /* Built-ins run inside the shell itself */
     if (count == 1 && strcmp(stages[0].argv[0], "exit") == 0) {
@@ -724,18 +873,39 @@ static int run_pipeline_text(const char *line, int *should_exit) {
         }
         return 0;
     }
-    /* export NAME=value: change the shell's own environment, which every
-     * program started afterwards inherits */
+    /* export NAME=value, or export NAME (a variable of the shell's): into
+     * the shell's environment, which every program started afterwards
+     * inherits */
     if (count == 1 && strcmp(stages[0].argv[0], "export") == 0) {
         for (int i = 1; i < stages[0].argc; i++) {
             char *assignment = stages[0].argv[i];
             char *equals = strchr(assignment, '=');
-            if (!equals || equals == assignment) {
-                fprintf(2, "sh: export: expected NAME=value, got '%s'\n", assignment);
+            if (!is_name(assignment, equals)) {
+                fprintf(2, "sh: export: expected NAME=value or NAME, got '%s'\n", assignment);
                 return 1;
             }
+            if (!equals) {
+                if (export_variable(assignment) != 0) return 1;
+                continue;
+            }
             *equals = '\0';
+            char **own = variable_entry(assignment);
+            if (own) {                       /* (A name is in one place only) */
+                free(*own);
+                *own = NULL;
+            }
             if (setenv(assignment, equals + 1) != 0) return 1;
+        }
+        return 0;
+    }
+    /* unset NAME...: forget variables, the shell's and exported ones */
+    if (count == 1 && strcmp(stages[0].argv[0], "unset") == 0) {
+        for (int i = 1; i < stages[0].argc; i++) {
+            if (!is_name(stages[0].argv[i], NULL)) {
+                fprintf(2, "sh: unset: '%s' is not a name\n", stages[0].argv[i]);
+                return 1;
+            }
+            unset_variable(stages[0].argv[i]);
         }
         return 0;
     }
@@ -783,7 +953,9 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
                "  echo $(date)           the output of a command, in place (up to 4 KiB)\n"
                "  cd [dir], pwd          change or print the current directory\n"
-               "  export NAME=value      set an environment variable; $NAME uses it, $? is the last status\n"
+               "  NAME=value             set a variable of the shell; $NAME uses it, $? is the last status\n"
+               "  export NAME[=value]    put it in the environment, for every program started after\n"
+               "  NAME=value prog        set it for that one program only; unset NAME forgets it\n"
                "  prog args &            run in the background; Ctrl-Z stops the running command\n"
                "  jobs, fg [N], bg [N]   list jobs; bring one to the terminal; let a stopped one run on\n"
                "  exit [status]          leave the shell\n");
@@ -1129,10 +1301,11 @@ static int leave_loop(void) {
 
 /* for: the words expanded once, as for a command, and copied (the body
  * reuses the parser's storage); then the body once for each, with the
- * variable set to it. Its status. */
+ * variable set to it (a variable of the shell's, unless it was exported).
+ * Its status. */
 static int exec_for(node_t *node, int *should_exit) {
     static stage_t stages[MAX_STAGES];
-    int count = parse(node->text, stages);
+    int count = parse(node->text, stages, 0);
     if (count < 0 || count > 1) {
         fprintf(2, "sh: syntax error\n");
         return 2;
@@ -1146,7 +1319,7 @@ static int exec_for(node_t *node, int *should_exit) {
         if (copy[i]) memcpy(copy[i], stages[0].argv[i], n + 1);
     }
     for (int i = 0; i < words; i++) {
-        if (copy[i]) setenv(node->name, copy[i]);
+        if (copy[i] && set_variable(node->name, copy[i]) != 0) { status = 1; break; }
         status = exec_list(&node->body, should_exit);
         if (*should_exit || interrupted || leave_loop()) break;
     }
@@ -1362,7 +1535,7 @@ static void complete_names(lineedit_t *e, const char *word, int command) {
     for (const char *c = word; *c; c++) if (*c == '/') slash = c;
 
     if (command && !slash) {
-        static const char *const builtins[] = { "bg", "cd", "exit", "export", "fg", "help", "jobs", "pwd" };
+        static const char *const builtins[] = { "bg", "cd", "exit", "export", "fg", "help", "jobs", "pwd", "unset" };
         size_t n = strlen(word);
         for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
             if (strncmp(builtins[i], word, n) == 0) lineedit_add_match(e, builtins[i]);
