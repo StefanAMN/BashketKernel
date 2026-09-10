@@ -2285,6 +2285,64 @@ static void check_shell_redirects(void) {
     CHECK(unlink("/tmp/redir") == 0);
 }
 
+/* Make `path` hold `size` bytes of `text`; whether it worked */
+static int put_file(const char *path, const char *text, size_t size) {
+    long fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0) return 0;
+    int ok = write((int)fd, text, size) == (long)size;
+    close((int)fd);
+    return ok;
+}
+
+/* uniq, cut and tr: their basic forms, a line longer than any fixed buffer
+ * (two equal ones, then a last line without '\n'), and what they refuse */
+static void check_line_tools(void) {
+    static char out[128];
+    CHECK(put_file("/tmp/lt", "a\na\nb\na\nc\nc", 11));                  /* No '\n' at the end */
+    CHECK(sh_prints("uniq /tmp/lt", "a\nb\na\nc\n"));
+    CHECK(sh_prints("uniq -c /tmp/lt", "2 a\n1 b\n1 a\n2 c\n"));
+    CHECK(sh_prints("uniq -d /tmp/lt", "a\nc\n"));
+    CHECK(sh_prints("cat /tmp/lt | uniq -c -d", "2 a\n2 c\n"));
+
+    CHECK(put_file("/tmp/lt", "one:two:three:four\nplain\ntab\tsep", 32));
+    CHECK(sh_prints("cut -d : -f 2 /tmp/lt", "two\nplain\ntab\tsep\n"));    /* No ':': the whole line */
+    CHECK(sh_prints("cut -d : -f 3-,1,1 /tmp/lt", "one:three:four\nplain\ntab\tsep\n"));
+    CHECK(sh_prints("cut -d : -f -2 /tmp/lt | head -n 1", "one:two\n"));
+    CHECK(sh_prints("cut -f 2 /tmp/lt", "one:two:three:four\nplain\nsep\n"));  /* A tab by default */
+    CHECK(sh_prints("cut -c 2-4,1 /tmp/lt", "one:\nplai\ntab\t\n"));
+    CHECK(sh_prints("cut -c 9- /tmp/lt", "three:four\n\n\n"));
+
+    CHECK(sh_prints("echo Hello, World | tr a-z A-Z", "HELLO, WORLD\n"));
+    CHECK(sh_prints("echo hello | tr -d l", "heo\n"));
+    CHECK(sh_prints("echo hello | tr a-z x", "xxxxx\n"));                   /* SET2's last, repeated */
+    CHECK(sh_prints("echo a b c | tr ' ' '\\n'", "a\nb\nc\n"));
+
+    /* 6000 bytes, the same again, then "y" with no '\n' */
+    static char big[12003];
+    memset(big, 'x', sizeof(big));
+    big[6000] = '\n';
+    big[12001] = '\n';
+    big[12002] = 'y';
+    CHECK(put_file("/tmp/lt", big, sizeof(big)));
+    CHECK(sh_prints("uniq -c /tmp/lt | cut -c 1-4", "2 xx\n1 y\n"));
+    CHECK(sh_prints("cut -c 5999- /tmp/lt", "xx\nxx\n\n"));
+    CHECK(sh_prints("tr x z < /tmp/lt | cut -c 1,6000-", "zz\nzz\ny\n"));
+    CHECK(sh_prints("tr -d x < /tmp/lt", "\n\ny"));
+    big[3000] = 'w';                                       /* Equal length, not equal */
+    CHECK(put_file("/tmp/lt", big, sizeof(big)));
+    CHECK(sh_prints("uniq -c /tmp/lt | cut -c 1-2", "1 \n1 \n1 \n"));
+
+    CHECK(sh_capture("cut -c 0 /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("cut -c 3-1 /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("cut -d : -c 1 /tmp/lt", out, sizeof(out)) == 2);     /* -d goes with -f */
+    CHECK(sh_capture("cut -f 1 /no/such", out, sizeof(out)) == 1);
+    CHECK(sh_capture("tr z-a b < /tmp/lt", out, sizeof(out)) == 2);         /* A range backwards */
+    CHECK(sh_capture("tr -d < /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("uniq -x /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("uniq /no/such", out, sizeof(out)) == 1);
+    CHECK(unlink("/tmp/lt") == 0);
+}
+
 /* The shell's if, while and for, break and continue, and test / [ */
 static void check_shell_control(void) {
     /* if: the branch taken; elif; nothing taken is status 0; the status of the branch */
@@ -2879,6 +2937,7 @@ int main(void) {
     check_shell_words();
     check_shell_control();
     check_shell_redirects();
+    check_line_tools();
     check_proc();
     check_groups_and_setuid();
     check_pipes();
