@@ -998,7 +998,7 @@ command, values, statuses, `unset`, and names that are not names
 environment failed 13 checks (5 of them the existing `for` checks);
 splitting the value as an ordinary word failed one, the `$(...)` value.
 
-### L3. `uniq`, `cut` and `tr` (S)
+### L3. `uniq`, `cut` and `tr` (S) — done
 
 Three more line tools on `user/lib/lines.c`, as POSIX describes them in
 their basic forms: `uniq [-c] [-d]`, `cut -d C -f LIST` and `cut -c LIST`
@@ -1006,6 +1006,15 @@ their basic forms: `uniq [-c] [-d]`, `cut -d C -f LIST` and `cut -c LIST`
 with ranges (`a-z`). **Check:** `make test-tools` and syscheck, with
 input lines longer than any fixed buffer and input without a final
 newline.
+
+Done as written. `tr` works on bytes, not lines, so it reads blocks and
+needs no line reader; `cut -c` counts bytes (there are no multi-byte
+characters here). `uniq` keeps a copy of the line it is counting, since
+the reader reuses its buffer. Sabotage, one at a time: `uniq` comparing
+only the first 2 KiB of a line failed the check with two 6000-byte lines
+that differ in the middle; `cut -f` dropping a line without the
+delimiter failed three checks; `tr` not repeating the last character of
+a shorter SET2 failed one.
 
 ### L4. Supplementary groups (M)
 
