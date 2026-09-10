@@ -22,6 +22,38 @@ void sched_init(void);
 task_t *task_create(const char *name, void (*entry)(void));
 
 /**
+ * @brief Allocate a task and its kernel stack without making it runnable.
+ * The caller may fill in more fields, then must call sched_add().
+ */
+task_t *task_alloc(const char *name, void (*entry)(void));
+
+/**
+ * @brief Put a task from task_alloc() on the run queue.
+ */
+void sched_add(task_t *t);
+
+/**
+ * @brief Free a task that is not on the run queue: its address space (if it
+ * owns one), its kernel stack and the task struct.
+ */
+void task_free(task_t *t);
+
+/**
+ * @brief Look up a task on the run queue by PID (NULL if there is none).
+ */
+task_t *sched_find_task(uint32_t pid);
+
+/**
+ * @brief Head of the run queue, for walking all tasks via ->next.
+ */
+task_t *sched_first_task(void);
+
+/**
+ * @brief Terminate the current task with an exit status. Does not return.
+ */
+void task_exit_status(int status);
+
+/**
  * @brief Voluntarily yield CPU to the next ready task in round-robin queue.
  */
 void sched_yield(void);

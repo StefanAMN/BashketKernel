@@ -11,6 +11,7 @@
 #include "string_util.h"
 #include "kstack.h"
 #include "spinlock.h"
+#include "gdt.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 
@@ -20,12 +21,16 @@ static task_t *task_queue_tail = NULL;
 static uint32_t next_pid = 0;
 static bool scheduler_active = false;
 
+// Kernel stack the syscall entry stub switches to. Kept equal to TSS.RSP0:
+// both are "the top of the running task's kernel stack". One variable is
+// enough while there is one CPU; SMP will need this per CPU (via swapgs).
+uint64_t syscall_kernel_rsp = 0;
+
 // The run queue is touched from task context and from the timer interrupt.
 // On one CPU, disabling interrupts is enough to make each update atomic;
 // real SMP will need a lock here as well.
 static void enqueue_task(task_t *t) {
     uint64_t flags = irq_save();
-    t->pid = next_pid++;
     t->next = NULL;
     if (task_queue_head == NULL) {
         task_queue_head = t;
@@ -45,9 +50,11 @@ void sched_init(void) {
     main_task->name[4] = 'e'; main_task->name[5] = 'l'; main_task->name[6] = '_'; main_task->name[7] = 'm';
     main_task->name[8] = 'a'; main_task->name[9] = 'i'; main_task->name[10] = 'n'; main_task->name[11] = '\0';
     main_task->state = TASK_RUNNING;
-    main_task->pml4_phys = NULL; // Uses kernel PML4
+    main_task->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys();
+    main_task->detached = true;
     main_task->next = NULL;
 
+    main_task->pid = next_pid++;
     enqueue_task(main_task);
     current_task = main_task;
 
@@ -55,7 +62,7 @@ void sched_init(void) {
     kprintf("Scheduler Init: Preemptive multitasking enabled (Main Kernel PID: %d)\n", main_task->pid);
 }
 
-task_t *task_create(const char *name, void (*entry)(void)) {
+task_t *task_alloc(const char *name, void (*entry)(void)) {
     task_t *t = (task_t *)kmalloc(sizeof(task_t));
     if (!t) return NULL;
     memset(t, 0, sizeof(task_t));
@@ -76,8 +83,16 @@ task_t *task_create(const char *name, void (*entry)(void)) {
         kfree(t);
         return NULL;
     }
+
     t->state = TASK_READY;
-    t->pml4_phys = NULL; // Shares kernel PML4 address space
+    t->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys(); // Kernel threads share the kernel address space
+    t->detached = true;
+    t->parent_pid = current_task ? current_task->pid : 0;
+
+    // Assign the PID now so the creator can use it before the task ever runs
+    uint64_t flags = irq_save();
+    t->pid = next_pid++;
+    irq_restore(flags);
 
     // Build initial stack frame for ctx_switch conforming to System V AMD64 ABI.
     // At function entry point, (RSP + 8) must be a multiple of 16 (i.e. RSP % 16 == 8).
@@ -99,10 +114,45 @@ task_t *task_create(const char *name, void (*entry)(void)) {
     *(--stack_top) = 0;                    // RBX
 
     t->rsp = (uint64_t)stack_top;
-
-    enqueue_task(t);
-    kprintf("Task Created: PID %d ('%s') at Entry: %p\n", t->pid, t->name, entry);
     return t;
+}
+
+void sched_add(task_t *t) {
+    enqueue_task(t);
+}
+
+task_t *task_create(const char *name, void (*entry)(void)) {
+    task_t *t = task_alloc(name, entry);
+    if (!t) return NULL;
+
+    kprintf("Task Created: PID %d ('%s') at Entry: %p\n", t->pid, t->name, entry);
+    sched_add(t);
+    return t;
+}
+
+void task_free(task_t *t) {
+    if (!t) return;
+    if (t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
+        vmm_destroy_address_space(vmm_space_from_phys((uint64_t)t->pml4_phys));
+    }
+    if (t->kernel_stack) {
+        kstack_free(t->kernel_stack);
+    }
+    kfree(t);
+}
+
+task_t *sched_first_task(void) {
+    return task_queue_head;
+}
+
+task_t *sched_find_task(uint32_t pid) {
+    uint64_t flags = irq_save();
+    task_t *curr = task_queue_head;
+    while (curr && curr->pid != pid) {
+        curr = curr->next;
+    }
+    irq_restore(flags);
+    return curr;
 }
 
 task_t *sched_get_current_task(void) {
@@ -144,6 +194,15 @@ void sched_yield(void) {
     next_task->state = TASK_RUNNING;
     current_task = next_task;
 
+    // Point the CPU at the incoming task's kernel stack for the next entry
+    // from ring 3: TSS.RSP0 for interrupts and exceptions, syscall_kernel_rsp
+    // for the syscall instruction (which does not use the TSS).
+    if (next_task->kernel_stack) {
+        uint64_t kstack_top = (uint64_t)next_task->kernel_stack + KERNEL_STACK_SIZE;
+        tss_set_rsp0(kstack_top);
+        syscall_kernel_rsp = kstack_top;
+    }
+
     ctx_switch((uint64_t **)&old_task->rsp, (uint64_t *)next_task->rsp, next_task->pml4_phys);
 
     // Back in old_task, possibly much later. ctx_switch restored the RFLAGS it
@@ -162,7 +221,7 @@ size_t sched_reap(void) {
     task_t *curr = task_queue_head;
     while (curr) {
         task_t *next = curr->next;
-        if (curr->state == TASK_ZOMBIE && curr != current_task) {
+        if (curr->state == TASK_ZOMBIE && curr->detached && curr != current_task) {
             if (prev) prev->next = next; else task_queue_head = next;
             if (curr == task_queue_tail) task_queue_tail = prev;
             curr->next = dead_list;
@@ -176,10 +235,7 @@ size_t sched_reap(void) {
 
     while (dead_list) {
         task_t *next = dead_list->next;
-        if (dead_list->kernel_stack) {
-            kstack_free(dead_list->kernel_stack);
-        }
-        kfree(dead_list);
+        task_free(dead_list);
         dead_list = next;
         reaped++;
     }
@@ -194,16 +250,29 @@ void sched_tick(void) {
 }
 
 void task_exit(void) {
+    task_exit_status(0);
+}
+
+void task_exit_status(int status) {
     if (!current_task) return;
 
-    kprintf("Task Exit: PID %d ('%s') finished execution.\n", current_task->pid, current_task->name);
+    uint64_t flags = irq_save();
+    current_task->exit_status = status;
     current_task->state = TASK_ZOMBIE;
+
+    // Children of an exiting task have nobody left to wait for them
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->parent_pid == current_task->pid && t != current_task) {
+            t->detached = true;
+        }
+    }
+    irq_restore(flags);
 
     // A zombie is never picked again, so this only returns if no other task
     // is runnable right now. Keep yielding until sched_reap frees us.
     while (1) {
         sched_yield();
-        asm volatile("hlt");
+        asm volatile("sti\n\thlt"); // IF may be clear if we got here from a fault handler
     }
 }
 

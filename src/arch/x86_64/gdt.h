@@ -15,6 +15,19 @@
 
 #include <stdint.h>
 
+// Segment selectors. The order of the user segments is dictated by SYSRET,
+// which loads SS from STAR[63:48] + 8 and CS from STAR[63:48] + 16: user data
+// must sit directly below user code. (Intel SDM Vol. 2B, SYSRET.)
+#define GDT_KERNEL_CODE 0x08
+#define GDT_KERNEL_DATA 0x10
+#define GDT_USER_DATA   0x18
+#define GDT_USER_CODE   0x20
+#define GDT_TSS         0x28
+
+// Selectors as loaded in ring 3 carry RPL 3 in their low two bits
+#define USER_DS (GDT_USER_DATA | 3) // 0x1B
+#define USER_CS (GDT_USER_CODE | 3) // 0x23
+
 /**
  * @brief Standard 8-byte GDT Entry Descriptor structure.
  */

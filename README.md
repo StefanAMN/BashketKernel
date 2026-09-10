@@ -4,8 +4,9 @@ BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed f
 
 ## Status
 
-The kernel boots under QEMU into a kernel-mode shell. Phases 1 to 4 are solid;
-much of what follows is placeholder code. `PLAN.md` is the plan for closing
+The kernel boots under QEMU into a kernel-mode shell that can run user
+programs in ring 3. The core (phases 1 to 6, 12 and 16) is real; much of the
+rest is placeholder code. `PLAN.md` is the plan for closing
 that gap.
 
 - **real**: implemented and exercised at runtime.
@@ -16,20 +17,20 @@ that gap.
 |---|---|---|---|
 | 1 | Boot, console, serial | real | Framebuffer console, COM1 serial, `kprintf`. |
 | 2 | GDT, TSS, IDT, interrupts | real | Double faults run on their own stack (IST1). |
-| 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap. One address space only. |
+| 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap, per-process address spaces. |
 | 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. 100 Hz PIT tick. |
-| 5 | Userspace and syscalls | partial | The dispatcher and an ELF header parser exist. The `syscall` entry path is broken and nothing runs in ring 3 yet. |
-| 6 | VFS and initrd | partial | In-memory VFS tree works. The USTAR parser is never called; no initrd is loaded. |
+| 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader. No file descriptors yet. |
+| 6 | VFS and initrd | real | In-memory VFS tree. A USTAR initrd with the user programs is loaded as a Limine module. Read-only. |
 | 7 | Shell | real | Runs as a kernel thread, not a user program. |
-| 8 | Slab, COW, mmap | partial | Slab allocator works. COW is a refcount table with no fault handler. `mmap` maps into the kernel address space. |
+| 8 | Slab, COW, mmap | partial | Slab allocator works. Anonymous `mmap`, `munmap` and `brk` work per process. Frame sharing counts exist, but `fork` still copies every page. |
 | 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |
 | 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
 | 11 | virtio-blk and FAT32 | stub | A RAM buffer and an in-memory file table. No virtqueues, no on-disk format. |
-| 12 | fork, exec, wait, signals | stub | `fork` starts a kernel thread; `exec`, `waitpid` and `kill` only print. |
+| 12 | fork, exec, wait, kill | real | `fork` (full copy), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. No signal handlers; waiting polls. |
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | stub | `/bin/hello` and `/bin/calc` are bare ELF headers with no code. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `hello`, `fault`, `syscheck`. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | One global table, not per process. |
 | 19 | Pipes | partial | A ring buffer with no blocking and no file descriptors. |
@@ -141,7 +142,20 @@ make run-gdb
 ```
 *(In a separate terminal, run `gdb build/kernel.elf` and type `target remote :1234`)*
 
-### 4. Triggering faults on purpose
+### 4. Running user programs
+`exec <path> [args]` in the shell runs a program from the initrd in ring 3 and
+waits for it:
+
+```
+BashketOS> exec /bin/hello one two
+BashketOS> exec /bin/syscheck          # exercises the system call interface
+BashketOS> exec /bin/fault kread       # tries to read kernel memory; gets killed
+```
+
+To add a program, put `name.c` in `user/`; it is built against `user/lib` and
+appears as `/bin/name`.
+
+### 5. Triggering kernel faults on purpose
 The shell command `crash div0`, `crash pf` or `crash stack` raises a divide
 error, a page fault or a kernel stack overflow, to check that each one is
 caught and reported on the serial console.

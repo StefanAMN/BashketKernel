@@ -37,9 +37,13 @@ ctx_switch:
     // Load incoming task's RSP (RSI)
     mov rsp, rsi
 
-    // If new_pml4_phys (RDX) is non-null, switch CR3 page table
+    // Load the incoming task's address space. Skip the write when it is
+    // already loaded: writing CR3 flushes the TLB even if the value is the same.
     test rdx, rdx
     jz .skip_cr3_switch
+    mov rax, cr3
+    cmp rax, rdx
+    je .skip_cr3_switch
     mov cr3, rdx
 
 .skip_cr3_switch:

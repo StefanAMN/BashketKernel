@@ -26,6 +26,58 @@
 
 #define PTE_ADDR_MASK   0x000FFFFFFFFFF000ULL
 
+// First address above user space. On x86_64 with 4-level paging the lower
+// canonical half ends at 0x00007FFFFFFFFFFF.
+#define USER_SPACE_END 0x0000800000000000ULL
+
+/**
+ * @brief Physical address of the kernel PML4, as loaded into CR3.
+ */
+uint64_t vmm_get_kernel_pml4_phys(void);
+
+/**
+ * @brief Convert a PML4 physical address (as stored in a task) into the
+ * pointer form the vmm_* functions take.
+ */
+uint64_t *vmm_space_from_phys(uint64_t pml4_phys);
+
+/**
+ * @brief Create an address space: empty user half, kernel half shared.
+ * @return PML4 pointer, or NULL if out of memory.
+ */
+uint64_t *vmm_create_address_space(void);
+
+/**
+ * @brief Free every user page and user page table of an address space, then
+ * the PML4 itself. Must not be the address space currently loaded in CR3.
+ */
+void vmm_destroy_address_space(uint64_t *pml4);
+
+/**
+ * @brief Read the raw page-table entry for a 4 KiB page (0 if unmapped).
+ */
+uint64_t vmm_get_pte(uint64_t *pml4, uint64_t virt);
+
+/**
+ * @brief Allocate a zeroed frame and map it at a user address.
+ * @return Kernel (direct map) pointer to the new page, for filling it in
+ *         without switching address space. NULL on failure.
+ */
+void *vmm_alloc_user_page(uint64_t *pml4, uint64_t virt, uint64_t flags);
+
+/**
+ * @brief Check that [addr, addr+len) lies in user space and that every page
+ * is mapped user-accessible (and writable, if `write`). Syscalls must call
+ * this before touching any pointer a user program passed in.
+ */
+bool vmm_user_range_ok(uint64_t *pml4, uint64_t addr, size_t len, bool write);
+
+/**
+ * @brief Copy bytes into another address space through the direct map.
+ * @return Number of bytes copied (short if a page is not mapped).
+ */
+size_t vmm_copy_to_space(uint64_t *pml4, uint64_t dest, const void *src, size_t len);
+
 /**
  * @brief Initialize Virtual Memory Manager from current CR3 page table.
  */

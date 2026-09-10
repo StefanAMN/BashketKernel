@@ -9,6 +9,8 @@
 #include "pic.h"
 #include "lapic.h"
 #include "kstack.h"
+#include "sched.h"
+#include "process.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -49,7 +51,31 @@ void register_irq_handler(uint8_t irq, irq_handler_t handler) {
     }
 }
 
+// An exception raised by ring 3 code is that program's problem, not the
+// kernel's: report it, end the process, keep the system running.
+static void kill_faulting_process(struct registers *regs) {
+    task_t *task = sched_get_current_task();
+    kprintf("\n[pid %u %s] killed: %s at RIP 0x%zx", task->pid, task->name,
+            exception_messages[regs->int_no], regs->rip);
+    if (regs->int_no == 14) {
+        uint64_t cr2;
+        asm volatile("mov %0, %%cr2" : "=r"(cr2));
+        kprintf(", address 0x%zx (%s%s)", cr2,
+                (regs->err_code & 2) ? "write" : ((regs->err_code & 16) ? "execute" : "read"),
+                (regs->err_code & 1) ? ", protection" : ", not mapped");
+    }
+    kprintf("\n");
+
+    // Shell convention: killed by signal N reports status 128 + N
+    task_exit_status(128 + (regs->int_no == 14 || regs->int_no == 13 ? SIGSEGV : SIGKILL));
+}
+
 void isr_handler(struct registers *regs) {
+    if (regs->int_no < 32 && (regs->cs & 3) == 3) {
+        kill_faulting_process(regs);
+        return; // Not reached
+    }
+
     if (regs->int_no < 32) {
         // CPU Exception (0..31). The fault may have happened while the
         // interrupted code held the kprintf lock, so take it away first.

@@ -24,7 +24,6 @@ extern void test_suite_process(void);
 extern void test_suite_net(void);
 extern void test_suite_boot(void);
 extern void test_suite_mouse(void);
-extern void test_suite_user_apps(void);
 extern void test_suite_rtc(void);
 extern void test_suite_env(void);
 extern void test_suite_pipe(void);
@@ -70,7 +69,6 @@ bool run_all_tests(void) {
     test_suite_net();
     test_suite_boot();
     test_suite_mouse();
-    test_suite_user_apps();
     test_suite_rtc();
     test_suite_env();
     test_suite_pipe();

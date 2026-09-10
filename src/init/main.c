@@ -34,7 +34,6 @@
 #include "boot_loader.h"
 #include "mouse.h"
 #include "cursor.h"
-#include "user_apps.h"
 #include "rtc.h"
 #include "env.h"
 #include "pipe.h"
@@ -84,6 +83,13 @@ static volatile struct limine_hhdm_request hhdm_request = {
 __attribute__((used, section(".requests")))
 static volatile struct limine_rsdp_request rsdp_request = {
     .id = LIMINE_RSDP_REQUEST,
+    .revision = 0
+};
+
+// The initrd (a tar archive of user programs) is loaded as a boot module
+__attribute__((used, section(".requests")))
+static volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST,
     .revision = 0
 };
 
@@ -200,6 +206,14 @@ void _start(void) {
 
     // Phase 6: Filesystem & Initrd
     vfs_init();
+    if (module_request.response && module_request.response->module_count > 0) {
+        struct limine_file *initrd = module_request.response->modules[0];
+        if (!initrd_mount(initrd->address, initrd->size)) {
+            kprintf("WARNING: initrd is corrupt; continuing with what was loaded\n");
+        }
+    } else {
+        kprintf("WARNING: no initrd module; /bin will be empty\n");
+    }
     kprintf("Phase 6 Virtual Filesystem initialization complete.\n");
 
     // Phase 7: Keyboard & Shell
@@ -242,10 +256,6 @@ void _start(void) {
     mouse_init();
     cursor_init();
     kprintf("Phase 15 PS/2 Mouse Driver & Canvas initialization complete.\n");
-
-    // Phase 16: Userland Environment & Built-in ELF Programs
-    user_apps_init();
-    kprintf("Phase 16 Userland Apps & Binaries initialization complete.\n");
 
     // Phase 17: Real-Time Clock & CMOS Driver
     rtc_init();

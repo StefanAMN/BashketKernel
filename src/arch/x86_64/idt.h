@@ -5,7 +5,7 @@
  * The IDT maps interrupt vectors (0 to 255) to Handler entry points.
  * Vectors 0–31: CPU Hardware Exceptions (e.g. Page Fault, Divide Error).
  * Vectors 32–47: Hardware IRQs (Timer, Keyboard).
- * Vector 128 (0x80): System Call Gateway.
+ * System calls do not use the IDT; they enter through the syscall instruction.
  */
 
 #ifndef IDT_H
@@ -44,7 +44,7 @@ void idt_init(void);
  * @param num Vector number (0..255).
  * @param base 64-bit virtual address of ISR entry stub.
  * @param selector Code Segment Selector (0x08).
- * @param flags Type and attribute flags (0x8E for Ring 0 Interrupt Gate, 0xEE for Ring 3 Trap Gate).
+ * @param flags Type and attribute flags (0x8E = present, DPL 0, 64-bit interrupt gate).
  */
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t selector, uint8_t flags);
 

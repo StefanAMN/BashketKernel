@@ -92,7 +92,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 5. Userspace & System Calls (Phase 5)
-**Status: partial.** The dispatcher and an ELF header parser exist. The `syscall` entry path is broken and nothing runs in ring 3 yet.
+**Status: real.** Programs run in ring 3 with their own address space. See also `src/arch/x86_64/syscall_entry.S`, `src/kernel/proc/process.c`, `user/`.
 
 **Goal:** Syscall/sysret MSR setup, user privilege transition (Ring 3), ELF64 loader.
 
@@ -108,7 +108,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 6. Virtual Filesystem (VFS) & InitRD (Phase 6)
-**Status: partial.** In-memory VFS tree works. The USTAR parser is never called; no initrd is loaded.
+**Status: real.** In-memory VFS tree; a USTAR initrd is loaded as a Limine module. Read-only.
 
 **Goal:** VFS inode and file operation abstractions, USTAR initrd parser.
 
@@ -138,7 +138,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 8. Advanced Memory Management (Phase 8)
-**Status: partial.** Slab allocator works. COW is a refcount table with no fault handler. `mmap` maps into the kernel address space.
+**Status: partial.** Slab works; `mmap`/`brk` work per process; `fork` still copies every page (no copy-on-write fault path).
 
 **Goal:** Slab object allocator, Copy-On-Write (COW), Anonymous memory mapping (`mmap`).
 
@@ -201,7 +201,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 12. Process Life Cycle & Signal Handling (Phase 12)
-**Status: stub.** `fork` starts a kernel thread; `exec`, `waitpid` and `kill` only print.
+**Status: real.** `fork` (full copy), `execve`, `waitpid`, `kill` and exit statuses work. No signal handlers.
 
 **Goal:** Process hierarchy (`fork`, `exec`, `waitpid`, `exit`), UNIX signal dispatching.
 
@@ -258,7 +258,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 16. Userland Application Infrastructure (Phase 16)
-**Status: stub.** `/bin/hello` and `/bin/calc` are bare ELF headers with no code.
+**Status: real.** `user/*.c` are built into `/bin` in the initrd. The old `user_apps.c` is gone; see `user/` and `src/kernel/proc/process.c`.
 
 **Goal:** Loading and executing standalone ring-3 binaries from filesystem.
 

@@ -12,6 +12,12 @@
 
 #define ELF_MAGIC 0x464C457F // 0x7F 'E' 'L' 'F'
 
+// e_ident[4] (class), e_ident[5] (data encoding), e_type, e_machine
+#define ELFCLASS64  2
+#define ELFDATA2LSB 1
+#define ET_EXEC     2
+#define EM_X86_64   62
+
 #define PT_NULL    0
 #define PT_LOAD    1
 #define PT_DYNAMIC 2
@@ -51,11 +57,16 @@ typedef struct {
 } __attribute__((packed)) Elf64_Phdr;
 
 /**
- * @brief Load an ELF64 binary image into virtual memory.
- * @param elf_data Pointer to ELF binary in memory.
- * @param out_entry_point Output pointer to store entry point address.
- * @return true on valid load, false on invalid binary.
+ * @brief Load a static ELF64 executable into a user address space.
+ * @param pml4 Target address space (from vmm_create_address_space).
+ * @param elf_data The file contents (untrusted).
+ * @param size Size of the file in bytes.
+ * @param out_entry Receives the entry point.
+ * @param out_image_end If non-NULL, receives the highest address used by any
+ *        segment (where the program break starts).
+ * @return true on success. On failure the address space may be partly
+ *         populated; the caller destroys it.
  */
-bool elf_load(const void *elf_data, void **out_entry_point);
+bool elf_load(uint64_t *pml4, const void *elf_data, size_t size, uint64_t *out_entry, uint64_t *out_image_end);
 
 #endif // ELF_H

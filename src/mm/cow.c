@@ -1,62 +1,68 @@
 /**
  * @file cow.c
- * @brief Implementation of Copy-On-Write Frame Reference Counting
+ * @brief Implementation of physical frame sharing counts
  */
 
 #include "cow.h"
 #include "pmm.h"
-#include "heap.h"
 #include "kprintf.h"
 #include "string_util.h"
+#include "spinlock.h"
 
-#define MAX_COW_FRAMES 65536 // 256 MB physical RAM ceiling (64K frames)
-static uint16_t *frame_refcounts = NULL;
+// extra_owners[frame] = owners beyond the first. Zero for almost every frame,
+// so the table needs no setup when a frame is allocated.
+static uint16_t *extra_owners = NULL;
+static size_t tracked_frames = 0;
+static spinlock_t cow_lock = SPINLOCK_INIT;
 
 void cow_init(void) {
-    size_t bytes = MAX_COW_FRAMES * sizeof(uint16_t);
-    frame_refcounts = (uint16_t *)kmalloc(bytes);
-    if (frame_refcounts) {
-        memset(frame_refcounts, 0, bytes);
-        kprintf("COW Init: Refcount table initialized for %d frames (%zu KB)\n", MAX_COW_FRAMES, bytes / 1024);
-    }
+    tracked_frames = pmm_get_total_frames();
+    size_t bytes = tracked_frames * sizeof(uint16_t);
+    size_t pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    // Too large for the kernel heap on big machines: take whole frames
+    void *phys = pmm_alloc_frames(pages);
+    if (!phys) panic("COW: cannot allocate the frame sharing table");
+
+    extra_owners = (uint16_t *)((uint64_t)phys + pmm_get_hhdm_offset());
+    memset(extra_owners, 0, pages * PAGE_SIZE);
+    kprintf("COW Init: Sharing table covers %zu frames (%zu KB)\n", tracked_frames, bytes / 1024);
 }
 
 void pmm_ref_frame(void *phys_frame) {
-    if (!frame_refcounts || !phys_frame) return;
+    uint64_t frame = (uint64_t)phys_frame / PAGE_SIZE;
+    if (!extra_owners || frame >= tracked_frames) return;
 
-    uint64_t frame_idx = (uint64_t)phys_frame / PAGE_SIZE;
-    if (frame_idx < MAX_COW_FRAMES) {
-        frame_refcounts[frame_idx]++;
-    }
+    uint64_t flags = spinlock_acquire_irqsave(&cow_lock);
+    extra_owners[frame]++;
+    spinlock_release_irqrestore(&cow_lock, flags);
 }
 
 void pmm_unref_frame(void *phys_frame) {
     if (!phys_frame) return;
+    uint64_t frame = (uint64_t)phys_frame / PAGE_SIZE;
 
-    if (!frame_refcounts) {
-        pmm_free_frame(phys_frame);
-        return;
+    bool last_owner = true;
+    if (extra_owners && frame < tracked_frames) {
+        uint64_t flags = spinlock_acquire_irqsave(&cow_lock);
+        if (extra_owners[frame] > 0) {
+            extra_owners[frame]--;
+            last_owner = false;
+        }
+        spinlock_release_irqrestore(&cow_lock, flags);
     }
 
-    uint64_t frame_idx = (uint64_t)phys_frame / PAGE_SIZE;
-    if (frame_idx < MAX_COW_FRAMES) {
-        if (frame_refcounts[frame_idx] > 0) {
-            frame_refcounts[frame_idx]--;
-        }
-        if (frame_refcounts[frame_idx] == 0) {
-            pmm_free_frame(phys_frame);
-        }
-    } else {
+    if (last_owner) {
         pmm_free_frame(phys_frame);
     }
 }
 
-uint16_t pmm_get_frame_ref(void *phys_frame) {
-    if (!frame_refcounts || !phys_frame) return 1;
+uint32_t pmm_get_frame_ref(void *phys_frame) {
+    uint64_t frame = (uint64_t)phys_frame / PAGE_SIZE;
+    if (!extra_owners || frame >= tracked_frames) return 1;
 
-    uint64_t frame_idx = (uint64_t)phys_frame / PAGE_SIZE;
-    if (frame_idx < MAX_COW_FRAMES) {
-        return frame_refcounts[frame_idx];
-    }
-    return 1;
+    uint64_t flags = spinlock_acquire_irqsave(&cow_lock);
+    uint32_t owners = (uint32_t)extra_owners[frame] + 1;
+    spinlock_release_irqrestore(&cow_lock, flags);
+    return owners;
 }
