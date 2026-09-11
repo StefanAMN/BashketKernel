@@ -7,6 +7,7 @@
 #define SEM_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "spinlock.h"
 
 typedef struct {
@@ -31,6 +32,12 @@ void sem_wait(sem_t *sem);
  * @brief Increment (post / signal / V) semaphore value.
  * @param sem Target semaphore.
  */
+/**
+ * @brief Take the semaphore only if that needs no waiting.
+ * @return true if it was taken.
+ */
+bool sem_trywait(sem_t *sem);
+
 void sem_post(sem_t *sem);
 
 /**

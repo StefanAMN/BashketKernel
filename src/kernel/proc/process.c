@@ -263,12 +263,14 @@ pid_t process_wait(pid_t pid, int *status) {
     task_t *self = sched_get_current_task();
     if (!self) return -1;
 
+    // Interrupts stay off between looking for a dead child and going to sleep,
+    // so a child that exits in between cannot be missed (see sched_block).
+    uint64_t flags = irq_save();
+    pid_t found = -1;
+
     while (1) {
-        pid_t found = -1;
         bool have_child = false;
 
-        // Interrupts off while walking the queue: the idle loop frees tasks
-        uint64_t flags = irq_save();
         for (task_t *t = sched_first_task(); t; t = t->next) {
             if (t->parent_pid != self->pid || t == self || t->detached) continue;
             if (pid != -1 && (pid_t)t->pid != pid) continue;
@@ -281,13 +283,15 @@ pid_t process_wait(pid_t pid, int *status) {
                 break;
             }
         }
-        irq_restore(flags);
 
-        if (found != -1) return found;
-        if (!have_child) return -1;
+        if (found != -1 || !have_child) break;
 
-        sched_yield();
+        // sched_make_zombie wakes this channel when a child of ours dies
+        sched_block(self, 0);
     }
+
+    irq_restore(flags);
+    return found;
 }
 
 int process_kill(pid_t pid, int sig) {
@@ -298,11 +302,8 @@ int process_kill(pid_t pid, int sig) {
         task_exit_status(128 + sig);
     }
 
-    // The target is not running (one CPU, and we are). Marking it a zombie
-    // means the scheduler never picks it again; its parent collects it.
-    uint64_t flags = irq_save();
-    target->exit_status = 128 + sig;
-    target->state = TASK_ZOMBIE;
-    irq_restore(flags);
+    // The target is not running (one CPU, and we are), so it holds no lock
+    // and can simply never be scheduled again. Its parent collects it.
+    sched_make_zombie(target, 128 + sig);
     return 0;
 }

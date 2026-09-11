@@ -44,6 +44,36 @@ void task_free(task_t *t);
 task_t *sched_find_task(uint32_t pid);
 
 /**
+ * @brief Put the current task to sleep until sched_wakeup(channel) is called
+ *        or, if wake_tick is non-zero, until that timer tick.
+ *
+ * Call with interrupts disabled, in a loop that re-checks the condition being
+ * waited for (see the comment in sched.c). Returns with interrupts disabled.
+ */
+void sched_block(void *channel, uint64_t wake_tick);
+
+/**
+ * @brief Wake every task blocked on `channel`. Safe to call from interrupts.
+ */
+void sched_wakeup(void *channel);
+
+/**
+ * @brief Wake tasks whose wake_tick has passed. Called from the timer interrupt.
+ */
+void sched_wake_sleepers(uint64_t now);
+
+/**
+ * @brief Sleep for at least `ticks` timer ticks without using CPU time.
+ */
+void sched_sleep_ticks(uint64_t ticks);
+
+/**
+ * @brief Mark a task dead: record its status, orphan its children and wake
+ *        its parent. The task must not be running on another CPU.
+ */
+void sched_make_zombie(task_t *task, int status);
+
+/**
  * @brief Head of the run queue, for walking all tasks via ->next.
  */
 task_t *sched_first_task(void);

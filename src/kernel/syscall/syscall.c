@@ -102,18 +102,13 @@ static int64_t sys_read(int fd, uint64_t buf, size_t count) {
     if (count == 0) return 0;
     if (!user_range_ok(buf, count, true)) return -EFAULT;
 
-    // Block until at least one character is available, then return what is
-    // there. The caller's address space stays loaded across sched_yield.
+    // Sleep until at least one character is available, then return what is
+    // there. The caller's address space is loaded again whenever it runs.
     char *out = (char *)buf;
     size_t n = 0;
-    while (n < count) {
-        if (keyboard_has_char()) {
-            out[n++] = keyboard_getchar();
-        } else if (n > 0) {
-            break;
-        } else {
-            sched_yield();
-        }
+    out[n++] = keyboard_getchar();
+    while (n < count && keyboard_has_char()) {
+        out[n++] = keyboard_getchar();
     }
     return (int64_t)n;
 }
@@ -153,11 +148,8 @@ static int64_t sys_munmap(uint64_t addr, size_t length) {
 }
 
 static int64_t sys_sleep(uint64_t milliseconds) {
-    uint64_t ticks = (milliseconds * TIMER_HZ + 999) / 1000;
-    uint64_t start = pit_get_ticks();
-    while (pit_get_ticks() - start < ticks) {
-        sched_yield();
-    }
+    if (milliseconds > 24ULL * 60 * 60 * 1000) return -EINVAL;
+    sched_sleep_ticks((milliseconds * TIMER_HZ + 999) / 1000);
     return 0;
 }
 

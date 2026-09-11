@@ -88,6 +88,22 @@ would change how the next problem is approached.
   below the stack (so it faults at all) and an IST stack for the double fault
   (the page fault cannot be delivered on the overflowed stack).
 
+### Blocking
+
+- **Lost wakeups: check the condition and block with interrupts off, in a
+  loop.** `sched_block` is entered with interrupts disabled and uses
+  `sti; hlt` (atomic) when nothing else can run. Every caller follows the
+  pattern in the comment above `sched_block` in `sched.c`.
+- **A round-robin scan must terminate on the current task even when that task
+  is not runnable.** The old loop only stopped at a READY task; the first time
+  the queue head blocked with nothing else runnable it spun forever with
+  interrupts off. Symptom: a hang with `IRR 32` pending and RIP inside
+  `sched_yield`. Found in seconds with the QEMU monitor (`info registers`,
+  `info lapic`) plus `tools/symbolize.sh`.
+- **Channels instead of linked wait queues.** A sleeper records what it waits
+  for; wakeup scans the task list. Killing a sleeper then needs no unlinking,
+  which is where linked wait queues usually go wrong.
+
 ### Design choices that paid off
 
 - **One frame layout for interrupts and system calls.** `syscall_entry` builds

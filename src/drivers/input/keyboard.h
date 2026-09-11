@@ -21,6 +21,12 @@ void keyboard_init(void);
 bool keyboard_has_char(void);
 
 /**
+ * @brief Wake tasks sleeping in keyboard_getchar. Called by the keyboard and
+ *        serial interrupt handlers after they have buffered input.
+ */
+void keyboard_input_arrived(void);
+
+/**
  * @brief Retrieve next character from keyboard buffer (blocking if empty).
  * @return ASCII character byte.
  */

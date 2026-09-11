@@ -118,33 +118,25 @@ static void shell_task_entry(void) {
     kprintf("BashketOS> ");
 
     while (1) {
-        if (keyboard_has_char()) {
-            char c = keyboard_getchar();
-            if (c == 0) {
-                continue;
+        char c = keyboard_getchar(); // Sleeps until a key arrives
+
+        if (c == '\n' || c == '\r') {
+            kprintf("\n");
+            line_buf[line_pos] = '\0';
+            if (line_pos > 0) {
+                shell_run_cmd(line_buf);
+                line_pos = 0;
             }
-            if (c == '\n' || c == '\r') {
-                kprintf("\n");
-                line_buf[line_pos] = '\0';
-                if (line_pos > 0) {
-                    shell_run_cmd(line_buf);
-                    line_pos = 0;
-                }
-                kprintf("BashketOS> ");
-            } else if (c == '\b') {
-                if (line_pos > 0) {
-                    line_pos--;
-                    kprintf("\b \b");
-                }
-            } else {
-                if (line_pos < sizeof(line_buf) - 1) {
-                    line_buf[line_pos++] = c;
-                    char str[2] = {c, '\0'};
-                    kprintf("%s", str);
-                }
+            kprintf("BashketOS> ");
+        } else if (c == '\b') {
+            if (line_pos > 0) {
+                line_pos--;
+                kprintf("\b \b");
             }
-        } else {
-            sched_yield();
+        } else if (line_pos < sizeof(line_buf) - 1) {
+            line_buf[line_pos++] = c;
+            char str[2] = {c, '\0'};
+            kprintf("%s", str);
         }
     }
 }
@@ -313,7 +305,8 @@ void _start(void) {
     // Create interactive shell task
     task_create("shell", shell_task_entry);
 
-    // Idle loop: free exited tasks, then yield to whatever is runnable
+    // Idle loop: free exited tasks, run whatever is runnable, and halt the
+    // CPU until the next interrupt when nothing is.
     while (1) {
         sched_reap();
         sched_yield();

@@ -170,20 +170,19 @@ void sched_yield(void) {
     task_t *old_task = current_task;
     task_t *next_task = NULL;
 
-    // Find next TASK_READY task in queue
-    task_t *curr = old_task->next;
-    while (curr != old_task) {
-        if (!curr) {
-            curr = task_queue_head;
-        }
-        if (curr->state == TASK_READY || curr->state == TASK_RUNNING) {
+    // Round robin: walk the queue once, starting after the current task and
+    // wrapping at the end, and take the first runnable task. The walk ends
+    // when it comes back to the current task, whatever state that is in.
+    task_t *curr = old_task;
+    do {
+        curr = curr->next ? curr->next : task_queue_head;
+        if (curr != old_task && curr->state == TASK_READY) {
             next_task = curr;
             break;
         }
-        curr = curr->next;
-    }
+    } while (curr != old_task);
 
-    if (!next_task || next_task == old_task) {
+    if (!next_task) {
         irq_restore(flags);
         return; // No other task ready to run
     }
@@ -207,6 +206,89 @@ void sched_yield(void) {
 
     // Back in old_task, possibly much later. ctx_switch restored the RFLAGS it
     // saved (interrupts off); now restore what the caller had.
+    irq_restore(flags);
+}
+
+// --- Blocking ----------------------------------------------------------------
+//
+// A task that has to wait for something (a key press, a child exiting, a point
+// in time) marks itself TASK_BLOCKED and names a "channel": any address that
+// identifies the event. The scheduler skips blocked tasks, so waiting costs no
+// CPU time. Whoever makes the event happen calls sched_wakeup(channel).
+//
+// The classic bug here is the lost wakeup: the task checks the condition, an
+// interrupt makes the condition true and calls wakeup, and only then does the
+// task go to sleep, forever. The rule that prevents it: check the condition and
+// call sched_block with interrupts disabled, in a loop:
+//
+//     uint64_t flags = irq_save();
+//     while (!condition) sched_block(channel, 0);
+//     irq_restore(flags);
+
+void sched_block(void *channel, uint64_t wake_tick) {
+    task_t *self = current_task;
+    if (!scheduler_active || !self) return;
+
+    uint64_t flags = irq_save();
+    self->wait_channel = channel;
+    self->wake_tick = wake_tick;
+    self->state = TASK_BLOCKED;
+
+    while (self->state == TASK_BLOCKED) {
+        sched_yield();
+        if (self->state == TASK_BLOCKED) {
+            // Nothing else is runnable. Wait for an interrupt. "sti; hlt" is
+            // atomic: an interrupt can not slip in between the two.
+            asm volatile("sti\n\thlt\n\tcli");
+        }
+    }
+
+    // If the wakeup arrived while we were halted above, no switch happened and
+    // the state still says READY.
+    self->state = TASK_RUNNING;
+    irq_restore(flags);
+}
+
+static void wake_task(task_t *t) {
+    t->wait_channel = NULL;
+    t->wake_tick = 0;
+    t->state = TASK_READY;
+}
+
+void sched_wakeup(void *channel) {
+    uint64_t flags = irq_save();
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->state == TASK_BLOCKED && t->wait_channel == channel) {
+            wake_task(t);
+        }
+    }
+    irq_restore(flags);
+}
+
+void sched_wake_sleepers(uint64_t now) {
+    uint64_t flags = irq_save();
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->state == TASK_BLOCKED && t->wake_tick != 0 && now >= t->wake_tick) {
+            wake_task(t);
+        }
+    }
+    irq_restore(flags);
+}
+
+void sched_make_zombie(task_t *task, int status) {
+    uint64_t flags = irq_save();
+    task->exit_status = status;
+    task->state = TASK_ZOMBIE;
+
+    // Children of a dead task have nobody left to wait for them
+    task_t *parent = NULL;
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->parent_pid == task->pid && t != task) t->detached = true;
+        if (t->pid == task->parent_pid && t != task) parent = t;
+    }
+
+    // A parent blocked in process_wait sleeps on its own task struct
+    if (parent) sched_wakeup(parent);
     irq_restore(flags);
 }
 
@@ -256,17 +338,7 @@ void task_exit(void) {
 void task_exit_status(int status) {
     if (!current_task) return;
 
-    uint64_t flags = irq_save();
-    current_task->exit_status = status;
-    current_task->state = TASK_ZOMBIE;
-
-    // Children of an exiting task have nobody left to wait for them
-    for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->parent_pid == current_task->pid && t != current_task) {
-            t->detached = true;
-        }
-    }
-    irq_restore(flags);
+    sched_make_zombie(current_task, status);
 
     // A zombie is never picked again, so this only returns if no other task
     // is runnable right now. Keep yielding until sched_reap frees us.
