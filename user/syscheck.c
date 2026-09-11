@@ -128,6 +128,144 @@ static void check_fork(void) {
     CHECK(kill(pid, 9) == -ESRCH);
 }
 
+static void check_files(void) {
+    char buf[64];
+
+    CHECK(open("/no/such/file", O_RDONLY) == -ENOENT);
+    CHECK(open((const char *)0xffffffff80000000, O_RDONLY) == -EFAULT);
+    CHECK(open("/tmp", O_WRONLY) == -EISDIR);
+    CHECK(close(9) == -EBADF);
+    CHECK(close(-1) == -EBADF);
+    CHECK(read(9, buf, 1) == -EBADF);
+    CHECK(lseek(0, 0, SEEK_SET) == -ESPIPE);          /* The console cannot seek */
+
+    /* Create, write, reopen, read back */
+    long fd = open("/tmp/syscheck.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 3);
+    CHECK(write((int)fd, "hello file", 10) == 10);
+    CHECK(write((int)fd, (void *)0xffffffff80000000, 4) == -EFAULT);
+    CHECK(close((int)fd) == 0);
+    CHECK(write((int)fd, "x", 1) == -EBADF);           /* Closed means closed */
+
+    fd = open("/tmp/syscheck.txt", O_RDONLY);
+    CHECK(fd >= 3);
+    memset(buf, 0, sizeof(buf));
+    CHECK(read((int)fd, buf, sizeof(buf)) == 10);
+    CHECK(strcmp(buf, "hello file") == 0);
+    CHECK(read((int)fd, buf, sizeof(buf)) == 0);       /* End of file */
+    CHECK(lseek((int)fd, 6, SEEK_SET) == 6);
+    CHECK(read((int)fd, buf, 4) == 4 && memcmp(buf, "file", 4) == 0);
+    CHECK(write((int)fd, "x", 1) == -EBADF);           /* Read-only descriptor */
+    CHECK(read((int)fd, (void *)(unsigned long)check_basics, 4) == -EFAULT); /* Into our code */
+    CHECK(unlink("/tmp/syscheck.txt") == -EBUSY);      /* Still open */
+    CHECK(close((int)fd) == 0);
+
+    /* The program files from the initrd are readable like any other */
+    fd = open("/bin/hello", O_RDONLY);
+    CHECK(fd >= 0);
+    CHECK(read((int)fd, buf, 4) == 4 && memcmp(buf, "\177ELF", 4) == 0);
+    close((int)fd);
+
+    /* Directories */
+    CHECK(mkdir("/tmp/syscheck.d") == 0);
+    CHECK(mkdir("/tmp/syscheck.d") == -EEXIST);
+    fd = open("/tmp/syscheck.d/inner", O_WRONLY | O_CREAT);
+    CHECK(fd >= 0);
+    close((int)fd);
+    CHECK(unlink("/tmp/syscheck.d") == -ENOTEMPTY);
+
+    fd = open("/tmp/syscheck.d", O_RDONLY);
+    struct dirent entry;
+    CHECK(readdir((int)fd, &entry) == 1 && strcmp(entry.name, "inner") == 0 && entry.type == DT_FILE);
+    CHECK(readdir((int)fd, &entry) == 0);
+    CHECK(readdir((int)fd, (struct dirent *)0xffffffff80000000) == -EFAULT);
+    CHECK(read((int)fd, buf, 1) == -EISDIR);
+    close((int)fd);
+    CHECK(readdir(1, &entry) == -ENOTDIR);
+
+    CHECK(unlink("/tmp/syscheck.d/inner") == 0);
+    CHECK(unlink("/tmp/syscheck.d") == 0);
+    CHECK(unlink("/tmp/syscheck.txt") == 0);
+    CHECK(unlink("/tmp/syscheck.txt") == -ENOENT);
+
+    /* Running out of descriptors is an error, and closing frees them again */
+    int opened[32], count = 0;
+    long last;
+    while ((last = open("/etc/motd", O_RDONLY)) >= 0 && count < 32) opened[count++] = (int)last;
+    CHECK(last == -EMFILE);
+    CHECK(count > 0 && count < 32);
+    while (count > 0) CHECK(close(opened[--count]) == 0);
+}
+
+static void check_pipes(void) {
+    int fds[2];
+    char buf[32];
+
+    CHECK(pipe((int *)0xffffffff80000000) == -EFAULT);
+    CHECK(pipe(fds) == 0);
+    CHECK(fds[0] >= 3 && fds[1] >= 3 && fds[0] != fds[1]);
+    CHECK(write(fds[0], "x", 1) == -EBADF);            /* Wrong end */
+    CHECK(read(fds[1], buf, 1) == -EBADF);
+
+    /* Parent to child, and the child's answer comes back as its exit status */
+    long pid = fork();
+    if (pid == 0) {
+        close(fds[1]);                                 /* Or we would never see end-of-file */
+        long total = 0, n;
+        while ((n = read(fds[0], buf, sizeof(buf))) > 0) total += n;
+        exit(n == 0 ? (int)total : 99);
+    }
+    close(fds[0]);
+    CHECK(write(fds[1], "twelve bytes", 12) == 12);
+    sleep_ms(20);                                      /* The child is now asleep in read() */
+    CHECK(write(fds[1], "+five", 5) == 5);
+    close(fds[1]);                                     /* End of file for the child */
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid);
+    CHECK(status == 17);
+
+    /* A pipe nobody can read from any more refuses writes */
+    CHECK(pipe(fds) == 0);
+    close(fds[0]);
+    CHECK(write(fds[1], "x", 1) == -EPIPE);
+    close(fds[1]);
+
+    /* dup2: make standard output a pipe, as a shell does for "a | b" */
+    CHECK(pipe(fds) == 0);
+    pid = fork();
+    if (pid == 0) {
+        dup2(fds[1], 1);
+        close(fds[0]);
+        close(fds[1]);
+        printf("via stdout");
+        exit(0);
+    }
+    close(fds[1]);
+    memset(buf, 0, sizeof(buf));
+    long got = 0, n;
+    while ((n = read(fds[0], buf + got, sizeof(buf) - 1 - (size_t)got)) > 0) got += n;
+    CHECK(strcmp(buf, "via stdout") == 0);
+    close(fds[0]);
+    waitpid(pid, &status);
+    CHECK(dup2(99, 1) == -EBADF);
+    CHECK(dup2(1, 99) == -EBADF);
+
+    /* A child killed while blocked in read() releases its end of the pipe */
+    CHECK(pipe(fds) == 0);
+    pid = fork();
+    if (pid == 0) {
+        close(fds[1]);
+        read(fds[0], buf, 1);                          /* Sleeps forever */
+        exit(0);
+    }
+    close(fds[0]);
+    sleep_ms(20);
+    CHECK(kill(pid, 9) == 0);
+    CHECK(write(fds[1], "x", 1) == -EPIPE);            /* Its read end is gone */
+    close(fds[1]);
+    CHECK(waitpid(pid, &status) == pid && status == 128 + 9);
+}
+
 /* Copy-on-write: after fork both processes share every page until one writes. */
 static void check_copy_on_write(void) {
     enum { PAGES = 64 };
@@ -196,6 +334,8 @@ int main(void) {
     check_memory();
     check_fork();
     check_copy_on_write();
+    check_files();
+    check_pipes();
 
     if (failures == 0) {
         printf("syscheck: all checks passed\n");

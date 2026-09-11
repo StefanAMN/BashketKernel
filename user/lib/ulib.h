@@ -26,12 +26,24 @@ long munmap(void *addr, size_t length);
 void *malloc(size_t size);
 void free(void *ptr);
 
-/* I/O */
+/* Files */
+long open(const char *path, int flags);
+long close(int fd);
 long read(int fd, void *buf, size_t count);
 long write(int fd, const void *buf, size_t count);
+long lseek(int fd, long offset, int whence);
+long pipe(int fds[2]);
+long dup2(int old_fd, int new_fd);
+long readdir(int fd, struct dirent *entry);   /* 1 = entry filled, 0 = end */
+long mkdir(const char *path);
+long unlink(const char *path);
+
+/* Formatted output */
 void puts(const char *s);
-void printf(const char *fmt, ...);
-long readline(char *buf, size_t size);
+void printf(const char *fmt, ...);               /* To standard output */
+void fprintf(int fd, const char *fmt, ...);
+long readline(char *buf, size_t size);           /* -1 at end of input */
+const char *strerror(long err);
 
 /* Strings */
 size_t strlen(const char *s);

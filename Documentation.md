@@ -92,7 +92,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 5. Userspace & System Calls (Phase 5)
-**Status: real.** Programs run in ring 3 with their own address space. See also `src/arch/x86_64/syscall_entry.S`, `src/kernel/proc/process.c`, `user/`.
+**Status: real.** Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader, per-process file descriptors.
 
 **Goal:** Syscall/sysret MSR setup, user privilege transition (Ring 3), ELF64 loader.
 
@@ -108,7 +108,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 6. Virtual Filesystem (VFS) & InitRD (Phase 6)
-**Status: real.** In-memory VFS tree; a USTAR initrd is loaded as a Limine module. Read-only.
+**Status: real.** In-memory VFS tree, readable and writable (contents live in RAM and are lost at power-off). A USTAR initrd with the user programs is loaded as a Limine module.
 
 **Goal:** VFS inode and file operation abstractions, USTAR initrd parser.
 
@@ -123,7 +123,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 7. Interactive Shell & Keyboard Input (Phase 7)
-**Status: real.** Runs as a kernel thread, not a user program.
+**Status: real.** Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines and redirection, built only on system calls.
 
 **Goal:** PS/2 keyboard scancode decoding, interactive shell commands (`ls`, `cat`, `echo`).
 
@@ -258,7 +258,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 16. Userland Application Infrastructure (Phase 16)
-**Status: real.** `user/*.c` are built into `/bin` in the initrd. The old `user_apps.c` is gone; see `user/` and `src/kernel/proc/process.c`.
+**Status: real.** `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`.
 
 **Goal:** Loading and executing standalone ring-3 binaries from filesystem.
 
@@ -294,7 +294,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 19. Inter-Process Communication Pipes (Phase 19)
-**Status: partial.** A ring buffer with no blocking and no file descriptors.
+**Status: real.** Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a | b`.
 
 **Goal:** POSIX Anonymous Pipes (`pipe`), blocking read/write ring buffers.
 

@@ -19,9 +19,9 @@ that gap.
 | 2 | GDT, TSS, IDT, interrupts | real | Double faults run on their own stack (IST1). |
 | 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap, per-process address spaces. |
 | 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. Tasks block (sleep, input, wait, semaphores) instead of polling. 100 Hz PIT tick. |
-| 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader. No file descriptors yet. |
-| 6 | VFS and initrd | real | In-memory VFS tree. A USTAR initrd with the user programs is loaded as a Limine module. Read-only. |
-| 7 | Shell | real | Runs as a kernel thread, not a user program. |
+| 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader, per-process file descriptors. |
+| 6 | VFS and initrd | real | In-memory VFS tree, readable and writable (contents live in RAM and are lost at power-off). A USTAR initrd with the user programs is loaded as a Limine module. |
+| 7 | Shell | real | Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines and redirection, built only on system calls. |
 | 8 | Slab, COW, mmap | partial | Slab allocator works. Anonymous `mmap`, `munmap` and `brk` work per process. `fork` shares pages copy-on-write. Nothing is demand-paged or file-backed. |
 | 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |
 | 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
@@ -30,10 +30,10 @@ that gap.
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `hello`, `fault`, `syscheck`. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | One global table, not per process. |
-| 19 | Pipes | partial | A ring buffer with no blocking and no file descriptors. |
+| 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
 | 20 | ANSI colors | stub | A lookup from color code to RGB. No escape-sequence parser. |
 | 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |
 | 22 | Priority scheduling | stub | Priorities are stored; the scheduler ignores them. |
@@ -150,6 +150,10 @@ waits for it:
 BashketOS> exec /bin/hello one two
 BashketOS> exec /bin/syscheck          # exercises the system call interface
 BashketOS> exec /bin/fault kread       # tries to read kernel memory; gets killed
+BashketOS> exec /bin/sh                # user-space shell
+$ ls /bin | wc > /tmp/count
+$ cat /tmp/count
+$ exit
 ```
 
 To add a program, put `name.c` in `user/`; it is built against `user/lib` and
