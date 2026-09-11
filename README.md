@@ -30,7 +30,7 @@ that gap.
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | One global table, not per process. |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -40,7 +40,7 @@ that gap.
 | 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
 | 24 | ProcFS | stub | Two static text files. |
 | 25 | TTY | stub | A ring buffer. No line discipline. |
-| 26 | FPU/SSE | partial | CR0/CR4 are set up. No per-task state is saved. |
+| 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
 | 28 | ELF dynamic relocation | stub | Recognises relocation types and returns 0. |
 | 29 | UDP/IP sockets | stub | Internet checksum works. No packets are built or sent. |

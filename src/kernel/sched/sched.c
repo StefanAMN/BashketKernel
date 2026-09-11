@@ -13,6 +13,7 @@
 #include "spinlock.h"
 #include "gdt.h"
 #include "file.h"
+#include "fpu.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 
@@ -203,6 +204,11 @@ void sched_yield(void) {
         tss_set_rsp0(kstack_top);
         syscall_kernel_rsp = kstack_top;
     }
+
+    // Floating point registers are not part of ctx_switch. The kernel never
+    // uses them, so only user tasks have any to keep.
+    if (old_task->is_user) fpu_save(old_task->fpu_state);
+    if (next_task->is_user) fpu_restore(next_task->fpu_state);
 
     ctx_switch((uint64_t **)&old_task->rsp, (uint64_t *)next_task->rsp, next_task->pml4_phys);
 

@@ -15,6 +15,7 @@
 #include "gdt.h"
 #include "spinlock.h"
 #include "file.h"
+#include "fpu.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
@@ -117,6 +118,7 @@ static void apply_image(task_t *task, const user_image_t *image) {
     task->brk_start = page_align_up(image->image_end);
     task->brk_end = task->brk_start;
     task->mmap_next = USER_MMAP_BASE;
+    fpu_state_init(task->fpu_state); // A new program starts with clean FPU registers
     strncpy(task->name, image->name, sizeof(task->name) - 1);
     task->name[sizeof(task->name) - 1] = '\0';
 }
@@ -171,6 +173,9 @@ int process_exec(struct registers *regs, const char *path, char *const argv[]) {
     uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
     apply_image(self, &image);
 
+    // The old program's floating point registers are still live in the CPU
+    fpu_restore(self->fpu_state);
+
     // Leave the old address space before freeing it
     vmm_switch_pml4(self->pml4_phys);
     vmm_destroy_address_space(old_pml4);
@@ -210,6 +215,10 @@ pid_t process_fork(struct registers *regs) {
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
     child->mmap_next = parent->mmap_next;
+
+    // The parent is running, so its FPU registers are in the CPU, not in its
+    // task struct: save them straight into the child.
+    fpu_save(child->fpu_state);
 
     // The child shares the parent's open files, positions included
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {

@@ -378,7 +378,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 26. Floating Point Unit (FPU/SSE) State Management (Phase 26)
-**Status: partial.** CR0/CR4 are set up. No per-task state is saved.
+**Status: real.** Each user task has its own x87/SSE state (FXSAVE area in `task_t`), saved and restored on every task switch. AVX is not enabled.
 
 **Goal:** FPU/SSE register initialization (`CR0`/`CR4`), `fxsave`/`fxrstor` context switching.
 
