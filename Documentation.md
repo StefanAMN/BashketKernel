@@ -354,7 +354,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 24. Virtual Process Filesystem (/proc) (Phase 24)
-**Status: stub.** Two static text files.
+**Status: real.** `/proc/version`, `uptime`, `meminfo`, `tasks` and `cpuinfo` are generated from live kernel state on every read.
 
 **Goal:** Virtual `/proc` filesystem exposing system diagnostics (`/proc/meminfo`, `/proc/cpuinfo`, `/proc/uptime`).
 
@@ -516,7 +516,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 37. Virtual Hardware Devices (/dev) (Phase 37)
-**Status: stub.** Static files. `/dev/random` contains the text `RND`.
+**Status: real.** `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` is a seeded xorshift generator, not cryptographically secure.
 
 **Goal:** Virtual character devices (`/dev/null`, `/dev/zero`, `/dev/random`), RDTSC pseudo-random number generator (`get_random_u32`).
 

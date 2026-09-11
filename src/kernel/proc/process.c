@@ -271,7 +271,7 @@ pid_t process_wait(pid_t pid, int *status) {
             if (t->state == TASK_ZOMBIE) {
                 if (status) *status = t->exit_status;
                 found = (pid_t)t->pid;
-                t->detached = true; // Collected: the idle loop may free it now
+                sched_free_zombie(t); // Collected: its memory goes back right now
                 break;
             }
         }

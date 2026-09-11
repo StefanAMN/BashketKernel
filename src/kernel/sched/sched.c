@@ -304,6 +304,22 @@ void sched_make_zombie(task_t *task, int status) {
     irq_restore(flags);
 }
 
+void sched_free_zombie(task_t *task) {
+    if (!task || task == current_task || task->state != TASK_ZOMBIE) return;
+
+    uint64_t flags = irq_save();
+    task_t *prev = NULL;
+    for (task_t *curr = task_queue_head; curr; prev = curr, curr = curr->next) {
+        if (curr != task) continue;
+        if (prev) prev->next = curr->next; else task_queue_head = curr->next;
+        if (curr == task_queue_tail) task_queue_tail = prev;
+        break;
+    }
+    irq_restore(flags);
+
+    task_free(task);
+}
+
 size_t sched_reap(void) {
     task_t *dead_list = NULL;
     size_t reaped = 0;

@@ -1,22 +1,24 @@
 /**
  * @file dev.h
- * @brief Virtual Hardware Device Manager (/dev) Interface
+ * @brief Device nodes under /dev
  */
 
 #ifndef DEV_H
 #define DEV_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /**
- * @brief Initialize Virtual Device Manager and mount '/dev' nodes.
+ * @brief Create /dev/null, /dev/zero, /dev/random and /dev/console.
  */
 void dev_init(void);
 
 /**
- * @brief Generate 32-bit pseudo-random integer using CPU RDTSC hardware timer.
- * @return 32-bit random integer value.
+ * @brief Pseudo-random numbers (xorshift64*, seeded from the CPU timestamp
+ *        counter). Good for tests and games. NOT suitable for cryptography.
  */
 uint32_t get_random_u32(void);
+void get_random_bytes(void *buf, size_t count);
 
 #endif // DEV_H

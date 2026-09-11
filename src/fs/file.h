@@ -110,6 +110,13 @@ int64_t file_seek(file_t *file, int64_t offset, int whence);
 int file_readdir(file_t *file, struct dirent_info *out);
 
 /**
+ * @brief The console itself, for the console open file and /dev/console.
+ *        console_read sleeps until input arrives; 0 means Ctrl-D was typed.
+ */
+int64_t console_read(char *out, size_t count);
+int64_t console_write_bytes(const char *in, size_t count);
+
+/**
  * @brief Put `file` in the lowest free slot of a descriptor table.
  * @return The descriptor, or -EMFILE if the table is full.
  */

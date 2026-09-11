@@ -124,6 +124,13 @@ vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, si
     return file;
 }
 
+vnode_t *vfs_create_device(vnode_t *parent, const char *name, const vnode_ops_t *ops) {
+    if (!ops) return NULL;
+    vnode_t *node = vfs_create_file(parent, name, NULL, 0);
+    if (node) node->ops = ops;
+    return node;
+}
+
 vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
     if (!path) return NULL;
     if (!relative_root || path[0] == '/') {
@@ -176,8 +183,12 @@ vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
 }
 
 size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
-    if (!file || file->type != VFS_FILE || !buf || !file->data) return 0;
-    if (offset >= file->size) return 0;
+    if (!file || file->type != VFS_FILE || !buf) return 0;
+    if (file->ops) {
+        int64_t n = file->ops->read ? file->ops->read(file, offset, buf, count) : 0;
+        return n > 0 ? (size_t)n : 0;
+    }
+    if (!file->data || offset >= file->size) return 0;
 
     size_t available = file->size - offset;
     size_t to_read = (count < available) ? count : available;
@@ -189,6 +200,10 @@ size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
 
 size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf) {
     if (!file || file->type != VFS_FILE || !buf || count == 0) return 0;
+    if (file->ops) {
+        int64_t n = file->ops->write ? file->ops->write(file, offset, buf, count) : 0;
+        return n > 0 ? (size_t)n : 0;
+    }
 
     size_t end = offset + count;
     if (end < offset) return 0; // Overflow
