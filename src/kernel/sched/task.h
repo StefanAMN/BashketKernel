@@ -15,6 +15,7 @@
 
 #define KERNEL_STACK_SIZE (16 * 1024) // 16 KiB kernel stack per task
 #define TASK_MAX_FDS 16               // Open file descriptors per process
+#define TASK_MAX_GROUPS 16            // Supplementary groups per process (setgroups)
 #define TASK_NSIG 32                  // Signal numbers 1..31
 
 struct file;
@@ -83,6 +84,8 @@ typedef struct task {
     uint32_t uid;            // Effective user: whose rights this process has (0: root, may do anything)
     uint32_t ruid;           // Real user: who started it (differs from uid only in a set-uid program)
     uint32_t gid;            // Its group
+    uint32_t groups[TASK_MAX_GROUPS]; // Supplementary groups: more whose members' rights it has (setgroups)
+    uint32_t group_count;    // How many of groups[] are in use
     uint16_t umask;          // Permission bits removed from every file it creates
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
     uint32_t pgid;           // Process group: the job it belongs to (signals from the terminal go to a whole group)

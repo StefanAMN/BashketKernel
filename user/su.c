@@ -45,7 +45,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    long err = setgid(account.gid);
+    /* The groups first: once we are no longer root we may not change them */
+    unsigned groups[MAX_GROUPS];
+    long err = account_groups(account.name, account.gid, groups, MAX_GROUPS);
+    if (err >= 0) err = setgroups((unsigned long)err, groups);
+    if (err == 0) err = setgid(account.gid);
     if (err == 0) err = setuid(account.uid);   /* As root: real and effective user both change */
     if (err < 0) {
         fprintf(2, "su: %s\n", strerror(err));

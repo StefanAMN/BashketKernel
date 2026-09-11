@@ -1841,6 +1841,59 @@ static void check_groups_and_setuid(void) {
     CHECK(unlink("/tmp/group.txt") == 0 && unlink("/tmp/suid-id") == 0 && unlink("/tmp/root-only") == 0);
 }
 
+/* As bob (1001, group 100) with supplementary group 50: a file of group 50
+ * is readable through it, and bob may move a file of his into group 50 but
+ * not into 51; he may not change his groups */
+static void group_checks_as_bob(void) {
+    unsigned groups[4];
+    CHECK(getgroups(4, groups) == 1 && groups[0] == 50);
+    CHECK(setgroups(0, NULL) == -EPERM);                      /* Membership is root's to give */
+    long fd = open("/tmp/staff.txt", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(open("/tmp/staff.txt", O_WRONLY) == -EACCES);       /* The group's digit: r-- */
+    fd = open("/tmp/bobs.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(chown("/tmp/bobs.txt", KEEP_ID, 50) == 0);
+    CHECK(chown("/tmp/bobs.txt", KEEP_ID, 51) == -EPERM);
+}
+
+/* The same bob without the supplementary group: the others' digit (---) */
+static void group_checks_without_groups(void) {
+    CHECK(getgroups(0, NULL) == 0);
+    CHECK(open("/tmp/staff.txt", O_RDONLY) == -EACCES);
+}
+
+/* setgroups and getgroups: root only, at most 16, copied by fork, kept by
+ * execve, and counted by the permission check */
+static void check_supplementary_groups(void) {
+    static char out[128];
+    unsigned groups[17] = { 50, 51, 52 }, got[16];
+    CHECK(getgroups(0, NULL) == 0);
+    CHECK(setgroups(17, groups) == -EINVAL);                  /* More than 16 */
+    CHECK(setgroups(2, (const unsigned *)16) == -EFAULT);
+    CHECK(getgroups(0, NULL) == 0);                           /* Neither changed anything */
+    CHECK(setgroups(3, groups) == 0);
+    CHECK(getgroups(0, NULL) == 3 && getgroups(2, got) == -EINVAL);
+    CHECK(getgroups(16, got) == 3 && got[0] == 50 && got[1] == 51 && got[2] == 52);
+
+    long pid = fork();
+    if (pid == 0) exit(getgroups(16, got) == 3 && got[2] == 52 ? 0 : 1);
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);   /* Copied by fork */
+    CHECK(run_capture("/bin/id", out, sizeof(out)) == 0 && contains(out, "groups 50 51 52\n"));  /* Kept by execve */
+
+    long fd = open("/tmp/staff.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && close((int)fd) == 0);
+    CHECK(chmod("/tmp/staff.txt", 0640) == 0 && chown("/tmp/staff.txt", 1000, 50) == 0);
+    CHECK(setgroups(1, groups) == 0);
+    CHECK(as_user_in_group(1001, 100, group_checks_as_bob) == 0);
+    CHECK(setgroups(0, NULL) == 0);
+    CHECK(as_user_in_group(1001, 100, group_checks_without_groups) == 0);
+    CHECK(unlink("/tmp/staff.txt") == 0 && unlink("/tmp/bobs.txt") == 0);
+}
+
 /* Permission bits as alice and bob, and root's freedom from them */
 static void check_users(void) {
     CHECK(getuid() == 0);                               /* The checks themselves run as root */
@@ -2991,6 +3044,7 @@ int main(void) {
     check_line_tools();
     check_proc();
     check_groups_and_setuid();
+    check_supplementary_groups();
     check_pipes();
 
     if (failures == 0) {
