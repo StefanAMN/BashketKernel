@@ -63,6 +63,8 @@
 #define SYS_TRUNCATE  317
 #define SYS_FTRUNCATE 318
 #define SYS_UTIME     319
+#define SYS_SETGROUPS 320
+#define SYS_GETGROUPS 321
 #define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230

@@ -60,6 +60,8 @@ long rename(const char *from, const char *to)      { return syscall2(SYS_RENAME,
 long geteuid(void)                                 { return syscall0(SYS_GETEUID); }
 long getgid(void)                                  { return syscall0(SYS_GETGID); }
 long setgid(unsigned gid)                          { return syscall1(SYS_SETGID, gid); }
+long setgroups(unsigned long count, const unsigned *groups) { return syscall2(SYS_SETGROUPS, (long)count, (long)groups); }
+long getgroups(unsigned long size, unsigned *groups)        { return syscall2(SYS_GETGROUPS, (long)size, (long)groups); }
 long umask(unsigned mask)                          { return syscall1(SYS_UMASK, mask); }
 
 /* --- Environment ---------------------------------------------------------- */

@@ -120,6 +120,7 @@ static void one_call(void) {
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
         SYS_SIGNAL, SYS_SIGACTION, SYS_SIGPROCMASK, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_NETCONFIG, SYS_DUP, SYS_PIPE2, SYS_FCNTL, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_GETEUID, SYS_GETGID, SYS_SETGID, SYS_UMASK, SYS_SETUID, SYS_CHMOD, SYS_CHOWN, SYS_RENAME, SYS_POLL, SYS_LINK, SYS_SYMLINK, SYS_READLINK,
         SYS_ISATTY, SYS_STAT, SYS_LSTAT, SYS_FSTAT, SYS_TRUNCATE, SYS_FTRUNCATE, SYS_UTIME,
+        SYS_SETGROUPS, SYS_GETGROUPS,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -221,6 +222,13 @@ static void one_call(void) {
 
         case SYS_SLEEP:
             a = rnd() % 3; /* Milliseconds */
+            break;
+        case SYS_SETGROUPS:
+        case SYS_GETGROUPS:
+            /* Free to run as they come: the groups are the caller's own
+             * (and its children's), like setgid's. Shaped: a count near
+             * the limit and a list in our own memory. */
+            if (shaped) { a = rnd() % 20; b = (unsigned long)mapped; }
             break;
         case SYS_SETUID:
             /* Giving up root would make most later calls fail on permissions
