@@ -142,6 +142,98 @@ static uint64_t *walk_to_pte(uint64_t *pml4, uint64_t virt) {
     return pt ? &pt[(virt >> 12) & 0x1FF] : NULL;
 }
 
+bool vmm_clone_user_space(uint64_t *dst, uint64_t *src) {
+    if (!dst || !src) return false;
+    uint64_t hhdm = pmm_get_hhdm_offset();
+    bool ok = true;
+
+    for (size_t i4 = 0; i4 < 256 && ok; i4++) {
+        if (!(src[i4] & VMM_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)((src[i4] & PTE_ADDR_MASK) + hhdm);
+
+        for (size_t i3 = 0; i3 < 512 && ok; i3++) {
+            if (!(pdpt[i3] & VMM_PRESENT) || (pdpt[i3] & VMM_HUGE)) continue;
+            uint64_t *pd = (uint64_t *)((pdpt[i3] & PTE_ADDR_MASK) + hhdm);
+
+            for (size_t i2 = 0; i2 < 512 && ok; i2++) {
+                if (!(pd[i2] & VMM_PRESENT) || (pd[i2] & VMM_HUGE)) continue;
+                uint64_t *pt = (uint64_t *)((pd[i2] & PTE_ADDR_MASK) + hhdm);
+
+                for (size_t i1 = 0; i1 < 512; i1++) {
+                    uint64_t pte = pt[i1];
+                    if (!(pte & VMM_PRESENT)) continue;
+
+                    // A writable page becomes read-only + COW in the parent
+                    // too: whichever side writes first gets the copy.
+                    // Read-only pages (program text) are simply shared.
+                    if (pte & VMM_WRITABLE) {
+                        pte = (pte & ~VMM_WRITABLE) | VMM_COW;
+                    }
+
+                    uint64_t virt = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
+                                    ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
+                    uint64_t phys = pte & PTE_ADDR_MASK;
+                    uint64_t flags = pte & (VMM_USER | VMM_COW | VMM_NO_EXECUTE);
+
+                    // Count the new owner before it exists, so a failure
+                    // below is undone by destroying dst like any other space.
+                    pmm_ref_frame((void *)phys);
+                    if (!vmm_map_page(dst, virt, phys, flags | VMM_PRESENT)) {
+                        pmm_unref_frame((void *)phys);
+                        ok = false;
+                        break;
+                    }
+                    pt[i1] = pte;
+                }
+            }
+        }
+    }
+
+    // The parent's page tables changed under a live TLB: writes it could do
+    // a moment ago must now fault. Reloading CR3 drops the stale entries.
+    uint64_t cr3;
+    asm volatile("mov %0, cr3" : "=r"(cr3));
+    if ((cr3 & PTE_ADDR_MASK) == (uint64_t)src - hhdm) {
+        asm volatile("mov cr3, %0" : : "r"(cr3) : "memory");
+    }
+
+    return ok;
+}
+
+bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt) {
+    if (!pml4 || virt >= USER_SPACE_END) return false;
+    virt &= ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t hhdm = pmm_get_hhdm_offset();
+
+    uint64_t irq_flags = irq_save();
+    bool resolved = false;
+
+    uint64_t *pte = walk_to_pte(pml4, virt);
+    if (pte && (*pte & VMM_PRESENT) && (*pte & VMM_COW)) {
+        uint64_t old_phys = *pte & PTE_ADDR_MASK;
+        uint64_t flags = (*pte & ~(PTE_ADDR_MASK | VMM_COW)) | VMM_WRITABLE;
+
+        if (pmm_get_frame_ref((void *)old_phys) == 1) {
+            // Every other owner has gone or already copied: just take it
+            *pte = old_phys | flags;
+            resolved = true;
+        } else {
+            void *copy = pmm_alloc_frame();
+            if (copy) {
+                memcpy((void *)((uint64_t)copy + hhdm), (void *)(old_phys + hhdm), PAGE_SIZE);
+                *pte = (uint64_t)copy | flags;
+                pmm_unref_frame((void *)old_phys);
+                resolved = true;
+            }
+        }
+
+        if (resolved) vmm_invlpg(virt);
+    }
+
+    irq_restore(irq_flags);
+    return resolved;
+}
+
 uint64_t vmm_get_pte(uint64_t *pml4, uint64_t virt) {
     if (pml4 == NULL) pml4 = kernel_pml4;
 
@@ -179,7 +271,7 @@ bool vmm_user_range_ok(uint64_t *pml4, uint64_t addr, size_t len, bool write) {
     for (uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1); page < end; page += PAGE_SIZE) {
         uint64_t pte = vmm_get_pte(pml4, page);
         if (!(pte & VMM_PRESENT) || !(pte & VMM_USER)) return false;
-        if (write && !(pte & VMM_WRITABLE)) return false;
+        if (write && !(pte & (VMM_WRITABLE | VMM_COW))) return false;
     }
     return true;
 }

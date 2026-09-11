@@ -22,6 +22,7 @@
 #define VMM_DIRTY       (1ULL << 6)  // Set by CPU when written
 #define VMM_HUGE        (1ULL << 7)  // Huge Page (2MB or 1GB)
 #define VMM_GLOBAL      (1ULL << 8)  // Global translation (not invalidated on CR3 write)
+#define VMM_COW         (1ULL << 9)  // Ours (CPU ignores bits 9-11): copy this page on first write
 #define VMM_NO_EXECUTE  (1ULL << 63) // NX bit (No Instruction Execution)
 
 #define PTE_ADDR_MASK   0x000FFFFFFFFFF000ULL
@@ -54,6 +55,25 @@ uint64_t *vmm_create_address_space(void);
 void vmm_destroy_address_space(uint64_t *pml4);
 
 /**
+ * @brief Make `dst` a copy-on-write clone of the user half of `src` (fork).
+ *
+ * No page contents are copied. Both spaces end up mapping the same frames;
+ * pages that were writable become read-only and marked VMM_COW in both, and
+ * the first write to one is resolved by vmm_handle_cow_fault.
+ *
+ * @return false if memory ran out; the caller should destroy `dst`.
+ */
+bool vmm_clone_user_space(uint64_t *dst, uint64_t *src);
+
+/**
+ * @brief Resolve a write to a copy-on-write page by giving `pml4` its own
+ *        writable copy (or just write access, if it is the last owner).
+ * @return true if `virt` was a COW page and is now writable; false if the
+ *         fault is a real protection violation or memory ran out.
+ */
+bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt);
+
+/**
  * @brief Read the raw page-table entry for a 4 KiB page (0 if unmapped).
  */
 uint64_t vmm_get_pte(uint64_t *pml4, uint64_t virt);
@@ -67,7 +87,8 @@ void *vmm_alloc_user_page(uint64_t *pml4, uint64_t virt, uint64_t flags);
 
 /**
  * @brief Check that [addr, addr+len) lies in user space and that every page
- * is mapped user-accessible (and writable, if `write`). Syscalls must call
+ * is mapped user-accessible (and writable or copy-on-write, if `write`; the
+ * kernel's own write to a COW page faults and is resolved like a user's). Syscalls must call
  * this before touching any pointer a user program passed in.
  */
 bool vmm_user_range_ok(uint64_t *pml4, uint64_t addr, size_t len, bool write);

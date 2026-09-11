@@ -104,6 +104,20 @@ would change how the next problem is approached.
   for; wakeup scans the task list. Killing a sleeper then needs no unlinking,
   which is where linked wait queues usually go wrong.
 
+### Copy-on-write
+
+- **The kernel takes COW faults too.** With CR0.WP set, ring 0 writing to a
+  user buffer (`waitpid` status, `uname`, `read`) faults on a COW page like
+  ring 3 would. So the fault handler resolves COW before it asks which ring
+  faulted, and syscall pointer checks accept "writable or COW".
+- **Mark the parent's pages read-only as well, then reload CR3.** The parent's
+  TLB still holds writable entries; without the flush its writes silently land
+  in frames the child shares.
+- **Count the new owner before mapping it.** Then a clone that fails half way
+  is cleaned up by the ordinary destroy path, with no special unwinding.
+- **Last owner writes: no copy.** If the frame's count is 1, just restore the
+  writable bit.
+
 ### Design choices that paid off
 
 - **One frame layout for interrupts and system calls.** `syscall_entry` builds

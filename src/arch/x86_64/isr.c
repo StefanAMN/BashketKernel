@@ -10,6 +10,7 @@
 #include "lapic.h"
 #include "kstack.h"
 #include "sched.h"
+#include "vmm.h"
 #include "process.h"
 #include <stddef.h>
 
@@ -59,7 +60,7 @@ static void kill_faulting_process(struct registers *regs) {
             exception_messages[regs->int_no], regs->rip);
     if (regs->int_no == 14) {
         uint64_t cr2;
-        asm volatile("mov %0, %%cr2" : "=r"(cr2));
+        asm volatile("mov %0, cr2" : "=r"(cr2));
         kprintf(", address 0x%zx (%s%s)", cr2,
                 (regs->err_code & 2) ? "write" : ((regs->err_code & 16) ? "execute" : "read"),
                 (regs->err_code & 1) ? ", protection" : ", not mapped");
@@ -70,7 +71,25 @@ static void kill_faulting_process(struct registers *regs) {
     task_exit_status(128 + (regs->int_no == 14 || regs->int_no == 13 ? SIGSEGV : SIGKILL));
 }
 
+// A write to a present page of a user process may be the first write to a
+// copy-on-write page after fork. That is not an error: give the process its
+// own copy and let it retry the instruction. This also covers the kernel
+// writing to a user buffer on the process's behalf (CR0.WP makes ring 0
+// respect read-only pages).
+static bool try_copy_on_write(struct registers *regs) {
+    if (regs->int_no != 14 || (regs->err_code & 3) != 3) return false; // Not "write to present page"
+
+    task_t *task = sched_get_current_task();
+    if (!task || !task->is_user) return false;
+
+    uint64_t cr2;
+    asm volatile("mov %0, cr2" : "=r"(cr2));
+    return vmm_handle_cow_fault(vmm_space_from_phys((uint64_t)task->pml4_phys), cr2);
+}
+
 void isr_handler(struct registers *regs) {
+    if (try_copy_on_write(regs)) return;
+
     if (regs->int_no < 32 && (regs->cs & 3) == 3) {
         kill_faulting_process(regs);
         return; // Not reached
@@ -93,7 +112,7 @@ void isr_handler(struct registers *regs) {
 
         if (regs->int_no == 14) {
             uint64_t cr2;
-            asm volatile("mov %0, %%cr2" : "=r"(cr2));
+            asm volatile("mov %0, cr2" : "=r"(cr2));
             kprintf("Faulting Address (CR2): 0x%zx\n", cr2);
             kprintf("Fault Causes: %s, %s, %s, %s\n",
                     (regs->err_code & 1) ? "Page-protection violation" : "Page not present",
