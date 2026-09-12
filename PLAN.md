@@ -156,8 +156,8 @@ Done as user programs (`dhcp`, `host`, and name support in `ping`) over a
 kernel whose address is now a setting (`netconfig`) and which can work
 unconfigured: broadcast from 0.0.0.0, accept whatever reaches its card. The
 kernel still boots with QEMU's usual addresses, so nothing depends on a
-DHCP server being there; `dhcp` replaces them. Not done: lease renewal, a
-resolver cache, record types other than A. The DNS check uses a server in
+DHCP server being there; `dhcp` replaces them (and with `-d` keeps the
+lease renewed, L5). Not done: a resolver cache, record types other than A. The DNS check uses a server in
 the test script; against a real resolver it was only tried by hand.
 
 - A DHCP client so that the address is no longer fixed at 10.0.2.15, and a
@@ -213,7 +213,7 @@ The promise limit does not cover fork or copy-on-write.
 - **Check:** `/bin/stress` variants; a program mapped from `/disk` whose
   untouched pages are never read from the disk.
 
-### B5. Permissions: the rest (M) — done, with one group per process
+### B5. Permissions: the rest (M) — done (supplementary groups: L4)
 
 Done: a group per process and per file with the group's permission digit,
 the execute bit (checked by `execve`), set-uid programs with real and
@@ -221,10 +221,13 @@ effective user ids, `umask`, `su` and `passwd`, salted PBKDF2 password
 hashes (checked against Python's implementation: `tools/mkpasswd.py` makes
 the lines `/bin/login` accepts), and owners for shared memory segments.
 
-Not done: supplementary groups, the execute ("search") bit on directories,
-set-gid and sticky bits. Owners for files on `/disk` wait for a filesystem
+Not done: set-gid and sticky bits. (Supplementary groups came with L4,
+search permission on directories with smaller repair 11.) Owners for files on `/disk` wait for a filesystem
 that can store them (C2), and a password changed with `passwd` is lost at
-reboot for the same reason: `/etc` is in the initrd.
+reboot for the same reason: `/etc` is in the initrd. (The password part no
+longer holds since D2: `/etc`
+is on the ext2 root, and `make test-shutdown` checks that a password
+changed in one boot works in the next.)
 
 - Groups, the execute bit, set-uid programs (which make `su` and `passwd`
   possible), `umask`.
@@ -977,6 +980,84 @@ test. The helper now starts the shell with 0, 1 and 2 only.
 
 ---
 
+### L2. Shell variables, and a setting for one command (S) — done
+
+`/bin/sh` knew only the environment (`export NAME=value`). Now
+`NAME=value` on its own sets a variable of the shell, not passed to
+programs (`$NAME` finds it, the environment second; a name is in one
+place at most, so setting an exported one changes the environment);
+`export NAME` moves one there, `unset` forgets either, and
+`NAME=value command` sets it in that command's environment only (its
+`PATH` too). The value is expanded like any word but not split or
+matched: `X=$(ls)` keeps the newlines, `X=*` is a star. The status is
+the last `$(...)`'s, as elsewhere (`X=$(false)` fails). A `for`
+variable is now the shell's own rather than exported. Before a
+built-in, the prefix form has no effect (none reads the environment).
+`unsetenv` joined the C library. **Check:** syscheck
+(`check_shell_variables`, 26 checks): the three forms, a plain variable
+unseen by a child until exported, the prefix form not outliving its
+command, values, statuses, `unset`, and names that are not names
+(`1x=y` and `"X"=1` are commands). Sabotage: looking only in the
+environment failed 13 checks (5 of them the existing `for` checks);
+splitting the value as an ordinary word failed one, the `$(...)` value.
+
+### L3. `uniq`, `cut` and `tr` (S) — done
+
+Three more line tools on `user/lib/lines.c`, as POSIX describes them in
+their basic forms: `uniq [-c] [-d]`, `cut -d C -f LIST` and `cut -c LIST`
+(LIST: `N`, `N-M`, `N-`, `-M`, comma separated), `tr [-d] SET1 [SET2]`
+with ranges (`a-z`). **Check:** `make test-tools` and syscheck, with
+input lines longer than any fixed buffer and input without a final
+newline.
+
+Done as written. `tr` works on bytes, not lines, so it reads blocks and
+needs no line reader; `cut -c` counts bytes (there are no multi-byte
+characters here). `uniq` keeps a copy of the line it is counting, since
+the reader reuses its buffer. Sabotage, one at a time: `uniq` comparing
+only the first 2 KiB of a line failed the check with two 6000-byte lines
+that differ in the middle; `cut -f` dropping a line without the
+delimiter failed three checks; `tr` not repeating the last character of
+a shorter SET2 failed one.
+
+### L4. Supplementary groups (M) — done
+
+A process is in one group; a user in several groups (`/etc/group`) can
+only use one. Add a list of up to 16 more per process, copied by `fork`,
+kept by `execve`; `setgroups` (root only) and `getgroups`; the
+permission check counts a match with any of them. `/bin/login` and
+`su` read `/etc/group` and set the list; `id` prints it. **Check:**
+unit tests in `tests/` for the permission check; syscheck for the calls
+(non-root refused, too many refused, fork copies); `make test-login`: a
+user reads a file through a second group.
+Done as described: `setgroups` is 320, `getgroups` 321; `/etc/group` is
+`name:x:gid:members` (`user/lib/password.c` reads it); a file owner may
+also `chown` a file into any group they are in. The test file is
+`/srv/staff.txt` (0640, group staff, 50), made by `tools/mkroot.sh`.
+Sabotage: with the list ignored by the check, the unit test, syscheck
+and `test-login` failed; with `fork` not copying it, syscheck did.
+
+### L5. DHCP lease renewal (S) — done
+
+`dhcp` takes an address and exits; the lease runs out unnoticed. With
+`-d` it stays, and renews at half the lease time (T1) by a unicast
+REQUEST to the server that gave it, falling back to a broadcast at 7/8
+(T2) and to starting over when the lease ends, as RFC 2131 section 4.4.5
+says. T1 and T2 from the server (options 58 and 59) are used when they
+make sense (0 < T1 < T2 < lease); a lease of 0 counts as a minute, so a
+broken server cannot make us renew in a loop, and an infinite one is
+never renewed. **Check:** QEMU's lease is fixed at a day, so the
+arithmetic is a function checked on its own (`dhcp -T`, run by
+syscheck), and `tools/test_net.py` renews at once (`dhcp -d -t 1 -n 2`:
+T1 one second after each lease, exit after two renewals). It reads
+QEMU's own capture of the traffic (`filter-dump`), not just what `dhcp`
+prints: each renewal must be a REQUEST addressed to the server alone,
+naming the address held, answered by an ACK. Not tested against a
+server: rebinding and expiry, which only happen when the server stops
+answering (QEMU always answers); the decision to enter them is in the
+`-T` cases.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1045,6 +1126,7 @@ J1, J2 -> J3, J4                 done
 K1, K2, K3, K4                   done (in parallel)
         |
 L1                               done
+L2, L3, L4, L5                   done (in parallel)
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem

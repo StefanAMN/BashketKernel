@@ -583,11 +583,52 @@ static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
     return (node->ops && node->ops->setattr) ? node->ops->setattr(node) : 0; // Where it is kept, if anywhere
 }
 
+// setgroups(count, list): make the calling process a member of the `count`
+// groups in `list` (uint32_t each; at most TASK_MAX_GROUPS; 0 for none),
+// besides its own group. Root only: membership is a right. -EPERM, -EINVAL
+// (too many), -EFAULT. Changes only the caller, which alone reads its list.
+static int64_t sys_setgroups(uint64_t count, uint64_t user_list) {
+    task_t *task = sched_get_current_task();
+    if (task->uid != UID_ROOT) return -EPERM;
+    if (count > TASK_MAX_GROUPS) return -EINVAL;
+    uint32_t groups[TASK_MAX_GROUPS];
+    size_t bytes = (size_t)count * sizeof(uint32_t);
+    if (count > 0) {
+        if (!user_range_ok(user_list, bytes, false)) return -EFAULT;
+        user_access_begin();
+        memcpy(groups, (const void *)user_list, bytes);
+        user_access_end();
+    }
+    memcpy(task->groups, groups, bytes);
+    task->group_count = (uint32_t)count;
+    return 0;
+}
+
+// getgroups(size, list): copy the calling process's supplementary groups
+// into `list`, which has room for `size`. Returns how many there are; with
+// size 0 only that, without touching `list`. -EINVAL if they do not fit,
+// -EFAULT.
+static int64_t sys_getgroups(uint64_t size, uint64_t user_list) {
+    task_t *task = sched_get_current_task();
+    uint32_t count = task->group_count;
+    if (size == 0) return count;
+    if (size < count) return -EINVAL;
+    size_t bytes = (size_t)count * sizeof(uint32_t);
+    if (count > 0) {
+        if (!user_range_ok(user_list, bytes, true)) return -EFAULT;
+        user_access_begin();
+        memcpy((void *)user_list, task->groups, bytes);
+        user_access_end();
+    }
+    return count;
+}
+
 #define CHOWN_KEEP 0xFFFFFFFFULL // "Leave this one as it is"
 
 // chown(path, uid, gid): give a file to another user or group
 // (CHOWN_KEEP leaves one as it is). Root only, except that an owner may
-// move a file into its own group. Takes away the set-uid bit.
+// move a file into a group it is in (its own or a supplementary one).
+// Takes away the set-uid bit.
 static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid) {
     vnode_t *node = NULL;
     int64_t err = lookup_for_change(user_path, &node);
@@ -595,9 +636,10 @@ static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid)
     if (new_uid > 0xFFFFFFFFULL || new_gid > 0xFFFFFFFFULL) return -EINVAL;
 
     // Giving files away (or taking them) is root's privilege. An owner may
-    // move a file of theirs into their own group.
+    // move a file of theirs into a group they are in.
     task_t *task = sched_get_current_task();
-    bool owner_to_own_group = task->uid == node->uid && new_uid == CHOWN_KEEP && new_gid == task->gid;
+    bool owner_to_own_group = task->uid == node->uid && new_uid == CHOWN_KEEP && new_gid != CHOWN_KEEP &&
+                              auth_current_in_group((uint32_t)new_gid);
     if (task->uid != UID_ROOT && !owner_to_own_group) return -EPERM;
     if (node->read_only) return -EROFS;
 
@@ -1206,6 +1248,8 @@ static int64_t dispatch(struct registers *regs) {
             if (task->uid != UID_ROOT && (uint32_t)regs->rdi != task->gid) return -EPERM;
             task->gid = (uint32_t)regs->rdi;
             return 0;
+        case SYS_SETGROUPS: return sys_setgroups(regs->rdi, regs->rsi);
+        case SYS_GETGROUPS: return sys_getgroups(regs->rdi, regs->rsi);
         case SYS_UMASK: {
             uint16_t previous = task->umask;
             task->umask = (uint16_t)(regs->rdi & 0777);

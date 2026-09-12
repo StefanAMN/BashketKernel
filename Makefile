@@ -407,6 +407,8 @@ test-login: iso
 		--expect 'passwd: password changed for alice' --expect 'you may only change your own password' \
 		--expect 'passwd: the two do not match' --expect 'passwd: incorrect password' \
 		--expect 'old-password[\s\S]*login: incorrect name or password[\s\S]*new-password[\s\S]*uid 1000\ngid 100\n[\s\S]*done-as-alice' \
+		--expect 'uid 1000\ngid 100\ngroups 50\n' --expect 'cat /srv/staff.txt\nnotes for the staff group' \
+		--expect 'uid 1001\ngid 100\n\$$ cat /srv/staff.txt\ncat: /srv/staff.txt: permission denied' \
 		'!exec /bin/login alice' '~wrong\r' '@wait:1' '!exec /bin/login alice' '~alice\r' \
 		'id' 'date -s "2030-01-01 00:00"' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
 		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' \
@@ -416,6 +418,8 @@ test-login: iso
 		'exec /bin/echo old-password' '!exec /bin/login alice' '~alice\r' '@wait:1' \
 		'exec /bin/echo new-password' '!exec /bin/login alice' '~wonderland\r' 'id' 'echo done-as-alice' 'exit' \
 		'exec /bin/id' \
+		'!exec /bin/login alice' '~wonderland\r' 'cat /srv/staff.txt' 'exit' \
+		'!exec /bin/login bob' '~bob\r' 'id' 'cat /srv/staff.txt' 'exit' \
 		> $(BUILD)/login.log 2>&1 \
 		&& echo "login, su, passwd and permissions: ok" || { echo "login: FAILED (see $(BUILD)/login.log)"; exit 1; }
 
@@ -665,7 +669,7 @@ test-jobs: iso
 	@# Tab completion: a program name, a directory, a file in it; two Tabs
 	@# list the names in /etc, sorted
 	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
-		--expect '\n/etc/motd\n' --expect '\ncompare.sh  demo.sh  motd  passwd  rc\n' \
+		--expect '\n/etc/motd\n' --expect '\ncompare.sh  demo.sh  group  motd  passwd  rc\n' \
 		'exec /bin/sh' '~ech^I/e^Imo^I\r' '@wait:1' '~ls /etc/^I^I^U\r' '@wait:1' 'exit' > $(BUILD)/completion.log 2>&1 \
 		&& echo "Tab completion: ok" || { echo "Tab completion: FAILED (see $(BUILD)/completion.log)"; exit 1; }
 	@# Compound commands at the prompt: the rest of an if is asked for with
@@ -696,6 +700,22 @@ test-tools: iso
 		'sort s' 'sort -n s' 'sort -r -n s' 'mkdir d ; cp a d' 'cat d/a' 'cp a /tmp/t/../t/a' 'wc a' \
 		'rm d/a ; rm d ; rm a ; rm b ; rm s ; cd / ; rm /tmp/t' 'exit' > $(BUILD)/tools.log 2>&1 \
 		&& echo "text tools (head, tail, grep, sort, cp): ok" || { echo "text tools: FAILED (see $(BUILD)/tools.log)"; exit 1; }
+	@# uniq, cut and tr in pipelines, as they are used: counting words
+	@# (sort | uniq -c), a column of /etc/passwd, case and deletion
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'sort w \| uniq -c\n2 apple\n1 kiwi\n3 pear\n\$$ ' \
+		--expect 'uniq -d w2\napple\npear\n\$$ ' \
+		--expect 'cut -d : -f 1,2 /etc/passwd \| grep alice\nalice:1000\n\$$ ' \
+		--expect 'cut -c 1-3 w2 \| uniq\napp\nkiw\npea\n\$$ ' \
+		--expect 'echo Mixed Case \| tr a-z A-Z\nMIXED CASE\n\$$ ' \
+		--expect 'cat w \| tr -d aeiou \| head -n 2\npr\nppl\n\$$ ' \
+		--forbid 'not found|usage:' \
+		'exec /bin/sh' 'mkdir /tmp/u ; cd /tmp/u' \
+		'echo pear > w ; echo apple >> w ; echo pear >> w ; echo kiwi >> w ; echo apple >> w ; echo pear >> w' \
+		'sort w | uniq -c' 'sort w > w2' 'uniq -d w2' 'cut -d : -f 1,2 /etc/passwd | grep alice' \
+		'cut -c 1-3 w2 | uniq' 'echo Mixed Case | tr a-z A-Z' 'cat w | tr -d aeiou | head -n 2' \
+		'rm w ; rm w2 ; cd / ; rm /tmp/u' 'exit' > $(BUILD)/line-tools.log 2>&1 \
+		&& echo "line tools (uniq, cut, tr): ok" || { echo "line tools: FAILED (see $(BUILD)/line-tools.log)"; exit 1; }
 	@# find and du on a tree made for them: sizes in whole KiB, a link back up
 	@# (listed and counted, not followed), filters, and a chain of
 	@# directories deeper than they enter (34 levels; the limit is 32)
