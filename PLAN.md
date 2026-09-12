@@ -1058,6 +1058,60 @@ answering (QEMU always answers); the decision to enter them is in the
 
 ---
 
+## Track M — Shared directories, a fuller shell, memory under pressure
+
+### M1. The sticky bit and set-gid (S)
+
+`/tmp` is writable by everyone, so anyone can delete or rename anyone
+else's file in it. With the sticky bit (01000) on a directory, removing
+or renaming an entry needs the caller to own the entry or the directory
+(or be root). `/tmp` is made 1777. Set-gid (02000) on an executable runs
+it with the file's group as the effective group, as set-uid does for the
+user (the bit is dropped by the same writes and owner changes); set-gid
+on directories (new files inherit the group) is left out and said so.
+`ls -l` and `stat` show `t` and `s`; `chmod` accepts the four-digit
+modes. **Check:** unit tests for the rule; syscheck as bob against
+alice's file in `/tmp` (unlink, rename over it, rename it away: refused;
+his own: allowed); `make test-login` runs a set-gid program.
+
+### M2. `case`, functions and `${NAME}` in the shell (M)
+
+`case WORD in PATTERN|PATTERN) LIST;; ... esac` with the wildcard
+matcher from `user/lib/glob.c`; functions (`name() { LIST; }`), called
+like programs, with `$1`..`$9`, `$#`, `$@` inside, and `return [N]`;
+`${NAME}` so that a name can be followed by letters. Functions live in
+the shell that defined them (not passed to programs) and may call
+themselves, up to a depth limit that fails cleanly. **Check:** syscheck
+(`check_shell_case_functions`), including a recursive function stopped
+by the limit, and `case` patterns with quotes (not wildcards).
+
+### M3. System calls make room instead of failing (S)
+
+A system call whose buffer is on the swap disk while no frame is free
+fails with `EFAULT` (the known limit in C4): only a user-mode fault may
+swap out, because a page taken while a call holds checked buffers could
+be one of them. A call's buffers are all populated by
+`vmm_user_range_ok` before any is used, so the call can make room
+*before* it populates, from pages outside the ranges it is about to
+use; or populate, and on failure swap out pages outside the current
+range and retry. Decide which, and record why. **Check:** a unit test
+on an address space built for it (no free frames, a buffer swapped out:
+the call succeeds); `swapper` gains a phase that does `read` into
+swapped pages while memory is full; `make test-swap` and
+`make test-lowmem` keep passing.
+
+### M4. `tee`, `xargs`, `seq`, `basename`, `dirname` (S)
+
+The POSIX basic forms: `tee [-a] FILE...`, `xargs [-n N] [COMMAND
+[ARG...]]` (arguments split at blanks and newlines, the command run as
+often as needed so no argument list exceeds the limit),
+`seq [FIRST [STEP]] LAST`, `basename PATH [SUFFIX]`, `dirname PATH`
+(with the edge cases POSIX lists: `/`, `//`, trailing slashes, no slash).
+**Check:** `make test-tools` and syscheck, including `xargs` with more
+input than fits one command line.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1127,6 +1181,8 @@ K1, K2, K3, K4                   done (in parallel)
         |
 L1                               done
 L2, L3, L4, L5                   done (in parallel)
+        |
+M1, M2, M3, M4                   in parallel
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
