@@ -1100,7 +1100,20 @@ the call succeeds); `swapper` gains a phase that does `read` into
 swapped pages while memory is full; `make test-swap` and
 `make test-lowmem` keep passing.
 
-### M4. `tee`, `xargs`, `seq`, `basename`, `dirname` (S)
+### M4. `tee`, `xargs`, `seq`, `basename`, `dirname` (S) — done
+
+Done as written, with two choices said in `user/xargs.c`: quotes and
+backslashes in its input are ordinary characters, and empty input runs
+nothing. `xargs` budgets each line against the kernel's own limits (32
+arguments; 4096 bytes of arguments and environment together). Two
+things the work turned up: a static array named `word` assembled, with
+`-masm=intel`, as a reference to the size keyword `WORD`, so the code
+wrote to its own text and faulted (no warning from the compiler or the
+assembler); and the first check of the byte budget passed with the
+environment left out of it, because the test's environment was small
+enough to fit in the slack. It now runs `xargs` with a 1000-byte
+variable, and the same sabotage fails it. Sabotaging `dirname` (keeping
+the slashes between the parts) failed its check too.
 
 The POSIX basic forms: `tee [-a] FILE...`, `xargs [-n N] [COMMAND
 [ARG...]]` (arguments split at blanks and newlines, the command run as
