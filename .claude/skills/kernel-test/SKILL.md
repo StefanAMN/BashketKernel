@@ -10,8 +10,13 @@ A change is verified when all three of these hold. Run them in this order.
 ## 1. Build with no warnings
 
 ```
-make -j8 iso 2>&1 | grep -E 'warning:|error:' ; echo "build: ${PIPESTATUS[0]}"
+make -j8 iso > /tmp/build.log 2>&1; echo "make exit $?"; grep -E 'warning:|error|undefined' /tmp/build.log
 ```
+
+`make exit` must be 0 and the grep must print nothing. Check the exit status,
+not just the grep: a linker error ("undefined reference") has no `error:` in
+it, and if the link fails the old ISO is still there, so the next QEMU run
+silently tests the previous kernel.
 
 Any warning is a failure: the tree builds clean, so a new warning is yours.
 
@@ -54,7 +59,10 @@ tools/qemu_shell.py --mem 512M --quiet 'mem'
   `tools/qemu_shell.py --quiet --allow-crash --expect 'KERNEL STACK OVERFLOW' 'crash stack'`
 - Exit status 0 pass, 1 pattern check failed, 2 timeout (hang or no prompt).
 
-The shell's `crash div0|pf|stack` command triggers each fault on purpose.
+The shell's `crash div0|pf|stack|wtext` command triggers each fault on purpose.
+
+To run with the CPU protections QEMU's default CPU model lacks (SMEP, UMIP):
+`tools/qemu_shell.py --quiet --qemu-arg=-cpu --qemu-arg=max 'exec /bin/syscheck'`.
 
 ### User programs
 

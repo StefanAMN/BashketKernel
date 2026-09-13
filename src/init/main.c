@@ -58,6 +58,7 @@
 #include "bench.h"
 #include "acpi.h"
 #include "io.h"
+#include "cpu.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -167,6 +168,8 @@ void _start(void) {
 
     idt_init();
     kprintf("IDT loaded.\n");
+
+    cpu_protection_init();
 
     pic_remap(32, 40);
     kprintf("PIC remapped.\n");
