@@ -24,6 +24,7 @@ make test         # separate test kernel in build-test/, exit 0 only if all pass
 make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
 
+make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s)
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
@@ -137,6 +138,27 @@ would change how the next problem is approached.
   each child before `execve`.
 - A side effect worth knowing: `kill()` returning does not mean the target is
   gone yet. Wait for it before testing for the consequences.
+
+### Running out of memory
+
+Found by `/bin/stress` on a 64 MB machine (`make test-lowmem`); the 2 GB test
+machine never gets near these paths.
+
+- **Growth must be all-or-nothing.** `kmalloc(32 MB)` with 20 MB free used to
+  map 20 MB into the heap, fail, and keep them: the machine was then out of
+  memory for good. `expand_heap` now rolls back what it mapped.
+- **A heap that never shrinks turns one big temporary allocation into a
+  permanent loss** for user programs. `kfree` trims a large free tail.
+- **Copy-on-write is a promise the kernel may be unable to keep.** If the
+  copy cannot be allocated, the writer is killed (there is no error return
+  from a `mov`). The same when the kernel is the writer, on the process's
+  behalf: kill the process, do not panic.
+- **Do not print on allocation failure.** A user program can cause thousands
+  per second. Count them (`/proc/meminfo`) instead.
+- What already held up without changes: `mmap`, `brk`, and a 1022-process
+  fork bomb all failed cleanly and released everything, because every
+  allocation path was written to undo itself on failure and checked with the
+  free-frame count.
 
 ### Files and pipes
 

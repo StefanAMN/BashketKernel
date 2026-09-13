@@ -85,6 +85,17 @@ tools/qemu_shell.py --quiet 'mem' 'exec /bin/syscheck' 'mem' | grep -E 'Free|All
 In a kernel test: call `sched_reap()`, record `pmm_get_free_frames()` and
 `kheap_get_allocated_bytes()`, run the workload, `sched_reap()` again, compare.
 
+### Out of memory
+
+```
+make test-lowmem
+```
+
+Runs `/bin/stress mem|brk|fork|cow|cowsys|file` with 64 MB of RAM (about 5
+seconds). Run it after any change to allocation, page tables, fork, the heap
+or file growth. Logs are in `build/lowmem-<mode>.log`. To try one by hand:
+`tools/qemu_shell.py --quiet --mem 64M 'exec /bin/stress fork' 'mem'`.
+
 ### Does the test detect the bug?
 
 When a new test passes on its first run, break the kernel on purpose once
