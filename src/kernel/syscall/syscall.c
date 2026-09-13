@@ -321,7 +321,18 @@ static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
 
 // --- Dispatcher --------------------------------------------------------------
 
+static int64_t dispatch(struct registers *regs);
+
 int64_t syscall_handler(struct registers *regs) {
+    int64_t result = dispatch(regs);
+
+    // About to return to user code: the system call is complete and nothing
+    // is held, so a pending kill can take effect here.
+    sched_check_kill();
+    return result;
+}
+
+static int64_t dispatch(struct registers *regs) {
     task_t *task = sched_get_current_task();
 
     switch (regs->rax) {
@@ -356,6 +367,10 @@ int64_t syscall_handler(struct registers *regs) {
         case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi);
         case SYS_KILL:
             return process_kill((pid_t)regs->rdi, (int)regs->rsi) == 0 ? 0 : -ESRCH;
+
+        case SYS_IGNORE_INTERRUPT:
+            task->ignore_interrupt = (regs->rdi != 0);
+            return 0;
 
         case SYS_UNAME:   return sys_uname(regs->rdi);
         case SYS_GETCWD:  return sys_getcwd(regs->rdi, (size_t)regs->rsi);

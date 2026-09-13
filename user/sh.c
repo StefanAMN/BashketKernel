@@ -8,6 +8,9 @@
  * its input with "< file" and its output with "> file" or ">> file".
  * A program name without a '/' is looked up in /bin.
  *
+ * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
+ * empty prompt leaves the shell.
+ *
  * Everything here is done with fork, execve, waitpid, pipe, dup2, open and
  * close: the shell needs no special help from the kernel.
  */
@@ -109,6 +112,8 @@ static void redirect_or_die(const char *path, int flags, int target) {
 }
 
 static void exec_stage(stage_t *stage) {
+    ignore_interrupt(0); /* Unlike the shell, the program should die on Ctrl-C */
+
     if (stage->in_path) redirect_or_die(stage->in_path, O_RDONLY, 0);
     if (stage->out_path) {
         redirect_or_die(stage->out_path,
@@ -200,6 +205,9 @@ static int run_line(const char *line, int *should_exit) {
 
 int main(int argc, char **argv) {
     int should_exit = 0;
+
+    /* Ctrl-C should stop the programs the shell runs, not the shell */
+    ignore_interrupt(1);
 
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
         return run_line(argv[2], &should_exit);

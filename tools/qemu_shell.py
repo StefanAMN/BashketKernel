@@ -7,6 +7,11 @@ fixed sleeps and the run takes as long as the kernel actually needs.
     tools/qemu_shell.py 'ps' 'mem'                # run commands, print output
     tools/qemu_shell.py --expect 'Hello' 'exec /bin/hello'
     tools/qemu_shell.py 'exec /bin/sh' 'ls /bin | wc' 'exit'   # user shell
+    tools/qemu_shell.py '!exec /bin/spin' '^C' 'ps'            # interrupt a program
+
+A command starting with '!' is sent without waiting for a prompt afterwards
+(for programs that do not finish by themselves). '^C' and '^D' send Ctrl-C
+and Ctrl-D.
     tools/qemu_shell.py --mem 512M --qemu-arg=-smp --qemu-arg=2 'uptime'
     tools/qemu_shell.py --trace-irq 'uptime'      # also write irq-trace.log
 
@@ -25,6 +30,7 @@ import sys
 import time
 
 PROMPT = b"BashketOS> "
+CONTROL_KEYS = {"^C": b"\x03", "^D": b"\x04"}
 USER_PROMPT = b"\n$ "  # /bin/sh, when a command starts it (e.g. 'exec /bin/sh')
 CRASH_END = b"=================================================\n"
 
@@ -34,7 +40,8 @@ def read_until(proc, buf, patterns, deadline):
     start = len(buf)
     while True:
         for pat in patterns:
-            if buf.find(pat, start) != -1:
+            # Back up a little: a pattern may have started arriving earlier
+            if buf.find(pat, max(0, start - len(pat) + 1)) != -1:
                 return pat
         remaining = deadline - time.monotonic()
         if remaining <= 0 or proc.poll() is not None:
@@ -82,7 +89,15 @@ def main():
             status = 2 if hit is None else 1
         else:
             for command in args.commands:
-                proc.stdin.write(command.encode() + b"\n")
+                if command.startswith("!"):
+                    # Start something that will not return to a prompt by
+                    # itself, and give it a moment to get going.
+                    proc.stdin.write(command[1:].encode() + b"\n")
+                    proc.stdin.flush()
+                    read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.5)
+                    continue
+                data = CONTROL_KEYS.get(command, command.encode() + b"\n")
+                proc.stdin.write(data)
                 proc.stdin.flush()
                 hit = read_until(proc, buf, [PROMPT, USER_PROMPT, b"CPU EXCEPTION", b"KERNEL PANIC"],
                                  time.monotonic() + args.timeout)

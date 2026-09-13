@@ -215,6 +215,7 @@ pid_t process_fork(struct registers *regs) {
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
     child->mmap_next = parent->mmap_next;
+    child->ignore_interrupt = parent->ignore_interrupt;
 
     // The parent is running, so its FPU registers are in the CPU, not in its
     // task struct: save them straight into the child.
@@ -289,13 +290,22 @@ pid_t process_wait(pid_t pid, int *status) {
 int process_kill(pid_t pid, int sig) {
     task_t *target = sched_find_task((uint32_t)pid);
     if (!target || !target->is_user || target->state == TASK_ZOMBIE) return -1;
+    if (sig <= 0 || sig > 64) return -1;
 
     if (target == sched_get_current_task()) {
         task_exit_status(128 + sig);
     }
 
-    // The target is not running (one CPU, and we are), so it holds no lock
-    // and can simply never be scheduled again. Its parent collects it.
-    sched_make_zombie(target, 128 + sig);
+    // The target is somewhere else, possibly half way through a system call.
+    // Only it can stop itself cleanly, so this just leaves the request.
+    sched_request_kill(target, sig);
     return 0;
+}
+
+void process_interrupt_all(void) {
+    uint64_t flags = irq_save();
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (t->is_user && !t->ignore_interrupt) sched_request_kill(t, SIGINT);
+    }
+    irq_restore(flags);
 }

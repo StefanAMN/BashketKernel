@@ -48,6 +48,8 @@ typedef struct task {
     uint64_t brk_end;        // Current program break (heap end)
     uint64_t mmap_next;      // Next free address in the mmap region
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
+    int kill_pending;        // Signal that will end this process at its next safe point (0: none)
+    bool ignore_interrupt;   // Ctrl-C does not end this process (shells set this)
 
     // FPU/SSE registers while the task is not running (FXSAVE format).
     // FXSAVE needs 16-byte alignment: kmalloc guarantees it for the struct,

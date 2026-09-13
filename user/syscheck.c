@@ -122,10 +122,36 @@ static void check_fork(void) {
         for (;;) yield();
     }
     CHECK(kill(pid, 9) == 0);
+    CHECK(kill(pid, 9) == 0);                 /* Asking twice is harmless */
     status = -1;
     CHECK(waitpid(pid, &status) == pid);
     CHECK(status == 128 + 9);
     CHECK(kill(pid, 9) == -ESRCH);
+    CHECK(kill(pid, 0) == -ESRCH && kill(getpid(), -1) == -ESRCH); /* Bad signal numbers */
+
+    /* A child stuck in a loop that makes no system calls can still be killed:
+     * the timer interrupt is its safe point */
+    pid = fork();
+    if (pid == 0) {
+        volatile unsigned long n = 0;
+        for (;;) n++;
+    }
+    sleep_ms(30);
+    CHECK(kill(pid, 15) == 0);
+    status = -1;
+    CHECK(waitpid(pid, &status) == pid);
+    CHECK(status == 128 + 15);
+
+    /* So can one that is asleep */
+    pid = fork();
+    if (pid == 0) {
+        for (;;) sleep_ms(100000);
+    }
+    sleep_ms(30);
+    CHECK(kill(pid, 9) == 0);
+    status = -1;
+    CHECK(waitpid(pid, &status) == pid);
+    CHECK(status == 128 + 9);
 }
 
 static void check_files(void) {
@@ -261,9 +287,9 @@ static void check_pipes(void) {
     close(fds[0]);
     sleep_ms(20);
     CHECK(kill(pid, 9) == 0);
-    CHECK(write(fds[1], "x", 1) == -EPIPE);            /* Its read end is gone */
-    close(fds[1]);
     CHECK(waitpid(pid, &status) == pid && status == 128 + 9);
+    CHECK(write(fds[1], "x", 1) == -EPIPE);            /* Its read end went with it */
+    close(fds[1]);
 }
 
 /* Copy-on-write: after fork both processes share every page until one writes. */

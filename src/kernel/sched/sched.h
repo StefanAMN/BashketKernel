@@ -68,6 +68,19 @@ void sched_wake_sleepers(uint64_t now);
 void sched_sleep_ticks(uint64_t ticks);
 
 /**
+ * @brief Ask for a process to be ended. It does not die here: it may be in
+ *        the middle of a kernel operation that must finish. It dies at its
+ *        next safe point: when it would sleep, when a system call is about to
+ *        return, or when an interrupt is about to return to its user code.
+ */
+void sched_request_kill(task_t *task, int sig);
+
+/**
+ * @brief Safe point: end the current task now if a kill was requested.
+ */
+void sched_check_kill(void);
+
+/**
  * @brief Mark a task dead: record its status, orphan its children and wake
  *        its parent. The task must not be running on another CPU.
  */

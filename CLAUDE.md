@@ -26,6 +26,7 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
+tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 ```
 
@@ -118,6 +119,24 @@ would change how the next problem is approached.
   is cleaned up by the ordinary destroy path, with no special unwinding.
 - **Last owner writes: no copy.** If the frame's count is 1, just restore the
   writable bit.
+
+### Killing processes
+
+- **Never tear a task down from outside.** The first `kill` marked the target
+  a zombie immediately. But the target may have been preempted half way
+  through a system call (updating a file, a pipe, a page table). Now `kill`
+  only records the request (`kill_pending`) and wakes the target if it sleeps;
+  the target ends itself at a safe point: in `sched_block`, at syscall return,
+  or when an interrupt is about to return to ring 3. The last one is what
+  stops a program stuck in `for(;;)`.
+- **Anything that sleeps is a safe point**, because code that can sleep
+  already holds no lock. That rule let `sched_block` do the check once, for
+  every blocking call in the kernel.
+- **Ctrl-C needs an "ignore" bit before it is usable**, otherwise it kills
+  the shell along with the program. `sh` sets it for itself and clears it in
+  each child before `execve`.
+- A side effect worth knowing: `kill()` returning does not mean the target is
+  gone yet. Wait for it before testing for the consequences.
 
 ### Files and pipes
 

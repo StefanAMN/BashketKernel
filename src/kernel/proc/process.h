@@ -57,9 +57,16 @@ pid_t process_fork(struct registers *regs);
 pid_t process_wait(pid_t pid, int *status);
 
 /**
- * @brief Terminate a process as if by a signal.
+ * @brief Ask for a process to be terminated as if by a signal. It ends at its
+ *        next safe point (see sched_request_kill); wait for it to see that.
  * @return 0 on success, -1 if there is no such user process.
  */
 int process_kill(pid_t pid, int sig);
+
+/**
+ * @brief Ctrl-C: interrupt every user process that has not asked to ignore
+ *        it. Safe to call from an interrupt handler.
+ */
+void process_interrupt_all(void);
 
 #endif // PROCESS_H

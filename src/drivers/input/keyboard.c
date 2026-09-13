@@ -9,6 +9,7 @@
 #include "sched.h"
 #include "serial.h"
 #include "spinlock.h"
+#include "process.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
@@ -17,6 +18,24 @@ static char kbd_buffer[KEYBOARD_BUFFER_SIZE];
 static size_t kbd_head = 0;
 static size_t kbd_tail = 0;
 static bool shift_pressed = false;
+static bool ctrl_pressed = false;
+
+#define CTRL_C 0x03
+
+// Store one input character. Ctrl-C is not data: it interrupts the running
+// programs instead. Caller must hold kbd_lock.
+static void kbd_buffer_push(char c) {
+    if (c == CTRL_C) {
+        process_interrupt_all();
+        return;
+    }
+
+    size_t next_head = (kbd_head + 1) % KEYBOARD_BUFFER_SIZE;
+    if (next_head != kbd_tail) {
+        kbd_buffer[kbd_head] = c;
+        kbd_head = next_head;
+    }
+}
 
 // Guards the ring buffer, the shift state and the PS/2 data port, which the
 // IRQ handler and the polling path in keyboard_getchar both use.
@@ -74,19 +93,27 @@ static void keyboard_handle_port(void) {
         return;
     }
 
+    // Track the (left) Ctrl key
+    if (scancode == 0x1D) {
+        ctrl_pressed = true;
+        return;
+    }
+    if (scancode == 0x9D) {
+        ctrl_pressed = false;
+        return;
+    }
+
     // Ignore key release codes (bit 7 set)
     if (scancode & 0x80) return;
 
-    if (scancode < 128) {
-        char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
-        if (c != 0) {
-            size_t next_head = (kbd_head + 1) % KEYBOARD_BUFFER_SIZE;
-            if (next_head != kbd_tail) {
-                kbd_buffer[kbd_head] = c;
-                kbd_head = next_head;
-            }
-        }
+    char c = shift_pressed ? scancode_ascii_shift[scancode] : scancode_ascii[scancode];
+    if (c == 0) return;
+
+    // Ctrl with a letter gives the control character: Ctrl-C is 3, Ctrl-D is 4
+    if (ctrl_pressed && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+        c = (char)(c & 0x1F);
     }
+    kbd_buffer_push(c);
 }
 
 static void keyboard_irq_handler(struct registers *regs) {

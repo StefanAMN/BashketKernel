@@ -18,8 +18,11 @@ Any warning is a failure: the tree builds clean, so a new warning is yours.
 ## 2. Unit tests
 
 ```
-make test
+make test 2>&1 | tail -8
 ```
+
+Do not `grep FAIL` the make output: the compiler command lines contain
+`-DKERNEL_TESTS` and will match. To see failures: `grep -n '\[FAIL\]' -A1 build-test/test.log`.
 
 Builds a separate test kernel in `build-test/` (with `-DKERNEL_TESTS`), boots
 it headless, and exits 0 only if the kernel reported every expectation passed.
@@ -52,6 +55,40 @@ tools/qemu_shell.py --mem 512M --quiet 'mem'
 - Exit status 0 pass, 1 pattern check failed, 2 timeout (hang or no prompt).
 
 The shell's `crash div0|pf|stack` command triggers each fault on purpose.
+
+### User programs
+
+`exec <path> [args]` runs a program from `/bin` (sources in `user/*.c`) and
+prints its exit status if non-zero. Arguments in "double quotes" may contain
+spaces. Useful ones:
+
+```
+tools/qemu_shell.py --quiet 'exec /bin/syscheck'                 # the whole syscall interface, from ring 3
+tools/qemu_shell.py --quiet 'exec /bin/sh -c "ls /bin | wc"'     # one shell command line
+tools/qemu_shell.py --quiet 'exec /bin/sh' 'cat /proc/tasks' 'exit'   # interactive user shell (prompt "$ ")
+tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'          # '!' = do not wait for a prompt; ^C, ^D keys
+```
+
+A user-visible kernel feature is tested from ring 3: add checks to
+`user/syscheck.c` (it exits 0 only if all pass, and `make test` runs it), or
+write a new `user/<name>.c` and spawn it from a kernel test with
+`process_spawn` + `process_wait`, asserting on the exit status.
+
+### Leak check
+
+Free frames and heap bytes must return to their starting values:
+
+```
+tools/qemu_shell.py --quiet 'mem' 'exec /bin/syscheck' 'mem' | grep -E 'Free|Allocated'
+```
+
+In a kernel test: call `sched_reap()`, record `pmm_get_free_frames()` and
+`kheap_get_allocated_bytes()`, run the workload, `sched_reap()` again, compare.
+
+### Does the test detect the bug?
+
+When a new test passes on its first run, break the kernel on purpose once
+(comment out the line the test is about), confirm the test fails, restore it.
 
 ## Checks that need wall-clock time
 
