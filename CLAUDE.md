@@ -25,6 +25,7 @@ make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
 
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s)
+make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
@@ -159,6 +160,21 @@ machine never gets near these paths.
   fork bomb all failed cleanly and released everything, because every
   allocation path was written to undo itself on failure and checked with the
   free-frame count.
+
+### Fuzzing from ring 3
+
+- `/bin/fuzz` found no kernel crash in about 230,000 calls (20 seeds, also at
+  48 MB). That is evidence for the "validate every user pointer with
+  `vmm_user_range_ok` before touching it" rule, not proof of anything more.
+- **A fuzzer has to be kept from destroying its own test bench.** There are
+  no file permissions, so unrestricted `unlink`/`open(O_TRUNC)` would delete
+  `/bin`; `kill` would hit the harness; `fork` would multiply. The fuzzer
+  restricts exactly those arguments and leaves the rest random.
+- **Logs from fuzzed programs contain NUL bytes.** `grep` then reports
+  "binary file" and prints nothing, which looks like an empty log. Use
+  `grep -a`.
+- It needs a watchdog process per round: some random sequences legitimately
+  block forever (reading a pipe whose write end the reader also holds).
 
 ### Files and pipes
 
