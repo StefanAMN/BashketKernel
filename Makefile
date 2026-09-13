@@ -716,6 +716,21 @@ test-tools: iso
 		'cut -c 1-3 w2 | uniq' 'echo Mixed Case | tr a-z A-Z' 'cat w | tr -d aeiou | head -n 2' \
 		'rm w ; rm w2 ; cd / ; rm /tmp/u' 'exit' > $(BUILD)/line-tools.log 2>&1 \
 		&& echo "line tools (uniq, cut, tr): ok" || { echo "line tools: FAILED (see $(BUILD)/line-tools.log)"; exit 1; }
+	@# tee, xargs, seq, basename and dirname as they are used together:
+	@# a copy kept on the way through a pipe, names fed to a command (wc
+	@# prints no name: "4 4 8" is the file, its empty standard input "0 0 0")
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'seq 4 \| tee s \| xargs -n 2 echo pair\npair 1 2\npair 3 4\n\$$ ' \
+		--expect 'cat s \| xargs\n1 2 3 4\n\$$ ' \
+		--expect 'basename /tmp/v/s.txt .txt ; dirname /tmp/v/s.txt\ns\n/tmp/v\n\$$ ' \
+		--expect 'find /tmp/v -name s \| xargs wc\n4 4 8\n\$$ ' \
+		--expect 'seq 10 -3 1 \| tee -a s > /dev/null ; wc s\n8 8 17\n\$$ ' \
+		--forbid 'not found|usage:' \
+		'exec /bin/sh' 'mkdir /tmp/v ; cd /tmp/v' \
+		'seq 4 | tee s | xargs -n 2 echo pair' 'cat s | xargs' 'basename /tmp/v/s.txt .txt ; dirname /tmp/v/s.txt' \
+		'find /tmp/v -name s | xargs wc' 'seq 10 -3 1 | tee -a s > /dev/null ; wc s' \
+		'rm s ; cd / ; rm /tmp/v' 'exit' > $(BUILD)/more-tools.log 2>&1 \
+		&& echo "more tools (tee, xargs, seq, basename, dirname): ok" || { echo "more tools: FAILED (see $(BUILD)/more-tools.log)"; exit 1; }
 	@# find and du on a tree made for them: sizes in whole KiB, a link back up
 	@# (listed and counted, not followed), filters, and a chain of
 	@# directories deeper than they enter (34 levels; the limit is 32)
