@@ -409,6 +409,7 @@ test-login: iso
 		--expect 'old-password[\s\S]*login: incorrect name or password[\s\S]*new-password[\s\S]*uid 1000\ngid 100\n[\s\S]*done-as-alice' \
 		--expect 'uid 1000\ngid 100\ngroups 50\n' --expect 'cat /srv/staff.txt\nnotes for the staff group' \
 		--expect 'uid 1001\ngid 100\n\$$ cat /srv/staff.txt\ncat: /srv/staff.txt: permission denied' \
+		--expect '/srv/staff-id\nuid 1001\ngid 100\neffective gid 50\n' \
 		'!exec /bin/login alice' '~wrong\r' '@wait:1' '!exec /bin/login alice' '~alice\r' \
 		'id' 'date -s "2030-01-01 00:00"' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
 		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' \
@@ -419,7 +420,7 @@ test-login: iso
 		'exec /bin/echo new-password' '!exec /bin/login alice' '~wonderland\r' 'id' 'echo done-as-alice' 'exit' \
 		'exec /bin/id' \
 		'!exec /bin/login alice' '~wonderland\r' 'cat /srv/staff.txt' 'exit' \
-		'!exec /bin/login bob' '~bob\r' 'id' 'cat /srv/staff.txt' 'exit' \
+		'!exec /bin/login bob' '~bob\r' 'id' 'cat /srv/staff.txt' '/srv/staff-id' 'exit' \
 		> $(BUILD)/login.log 2>&1 \
 		&& echo "login, su, passwd and permissions: ok" || { echo "login: FAILED (see $(BUILD)/login.log)"; exit 1; }
 

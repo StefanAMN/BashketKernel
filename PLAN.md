@@ -221,7 +221,8 @@ effective user ids, `umask`, `su` and `passwd`, salted PBKDF2 password
 hashes (checked against Python's implementation: `tools/mkpasswd.py` makes
 the lines `/bin/login` accepts), and owners for shared memory segments.
 
-Not done: set-gid and sticky bits. (Supplementary groups came with L4,
+Not done: set-gid and sticky bits (done in M1, except set-gid on a
+directory). (Supplementary groups came with L4,
 search permission on directories with smaller repair 11.) Owners for files on `/disk` wait for a filesystem
 that can store them (C2), and a password changed with `passwd` is lost at
 reboot for the same reason: `/etc` is in the initrd. (The password part no
@@ -1060,7 +1061,7 @@ answering (QEMU always answers); the decision to enter them is in the
 
 ## Track M — Shared directories, a fuller shell, memory under pressure
 
-### M1. The sticky bit and set-gid (S)
+### M1. The sticky bit and set-gid (S) — done
 
 `/tmp` is writable by everyone, so anyone can delete or rename anyone
 else's file in it. With the sticky bit (01000) on a directory, removing
@@ -1073,6 +1074,22 @@ on directories (new files inherit the group) is left out and said so.
 modes. **Check:** unit tests for the rule; syscheck as bob against
 alice's file in `/tmp` (unlink, rename over it, rename it away: refused;
 his own: allowed); `make test-login` runs a set-gid program.
+
+Done as written. Until now every directory behaved as if sticky (removing
+always needed ownership of the entry or the directory); the rule now
+follows the bit, so a directory writable by all and not sticky lets anyone
+remove from it, as in Unix. A process gained a real group beside its
+effective one: `getgid` returns the real group, the new `getegid` (322)
+the effective one, and `setgid` mirrors `setuid` (root sets both; anyone
+else may only go back to the real group). `chmod` by a non-root owner
+leaves the set-gid bit off a file whose group the owner is not in;
+`chown` by root takes set-gid away when the group changes and set-uid
+when the owner does. `/proc/<pid>/status` shows `Rgid`. `/srv/staff-id`
+on the system disk is a set-gid copy of `id` for `make test-login`.
+Sabotage, one at a time: ignoring the sticky bit in `auth_may_remove`
+failed `permission_rules` and syscheck (eight checks, old and new);
+ignoring set-gid at `execve` failed syscheck's set-gid program check and
+`make test-login`.
 
 ### M2. `case`, functions and `${NAME}` in the shell (M) — done
 
@@ -1211,7 +1228,7 @@ K1, K2, K3, K4                   done (in parallel)
 L1                               done
 L2, L3, L4, L5                   done (in parallel)
         |
-M1, M2, M3, M4                   in parallel (M2 done)
+M1, M2, M3, M4                   in parallel (M1, M2, M4 done)
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem

@@ -35,6 +35,8 @@ typedef struct {
     char name[32];
     bool setuid;          // The file has the set-uid bit...
     uint32_t owner;       // ...and this owner
+    bool setgid;          // The file has the set-gid bit...
+    uint32_t group;       // ...and this group
     char cmdline[TASK_CMDLINE_MAX]; // The arguments, NUL after each (for /proc/<pid>/cmdline)
     uint16_t cmdline_len;
 } user_image_t;
@@ -162,6 +164,8 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
     if (!auth_may_access(auth_current_uid(), file, false)) return false; // Running a program means reading it
     image->setuid = (file->mode & PERM_SETUID) != 0;
     image->owner = file->uid;
+    image->setgid = (file->mode & PERM_SETGID) != 0;
+    image->group = file->gid;
 
     // A file in memory (the initrd) can be loaded from where it is. One whose
     // contents come from elsewhere (the disk) is read into a buffer first.
@@ -326,6 +330,7 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     // A set-uid program runs as the file's owner, whoever started it. The
     // real user id stays: it is how the program knows who that was.
     if (image.setuid) self->uid = image.owner;
+    if (image.setgid) self->gid = image.group;   // (Likewise for the group: the real one stays)
 
     signal_reset_on_exec(self);
 
@@ -399,6 +404,7 @@ pid_t process_fork(struct registers *regs) {
     child->uid = parent->uid;
     child->ruid = parent->ruid;
     child->gid = parent->gid;
+    child->rgid = parent->rgid;
     memcpy(child->groups, parent->groups, sizeof(child->groups));
     child->group_count = parent->group_count;
     child->umask = parent->umask;
