@@ -14,6 +14,11 @@
  * for itself. */
 int glob_match(const char *pattern, const char *name);
 
+/* The same without the rule for hidden names, for text that is not a file
+ * name (the shell's case: "*" matches ".x"). To match *, ? or [ itself,
+ * put it in brackets: "[*]". */
+int glob_match_text(const char *pattern, const char *text);
+
 /* 1 if `word` contains a wildcard character (*, ? or [), 0 if not */
 int glob_has_wildcard(const char *word);
 
