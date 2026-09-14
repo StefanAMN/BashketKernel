@@ -367,10 +367,10 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   on can be the one it has just pushed out, so the fault handler reads the
   faulting page back whatever kind of fault it was; and a process with
   nothing it may give up (a fresh fork child: every page still shared)
-  must not search its whole address space at every fault. Known limits:
-  a fork child cannot free memory until it has pages of its own, and a
-  system call that needs a swapped page when no frame is free fails rather
-  than making room. (Testing this showed that a dead process kept its
+  must not search its whole address space at every fault. Known limit:
+  a fork child cannot free memory until it has pages of its own. (A
+  system call that needed a swapped page when no frame was free used to
+  fail rather than make room; M3 lifted that. Testing this showed that a dead process kept its
   memory until its parent collected it; it now gives it back as it dies.)
   The design, decided before the code:
   - *Where:* a disk of its own carrying the Linux swap signature (made on
@@ -1085,7 +1085,50 @@ themselves, up to a depth limit that fails cleanly. **Check:** syscheck
 (`check_shell_case_functions`), including a recursive function stopped
 by the limit, and `case` patterns with quotes (not wildcards).
 
-### M3. System calls make room instead of failing (S)
+### M3. System calls make room instead of failing (S) — done
+
+Decided: record, do not reorder. `process_populate` (which every check
+of a user buffer goes through) records the range in the task before it
+populates it, joined to any range it touches, up to `TASK_CALL_RANGES`
+(8); the system call entry clears the list as a call starts and as it
+returns, and so does a page fault from user mode (the only other place a
+range can be recorded is a signal frame set up on the way out of an
+interrupt, which has been written by then). When a page needs a frame
+and memory is low, or a frame could not be had, the process swaps out
+its own pages through the usual clock, skipping every page of a recorded
+range, and tries again (four times at most, each having freed at least
+one page). "Make room before populating, from pages outside the range
+about to be used" was not enough on its own: a call that checks two
+buffers would lose the first while populating the second, and the kernel
+would then fault on it with the access window open. A call that checks
+more ranges than fit gives nothing up (it fails as before), because an
+unrecorded range could be taken. There is one task per address space (no
+threads), so no other CPU can be using a page that goes; the
+`invlpg` on this CPU is the whole shootdown. A buffer larger than the
+memory the process can free still fails with `EFAULT`: the kernel copies
+from all of it at once.
+
+Check: unit tests `kept_ranges_stay_in_memory` (no page overlapping a
+range goes, partial pages included) and `call_ranges_join_and_fill_up`;
+`swapper` ends with a 4 MiB `read` from `/dev/zero` into pages on the
+disk while about 1 MiB is free, and `make test-swap` checks the line.
+Sabotage: without the room-making in `process_populate` that read
+returned `EFAULT`; with `vmm_swap_pick` ignoring the ranges, the unit
+test failed ten checks while the swapper phase still passed (the clock
+spares the buffer's pages, just read back and so marked accessed, and
+takes others), so only the unit test guards the ranges.
+
+The new phase also exposed a race in the fault path, 1 run of `make
+test-swap` in 5 and once with `SMP=4`: with two swappers running, a
+fault made room at its start, another process took the frames, and the
+faulting process was killed ("out of memory for a promised page", and
+once "could not be read back" in a fork child with no page of its own
+to give). A user-mode fault that finds no frame now makes more room and
+tries again, and when it has nothing to give, waits a tick for others
+(a quarter of a second at most) before giving up (`fault_may_retry` in
+`isr.c`). Afterwards: 8 of 8, and 3 of 3 with `SMP=4`.
+
+The plan as written:
 
 A system call whose buffer is on the swap disk while no frame is free
 fails with `EFAULT` (the known limit in C4): only a user-mode fault may
@@ -1182,7 +1225,7 @@ K1, K2, K3, K4                   done (in parallel)
 L1                               done
 L2, L3, L4, L5                   done (in parallel)
         |
-M1, M2, M3, M4                   in parallel
+M1, M2, M3, M4                   in parallel (M3 done)
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem

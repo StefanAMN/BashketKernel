@@ -12,9 +12,12 @@
  *
  * Rules this implementation keeps (PLAN.md, C4, has the reasons):
  *
- *   - A process only ever loses its own pages, and only at a page fault it
- *     took in user mode. While it is inside a system call, nothing of its
- *     is taken: the kernel may be about to use a buffer it has checked.
+ *   - A process only ever loses its own pages: at a page fault it took in
+ *     user mode, at fork, and inside a system call that needs a frame for
+ *     one of its buffers when none is free. In that last case the pages
+ *     of every buffer the call has checked so far stay: the kernel may be
+ *     about to use them (process_populate records them, and the system
+ *     call entry forgets them when the call returns).
  *   - Pages shared with another process (shared memory, or copy-on-write
  *     pages nobody has written yet) stay in memory.
  *   - The victim is chosen by the clock algorithm: a hand goes round the
@@ -32,6 +35,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "vmm.h"
 
 #define SWAP_LOW_FRAMES  256   // Below this many free frames, a faulting process gives pages up...
 #define SWAP_HIGH_FRAMES 320   // ...until this many are free again
@@ -65,6 +69,12 @@ uint64_t swap_pages_in(void);    // ...and read back
 size_t swap_out(uint64_t *space, uint64_t *cursor, size_t want);
 
 /**
+ * @brief The same, never taking a page that overlaps one of the
+ *        `keep_count` ranges in `keep`.
+ */
+size_t swap_out_keeping(uint64_t *space, uint64_t *cursor, size_t want, const vmm_range_t *keep, size_t keep_count);
+
+/**
  * @brief Bring the page containing `virt` back, if it is swapped out.
  *        May sleep.
  * @return 1 if it is now present, 0 if it was not a swapped page, -1 if it
@@ -73,10 +83,24 @@ size_t swap_out(uint64_t *space, uint64_t *cursor, size_t want);
 int swap_in(uint64_t *space, uint64_t virt);
 
 /**
- * @brief Called at a page fault from user mode: if free memory is low, the
- *        current process gives up pages until it is not. May sleep.
+ * @brief Called at a page fault from user mode, and before a system call
+ *        gives one of its buffers a frame: if free memory is low, the
+ *        current process gives up pages until it is not, keeping those of
+ *        the buffers its current system call has checked. May sleep.
  */
 void swap_relieve_pressure(void);
+
+/**
+ * @brief Called by a system call that could not get a frame for one of its
+ *        buffers (process_populate): the current process gives up pages
+ *        outside the buffers the call has checked, until SWAP_HIGH_FRAMES
+ *        are free, or at least one page. Unlike swap_relieve_pressure it
+ *        looks even after a search that found nothing. Gives nothing if
+ *        the call has checked more buffers than it can keep track of
+ *        (TASK_CALL_RANGES). May sleep.
+ * @return How many pages went.
+ */
+size_t swap_make_room_for_call(void);
 
 /**
  * @brief Called by fork: if free memory is below SWAP_LOW_FRAMES and there

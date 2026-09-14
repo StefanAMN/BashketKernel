@@ -1121,7 +1121,10 @@ static int64_t sys_sigprocmask(int how, uint64_t user_set, uint64_t user_old) {
 
 int64_t syscall_handler(struct registers *regs) {
     uint64_t number = regs->rax;
+    task_t *self = sched_get_current_task();
+    process_call_ranges_reset(self);   // The buffers this call checks are kept in memory while it runs (swap.h)
     int64_t result = dispatch(regs);
+    process_call_ranges_reset(self);   // ...and no longer: the call is over
 
     // If a signal handler is about to run instead of this call's result
     // being looked at, the handler's settings may ask for the call to be
