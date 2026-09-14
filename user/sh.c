@@ -21,10 +21,21 @@
  *   if LIST; then LIST; [elif LIST; then LIST;] [else LIST;] fi
  *   while LIST; do LIST; done      (until LIST: as long as it fails)
  *   for NAME in WORDS; do LIST; done
+ *   case WORD in PATTERN|PATTERN) LIST;; ... esac
+ *   { LIST; }
  * with break [N] and continue [N] inside loops, and the built-in test
  * EXPR (or [ EXPR ]) for conditions: -e -f -d PATH, -z -n STRING, a = b,
  * a != b, x -eq -ne -lt -le -gt -ge y, and ! to turn one round. Ctrl-C
- * ends a loop as well as the command it was running.
+ * ends a loop as well as the command it was running. A case runs the list
+ * of the first pattern (wildcards as for file names, but "*" also matches
+ * ".x") that matches the word; quoted parts of a pattern match themselves.
+ *
+ * Functions: "NAME() { LIST; }" defines one, and NAME then runs as a
+ * command, with its words as $1 .. $9 (${10} on), $# and $@ ("$@" gives
+ * one word per argument); "return [N]" ends it. A function belongs to the
+ * shell (programs do not see it); alone on its line it runs in the shell
+ * itself and can set its variables, in a pipeline or with a redirection in
+ * a child. Calls may nest 64 deep; deeper ones abandon the command.
  *
  * A word may join plain, "double quoted" ($ expanded) and 'single quoted'
  * (taken as it is) parts. $(command) is replaced by what the command
@@ -32,7 +43,8 @@
  * word with *, ? or [...] and no quoted part is replaced by the names it
  * matches, sorted (user/lib/glob.h); one that matches nothing stays as
  * typed.
- * $NAME expands to a variable and $? to the last exit status. "NAME=value"
+ * $NAME (or ${NAME}, to put letters after it) expands to a variable and
+ * $? to the last exit status; $0 is "sh" or the script. "NAME=value"
  * on its own sets a variable of the shell, which programs do not see;
  * "export NAME=value" (or "export NAME" for one already set) puts it in
  * the environment, which the shell and everything it starts share; "unset
@@ -310,44 +322,109 @@ static int export_variable(const char *name) {
     return 0;
 }
 
-/* Append the value of the variable at *p ($NAME or $?, *p just after the
- * '$') to `word` (length *len, in word_storage from `used`), and move *p
- * past its name. An unset variable is nothing. 0, or -1 if it does not fit. */
-static int append_variable(const char **p, char *word, size_t *len, size_t used) {
-    char name[32], status_text[12];
-    const char *value;
-    size_t n = 0;
-    if (**p == '?') {
-        (*p)++;
-        int v = last_status, digits = 0;
-        char tmp[12];
-        do { tmp[digits++] = (char)('0' + v % 10); v /= 10; } while (v > 0);
-        for (int i = 0; i < digits; i++) status_text[i] = tmp[digits - 1 - i];
-        status_text[digits] = '\0';
-        value = status_text;
-    } else {
-        while (is_name_char(**p) && n < sizeof(name) - 1) name[n++] = *(*p)++;
-        name[n] = '\0';
-        value = get_variable(name);
-    }
-    for (; value && *value; value++) {
-        if (used + *len + 1 >= sizeof(word_storage)) return -1;
-        word[(*len)++] = *value;
-    }
-    return 0;
-}
+/* The arguments of the function being run ($1 .. $9, $#, $@; at the top
+ * level none, or a script's own with "sh FILE ARGS"), and $0 */
+static char **arguments;
+static int argument_count;
+static const char *shell_name = "sh";
 
-static int run_line(const char *line, int *should_exit);
-
-#define WORD_QUOTED 1         /* next_word: some part was in quotes */
-#define WORD_SPLIT  2         /* next_word: holds FIELD_BREAKs, to be split into words */
 #define FIELD_BREAK '\x1f'    /* Where unquoted $(...) output had blanks (0x1f in output counts as one) */
-#define SUBST_MAX   4096      /* Most output a $(...) may give */
 
 /* Set while next_word reads NAME=value: the value is one word whatever a
  * $(...) in it prints, as in other Bourne shells (X=$(ls) keeps the
  * newlines) */
 static int reading_assignment = 0;
+/* Set while next_word reads a case pattern: what was quoted must match
+ * itself, so a quoted *, ? or [ is written in brackets ("[*]") */
+static int reading_pattern = 0;
+
+/* Add character `c` to `word` (length *len, in word_storage from `used`);
+ * if `literal` (it was quoted) while a pattern is read, a wildcard
+ * character goes in as "[c]". 0, or -1 if it does not fit. */
+static int put_char(char *word, size_t *len, size_t used, char c, int literal) {
+    int bracket = literal && reading_pattern && (c == '*' || c == '?' || c == '[');
+    if (used + *len + (bracket ? 3 : 1) >= sizeof(word_storage)) return -1;
+    if (bracket) word[(*len)++] = '[';
+    word[(*len)++] = c;
+    if (bracket) word[(*len)++] = ']';
+    return 0;
+}
+
+/* `v` (not negative) in decimal into text[12] */
+static void number_text(int v, char text[12]) {
+    char tmp[12];
+    int digits = 0;
+    do { tmp[digits++] = (char)('0' + v % 10); v /= 10; } while (v > 0);
+    for (int i = 0; i < digits; i++) text[i] = tmp[digits - 1 - i];
+    text[digits] = '\0';
+}
+
+/* Append the value of the variable at *p (*p just after the '$') to `word`
+ * (length *len, in word_storage from `used`), and move *p past it: $NAME,
+ * ${NAME}, $? (the last status), $1 .. $9 and ${N} (the arguments; $0 the
+ * shell), $# (how many) and $@ (all of them). `quote` is the quote the
+ * '$' is inside (0 if none). $@ gives one word per argument, quoted or
+ * not, by putting FIELD_BREAKs between them and setting *split (in an
+ * assignment or a pattern, a blank instead). An unset variable is
+ * nothing. 0; -1 if it does not fit, or "${" has no proper name and '}'. */
+static int append_variable(const char **p, char *word, size_t *len, size_t used, char quote, int *split) {
+    char name[32], text[12];
+    const char *value = NULL;
+    size_t n = 0;
+    int braced = (**p == '{');
+    if (braced) (*p)++;
+    char special = 0;
+    if (**p == '?' || **p == '#' || **p == '@') {
+        special = *(*p)++;
+    } else if (**p >= '0' && **p <= '9') {
+        special = '1';                     /* $1: one digit; ${12}: all of them */
+        do name[n++] = *(*p)++; while (braced && **p >= '0' && **p <= '9' && n < sizeof(name) - 1);
+    } else {
+        while (is_name_char(**p) && n < sizeof(name) - 1) name[n++] = *(*p)++;
+    }
+    name[n] = '\0';
+    if (braced) {
+        if (**p != '}' || (!special && n == 0)) return -1;   /* "${}", "${a-b}", no '}' */
+        (*p)++;
+    }
+
+    if (special == '?') {
+        number_text(last_status, text);
+        value = text;
+    } else if (special == '#') {
+        number_text(argument_count, text);
+        value = text;
+    } else if (special == '1') {
+        int index = atoi(name);
+        if (index == 0) value = shell_name;
+        else if (index <= argument_count) value = arguments[index - 1];
+    } else if (special == '@') {
+        int joined = reading_assignment || reading_pattern;
+        if (!joined) *split = 1;
+        for (int i = 0; i < argument_count; i++) {
+            if (i > 0 && put_char(word, len, used, joined ? ' ' : FIELD_BREAK, 0) < 0) return -1;
+            for (const char *c = arguments[i]; *c; c++) {
+                if (put_char(word, len, used, *c, quote != 0) < 0) return -1;
+            }
+        }
+        return 0;
+    } else {
+        value = get_variable(name);
+    }
+    for (; value && *value; value++) {
+        if (put_char(word, len, used, *value, quote != 0) < 0) return -1;
+    }
+    return 0;
+}
+
+static int run_line(const char *line, int *should_exit);
+static int is_function(const char *name);
+static int call_function(int argc, char **argv, int *should_exit);
+
+#define WORD_QUOTED 1         /* next_word: some part was in quotes */
+#define WORD_SPLIT  2         /* next_word: holds FIELD_BREAKs, to be split into words */
+#define SUBST_MAX   4096      /* Most output a $(...) may give */
+
 static unsigned substitutions_run = 0;   /* $(...)s run so far: did a command line have one? */
 
 /* The ')' that closes the "$(" just before `p`, skipping nested ones and
@@ -378,7 +455,7 @@ static long substitute(const char *command, char *out, size_t size) {
         close(p[0]);
         close(p[1]);
         interactive = 0;                      /* The child runs the command, not jobs */
-        reading_assignment = 0;               /* (Its own words split as usual) */
+        reading_assignment = reading_pattern = 0;   /* (Its own words split as usual) */
         int should_exit = 0;
         exit(run_line(command, &should_exit));
     }
@@ -415,7 +492,9 @@ static long substitute(const char *command, char *out, size_t size) {
  * $? expanded, blanks and operators kept) and 'single quoted' (everything
  * kept as it is): `"a b"c` is one word, `a b c`. NULL if no word starts
  * here (the end of the line, an operator), a quote is not closed, or the
- * line's words do not fit in word_storage. $(command) is replaced by the
+ * line's words do not fit in word_storage (or a "${" is malformed).
+ * Reading a case pattern, quoted wildcard characters are bracketed (see
+ * put_char). $(command) is replaced by the
  * command's output: as it is inside double quotes, and outside them with
  * its blanks as FIELD_BREAKs, at which the caller splits the word. *flags
  * (if not NULL) receives WORD_QUOTED (any part was in quotes: not a
@@ -457,16 +536,15 @@ static char *next_word(const char **cursor, size_t *used, int *flags) {
             for (long i = 0; i < n; i++) {
                 char o = output[i];
                 if (!whole && (is_blank(o) || o == '\n' || o == FIELD_BREAK)) o = FIELD_BREAK;
-                if (*used + len + 1 >= sizeof(word_storage)) return NULL;
-                word[len++] = o;
+                if (put_char(word, &len, *used, o, quote != 0) < 0) return NULL;
             }
             if (!whole) split = 1;
-        } else if (c == '$' && quote != '\'' && (is_name_char(p[1]) || p[1] == '?')) {
+        } else if (c == '$' && quote != '\'' &&
+                   (is_name_char(p[1]) || p[1] == '?' || p[1] == '#' || p[1] == '@' || p[1] == '{')) {
             p++;
-            if (append_variable(&p, word, &len, *used) < 0) return NULL;
+            if (append_variable(&p, word, &len, *used, quote, &split) < 0) return NULL;
         } else {
-            if (*used + len + 1 >= sizeof(word_storage)) return NULL;
-            word[len++] = c;
+            if (put_char(word, &len, *used, c, quote != 0) < 0) return NULL;
             p++;
         }
     }
@@ -717,6 +795,14 @@ static void exec_stage(stage_t *stage) {
         }
     }
 
+    /* A function, here in a pipeline or with redirections: run by this
+     * child, which is a copy of the shell */
+    if (is_function(stage->argv[0])) {
+        int should_exit = 0;
+        interactive = 0;                          /* (The child runs commands, not jobs) */
+        exit(call_function(stage->argc, stage->argv, &should_exit));
+    }
+
     const char *name = stage->argv[0];
     long err = -ENOENT;
     char path[160];
@@ -808,6 +894,7 @@ static int run_pipeline(stage_t *stages, int count, int background, const char *
 
 static int test_builtin(int argc, char **argv);
 static int loop_control(int argc, char **argv);
+static int return_builtin(int argc, char **argv);
 
 /* Run one pipeline (a part of a command line between ';', '&&' and '||'):
  * a built-in, or programs in the foreground or (with a final '&') the
@@ -858,6 +945,9 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     }
     if (count == 1 && (strcmp(stages[0].argv[0], "break") == 0 || strcmp(stages[0].argv[0], "continue") == 0)) {
         return loop_control(stages[0].argc, stages[0].argv);
+    }
+    if (count == 1 && strcmp(stages[0].argv[0], "return") == 0) {
+        return return_builtin(stages[0].argc, stages[0].argv);
     }
     if (count == 1 && (strcmp(stages[0].argv[0], "test") == 0 || strcmp(stages[0].argv[0], "[") == 0)) {
         return test_builtin(stages[0].argc, stages[0].argv);
@@ -947,19 +1037,27 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  a ; b, a && b, a || b  run b after a; only if a succeeded; only if it failed\n"
                "  if c; then a; else b; fi     while c; do a; done     for x in 1 2 3; do echo $x; done\n"
                "  until c; do a; done          (runs a as long as c fails)\n"
+               "  case $x in a*|b) cmd;; *) other;; esac      f() { echo $1 $#; return 2; }; f x\n"
                "  [ -f FILE ], [ $x = y ], [ 3 -lt 4 ], [ ! ... ]   conditions (test); break, continue\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
                "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
                "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
                "  echo $(date)           the output of a command, in place (up to 4 KiB)\n"
                "  cd [dir], pwd          change or print the current directory\n"
-               "  NAME=value             set a variable of the shell; $NAME uses it, $? is the last status\n"
+               "  NAME=value             set a variable of the shell; $NAME or ${NAME} uses it, $? is the last status\n"
                "  export NAME[=value]    put it in the environment, for every program started after\n"
                "  NAME=value prog        set it for that one program only; unset NAME forgets it\n"
                "  prog args &            run in the background; Ctrl-Z stops the running command\n"
                "  jobs, fg [N], bg [N]   list jobs; bring one to the terminal; let a stopped one run on\n"
                "  exit [status]          leave the shell\n");
         return 0;
+    }
+
+    /* A function, alone and with nothing to set up: in the shell itself
+     * (anywhere else, exec_stage runs it in the child) */
+    if (count == 1 && !background && stages[0].redirect_count == 0 && stages[0].assignment_count == 0 &&
+        is_function(stages[0].argv[0])) {
+        return call_function(stages[0].argc, stages[0].argv, should_exit);
     }
 
     return run_pipeline(stages, count, background, text);
@@ -979,7 +1077,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
 
 enum { JOIN_ALWAYS, JOIN_IF_OK, JOIN_IF_FAILED };      /* How a command follows the one before */
 enum { PARSE_OK, PARSE_SYNTAX, PARSE_INCOMPLETE };
-enum { NODE_SIMPLE, NODE_IF, NODE_WHILE, NODE_UNTIL, NODE_FOR };
+enum { NODE_SIMPLE, NODE_IF, NODE_WHILE, NODE_UNTIL, NODE_FOR, NODE_CASE, NODE_GROUP, NODE_FUNCTION };
 #define RUN_INCOMPLETE (-1)                             /* run_text: more lines are needed */
 
 typedef struct segment {
@@ -995,24 +1093,55 @@ typedef struct {
     int count, cap;
 } cmd_list_t;
 
+typedef struct {
+    char **patterns;          /* As written (quotes and all), expanded when the case runs */
+    int pattern_count;
+    cmd_list_t body;          /* May be empty: "x) ;;" */
+} case_item_t;
+
 struct node {
     int kind;                 /* NODE_* */
-    char *text;               /* NODE_SIMPLE: the command; NODE_FOR: the words to loop over */
-    char name[32];            /* NODE_FOR: the variable */
-    cmd_list_t cond, body;    /* if: condition, then-part; while, until: condition, body; for: body */
+    char *text;               /* NODE_SIMPLE: the command; NODE_FOR: the words to loop over; NODE_CASE: the word */
+    char name[32];            /* NODE_FOR: the variable; NODE_FUNCTION: the function */
+    cmd_list_t cond, body;    /* if: condition, then-part; while, until: condition, body; for, { }, function: body */
     cmd_list_t other;         /* if: the else-part (an elif is an else holding one if) */
+    case_item_t *items;       /* NODE_CASE: the PATTERN) LIST;; items, in order */
+    int item_count;
 };
 
 static segment_t *segs;       /* The segments being parsed, and where the parser is */
 static int seg_count, seg_pos, parse_state;
 static int loop_depth;        /* Loops being run (for break and continue) */
 static int pending_break, pending_continue;   /* Loops still to leave, or to continue */
+static int pending_return;    /* "return" ran: the rest of the function is skipped */
+static int call_depth;        /* Functions being run */
 static int interrupted;       /* A command was ended by Ctrl-C: loops stop */
+
+/* Add a segment: `storage` (malloc'd, now the segment's), whose text
+ * starts at `text`, followed by `join`. 0, or -1 (storage freed) if memory
+ * ran out. */
+static int add_segment(char *storage, char *text, int join, int *cap) {
+    if (seg_count == *cap) {
+        int grown_cap = *cap ? *cap * 2 : 16;
+        segment_t *grown = malloc(sizeof(segment_t) * (size_t)grown_cap);
+        if (!grown) { free(storage); return -1; }
+        if (segs) memcpy(grown, segs, sizeof(segment_t) * (size_t)seg_count);
+        free(segs);
+        segs = grown;
+        *cap = grown_cap;
+    }
+    segs[seg_count].storage = storage;
+    segs[seg_count].text = text;
+    segs[seg_count].join_next = join;
+    seg_count++;
+    return 0;
+}
 
 /* Cut `text` into segments (segs, seg_count). Returns PARSE_OK, or
  * PARSE_SYNTAX for an empty command before '&&' or '||' (or no memory), or
  * PARSE_INCOMPLETE for a text that ends with '&&' or '||'. A '#' starting a
- * word outside quotes comments out the rest of its line. */
+ * word outside quotes comments out the rest of its line. The ";;" that
+ * ends a case item is a segment of its own. */
 static int cut_segments(const char *text) {
     int cap = 0, join = JOIN_ALWAYS;
     seg_count = seg_pos = 0;
@@ -1038,8 +1167,9 @@ static int cut_segments(const char *text) {
             buf[n++] = *p;
         }
         buf[n] = '\0';
-        int next = JOIN_ALWAYS;
-        if (*p == ';' || *p == '\n') p++;
+        int next = JOIN_ALWAYS, case_end = 0;
+        if (p[0] == ';' && p[1] == ';') { case_end = 1; p += 2; }
+        else if (*p == ';' || *p == '\n') p++;
         else if (*p) { next = (*p == '&') ? JOIN_IF_OK : JOIN_IF_FAILED; p += 2; }
 
         char *t = buf;
@@ -1049,21 +1179,18 @@ static int cut_segments(const char *text) {
         if (len == 0) {                                     /* Nothing here */
             free(buf);
             if (next != JOIN_ALWAYS) return PARSE_SYNTAX;   /* "&& b", "a && && b" */
-            continue;                                       /* (A newline after "&&" keeps the "&&") */
+        } else {
+            if (add_segment(buf, t, next, &cap) < 0) return PARSE_SYNTAX;
+            join = next;
         }
-        if (seg_count == cap) {
-            cap = cap ? cap * 2 : 16;
-            segment_t *grown = malloc(sizeof(segment_t) * (size_t)cap);
-            if (!grown) { free(buf); return PARSE_SYNTAX; }
-            if (segs) memcpy(grown, segs, sizeof(segment_t) * (size_t)seg_count);
-            free(segs);
-            segs = grown;
+        if (case_end) {
+            char *mark = malloc(3);
+            if (!mark) return PARSE_SYNTAX;
+            memcpy(mark, ";;", 3);
+            if (add_segment(mark, mark, JOIN_ALWAYS, &cap) < 0) return PARSE_SYNTAX;
+            join = JOIN_ALWAYS;
         }
-        segs[seg_count].storage = buf;
-        segs[seg_count].text = t;
-        segs[seg_count].join_next = next;
-        seg_count++;
-        join = next;
+        /* (A newline after "&&" keeps the "&&": an empty segment changes nothing) */
     }
     return join == JOIN_ALWAYS ? PARSE_OK : PARSE_INCOMPLETE;
 }
@@ -1087,7 +1214,7 @@ static void first_word(const char *text, char word[32]) {
 
 /* Whether `word` is one of the keywords that end or divide a compound command */
 static int is_closing_keyword(const char *word) {
-    static const char *const closing[] = { "then", "elif", "else", "fi", "do", "done" };
+    static const char *const closing[] = { "then", "elif", "else", "fi", "do", "done", "esac", ";;", "}" };
     for (unsigned i = 0; i < sizeof(closing) / sizeof(closing[0]); i++) {
         if (strcmp(word, closing[i]) == 0) return 1;
     }
@@ -1150,6 +1277,12 @@ static void free_node(node_t *node) {
     free_list(&node->cond);
     free_list(&node->body);
     free_list(&node->other);
+    for (int i = 0; i < node->item_count; i++) {
+        for (int j = 0; j < node->items[i].pattern_count; j++) free(node->items[i].patterns[j]);
+        free(node->items[i].patterns);
+        free_list(&node->items[i].body);
+    }
+    free(node->items);
     free(node);
 }
 
@@ -1239,8 +1372,153 @@ static node_t *parse_for(void) {
     return node;
 }
 
-/* One command: a simple one, or an if/while/for (whose keyword starts the
- * current segment). The node, or NULL with parse_state set. */
+/* A malloc'd copy of the `n` characters at `text`, or NULL */
+static char *copy_text(const char *text, size_t n) {
+    char *copy = malloc(n + 1);
+    if (!copy) return NULL;
+    memcpy(copy, text, n);
+    copy[n] = '\0';
+    return copy;
+}
+
+/* Where the word starting at `p` ends: at a blank, an operator or ')'
+ * outside quotes and $( ). NULL if a quote or a $( is not closed. */
+static const char *word_end(const char *p) {
+    char quote = 0;
+    for (; *p; p++) {
+        if (quote) { if (*p == quote) quote = 0; continue; }
+        if (*p == '"' || *p == '\'') quote = *p;
+        else if (p[0] == '$' && p[1] == '(') { if (!(p = closing_paren(p + 2))) return NULL; }
+        else if (is_blank(*p) || is_operator(*p) || *p == ')') break;
+    }
+    return quote ? NULL : p;
+}
+
+/* Make the current segment start at `rest` (blanks skipped), or move to
+ * the next one if nothing is left of it */
+static void continue_segment(const char *rest) {
+    while (is_blank(*rest)) rest++;
+    if (*rest) segs[seg_pos].text = (char *)rest;
+    else seg_pos++;
+}
+
+/* One "PATTERN|PATTERN) LIST" of a case (an optional '(' first), and the
+ * ";;" after it unless "esac" follows; added to `node`. 0, or -1 with
+ * parse_state set. */
+static int parse_case_item(node_t *node) {
+    case_item_t *items = malloc(sizeof(case_item_t) * (size_t)(node->item_count + 1));
+    if (!items) { parse_state = PARSE_SYNTAX; return -1; }
+    if (node->item_count) memcpy(items, node->items, sizeof(case_item_t) * (size_t)node->item_count);
+    free(node->items);
+    node->items = items;
+    case_item_t *item = &items[node->item_count++];
+    memset(item, 0, sizeof(*item));
+
+    const char *p = segs[seg_pos].text;
+    if (*p == '(') p++;
+    for (;;) {                                   /* Patterns, each one word, divided by '|', up to ')' */
+        while (is_blank(*p)) p++;
+        const char *end = word_end(p);
+        char **grown = end && end != p ? malloc(sizeof(char *) * (size_t)(item->pattern_count + 1)) : NULL;
+        if (!grown) { parse_state = PARSE_SYNTAX; return -1; }
+        if (item->pattern_count) memcpy(grown, item->patterns, sizeof(char *) * (size_t)item->pattern_count);
+        free(item->patterns);
+        item->patterns = grown;
+        if (!(item->patterns[item->pattern_count] = copy_text(p, (size_t)(end - p)))) { parse_state = PARSE_SYNTAX; return -1; }
+        item->pattern_count++;
+        p = end;
+        while (is_blank(*p)) p++;
+        if (*p == '|') { p++; continue; }
+        if (*p == ')') break;
+        parse_state = PARSE_SYNTAX;              /* "a b)", no ')' */
+        return -1;
+    }
+    continue_segment(p + 1);
+    parse_list(&item->body, 1);
+    if (parse_state != PARSE_OK) return -1;
+    if (take_keyword(";;", 1)) return parse_state == PARSE_OK ? 0 : -1;
+    char word[32];
+    first_word(segs[seg_pos].text, word);
+    if (strcmp(word, "esac") != 0) { parse_state = PARSE_SYNTAX; return -1; }   /* "fi", "done", "}" */
+    return 0;
+}
+
+/* A case, starting at the current segment: "case WORD in", then items up
+ * to "esac". The node, or NULL with parse_state set. */
+static node_t *parse_case(void) {
+    node_t *node = new_node(NODE_CASE);
+    if (!node) return NULL;
+    const char *p = segs[seg_pos].text + 4;
+    while (is_blank(*p)) p++;
+    const char *end = word_end(p);
+    if (!end || end == p || !(node->text = copy_text(p, (size_t)(end - p)))) {
+        parse_state = PARSE_SYNTAX;
+        free_node(node);
+        return NULL;
+    }
+    p = end;
+    while (is_blank(*p)) p++;
+    if (*p == '\0') {                            /* "in" on the next line */
+        seg_pos++;
+        expect_keyword("in", 0);
+    } else if (strncmp(p, "in", 2) == 0 && (p[2] == '\0' || is_blank(p[2]))) {
+        continue_segment(p + 2);
+    } else {
+        parse_state = PARSE_SYNTAX;
+    }
+    while (parse_state == PARSE_OK) {
+        if (seg_pos >= seg_count) { parse_state = PARSE_INCOMPLETE; break; }
+        if (take_keyword("esac", 1)) break;
+        if (parse_case_item(node) < 0) break;
+    }
+    if (parse_state != PARSE_OK) { free_node(node); return NULL; }
+    return node;
+}
+
+/* The rest of a { } group or a function's body: "{" (already taken for a
+ * group), the commands, "}". Fills node->body; 0, or -1 with parse_state
+ * set. */
+static int parse_braces(node_t *node) {
+    parse_list(&node->body, 1);
+    expect_keyword("}", 1);
+    if (parse_state == PARSE_OK && node->body.count == 0) parse_state = PARSE_SYNTAX;
+    return parse_state == PARSE_OK ? 0 : -1;
+}
+
+/* If the current segment starts "NAME()" (blanks allowed around the
+ * parentheses), where its "{" is: just after, or the next segment. NULL
+ * if it does not. */
+static const char *function_header(const char *text) {
+    size_t n = 0;
+    while (is_name_char(text[n])) n++;
+    if (n == 0 || n >= 32 || !is_name(text, text + n)) return NULL;
+    const char *p = text + n;
+    while (is_blank(*p)) p++;
+    if (*p++ != '(') return NULL;
+    while (is_blank(*p)) p++;
+    if (*p++ != ')') return NULL;
+    return p;
+}
+
+/* A function definition, "NAME() { LIST; }", the current segment starting
+ * with the header (`after` just past its ')'). The node, or NULL with
+ * parse_state set. */
+static node_t *parse_function(const char *after) {
+    node_t *node = new_node(NODE_FUNCTION);
+    if (!node) return NULL;
+    const char *text = segs[seg_pos].text;
+    size_t n = 0;
+    while (is_name_char(text[n])) n++;
+    memcpy(node->name, text, n);
+    node->name[n] = '\0';
+    continue_segment(after);
+    if (!expect_keyword("{", 0) || parse_braces(node) < 0) { free_node(node); return NULL; }
+    return node;
+}
+
+/* One command: a simple one, an if/while/until/for/case or { } (whose
+ * keyword starts the current segment), or a function definition. The
+ * node, or NULL with parse_state set. */
 static node_t *parse_command(void) {
     char word[32];
     first_word(segs[seg_pos].text, word);
@@ -1248,6 +1526,14 @@ static node_t *parse_command(void) {
     if (take_keyword("while", 0)) return parse_while(NODE_WHILE);
     if (take_keyword("until", 0)) return parse_while(NODE_UNTIL);
     if (strcmp(word, "for") == 0) return parse_for();
+    if (strcmp(word, "case") == 0) return parse_case();
+    if (take_keyword("{", 0)) {
+        node_t *group = new_node(NODE_GROUP);
+        if (group && parse_braces(group) < 0) { free_node(group); group = NULL; }
+        return group;
+    }
+    const char *after = function_header(segs[seg_pos].text);
+    if (after) return parse_function(after);
 
     node_t *node = new_node(NODE_SIMPLE);
     if (!node) return NULL;
@@ -1288,6 +1574,7 @@ static int exec_list(cmd_list_t *list, int *should_exit);
  * 1 if the loop must end (a break for it, or anything for a loop further
  * out), 0 if it goes on. */
 static int leave_loop(void) {
+    if (pending_return) return 1;                           /* Out of every loop of the function */
     if (pending_break) {
         pending_break--;                                    /* This loop is left; more for outer ones */
         return 1;
@@ -1328,17 +1615,216 @@ static int exec_for(node_t *node, int *should_exit) {
     return status;
 }
 
+static node_t *copy_node(const node_t *from);
+
+/* Copy the list `from` into `to` (empty before). 0, or -1 (nothing left
+ * in `to`) if memory ran out. */
+static int copy_list(const cmd_list_t *from, cmd_list_t *to) {
+    memset(to, 0, sizeof(*to));
+    for (int i = 0; i < from->count; i++) {
+        node_t *copy = copy_node(from->items[i]);
+        if (!copy || list_add(to, copy, from->joins[i]) < 0) {
+            free_node(copy);
+            free_list(to);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* A copy of a node and everything in it, or NULL if memory ran out */
+static node_t *copy_node(const node_t *from) {
+    node_t *node = malloc(sizeof(node_t));
+    if (!node) return NULL;
+    memset(node, 0, sizeof(*node));
+    node->kind = from->kind;
+    memcpy(node->name, from->name, sizeof(node->name));
+    if ((from->text && !(node->text = copy_text(from->text, strlen(from->text)))) ||
+        copy_list(&from->cond, &node->cond) < 0 || copy_list(&from->body, &node->body) < 0 ||
+        copy_list(&from->other, &node->other) < 0) {
+        free_node(node);
+        return NULL;
+    }
+    if (from->item_count) {
+        node->items = malloc(sizeof(case_item_t) * (size_t)from->item_count);
+        if (!node->items) { free_node(node); return NULL; }
+        memset(node->items, 0, sizeof(case_item_t) * (size_t)from->item_count);
+        node->item_count = from->item_count;
+        for (int i = 0; i < from->item_count; i++) {
+            const case_item_t *item = &from->items[i];
+            case_item_t *copy = &node->items[i];
+            copy->patterns = malloc(sizeof(char *) * (size_t)item->pattern_count);
+            if (!copy->patterns || copy_list(&item->body, &copy->body) < 0) { free_node(node); return NULL; }
+            for (int j = 0; j < item->pattern_count; j++) {
+                copy->patterns[j] = copy_text(item->patterns[j], strlen(item->patterns[j]));
+                if (!copy->patterns[j]) { free_node(node); return NULL; }
+                copy->pattern_count++;
+            }
+        }
+    }
+    return node;
+}
+
+/* --- Functions ---------------------------------------------------------------
+ *
+ * "NAME() { LIST; }" keeps a copy of the commands under the name; a
+ * command NAME then runs them with its words as $1, $2 ... A function
+ * lives in the shell that defined it (programs do not see it), is run by
+ * the shell itself when it is a command of its own (so it can set the
+ * shell's variables), and by a child of the shell in a pipeline, with a
+ * redirection, in the background or with NAME=value before it. */
+
+#define MAX_FUNCTIONS  32
+#define MAX_CALL_DEPTH 64     /* Calls inside calls (a function calling itself, say) */
+
+typedef struct {
+    char name[32];            /* "" for a free entry */
+    cmd_list_t body;
+} function_t;
+
+static function_t functions[MAX_FUNCTIONS];
+
+/* The function called `name`, or NULL */
+static function_t *find_function(const char *name) {
+    for (int i = 0; i < MAX_FUNCTIONS; i++) {
+        if (functions[i].name[0] && strcmp(functions[i].name, name) == 0) return &functions[i];
+    }
+    return NULL;
+}
+
+/* Whether a function called `name` is defined */
+static int is_function(const char *name) {
+    return find_function(name) != NULL;
+}
+
+/* Define (or redefine) the function of a NODE_FUNCTION: its body is copied
+ * (the tree is freed once the command text has run). Its status: 0, or 1
+ * (a message printed) if there is no room. */
+static int define_function(node_t *node) {
+    function_t *f = find_function(node->name);
+    for (int i = 0; !f && i < MAX_FUNCTIONS; i++) if (!functions[i].name[0]) f = &functions[i];
+    cmd_list_t body;
+    if (!f || copy_list(&node->body, &body) < 0) {
+        fprintf(2, "sh: %s: no room for another function\n", node->name);
+        return 1;
+    }
+    free_list(&f->body);
+    f->body = body;
+    memcpy(f->name, node->name, sizeof(f->name));
+    return 0;
+}
+
+/* Run the function argv[0] (it must exist) with argv[1..] as its
+ * arguments, in this process. Its status: that of its last command, or
+ * what "return" gave. Calls nested more than MAX_CALL_DEPTH deep fail
+ * with status 2 and abandon the whole command text being run. */
+static int call_function(int argc, char **argv, int *should_exit) {
+    function_t *f = find_function(argv[0]);
+    if (call_depth >= MAX_CALL_DEPTH) {
+        fprintf(2, "sh: %s: functions called more than %d deep\n", argv[0], MAX_CALL_DEPTH);
+        interrupted = 1;
+        return 2;
+    }
+    /* The words live in word_storage, which the body's commands reuse,
+     * and the body may redefine the function: both are copied */
+    char **args = malloc(sizeof(char *) * (size_t)argc);
+    cmd_list_t body;
+    if (!args || copy_list(&f->body, &body) < 0) {
+        free(args);
+        fprintf(2, "sh: %s: out of memory\n", argv[0]);
+        return 1;
+    }
+    int count = 0;
+    for (int i = 1; i < argc; i++) {
+        if ((args[count] = copy_text(argv[i], strlen(argv[i])))) count++;
+    }
+
+    char **saved_args = arguments;
+    int saved_count = argument_count, saved_loops = loop_depth;
+    arguments = args;
+    argument_count = count;
+    loop_depth = 0;           /* break and continue do not reach the caller's loops */
+    call_depth++;
+    int status = exec_list(&body, should_exit);
+    call_depth--;
+    pending_return = 0;
+    loop_depth = saved_loops;
+    arguments = saved_args;
+    argument_count = saved_count;
+
+    for (int i = 0; i < count; i++) free(args[i]);
+    free(args);
+    free_list(&body);
+    return status;
+}
+
+/* return [N]: end the function being run, with status N (else $?). Outside
+ * a function, an error (status 1). */
+static int return_builtin(int argc, char **argv) {
+    if (call_depth == 0) {
+        fprintf(2, "sh: return: not in a function\n");
+        return 1;
+    }
+    if (argc > 2 || (argc == 2 && (argv[1][0] < '0' || argv[1][0] > '9'))) {
+        fprintf(2, "sh: return: expected a number\n");
+        return 2;
+    }
+    pending_return = 1;
+    return argc == 2 ? atoi(argv[1]) : last_status;
+}
+
+/* case: the word expanded (one word: not split, no wildcards), then each
+ * item's patterns in turn; the first that matches runs its list. Quoted
+ * parts of a pattern match themselves. Its status: that of the list, or
+ * 0 if nothing matched (or the list is empty). */
+static int exec_case(node_t *node, int *should_exit) {
+    size_t used = 0;
+    const char *p = node->text;
+    reading_assignment = 1;
+    const char *expanded = next_word(&p, &used, NULL);
+    reading_assignment = 0;
+    char *word = expanded ? copy_text(expanded, strlen(expanded)) : NULL;
+    if (!word) {
+        fprintf(2, "sh: syntax error\n");
+        return 2;
+    }
+    for (int i = 0; i < node->item_count; i++) {
+        for (int j = 0; j < node->items[i].pattern_count; j++) {
+            used = 0;
+            p = node->items[i].patterns[j];
+            reading_assignment = reading_pattern = 1;
+            const char *pattern = next_word(&p, &used, NULL);
+            reading_assignment = reading_pattern = 0;
+            if (!pattern) {
+                free(word);
+                fprintf(2, "sh: syntax error\n");
+                return 2;
+            }
+            if (glob_match_text(pattern, word)) {
+                free(word);
+                return node->items[i].body.count ? exec_list(&node->items[i].body, should_exit) : 0;
+            }
+        }
+    }
+    free(word);
+    return 0;
+}
+
 /* Run one command of the tree; its status. An if whose branches are not
- * taken, and a loop that never runs its body, give 0. */
+ * taken, a loop that never runs its body, a case that matches nothing and
+ * a function definition give 0. */
 static int exec_node(node_t *node, int *should_exit) {
     if (node->kind == NODE_SIMPLE) {
         int status = run_pipeline_text(node->text, should_exit);
         if (status == 128 + SIGINT) interrupted = 1;        /* Ctrl-C: no further loop rounds */
         return status;
     }
+    if (node->kind == NODE_CASE) return exec_case(node, should_exit);
+    if (node->kind == NODE_GROUP) return exec_list(&node->body, should_exit);
+    if (node->kind == NODE_FUNCTION) return define_function(node);
     if (node->kind == NODE_IF) {
         int cond = exec_list(&node->cond, should_exit);
-        if (*should_exit || interrupted || pending_break || pending_continue) return cond;
+        if (*should_exit || interrupted || pending_break || pending_continue || pending_return) return cond;
         if (cond == 0) return exec_list(&node->body, should_exit);
         return node->other.count ? exec_list(&node->other, should_exit) : 0;
     }
@@ -1362,7 +1848,7 @@ static int exec_node(node_t *node, int *should_exit) {
 
 /* Run a list: each command in turn, the next one only if its join allows
  * (a command not run leaves the status as it was). Stops at exit, a
- * pending break or continue, or Ctrl-C. Returns the last status; $? is up
+ * pending break, continue or return, or Ctrl-C. Returns the last status; $? is up
  * to date after each command. */
 static int exec_list(cmd_list_t *list, int *should_exit) {
     int status = last_status;
@@ -1371,7 +1857,7 @@ static int exec_list(cmd_list_t *list, int *should_exit) {
         if (join == JOIN_ALWAYS || (join == JOIN_IF_OK && status == 0) || (join == JOIN_IF_FAILED && status != 0)) {
             status = last_status = exec_node(list->items[i], should_exit);
         }
-        if (*should_exit || interrupted || pending_break || pending_continue) break;
+        if (*should_exit || interrupted || pending_break || pending_continue || pending_return) break;
     }
     return status;
 }
@@ -1401,7 +1887,7 @@ static int run_text(const char *text, int *should_exit, int may_continue) {
     interrupted = 0;
     int status = exec_list(&top, should_exit);
     free_list(&top);
-    pending_break = pending_continue = 0;
+    pending_break = pending_continue = pending_return = 0;
     return status;
 }
 
@@ -1589,6 +2075,9 @@ int main(int argc, char **argv) {
             return 127;
         }
         script_fd = (int)fd;
+        shell_name = argv[1];                   /* $0, and $1 .. for the words after it */
+        arguments = argv + 2;
+        argument_count = argc - 2;
     }
 
     /* Reading the terminal: take charge of it. The shell gets a process

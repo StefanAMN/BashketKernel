@@ -64,3 +64,7 @@ int glob_match(const char *pattern, const char *name) {
     if (name[0] == '.' && pattern[0] != '.') return 0;
     return match(pattern, name);
 }
+
+int glob_match_text(const char *pattern, const char *text) {
+    return match(pattern, text);
+}
