@@ -4,6 +4,8 @@
 #include "pmm.h"
 #include "mmap.h"
 #include "kstring.h"
+#include "task.h"
+#include "process.h"
 
 #define BASE 0x0000000040000000ULL   // Where the tests' pages live in their address space
 #define PAGES 24
@@ -197,6 +199,65 @@ TEST(swapped_pages_and_fork) {
     EXPECT_TRUE(swap_free_pages() == slots_before && test_free_frames() == frames_before);
 }
 
+// The buffers of a system call in progress: no page that overlaps one is
+// taken, however little of it the range covers, and the rest still go
+TEST(kept_ranges_stay_in_memory) {
+    size_t frames_before = test_free_frames(), slots_before = swap_free_pages();
+    uint64_t *space = make_space();
+    EXPECT_TRUE(space != NULL);
+    if (!space) return;
+
+    const vmm_range_t keep[] = {
+        { BASE + 2 * PAGE_SIZE + 100, BASE + 5 * PAGE_SIZE },          // Pages 2, 3 and 4 (the end is not in it)
+        { BASE + 10 * PAGE_SIZE + 4000, BASE + 10 * PAGE_SIZE + 4001 },  // One byte of page 10
+    };
+    uint64_t cursor = 0;
+    EXPECT_EQ(swap_out_keeping(space, &cursor, 1000, keep, 2), (size_t)(PAGES - 4));
+    EXPECT_EQ(swap_out_keeping(space, &cursor, 1, keep, 2), (size_t)0);     // Only kept pages are left
+    for (uint64_t i = 0; i < PAGES; i++) {
+        bool kept = (i >= 2 && i <= 4) || i == 10;
+        EXPECT_TRUE(vmm_pte_swapped(vmm_get_pte(space, BASE + i * PAGE_SIZE)) == !kept);
+        if (kept) EXPECT_TRUE(page_is_whole(space, i));
+    }
+    EXPECT_EQ(swap_out(space, &cursor, 1000), (size_t)4);                // Without the ranges they go too
+
+    vmm_destroy_address_space(space);
+    EXPECT_TRUE(swap_free_pages() == slots_before && test_free_frames() == frames_before);
+}
+
+// What a system call records of the buffers it checks: whole pages, joined
+// when they touch, and "full" (nothing may go) past TASK_CALL_RANGES
+TEST(call_ranges_join_and_fill_up) {
+    static task_t task;
+    memset(&task, 0, sizeof(task));
+
+    process_call_range_add(&task, 0x10010, 10);                 // Within one page
+    EXPECT_EQ(task.call_range_count, 1u);
+    EXPECT_TRUE(task.call_ranges[0].start == 0x10000 && task.call_ranges[0].end == 0x11000);
+    process_call_range_add(&task, 0x11000, 1);                  // The next page: joined
+    process_call_range_add(&task, 0x10800, 0x100);              // Inside: nothing new
+    process_call_range_add(&task, 0x0f000, 0x1001);             // Reaches back over the start
+    EXPECT_EQ(task.call_range_count, 1u);
+    EXPECT_TRUE(task.call_ranges[0].start == 0x0f000 && task.call_ranges[0].end == 0x12000);
+    process_call_range_add(&task, 0x10000, 0);                  // Nothing at all
+    EXPECT_EQ(task.call_range_count, 1u);
+
+    for (uint64_t i = 1; i < TASK_CALL_RANGES; i++) process_call_range_add(&task, 0x100000 * i, 8);
+    EXPECT_EQ(task.call_range_count, (uint32_t)TASK_CALL_RANGES);
+    EXPECT_TRUE(!task.call_ranges_full);
+    process_call_range_add(&task, 0x100000, 0x2000);            // Joins one: still room
+    EXPECT_TRUE(!task.call_ranges_full);
+    process_call_range_add(&task, 0x7000000, 8);                // One more than fits
+    EXPECT_TRUE(task.call_ranges_full);
+
+    process_call_range_add(&task, USER_SPACE_END - 8, 64);      // Past the end of user space: cut there
+    process_call_ranges_reset(&task);
+    EXPECT_EQ(task.call_range_count, 0u);
+    EXPECT_TRUE(!task.call_ranges_full);
+    process_call_range_add(&task, USER_SPACE_END - 8, 64);
+    EXPECT_TRUE(task.call_ranges[0].start == USER_SPACE_END - PAGE_SIZE && task.call_ranges[0].end == USER_SPACE_END);
+}
+
 void test_suite_swap(void) {
     kprintf("Suite: Swap\n");
     if (!swap_active()) {
@@ -207,4 +268,6 @@ void test_suite_swap(void) {
     RUN_TEST(pages_go_out_and_come_back);
     RUN_TEST(recently_used_pages_are_spared);
     RUN_TEST(swapped_pages_and_fork);
+    RUN_TEST(kept_ranges_stay_in_memory);
+    RUN_TEST(call_ranges_join_and_fill_up);
 }

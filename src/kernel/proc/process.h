@@ -116,6 +116,22 @@ void process_interrupt_all(void);
  */
 bool process_populate(uint64_t addr, size_t len);
 
+/**
+ * @brief Record that the system call in progress has checked user memory
+ *        [addr, addr + len) of `task` and may use it: from now until
+ *        process_call_ranges_reset, swapping out to make room leaves its
+ *        pages alone (swap.h). A range that touches one already recorded
+ *        is joined to it; when TASK_CALL_RANGES are in use, the task is
+ *        marked so that nothing of it is swapped out at all.
+ */
+void process_call_range_add(struct task *task, uint64_t addr, size_t len);
+
+/**
+ * @brief Forget the ranges recorded by process_call_range_add: called by
+ *        the system call entry as a call starts and as it returns.
+ */
+void process_call_ranges_reset(struct task *task);
+
 // --- Jobs --------------------------------------------------------------------
 //
 // A process group is a set of processes that a shell started for one command

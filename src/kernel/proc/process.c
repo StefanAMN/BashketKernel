@@ -237,23 +237,40 @@ static void user_task_start(void) {
 // what it has. The page fault handler calls this for "page not present"
 // faults. The lowest page of the region is never mapped: running into it is
 // how unbounded recursion ends (with a fault) instead of reaching other memory.
+//
+// When no frame is free, the process makes room by swapping out pages of
+// its own, never those of a buffer this system call has already checked
+// (this one included: it is recorded first), because the kernel may be
+// about to use them, and a kernel access to a page that has gone would
+// fault where nothing may sleep. A few attempts, each giving up at least
+// one page, or false.
+#define MAKE_ROOM_ATTEMPTS 4
+
 bool process_populate(uint64_t addr, size_t len) {
     task_t *self = sched_get_current_task();
     if (!self || !self->is_user || len == 0) return true;
     if (addr >= USER_SPACE_END || len > USER_SPACE_END - addr) return false;
+    process_call_range_add(self, addr, len);
 
     uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
     for (uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1); page < addr + len; page += PAGE_SIZE) {
         uint64_t entry = vmm_get_pte(space, page);
         if (entry & VMM_PRESENT) continue;
+        swap_relieve_pressure();      // As a fault from user mode would: memory is short, and this page needs a frame
         if (vmm_pte_swapped(entry)) {
-            // On the swap disk: read it back. (Nothing is pushed out to
-            // make room here: see swap.h.)
-            if (swap_in(space, page) < 0) return false;
+            // On the swap disk: read it back
+            int back = swap_in(space, page);
+            for (int i = 0; back < 0 && i < MAKE_ROOM_ATTEMPTS && swap_make_room_for_call() > 0; i++) {
+                back = swap_in(space, page);
+            }
+            if (back < 0) return false;
             continue;
         }
         if (process_grow_stack(page)) continue;
         int given = region_fault(self, page);
+        for (int i = 0; given < 0 && i < MAKE_ROOM_ATTEMPTS && swap_make_room_for_call() > 0; i++) {
+            given = region_fault(self, page);
+        }
         if (given < 0) return false;  // Promised, and no memory to keep the promise
         // Never promised: the range is bad, and the check that follows will
         // say so. Stop here: the length is the caller's word, and walking
@@ -261,6 +278,34 @@ bool process_populate(uint64_t addr, size_t len) {
         if (given == 0) break;
     }
     return true;
+}
+
+void process_call_range_add(task_t *task, uint64_t addr, size_t len) {
+    if (!task || len == 0 || addr >= USER_SPACE_END) return;
+    uint64_t start = addr & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t end = len > USER_SPACE_END - addr ? USER_SPACE_END : page_align_up(addr + len);
+
+    // Joined to one it touches or overlaps: a call that checks a buffer page
+    // by page (a string) or an array element by element stays one range
+    for (uint32_t i = 0; i < task->call_range_count; i++) {
+        vmm_range_t *r = &task->call_ranges[i];
+        if (start <= r->end && end >= r->start) {
+            if (start < r->start) r->start = start;
+            if (end > r->end) r->end = end;
+            return;
+        }
+    }
+    if (task->call_range_count == TASK_CALL_RANGES) {
+        task->call_ranges_full = true;    // Not recorded: nothing may be swapped out until the call returns
+        return;
+    }
+    task->call_ranges[task->call_range_count++] = (vmm_range_t){ start, end };
+}
+
+void process_call_ranges_reset(task_t *task) {
+    if (!task) return;
+    task->call_range_count = 0;
+    task->call_ranges_full = false;
 }
 
 bool process_grow_stack(uint64_t addr) {
