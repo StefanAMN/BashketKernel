@@ -221,7 +221,8 @@ effective user ids, `umask`, `su` and `passwd`, salted PBKDF2 password
 hashes (checked against Python's implementation: `tools/mkpasswd.py` makes
 the lines `/bin/login` accepts), and owners for shared memory segments.
 
-Not done: set-gid and sticky bits. (Supplementary groups came with L4,
+Not done: set-gid and sticky bits (done in M1, except set-gid on a
+directory). (Supplementary groups came with L4,
 search permission on directories with smaller repair 11.) Owners for files on `/disk` wait for a filesystem
 that can store them (C2), and a password changed with `passwd` is lost at
 reboot for the same reason: `/etc` is in the initrd. (The password part no
@@ -367,10 +368,10 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   on can be the one it has just pushed out, so the fault handler reads the
   faulting page back whatever kind of fault it was; and a process with
   nothing it may give up (a fresh fork child: every page still shared)
-  must not search its whole address space at every fault. Known limits:
-  a fork child cannot free memory until it has pages of its own, and a
-  system call that needs a swapped page when no frame is free fails rather
-  than making room. (Testing this showed that a dead process kept its
+  must not search its whole address space at every fault. Known limit:
+  a fork child cannot free memory until it has pages of its own. (A
+  system call that needed a swapped page when no frame was free used to
+  fail rather than make room; M3 lifted that. Testing this showed that a dead process kept its
   memory until its parent collected it; it now gives it back as it dies.)
   The design, decided before the code:
   - *Where:* a disk of its own carrying the Linux swap signature (made on
@@ -914,9 +915,9 @@ counted (as J1's test does); the unit tests otherwise unchanged.
 ### K2. `if`, `while` and `for` in the shell (M) — done
 
 Done as proposed, with `elif` and `break N` / `continue N`; a text is now
-parsed into a tree before it runs (`until` followed). Not done: `case`, functions,
-`${NAME}`, redirections after `fi` / `done`, and `for NAME in` split over
-lines. Ctrl-C stops a loop only by killing the command it is running.
+parsed into a tree before it runs (`until` followed; `case`, functions
+and `${NAME}` came with M2). Not done: redirections after `fi` / `done` / `}`,
+and `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
 The tests found `for 1 in a` accepted. The proposal:
 
 `if LIST; then LIST; [else LIST;] fi`, `while LIST; do LIST; done` and
@@ -1058,6 +1059,148 @@ answering (QEMU always answers); the decision to enter them is in the
 
 ---
 
+## Track M — Shared directories, a fuller shell, memory under pressure
+
+### M1. The sticky bit and set-gid (S) — done
+
+`/tmp` is writable by everyone, so anyone can delete or rename anyone
+else's file in it. With the sticky bit (01000) on a directory, removing
+or renaming an entry needs the caller to own the entry or the directory
+(or be root). `/tmp` is made 1777. Set-gid (02000) on an executable runs
+it with the file's group as the effective group, as set-uid does for the
+user (the bit is dropped by the same writes and owner changes); set-gid
+on directories (new files inherit the group) is left out and said so.
+`ls -l` and `stat` show `t` and `s`; `chmod` accepts the four-digit
+modes. **Check:** unit tests for the rule; syscheck as bob against
+alice's file in `/tmp` (unlink, rename over it, rename it away: refused;
+his own: allowed); `make test-login` runs a set-gid program.
+
+Done as written. Until now every directory behaved as if sticky (removing
+always needed ownership of the entry or the directory); the rule now
+follows the bit, so a directory writable by all and not sticky lets anyone
+remove from it, as in Unix. A process gained a real group beside its
+effective one: `getgid` returns the real group, the new `getegid` (322)
+the effective one, and `setgid` mirrors `setuid` (root sets both; anyone
+else may only go back to the real group). `chmod` by a non-root owner
+leaves the set-gid bit off a file whose group the owner is not in;
+`chown` by root takes set-gid away when the group changes and set-uid
+when the owner does. `/proc/<pid>/status` shows `Rgid`. `/srv/staff-id`
+on the system disk is a set-gid copy of `id` for `make test-login`.
+Sabotage, one at a time: ignoring the sticky bit in `auth_may_remove`
+failed `permission_rules` and syscheck (eight checks, old and new);
+ignoring set-gid at `execve` failed syscheck's set-gid program check and
+`make test-login`.
+
+### M2. `case`, functions and `${NAME}` in the shell (M) — done
+
+Done as written, and `{ LIST; }` groups came with the function bodies.
+`;;` is a segment of its own when a text is cut up; a case's patterns are
+kept as written and expanded when it runs, a quoted `*`, `?` or `[`
+going to the matcher in brackets (`[*]`), which needed no change to the
+matcher beyond a variant without the hidden-name rule
+(`glob_match_text`: `*` matches `.x` in a case). A function keeps a copy
+of its tree, and each call runs a copy of that (a body may redefine the
+function it is running). A call is run by the shell itself when it is a
+command of its own, else by the child that a pipeline or a redirection
+makes; `break` inside a function does not reach the caller's loops.
+`"$@"` and `$@` both give one word per argument (an empty argument is
+dropped, unlike POSIX). The depth limit (64 calls) abandons the whole
+command text. Sabotage, one at a time: quoted pattern characters left as
+wildcards failed two checks; a call not putting back its caller's
+arguments failed one.
+
+`case WORD in PATTERN|PATTERN) LIST;; ... esac` with the wildcard
+matcher from `user/lib/glob.c`; functions (`name() { LIST; }`), called
+like programs, with `$1`..`$9`, `$#`, `$@` inside, and `return [N]`;
+`${NAME}` so that a name can be followed by letters. Functions live in
+the shell that defined them (not passed to programs) and may call
+themselves, up to a depth limit that fails cleanly. **Check:** syscheck
+(`check_shell_case_functions`), including a recursive function stopped
+by the limit, and `case` patterns with quotes (not wildcards).
+
+### M3. System calls make room instead of failing (S) — done
+
+Decided: record, do not reorder. `process_populate` (which every check
+of a user buffer goes through) records the range in the task before it
+populates it, joined to any range it touches, up to `TASK_CALL_RANGES`
+(8); the system call entry clears the list as a call starts and as it
+returns, and so does a page fault from user mode (the only other place a
+range can be recorded is a signal frame set up on the way out of an
+interrupt, which has been written by then). When a page needs a frame
+and memory is low, or a frame could not be had, the process swaps out
+its own pages through the usual clock, skipping every page of a recorded
+range, and tries again (four times at most, each having freed at least
+one page). "Make room before populating, from pages outside the range
+about to be used" was not enough on its own: a call that checks two
+buffers would lose the first while populating the second, and the kernel
+would then fault on it with the access window open. A call that checks
+more ranges than fit gives nothing up (it fails as before), because an
+unrecorded range could be taken. There is one task per address space (no
+threads), so no other CPU can be using a page that goes; the
+`invlpg` on this CPU is the whole shootdown. A buffer larger than the
+memory the process can free still fails with `EFAULT`: the kernel copies
+from all of it at once.
+
+Check: unit tests `kept_ranges_stay_in_memory` (no page overlapping a
+range goes, partial pages included) and `call_ranges_join_and_fill_up`;
+`swapper` ends with a 4 MiB `read` from `/dev/zero` into pages on the
+disk while about 1 MiB is free, and `make test-swap` checks the line.
+Sabotage: without the room-making in `process_populate` that read
+returned `EFAULT`; with `vmm_swap_pick` ignoring the ranges, the unit
+test failed ten checks while the swapper phase still passed (the clock
+spares the buffer's pages, just read back and so marked accessed, and
+takes others), so only the unit test guards the ranges.
+
+The new phase also exposed a race in the fault path, 1 run of `make
+test-swap` in 5 and once with `SMP=4`: with two swappers running, a
+fault made room at its start, another process took the frames, and the
+faulting process was killed ("out of memory for a promised page", and
+once "could not be read back" in a fork child with no page of its own
+to give). A user-mode fault that finds no frame now makes more room and
+tries again, and when it has nothing to give, waits a tick for others
+(a quarter of a second at most) before giving up (`fault_may_retry` in
+`isr.c`). Afterwards: 8 of 8, and 3 of 3 with `SMP=4`.
+
+The plan as written:
+
+A system call whose buffer is on the swap disk while no frame is free
+fails with `EFAULT` (the known limit in C4): only a user-mode fault may
+swap out, because a page taken while a call holds checked buffers could
+be one of them. A call's buffers are all populated by
+`vmm_user_range_ok` before any is used, so the call can make room
+*before* it populates, from pages outside the ranges it is about to
+use; or populate, and on failure swap out pages outside the current
+range and retry. Decide which, and record why. **Check:** a unit test
+on an address space built for it (no free frames, a buffer swapped out:
+the call succeeds); `swapper` gains a phase that does `read` into
+swapped pages while memory is full; `make test-swap` and
+`make test-lowmem` keep passing.
+
+### M4. `tee`, `xargs`, `seq`, `basename`, `dirname` (S) — done
+
+Done as written, with two choices said in `user/xargs.c`: quotes and
+backslashes in its input are ordinary characters, and empty input runs
+nothing. `xargs` budgets each line against the kernel's own limits (32
+arguments; 4096 bytes of arguments and environment together). Two
+things the work turned up: a static array named `word` assembled, with
+`-masm=intel`, as a reference to the size keyword `WORD`, so the code
+wrote to its own text and faulted (no warning from the compiler or the
+assembler); and the first check of the byte budget passed with the
+environment left out of it, because the test's environment was small
+enough to fit in the slack. It now runs `xargs` with a 1000-byte
+variable, and the same sabotage fails it. Sabotaging `dirname` (keeping
+the slashes between the parts) failed its check too.
+
+The POSIX basic forms: `tee [-a] FILE...`, `xargs [-n N] [COMMAND
+[ARG...]]` (arguments split at blanks and newlines, the command run as
+often as needed so no argument list exceeds the limit),
+`seq [FIRST [STEP]] LAST`, `basename PATH [SUFFIX]`, `dirname PATH`
+(with the edge cases POSIX lists: `/`, `//`, trailing slashes, no slash).
+**Check:** `make test-tools` and syscheck, including `xargs` with more
+input than fits one command line.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1127,6 +1270,8 @@ K1, K2, K3, K4                   done (in parallel)
         |
 L1                               done
 L2, L3, L4, L5                   done (in parallel)
+        |
+M1, M2, M3, M4                   done (in parallel)
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem

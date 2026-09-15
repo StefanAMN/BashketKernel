@@ -1894,6 +1894,83 @@ static void check_supplementary_groups(void) {
     CHECK(unlink("/tmp/staff.txt") == 0 && unlink("/tmp/bobs.txt") == 0);
 }
 
+/* As bob (1001, group 200) in /tmp, which is sticky: alice's file there
+ * cannot be removed or renamed away by him, nor replaced by a rename; his
+ * own can. In /tmp/open, writable by all and not sticky, hers can. */
+static void sticky_checks_as_bob(void) {
+    CHECK(unlink("/tmp/st-alice") == -EACCES);
+    CHECK(rename("/tmp/st-alice", "/tmp/st-moved") == -EACCES);
+    long fd = open("/tmp/st-bob", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(rename("/tmp/st-bob", "/tmp/st-alice") == -EEXIST);     /* Nothing is replaced */
+    CHECK(rename("/tmp/st-bob", "/tmp/st-bob2") == 0);
+    CHECK(unlink("/tmp/st-bob2") == 0);
+    CHECK(unlink("/tmp/open/alice") == 0);                      /* Not sticky: writing there is enough */
+}
+
+/* As bob (1001, group 200): a set-gid program of group 50 runs with 50 as
+ * its effective group and 200 as its real one; bob may go back to 200 but
+ * not take 50; his own file may be made set-gid only for a group he is in,
+ * and writing to it takes the bit away */
+static void setgid_checks_as_bob(void) {
+    static char out[128];
+    CHECK(getgid() == 200 && getegid() == 200);
+    CHECK(run_capture("/tmp/sgid-id", out, sizeof(out)) == 0 && contains(out, "gid 200\n") &&
+          contains(out, "effective gid 50\n"));
+    CHECK(setgid(50) == -EPERM && setgid(200) == 0);
+    long fd = open("/tmp/bob-tool", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(chmod("/tmp/bob-tool", 02755) == 0 && tmp_mode("bob-tool") == 02755);    /* His own group */
+    CHECK(chown("/tmp/bob-tool", KEEP_ID, 50) == -EPERM);
+    fd = open("/tmp/bob-tool", O_WRONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(tmp_mode("bob-tool") == 0755);                          /* Rewritten by him: no longer set-gid */
+    CHECK(chmod("/tmp/sgid-id", 02755) == -EPERM);                /* Not his */
+    CHECK(unlink("/tmp/bob-tool") == 0);
+}
+
+/* As alice (1000, group 100) without group 50: chmod of her file in group
+ * 50 with the set-gid bit keeps the rest and quietly leaves the bit off */
+static void setgid_checks_as_alice(void) {
+    CHECK(chmod("/tmp/st-alice", 02750) == 0 && tmp_mode("st-alice") == 0750);
+}
+
+static int sh_capture(const char *command, char *out, size_t size);   /* (Defined with the shell's checks) */
+
+/* The sticky bit (/tmp has it) and set-gid programs */
+static void check_sticky_and_setgid(void) {
+    static char out[512];
+    struct stat st;
+    CHECK(stat("/tmp", &st) == 0 && st.mode == 01777);
+    CHECK(sh_capture("ls -l / | grep ' tmp'", out, sizeof(out)) == 0 && strncmp(out, "drwxrwxrwt", 10) == 0);
+
+    long fd = open("/tmp/st-alice", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && close((int)fd) == 0);
+    CHECK(chown("/tmp/st-alice", 1000, 100) == 0);
+    CHECK(mkdir("/tmp/open") == 0 && chmod("/tmp/open", 0777) == 0);
+    fd = open("/tmp/open/alice", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && close((int)fd) == 0);
+    CHECK(chown("/tmp/open/alice", 1000, 100) == 0);
+    CHECK(as_user_in_group(1001, 200, sticky_checks_as_bob) == 0);
+    CHECK(tmp_mode("st-alice") == 0644);                          /* Still there, untouched */
+
+    /* Root's chown of the group comes first: it would take the bit away */
+    CHECK(copy_file("/bin/id", "/tmp/sgid-id") == 0);
+    CHECK(chown("/tmp/sgid-id", KEEP_ID, 50) == 0 && chmod("/tmp/sgid-id", 02755) == 0);
+    CHECK(tmp_mode("sgid-id") == 02755);
+    CHECK(sh_capture("ls -l /tmp | grep sgid-id", out, sizeof(out)) == 0 && strncmp(out, "-rwxr-sr-x", 10) == 0);
+    CHECK(as_user_in_group(1001, 200, setgid_checks_as_bob) == 0);
+    CHECK(chown("/tmp/st-alice", KEEP_ID, 50) == 0);
+    CHECK(as_user_in_group(1000, 100, setgid_checks_as_alice) == 0);
+    CHECK(chown("/tmp/sgid-id", KEEP_ID, 51) == 0 && tmp_mode("sgid-id") == 0755);   /* A new group did not ask for it */
+
+    CHECK(unlink("/tmp/st-alice") == 0 && unlink("/tmp/sgid-id") == 0);
+    CHECK(unlink("/tmp/open") == 0);
+}
+
 /* Permission bits as alice and bob, and root's freedom from them */
 static void check_users(void) {
     CHECK(getuid() == 0);                               /* The checks themselves run as root */
@@ -2387,6 +2464,62 @@ static void check_shell_variables(void) {
     CHECK(sh_ends("X=1 > /tmp/never", "", 2));
 }
 
+/* The shell's case (patterns, quoted parts literal, | and the optional
+ * '(', empty and last items, over several lines), functions ($#, $1, "$@",
+ * return, run in the shell or in a child, a body that redefines itself,
+ * recursion and its limit, loops that stay the function's own) and ${NAME} */
+static void check_shell_case_functions(void) {
+    CHECK(sh_prints("x=hello; case $x in h*) echo H;; *) echo other;; esac", "H\n"));
+    CHECK(sh_prints("case abc in \"*\") echo quoted;; a*) echo glob;; esac", "glob\n"));
+    CHECK(sh_prints("case '*' in \"*\") echo star;; esac", "star\n"));
+    CHECK(sh_prints("p='a*'; case abc in \"$p\") echo q;; $p) echo u;; esac", "u\n"));
+    CHECK(sh_prints("case .x in *) echo dot;; esac", "dot\n"));                /* Not a file name */
+    CHECK(sh_prints("case z in a|z) echo alt;; esac", "alt\n"));
+    CHECK(sh_prints("case z in (z) echo paren;; esac", "paren\n"));
+    CHECK(sh_prints("false; case q in a) echo no;; esac; echo s=$?", "s=0\n"));
+    CHECK(sh_ends("case a in a) false;; esac", "", 1));
+    CHECK(sh_prints("case a in a) ;; esac; echo empty", "empty\n"));
+    CHECK(sh_prints("case b in\na)\n echo A\n ;;\nb)\n echo B1\n echo B2;;\nesac", "B1\nB2\n"));
+    CHECK(sh_prints("case x\nin x) echo last; esac", "last\n"));                /* No ;; before esac */
+    CHECK(sh_prints("for w in a b c; do case $w in b) continue;; esac; echo $w; done", "a\nc\n"));
+    CHECK(sh_ends("case a in a echo;; esac", "", 2));
+    CHECK(sh_ends("echo a;; echo b", "", 2));
+    CHECK(sh_ends("case a in a) echo x;;", "", 2));                            /* No esac */
+    CHECK(sh_ends("if true; then case a in a) echo x;; fi", "", 2));
+
+    CHECK(sh_prints("f() { echo $# [$1] [$2]; }; f a 'b c'", "2 [a] [b c]\n"));
+    CHECK(sh_prints("f() { return 3; echo never; }; f; echo s=$?", "s=3\n"));
+    CHECK(sh_prints("f() { false; return; }; f; echo s=$?", "s=1\n"));
+    CHECK(sh_prints("g() { for w in \"$@\"; do echo w=$w; done; }; g 1 '2 3'", "w=1\nw=2 3\n"));
+    CHECK(sh_prints("g() { for w in \"$@\"; do echo w=$w; done; echo end; }; g", "end\n"));   /* No words */
+    CHECK(sh_prints("f() {\n  echo multi\n}\nf", "multi\n"));
+    CHECK(sh_prints("f()\n{\n echo brace below\n}\nf", "brace below\n"));
+    CHECK(sh_prints("f() { X=set; }; f; echo $X", "set\n"));                    /* Run by the shell */
+    CHECK(sh_prints("f() { echo piped $1; }; f x | cat", "piped x\n"));         /* By a child */
+    CHECK(sh_prints("f() { echo out; }; f > /tmp/fn; cat /tmp/fn; rm /tmp/fn", "out\n"));
+    CHECK(sh_prints("f() { echo $X; }; X=pre f", "pre\n"));
+    CHECK(sh_prints("f() { echo $1; }; g() { f inner; echo $1; }; g mine", "inner\nmine\n"));
+    CHECK(sh_prints("f() { echo one; }; f() { echo two; }; f", "two\n"));
+    CHECK(sh_prints("f() { f() { echo redefined; }; echo first; }; f; f", "first\nredefined\n"));
+    CHECK(sh_prints("f() { break; }; for i in 1 2; do f; echo $i; done", "1\n2\n"));
+    CHECK(sh_prints("f() { for i in 1 2 3; do if [ $i = 2 ]; then return 7; fi; echo $i; done; echo no; }; f; echo s=$?",
+                    "1\ns=7\n"));
+    CHECK(sh_prints("r() { case $1 in xxx) echo deep $1;; *) r x$1;; esac; }; r ''", "deep xxx\n"));
+    CHECK(sh_ends("inf() { inf; }; inf; echo never", "", 2));                  /* The depth limit */
+    CHECK(sh_prints("sh -c 'inf() { inf; }; inf'; echo survived $?", "survived 2\n"));
+    CHECK(sh_prints("f() { echo fn; }; sh -c f; echo s=$?", "s=127\n"));        /* Programs do not see it */
+    CHECK(sh_ends("return", "", 1));
+    CHECK(sh_ends("f() { return x; }; f", "", 2));
+    CHECK(sh_ends("f() { }", "", 2));
+    CHECK(sh_ends("f() echo", "", 2));
+    CHECK(sh_prints("{ echo g; false; }; echo s=$?", "g\ns=1\n"));
+
+    CHECK(sh_prints("x=ab; echo ${x}c $xc. \"${x}\"", "abc . ab\n"));
+    CHECK(sh_prints("echo $0 $# [$1]", "sh 0 []\n"));
+    CHECK(sh_ends("echo ${x", "", 2));
+    CHECK(sh_ends("echo ${}", "", 2));
+}
+
 /* Make `path` hold `size` bytes of `text`; whether it worked */
 static int put_file(const char *path, const char *text, size_t size) {
     long fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
@@ -2443,6 +2576,60 @@ static void check_line_tools(void) {
     CHECK(sh_capture("uniq -x /tmp/lt", out, sizeof(out)) == 2);
     CHECK(sh_capture("uniq /no/such", out, sizeof(out)) == 1);
     CHECK(unlink("/tmp/lt") == 0);
+}
+
+/* tee, xargs, seq, basename and dirname: their forms, POSIX's edge cases
+ * for the two name tools, and xargs keeping every command line within
+ * what execve takes (32 arguments, 4096 bytes with the environment) */
+static void check_more_tools(void) {
+    static char out[128];
+    CHECK(sh_prints("basename /a/b.c .c; basename a/b/; basename /; basename //; basename ''",
+                    "b\nb\n/\n/\n\n"));
+    CHECK(sh_prints("basename .c .c; basename x/y.c y.c; basename a.c x.c", ".c\ny.c\na.c\n"));  /* Not the whole name */
+    CHECK(sh_prints("dirname /a//b; dirname /a; dirname a; dirname ///; dirname a/b/; dirname ''",
+                    "/a\n/\n.\n/\na\n.\n"));
+    CHECK(sh_ends("basename", "", 2));
+    CHECK(sh_ends("dirname a b", "", 2));
+
+    CHECK(sh_prints("seq 3; seq -1 1; seq 10 -4 1", "1\n2\n3\n-1\n0\n1\n10\n6\n2\n"));
+    CHECK(sh_prints("seq 0; seq 5 1", ""));                               /* Already past the end */
+    CHECK(sh_ends("seq 1 0 5", "", 2));
+    CHECK(sh_ends("seq 1x", "", 2));
+    CHECK(sh_ends("seq", "", 2));
+
+    CHECK(sh_prints("echo hi | tee /tmp/tee1 /tmp/tee2 && cat /tmp/tee1 /tmp/tee2", "hi\nhi\nhi\n"));
+    CHECK(sh_prints("echo more | tee -a /tmp/tee1 > /dev/null; cat /tmp/tee1", "hi\nmore\n"));
+    CHECK(sh_prints("echo x | tee /no/such/f /tmp/tee2 > /dev/null; echo $?; cat /tmp/tee2", "1\nx\n"));
+    CHECK(sh_ends("tee /tmp/tee1 < /bin/sh > /tmp/tee2", "", 0));          /* Many reads' worth */
+    CHECK(same_contents("/bin/sh", "/tmp/tee1") && same_contents("/bin/sh", "/tmp/tee2"));
+    CHECK(unlink("/tmp/tee1") == 0 && unlink("/tmp/tee2") == 0);
+
+    CHECK(sh_prints("seq 5 | xargs; seq 5 | xargs -n 2 echo n", "1 2 3 4 5\nn 1 2\nn 3 4\nn 5\n"));
+    CHECK(put_file("/tmp/xw", "a\tb\n\n  c d", 11));                      /* Blanks of every kind, no final '\n' */
+    CHECK(sh_prints("xargs < /tmp/xw", "a b c d\n"));
+    CHECK(sh_prints("echo | xargs echo never", ""));                       /* No words: nothing run */
+    CHECK(sh_prints("seq 100 | xargs | wc", "4 100 292\n"));               /* 31 words a line at most */
+    CHECK(sh_ends("echo a | xargs nosuch", "", 127));
+    CHECK(sh_ends("seq 3 | xargs false", "", 123));
+    CHECK(sh_ends("seq 3 | xargs -n 0", "", 2));
+
+    /* 40 words of 300 bytes: no line may pass 4096 bytes with the
+     * environment, or execve refuses it (and xargs ends with 126). With a
+     * 1000-byte variable, ten words fit and thirteen would without it. */
+    static char big[40 * 301];
+    for (size_t i = 0; i < sizeof(big); i++) big[i] = (i % 301 == 300) ? '\n' : 'w';
+    CHECK(put_file("/tmp/xw", big, sizeof(big)));
+    CHECK(sh_capture("xargs < /tmp/xw | wc", out, sizeof(out)) == 0 && strlen(out) > 10 &&
+          strcmp(out + strlen(out) - 10, " 40 12040\n") == 0 && out[0] >= '3' && out[0] <= '9');
+    static char value[1000];
+    memset(value, 'e', sizeof(value));
+    CHECK(put_file("/tmp/xe", value, sizeof(value)));
+    CHECK(sh_prints("export E=$(cat /tmp/xe); xargs < /tmp/xw | wc", "4 40 12040\n"));
+    CHECK(unlink("/tmp/xe") == 0);
+    for (size_t i = 4500; i < 9500; i++) big[i] = 'w';                     /* One word of over 5000 bytes */
+    CHECK(put_file("/tmp/xw", big, sizeof(big)));
+    CHECK(sh_capture("xargs < /tmp/xw", out, sizeof(out)) == 1);
+    CHECK(unlink("/tmp/xw") == 0);
 }
 
 /* The shell's if, while and for, break and continue, and test / [ */
@@ -3041,10 +3228,13 @@ int main(void) {
     check_shell_control();
     check_shell_redirects();
     check_shell_variables();
+    check_shell_case_functions();
     check_line_tools();
+    check_more_tools();
     check_proc();
     check_groups_and_setuid();
     check_supplementary_groups();
+    check_sticky_and_setgid();
     check_pipes();
 
     if (failures == 0) {

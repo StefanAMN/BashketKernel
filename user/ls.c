@@ -59,10 +59,14 @@ int main(int argc, char **argv) {
         }
 
         /* rwx for the owner, the group and everyone else ('s' in the
-         * owner's x place: set-uid), then the owner and the group */
+         * owner's x place: set-uid, in the group's: set-gid; 't' in the
+         * last: sticky; upper case when the x under it is not set), then
+         * the owner and the group */
         char perms[10];
         for (int i = 0; i < 9; i++) perms[i] = (entry.mode & (0400u >> i)) ? "rwx"[i % 3] : '-';
         if (entry.mode & 04000) perms[2] = (entry.mode & 0100) ? 's' : 'S';
+        if (entry.mode & 02000) perms[5] = (entry.mode & 0010) ? 's' : 'S';
+        if (entry.mode & 01000) perms[8] = (entry.mode & 0001) ? 't' : 'T';
         perms[9] = '\0';
         /* When it was last written, where the filesystem records that */
         char when[20] = "                ";

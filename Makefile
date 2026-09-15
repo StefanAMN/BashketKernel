@@ -409,6 +409,7 @@ test-login: iso
 		--expect 'old-password[\s\S]*login: incorrect name or password[\s\S]*new-password[\s\S]*uid 1000\ngid 100\n[\s\S]*done-as-alice' \
 		--expect 'uid 1000\ngid 100\ngroups 50\n' --expect 'cat /srv/staff.txt\nnotes for the staff group' \
 		--expect 'uid 1001\ngid 100\n\$$ cat /srv/staff.txt\ncat: /srv/staff.txt: permission denied' \
+		--expect '/srv/staff-id\nuid 1001\ngid 100\neffective gid 50\n' \
 		'!exec /bin/login alice' '~wrong\r' '@wait:1' '!exec /bin/login alice' '~alice\r' \
 		'id' 'date -s "2030-01-01 00:00"' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
 		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' \
@@ -419,7 +420,7 @@ test-login: iso
 		'exec /bin/echo new-password' '!exec /bin/login alice' '~wonderland\r' 'id' 'echo done-as-alice' 'exit' \
 		'exec /bin/id' \
 		'!exec /bin/login alice' '~wonderland\r' 'cat /srv/staff.txt' 'exit' \
-		'!exec /bin/login bob' '~bob\r' 'id' 'cat /srv/staff.txt' 'exit' \
+		'!exec /bin/login bob' '~bob\r' 'id' 'cat /srv/staff.txt' '/srv/staff-id' 'exit' \
 		> $(BUILD)/login.log 2>&1 \
 		&& echo "login, su, passwd and permissions: ok" || { echo "login: FAILED (see $(BUILD)/login.log)"; exit 1; }
 
@@ -537,9 +538,10 @@ test-swap: iso
 	tools/qemu_shell.py --quiet --mem 64M --timeout 300 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
 		--expect 'swap: disk [0-9], 16383 pages' \
 		--expect 'swapper: 80 MiB written and read back; [0-9]{5,} pages went out to disk, [0-9]{5,} came back' \
+		--expect 'swapper: a read\(\) of 4096 kB into swapped-out memory with ([0-9]{1,3}|[0-3][0-9]{3}) kB free' \
 		--expect 'syscheck: all checks passed' \
 		--expect 'SwapFree:   65532 kB' --forbid 'swapper: FAILED|could not be read back|out of memory' \
-		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[^\n]*\n[^\n]*){2}' \
+		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[\s\S]*){2}' \
 		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' '@wait:8' 'exit' \
 		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
 		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
@@ -716,6 +718,21 @@ test-tools: iso
 		'cut -c 1-3 w2 | uniq' 'echo Mixed Case | tr a-z A-Z' 'cat w | tr -d aeiou | head -n 2' \
 		'rm w ; rm w2 ; cd / ; rm /tmp/u' 'exit' > $(BUILD)/line-tools.log 2>&1 \
 		&& echo "line tools (uniq, cut, tr): ok" || { echo "line tools: FAILED (see $(BUILD)/line-tools.log)"; exit 1; }
+	@# tee, xargs, seq, basename and dirname as they are used together:
+	@# a copy kept on the way through a pipe, names fed to a command (wc
+	@# prints no name: "4 4 8" is the file, its empty standard input "0 0 0")
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'seq 4 \| tee s \| xargs -n 2 echo pair\npair 1 2\npair 3 4\n\$$ ' \
+		--expect 'cat s \| xargs\n1 2 3 4\n\$$ ' \
+		--expect 'basename /tmp/v/s.txt .txt ; dirname /tmp/v/s.txt\ns\n/tmp/v\n\$$ ' \
+		--expect 'find /tmp/v -name s \| xargs wc\n4 4 8\n\$$ ' \
+		--expect 'seq 10 -3 1 \| tee -a s > /dev/null ; wc s\n8 8 17\n\$$ ' \
+		--forbid 'not found|usage:' \
+		'exec /bin/sh' 'mkdir /tmp/v ; cd /tmp/v' \
+		'seq 4 | tee s | xargs -n 2 echo pair' 'cat s | xargs' 'basename /tmp/v/s.txt .txt ; dirname /tmp/v/s.txt' \
+		'find /tmp/v -name s | xargs wc' 'seq 10 -3 1 | tee -a s > /dev/null ; wc s' \
+		'rm s ; cd / ; rm /tmp/v' 'exit' > $(BUILD)/more-tools.log 2>&1 \
+		&& echo "more tools (tee, xargs, seq, basename, dirname): ok" || { echo "more tools: FAILED (see $(BUILD)/more-tools.log)"; exit 1; }
 	@# find and du on a tree made for them: sizes in whole KiB, a link back up
 	@# (listed and counted, not followed), filters, and a chain of
 	@# directories deeper than they enter (34 levels; the limit is 32)

@@ -168,9 +168,19 @@ static bool set_raw_entry(uint64_t *pml4, uint64_t virt, uint64_t entry) {
 
 // --- Swapped-out pages -------------------------------------------------------------
 
-// Look in [from, to) for a page that may be swapped out; on finding one,
-// replace its entry. Caller holds vmm_lock.
-static bool swap_scan(uint64_t *pml4, uint64_t from, uint64_t to, uint32_t slot, uint64_t *virt_out, uint64_t *frame_out) {
+// Does the page at `v` overlap any of the `count` ranges in `keep`?
+static bool page_is_kept(uint64_t v, const vmm_range_t *keep, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (v < keep[i].end && v + PAGE_SIZE > keep[i].start) return true;
+    }
+    return false;
+}
+
+// Look in [from, to) for a page that may be swapped out (and is in none of
+// the `keep` ranges); on finding one, replace its entry. Caller holds
+// vmm_lock.
+static bool swap_scan(uint64_t *pml4, uint64_t from, uint64_t to, uint32_t slot, const vmm_range_t *keep,
+                      size_t keep_count, uint64_t *virt_out, uint64_t *frame_out) {
     uint64_t hhdm = pmm_get_hhdm_offset();
     uint64_t v = from & ~(uint64_t)(PAGE_SIZE - 1);
 
@@ -191,7 +201,7 @@ static bool swap_scan(uint64_t *pml4, uint64_t from, uint64_t to, uint32_t slot,
             // Only a page this address space has to itself: shared memory,
             // and frames still shared after a fork, stay
             if ((entry & VMM_PRESENT) && (entry & VMM_USER) && !(entry & VMM_SHARED) &&
-                pmm_get_frame_ref((void *)frame) == 1) {
+                pmm_get_frame_ref((void *)frame) == 1 && !page_is_kept(v, keep, keep_count)) {
                 if (entry & VMM_ACCESSED) {
                     // Used since the hand was last here: a second chance.
                     // (The CPU sets the bit again only if it has to look at
@@ -212,16 +222,17 @@ static bool swap_scan(uint64_t *pml4, uint64_t from, uint64_t to, uint32_t slot,
     return false;
 }
 
-bool vmm_swap_pick(uint64_t *pml4, uint64_t *cursor, uint32_t slot, uint64_t *virt, uint64_t *frame) {
+bool vmm_swap_pick(uint64_t *pml4, uint64_t *cursor, uint32_t slot, const vmm_range_t *keep, size_t keep_count,
+                   uint64_t *virt, uint64_t *frame) {
     if (!pml4 || pml4 == kernel_pml4 || !cursor) return false;
     uint64_t start = *cursor < USER_SPACE_END ? *cursor : 0;
 
     // From the hand to the end, then all the way round, then once more:
     // the first time round may only have cleared accessed bits
     uint64_t irq_flags = spinlock_acquire_irqsave(&vmm_lock);
-    bool found = swap_scan(pml4, start, USER_SPACE_END, slot, virt, frame) ||
-                 swap_scan(pml4, 0, USER_SPACE_END, slot, virt, frame) ||
-                 swap_scan(pml4, 0, USER_SPACE_END, slot, virt, frame);
+    bool found = swap_scan(pml4, start, USER_SPACE_END, slot, keep, keep_count, virt, frame) ||
+                 swap_scan(pml4, 0, USER_SPACE_END, slot, keep, keep_count, virt, frame) ||
+                 swap_scan(pml4, 0, USER_SPACE_END, slot, keep, keep_count, virt, frame);
     if (found) *cursor = *virt + PAGE_SIZE;
     spinlock_release_irqrestore(&vmm_lock, irq_flags);
     return found;

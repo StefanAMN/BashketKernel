@@ -65,6 +65,7 @@
 #define SYS_UTIME     319
 #define SYS_SETGROUPS 320
 #define SYS_GETGROUPS 321
+#define SYS_GETEGID   322
 #define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
@@ -189,7 +190,7 @@ struct pollfd {
 
 struct dirent {
     uint32_t type;      /* DT_FILE, DT_DIR or DT_LNK */
-    uint32_t mode;      /* Permission bits, in octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid */
+    uint32_t mode;      /* Permission bits, in octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid, 02000: set-gid, 01000: sticky */
     uint64_t size;
     uint32_t uid;       /* Owner */
     uint32_t gid;       /* Group */

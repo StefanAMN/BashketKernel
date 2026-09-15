@@ -30,6 +30,9 @@ ln -s alice/notes.txt "$stage/home/alice-notes"
 # supplementary group, bob is not
 mkdir -p "$stage/srv"
 echo "notes for the staff group" > "$stage/srv/staff.txt"
+# A set-gid program of that group: whoever runs it has the group's rights
+# while it runs (id says so: "effective gid 50")
+cp "$stage/bin/id" "$stage/srv/staff-id"
 # Permission bits: what a checkout happens to have (the builder's umask) is
 # not what the system should. Directories 0755, files 0644, programs 0755;
 # then the exceptions.
@@ -39,6 +42,7 @@ chmod 0600 "$stage/etc/passwd"                   # Password hashes: for /bin/log
 chmod 0700 "$stage/root"
 chmod 0600 "$stage/home/alice/diary.txt"         # Something only alice may read (the tests rely on it)
 chmod 0640 "$stage/srv/staff.txt"                # Readable by its group (set below)
+chmod 2755 "$stage/srv/staff-id"                 # Set-gid: runs with its group (set below)
 
 rm -f "$image"
 mke2fs -q -t ext2 -O ^resize_inode,^dir_index,^ext_attr -b 1024 -L system -d "$stage" "$image" "$size"
@@ -59,6 +63,7 @@ mke2fs -q -t ext2 -O ^resize_inode,^dir_index,^ext_attr -b 1024 -L system -d "$s
         done
     done < "$stage/etc/passwd"
     echo "sif \"/srv/staff.txt\" gid 50"
+    echo "sif \"/srv/staff-id\" gid 50"
 } | debugfs -w "$image" -f - >/dev/null 2>&1
 
 e2fsck -fn "$image" >/dev/null 2>&1 || { echo "e2fsck rejects $image" >&2; rm -f "$image"; exit 1; }

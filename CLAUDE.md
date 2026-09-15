@@ -241,6 +241,10 @@ code comments and commit messages; `git log` is the full history.
   the build.** A static variable called `fs` produced "invalid use of
   register" from the assembler, with no hint at the C source. Avoid `fs`,
   `gs`, `cs`, `ax`, `sp`, `cr3` and friends as global or static names.
+  Size keywords are worse: a static array called `word` built without a
+  warning into `lea r12,[rip+0x2]` (the assembler read `WORD`), and the
+  program faulted writing into its own code. Avoid `byte`, `word`,
+  `dword`, `qword`, `ptr` and `offset` too.
 - **Objects do not depend on the compiler flags unless told to.** After
   switching user programs to `-fpie`, the other build tree still held non-PIE
   objects and failed at link time with a confusing relocation error. User

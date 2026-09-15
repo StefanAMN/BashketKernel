@@ -50,9 +50,9 @@
 #define SYS_CHOWN       92   // (path, uid, gid): root only, except an owner moving a file to their own group; 0xFFFFFFFF leaves one as it is
 #define SYS_UMASK       95   // (mask): permission bits removed from files this process creates; returns the previous mask
 #define SYS_GETUID      102  // The real user: who started the process
-#define SYS_GETGID      104
+#define SYS_GETGID      104  // The real group: that of whoever started the process
 #define SYS_SETUID      105  // (uid): root may become anyone; anyone else may only return to their real user
-#define SYS_SETGID      106  // (gid): root only
+#define SYS_SETGID      106  // (gid): root sets real and effective group; anyone else may only return to their real group
 #define SYS_GETEUID     107  // The effective user: whose rights the process has
 #define SYS_SETPGID     109  // (pid, pgid): move a process (0: the caller) into a process group (0: its own)
 #define SYS_GETPPID     110
@@ -100,6 +100,7 @@
 #define SYS_UTIME       319  // (path, seconds): set a file's modification time; UTIME_NOW: now
 #define SYS_SETGROUPS   320  // (count, const uint32_t *list): root only; at most 16; the caller's supplementary groups
 #define SYS_GETGROUPS   321  // (size, uint32_t *list): the caller's supplementary groups; returns how many (size 0: only that)
+#define SYS_GETEGID     322  // The effective group: whose group rights the process has (differs in a set-gid program)
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105
 #define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen

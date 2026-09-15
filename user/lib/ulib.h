@@ -90,13 +90,14 @@ long tcgetpgrp(void); /* The terminal's foreground group (0: none) */
 /* Users and permissions. uid 0 is root and may do anything. */
 long getuid(void);                           /* The real user: who started this process */
 long geteuid(void);                          /* The effective user: whose rights it has (differs in a set-uid program) */
-long getgid(void); /* The group this process runs as */
+long getgid(void);                           /* The real group: that of whoever started it */
+long getegid(void);                          /* The effective group: whose group rights it has (differs in a set-gid program) */
 long setuid(unsigned uid);                   /* Root may become anyone; anyone else may only go back to their real user */
 long setgid(unsigned gid);                   /* Root only */
 long setgroups(unsigned long count, const unsigned *groups); /* Root only: also be in these groups (at most 16; 0, -EPERM, -EINVAL) */
 long getgroups(unsigned long size, unsigned *groups);        /* The groups set by setgroups: how many (size 0: only count them), -EINVAL if more than size */
 long umask(unsigned mask);                   /* Bits removed from the mode of files this process creates; returns the old mask */
-long chmod(const char *path, unsigned mode); /* Octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid */
+long chmod(const char *path, unsigned mode); /* Octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid, 02000: set-gid, 01000: sticky */
 long chown(const char *path, unsigned uid, unsigned gid); /* Root only (an owner may set their own group); KEEP_ID leaves one as it is */
 #define KEEP_ID 0xFFFFFFFFu
 

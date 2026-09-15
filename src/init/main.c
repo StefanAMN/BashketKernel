@@ -313,9 +313,10 @@ static void boot_continue(void) {
 
     // Phase 17: Real-Time Clock & CMOS Driver
 
-    // /tmp: the one place every user may create files (and remove their own)
+    // /tmp: the one place every user may create files; sticky, so that each
+    // may remove only their own (auth_may_remove)
     vnode_t *tmp_dir = NULL;
-    if (vfs_mount_dir(vfs_get_root(), "tmp", &tmp_dir) == 0) tmp_dir->mode = 0777;
+    if (vfs_mount_dir(vfs_get_root(), "tmp", &tmp_dir) == 0) tmp_dir->mode = 01777;
 
     // Phase 24: Pseudo-Filesystem ProcFS
     procfs_init();
