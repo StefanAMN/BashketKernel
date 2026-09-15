@@ -1201,6 +1201,52 @@ input than fits one command line.
 
 ---
 
+## Track N — Interrupts of their own, and looking inside a process
+
+### N1. Redirections and pipes after compound commands (S)
+
+`for f in *; do cat $f; done > all` and `if ...; fi | wc` are refused:
+a compound command cannot take a redirection or join a pipeline (K2's
+"Not done"). A compound command followed by redirections or `|` runs in
+a child of the shell (as a function call in a pipeline already does), so
+its redirections apply to everything inside; one without stays in the
+shell. **Check:** syscheck: each compound kind redirected, piped from and
+into, `2>&1` after `done`, and that a variable set inside a piped loop
+does not reach the shell (it ran in a child).
+
+### N2. `/proc/<pid>/maps` and `/proc/<pid>/fd` (S)
+
+What a process has mapped (start, end, permissions, kind: program,
+heap, stack, anonymous, file with its name, shared memory) and what its
+descriptors refer to (`/proc/<pid>/fd` lists numbers; reading
+`/proc/<pid>/fd/N` gives a description such as `pipe`, `socket`,
+`/tmp/x`). Readable by the process's owner and root only (they show
+file names). **Check:** unit tests for the text; syscheck reads its own
+maps after an `mmap` and a file mapping, and its fd list after `pipe`
+and `open`; bob cannot read root's.
+
+### N3. MSI-X for virtio devices (M)
+
+Both virtio devices share one PCI interrupt line with each other (the
+lesson in CLAUDE.md); with MSI-X each queue gets a vector of its own,
+delivered to a chosen CPU's local APIC without the I/O APIC. Use it when
+the modern interface offers the capability, keep the shared line
+otherwise, and assert in the boot log which one is in use (the
+lesson about fallbacks). Spread the vectors over CPUs. **Check:**
+`make test-disk`, `make test-net` and `make test-smp` with both
+`VIRTIO=modern` (MSI-X) and `VIRTIO=legacy` (the line); `/proc/interrupts`
+(or `/proc/timers`'s neighbour) shows counts per vector and CPU; QEMU's
+`info pci` / `info irq` confirm the line is no longer used.
+
+### N4. `/etc/hosts` (S)
+
+Names are only resolved by DNS. Look in `/etc/hosts` first (address,
+then names, `#` comments), so `ping gateway` works with no DNS server.
+**Check:** syscheck (a name in the file, an alias, a comment, a line too
+long, a name that falls through to DNS), and `make test-net`.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1272,12 +1318,13 @@ L1                               done
 L2, L3, L4, L5                   done (in parallel)
         |
 M1, M2, M3, M4                   done (in parallel)
+        |
+N1, N2, N3, N4                   in parallel
 ```
 
-If only one thing is done next, it should be **Track A**: every subsystem
-added while "interrupts off" is the only lock makes the eventual SMP audit
-longer, and it is the one item that changes how all later code must be
-written.
+(Track A, once the recommended first step because everything built on
+"interrupts off" as the only lock would have had to be audited again, is
+done; the order above is now history plus what is next.)
 
 ## What "done" means for any item here
 
