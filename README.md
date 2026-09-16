@@ -36,7 +36,7 @@ that gap.
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
 | 20 | ANSI colors | stub | A lookup from color code to RGB. No escape-sequence parser. |
 | 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |
-| 22 | Priority scheduling | stub | Priorities are stored; the scheduler ignores them. |
+| 22 | Priority scheduling | real | Round robin with weighted time slices: high, normal and low priority tasks run for 4, 2 and 1 ticks per turn, so priority sets the CPU share and nothing is starved. Per-task CPU ticks are in `/proc/tasks`. |
 | 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
 | 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks` and `cpuinfo` are generated from live kernel state on every read. |
 | 25 | TTY | stub | A ring buffer. No line discipline. |

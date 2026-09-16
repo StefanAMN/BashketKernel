@@ -1,6 +1,11 @@
 /**
  * @file priority.h
- * @brief Priority-Based Multilevel Scheduler Interface
+ * @brief Task priorities
+ *
+ * The scheduler is round robin with weighted time slices: each runnable task
+ * runs in turn, and its priority decides for how many timer ticks before it
+ * is preempted. A high-priority task therefore gets a larger share of the
+ * CPU, but a low-priority one is never starved.
  */
 
 #ifndef PRIORITY_H
@@ -9,22 +14,17 @@
 #include <stdint.h>
 #include "task.h"
 
-#define PRIO_HIGH   0
-#define PRIO_NORMAL 1
-#define PRIO_LOW    2
-
 /**
- * @brief Set execution priority level for a task.
- * @param task Target task control block.
- * @param priority Priority level (PRIO_HIGH, PRIO_NORMAL, PRIO_LOW).
+ * @brief Set a task's priority. Values above PRIO_LOW are treated as PRIO_LOW.
+ *        Takes effect from its next turn.
  */
 void task_set_priority(task_t *task, uint8_t priority);
 
-/**
- * @brief Get execution priority level of a task.
- * @param task Target task control block.
- * @return Priority level value.
- */
 uint8_t task_get_priority(const task_t *task);
+
+/**
+ * @brief Time slice, in timer ticks, for a priority.
+ */
+uint8_t priority_time_slice(uint8_t priority);
 
 #endif // PRIORITY_H

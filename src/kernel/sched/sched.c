@@ -14,6 +14,7 @@
 #include "gdt.h"
 #include "file.h"
 #include "fpu.h"
+#include "priority.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 
@@ -54,6 +55,8 @@ void sched_init(void) {
     main_task->state = TASK_RUNNING;
     main_task->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys();
     main_task->detached = true;
+    main_task->priority = PRIO_NORMAL;
+    main_task->slice_left = priority_time_slice(PRIO_NORMAL);
     main_task->next = NULL;
 
     main_task->pid = next_pid++;
@@ -90,6 +93,7 @@ task_t *task_alloc(const char *name, void (*entry)(void)) {
     t->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys(); // Kernel threads share the kernel address space
     t->detached = true;
     t->parent_pid = current_task ? current_task->pid : 0;
+    t->priority = current_task ? current_task->priority : PRIO_NORMAL; // Inherited
 
     // Assign the PID now so the creator can use it before the task ever runs
     uint64_t flags = irq_save();
@@ -194,6 +198,7 @@ void sched_yield(void) {
         old_task->state = TASK_READY;
     }
     next_task->state = TASK_RUNNING;
+    next_task->slice_left = priority_time_slice(next_task->priority); // A fresh turn
     current_task = next_task;
 
     // Point the CPU at the incoming task's kernel stack for the next entry
@@ -377,9 +382,17 @@ size_t sched_reap(void) {
 }
 
 void sched_tick(void) {
-    if (scheduler_active) {
-        sched_yield();
+    if (!scheduler_active || !current_task) return;
+
+    current_task->cpu_ticks++;
+
+    // Preempt only when the running task has used up its turn. A task that
+    // is no longer runnable (it is on its way to sleep) gives way at once.
+    if (current_task->state == TASK_RUNNING && current_task->slice_left > 1) {
+        current_task->slice_left--;
+        return;
     }
+    sched_yield();
 }
 
 void task_exit(void) {
