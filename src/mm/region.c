@@ -134,8 +134,12 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
         uncharge(task, untouched_pages(task, cut_start, cut_end)); // The frames are freed below
 
         if (cut_start == r->start && cut_end == r->end) {
-            pin(r->node, -1);
+            // The entry goes before the file's pin: /proc/<pid>/maps reads
+            // the entries of other processes under the tree lock, and must
+            // never find one naming a file that could already be gone
+            struct vnode *node = r->node;
             memset(r, 0, sizeof(*r));
+            pin(node, -1);
         } else if (cut_start == r->start) {
             r->file_offset += cut_end - r->start;                   // The front goes
             r->start = cut_end;
@@ -229,9 +233,13 @@ void region_fork(struct task *child, const struct task *parent) {
 }
 
 void region_release_all(struct task *task) {
+    // Each entry is cleared before its file is unpinned (see region_unmap)
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        if (task->regions[i].end != 0) pin(task->regions[i].node, -1);
+        mem_region_t *r = &task->regions[i];
+        if (r->end == 0) continue;
+        struct vnode *node = r->node;
+        memset(r, 0, sizeof(*r));
+        pin(node, -1);
     }
-    memset(task->regions, 0, sizeof(task->regions));
     uncharge(task, task->promised_pages);
 }

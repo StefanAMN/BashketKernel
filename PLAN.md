@@ -1214,7 +1214,24 @@ shell. **Check:** syscheck: each compound kind redirected, piped from and
 into, `2>&1` after `done`, and that a variable set inside a piped loop
 does not reach the shell (it ran in a child).
 
-### N2. `/proc/<pid>/maps` and `/proc/<pid>/fd` (S)
+### N2. `/proc/<pid>/maps` and `/proc/<pid>/fd` (S) — done
+
+Done, except shared memory in `maps`: `MAP_SHARED` and `shmat` map
+frames straight into the page tables and the process keeps no record
+of them, so `maps` shows the program (its segments, which the loader
+now reports), the heap, the stack's 8 MiB and the `mmap` regions. Two
+races had to be closed for reading another process's tables. A region
+was unpinned before its entry was cleared, so a reader could find a
+pointer to a file already removed; the entry now goes first, and the
+reader holds the tree lock. A descriptor slot could be emptied and its
+file freed while being described; slots are now emptied under a lock
+(`fd_slot_set`), under which the reader takes its own reference
+(`fd_slot_dup`). Sabotage: `fd_slot_dup` without the reference
+crashed the kernel in `vfs_path_of` during syscheck (a freed file);
+`maps` readable by everyone failed syscheck's check as bob. The first
+version of the test checked that a closed descriptor left the listing,
+and failed: opening the directory to list it takes the lowest free
+descriptor, the one just closed.
 
 What a process has mapped (start, end, permissions, kind: program,
 heap, stack, anonymous, file with its name, shared memory) and what its

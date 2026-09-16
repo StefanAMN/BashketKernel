@@ -228,7 +228,7 @@ static int64_t sys_close(int fd) {
     task_t *task = sched_get_current_task();
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
-    task->fds[fd] = NULL;
+    fd_slot_set(task->fds, fd, NULL);
     task->fd_cloexec &= ~(1u << fd);
     file_close(file);
     return 0;
@@ -248,7 +248,7 @@ static int64_t sys_pipe(uint64_t user_fds, uint64_t flags) {
     int read_fd = fd_install(task->fds, reader);
     int write_fd = (read_fd >= 0) ? fd_install(task->fds, writer) : -EMFILE;
     if (write_fd < 0) {
-        if (read_fd >= 0) task->fds[read_fd] = NULL;
+        if (read_fd >= 0) fd_slot_set(task->fds, read_fd, NULL);
         file_close(reader);
         file_close(writer);
         return -EMFILE;
@@ -271,8 +271,7 @@ static int64_t sys_dup2(int old_fd, int new_fd) {
     if (old_fd == new_fd) return new_fd;
 
     task_t *task = sched_get_current_task();
-    file_t *replaced = task->fds[new_fd];
-    task->fds[new_fd] = file_dup(file);
+    file_t *replaced = fd_slot_set(task->fds, new_fd, file_dup(file));
     task->fd_cloexec &= ~(1u << new_fd); // The flag belongs to the descriptor, not the file: a copy starts without it
     file_close(replaced);
     return new_fd;

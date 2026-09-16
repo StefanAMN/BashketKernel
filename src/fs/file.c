@@ -4,6 +4,7 @@
  */
 
 #include "file.h"
+#include "spinlock.h"
 #include "heap.h"
 #include "kstring.h"
 #include "kerrno.h"
@@ -221,10 +222,41 @@ void file_close(file_t *file) {
 
 void file_close_all(file_t *fds[TASK_MAX_FDS]) {
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
-        file_t *file = fds[fd];
-        fds[fd] = NULL; // Clear the slot first: file_close may sleep or wake others
-        file_close(file);
+        // Clear the slot first: file_close may sleep or wake others
+        file_close(fd_slot_set(fds, fd, NULL));
     }
+}
+
+// Held while a descriptor slot is emptied or replaced, and while another
+// process's slot is read and its file given a reference (fd_slot_dup). A
+// file in a slot holds a reference of its own, so under this lock a file
+// seen in a slot cannot reach its last file_close: the slot must be
+// emptied first, and that waits for the lock. (Filling an empty slot needs
+// no lock: the file is complete and counted before it is stored.)
+static spinlock_t fd_slot_lock = SPINLOCK_RANKED("fd-slots", LOCK_RANK_FD_SLOTS);
+
+file_t *fd_slot_set(file_t *fds[TASK_MAX_FDS], int fd, file_t *file) {
+    uint64_t flags = spinlock_acquire_irqsave(&fd_slot_lock);
+    file_t *old = fds[fd];
+    fds[fd] = file;
+    spinlock_release_irqrestore(&fd_slot_lock, flags);
+    return old;
+}
+
+file_t *fd_slot_dup(file_t *fds[TASK_MAX_FDS], int fd) {
+    if (fd < 0 || fd >= TASK_MAX_FDS) return NULL;
+    uint64_t flags = spinlock_acquire_irqsave(&fd_slot_lock);
+    file_t *file = file_dup(fds[fd]);
+    spinlock_release_irqrestore(&fd_slot_lock, flags);
+    return file;
+}
+
+uint32_t fd_slot_mask(file_t *fds[TASK_MAX_FDS]) {
+    uint32_t mask = 0;
+    for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
+        if (__atomic_load_n(&fds[fd], __ATOMIC_RELAXED)) mask |= 1u << fd;
+    }
+    return mask;
 }
 
 int fd_install(file_t *fds[TASK_MAX_FDS], file_t *file) {
