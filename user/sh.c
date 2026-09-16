@@ -29,6 +29,9 @@
  * ends a loop as well as the command it was running. A case runs the list
  * of the first pattern (wildcards as for file names, but "*" also matches
  * ".x") that matches the word; quoted parts of a pattern match themselves.
+ * A compound command may be redirected and piped like a program
+ * ("for ...; done > f 2>&1", "{ a; b; } | sort", "echo x | while ...");
+ * it then runs in a child of the shell, so what it sets stays there.
  *
  * Functions: "NAME() { LIST; }" defines one, and NAME then runs as a
  * command, with its words as $1 .. $9 (${10} on), $# and $@ ("$@" gives
@@ -764,12 +767,9 @@ static void redirect_or_die(const char *path, int flags, int target) {
     close((int)fd);
 }
 
-/* In a child: apply a stage's redirections and run its program. Never
- * returns (exits 127 if the program could not be run). */
-static void exec_stage(stage_t *stage) {
-    ignore_interrupt(0); /* Unlike the shell, the program should die on Ctrl-C */
-    if (script_fd >= 0) close(script_fd); /* The script is the shell's business, not the program's */
-
+/* In a child: apply a stage's redirections, in the order written, or exit
+ * with status 1 (a message printed) if one cannot be done. */
+static void apply_redirects(stage_t *stage) {
     for (int i = 0; i < stage->redirect_count; i++) {
         redirect_t *r = &stage->redirects[i];
         if (r->kind == REDIRECT_IN) {
@@ -783,6 +783,14 @@ static void exec_stage(stage_t *stage) {
             exit(1);
         }
     }
+}
+
+/* In a child: apply a stage's redirections and run its program. Never
+ * returns (exits 127 if the program could not be run). */
+static void exec_stage(stage_t *stage) {
+    ignore_interrupt(0); /* Unlike the shell, the program should die on Ctrl-C */
+    if (script_fd >= 0) close(script_fd); /* The script is the shell's business, not the program's */
+    apply_redirects(stage);
 
     /* NAME=value before the program: in its environment only (the child's
      * copy of it; the shell's is untouched). PATH set so is used below. */
@@ -1040,6 +1048,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  case $x in a*|b) cmd;; *) other;; esac      f() { echo $1 $#; return 2; }; f x\n"
                "  [ -f FILE ], [ $x = y ], [ 3 -lt 4 ], [ ! ... ]   conditions (test); break, continue\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
+               "  for ...; done > f      a whole if/while/for/case/{ } too, or in a pipe (in a child)\n"
                "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
                "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
                "  echo $(date)           the output of a command, in place (up to 4 KiB)\n"
@@ -1077,7 +1086,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
 
 enum { JOIN_ALWAYS, JOIN_IF_OK, JOIN_IF_FAILED };      /* How a command follows the one before */
 enum { PARSE_OK, PARSE_SYNTAX, PARSE_INCOMPLETE };
-enum { NODE_SIMPLE, NODE_IF, NODE_WHILE, NODE_UNTIL, NODE_FOR, NODE_CASE, NODE_GROUP, NODE_FUNCTION };
+enum { NODE_SIMPLE, NODE_IF, NODE_WHILE, NODE_UNTIL, NODE_FOR, NODE_CASE, NODE_GROUP, NODE_FUNCTION, NODE_PIPELINE };
 #define RUN_INCOMPLETE (-1)                             /* run_text: more lines are needed */
 
 typedef struct segment {
@@ -1107,6 +1116,7 @@ struct node {
     cmd_list_t other;         /* if: the else-part (an elif is an else holding one if) */
     case_item_t *items;       /* NODE_CASE: the PATTERN) LIST;; items, in order */
     int item_count;
+    char *redirs;             /* In a NODE_PIPELINE's body: the redirections after a compound command, as written */
 };
 
 static segment_t *segs;       /* The segments being parsed, and where the parser is */
@@ -1116,6 +1126,8 @@ static int pending_break, pending_continue;   /* Loops still to leave, or to con
 static int pending_return;    /* "return" ran: the rest of the function is skipped */
 static int call_depth;        /* Functions being run */
 static int interrupted;       /* A command was ended by Ctrl-C: loops stop */
+static int tail_waiting;      /* A closing keyword had redirections or '|' after it, left in its segment */
+static int pipe_waiting;      /* The command just parsed is followed by '|': the segment holds what comes after */
 
 /* Add a segment: `storage` (malloc'd, now the segment's), whose text
  * starts at `text`, followed by `join`. 0, or -1 (storage freed) if memory
@@ -1203,10 +1215,11 @@ static void free_segments(void) {
     seg_count = seg_pos = 0;
 }
 
-/* The first word of `text` into word[32] (blank-separated; "" if longer) */
+/* The first word of `text` into word[32] (ended by a blank or an operator,
+ * so "done>f" is "done" and ">f"; "" if longer) */
 static void first_word(const char *text, char word[32]) {
     size_t n = 0;
-    while (text[n] && !is_blank(text[n])) n++;
+    while (text[n] && !is_blank(text[n]) && !is_operator(text[n])) n++;
     if (n >= 32) n = 0;
     memcpy(word, text, n);
     word[n] = '\0';
@@ -1221,9 +1234,20 @@ static int is_closing_keyword(const char *word) {
     return 0;
 }
 
+/* Whether `p` starts a redirection: '<', '>', or a digit just before one */
+static int is_redirect_start(const char *p) {
+    return *p == '<' || *p == '>' || (*p >= '0' && *p <= '9' && (p[1] == '<' || p[1] == '>'));
+}
+
+#define KEYWORD_ALONE 1       /* take_keyword: nothing may follow it ("fi x") */
+#define KEYWORD_TAIL  2       /* ... except redirections and '|', left for parse_pipeline */
+
 /* If the current segment starts with keyword `kw`, take the keyword off it
  * (and the segment, if nothing is left) and return 1; else 0. With
- * `alone`, anything after the keyword is a syntax error ("fi x"). */
+ * KEYWORD_ALONE, anything after the keyword is a syntax error ("fi x");
+ * with KEYWORD_TAIL (the keywords that close a compound command) so is
+ * anything but redirections or a '|', which stay in the segment with
+ * tail_waiting set. */
 static int take_keyword(const char *kw, int alone) {
     if (seg_pos >= seg_count) return 0;
     char word[32];
@@ -1231,9 +1255,16 @@ static int take_keyword(const char *kw, int alone) {
     if (strcmp(word, kw) != 0) return 0;
     char *rest = segs[seg_pos].text + strlen(kw);
     while (is_blank(*rest)) rest++;
-    if (*rest == '\0') seg_pos++;
-    else if (alone) parse_state = PARSE_SYNTAX;
-    else segs[seg_pos].text = rest;
+    if (*rest == '\0') {
+        seg_pos++;
+    } else if (alone == KEYWORD_TAIL && (*rest == '|' || is_redirect_start(rest))) {
+        segs[seg_pos].text = rest;
+        tail_waiting = 1;
+    } else if (alone) {
+        parse_state = PARSE_SYNTAX;
+    } else {
+        segs[seg_pos].text = rest;
+    }
     return 1;
 }
 
@@ -1274,6 +1305,7 @@ static void free_list(cmd_list_t *list);
 static void free_node(node_t *node) {
     if (!node) return;
     free(node->text);
+    free(node->redirs);
     free_list(&node->cond);
     free_list(&node->body);
     free_list(&node->other);
@@ -1318,7 +1350,7 @@ static node_t *parse_if(void) {
             if (inner && list_add(&node->other, inner, JOIN_ALWAYS) < 0) { free_node(inner); parse_state = PARSE_SYNTAX; }
         } else {
             if (take_keyword("else", 0)) parse_list(&node->other, 1);
-            expect_keyword("fi", 1);
+            expect_keyword("fi", KEYWORD_TAIL);
         }
     }
     if (parse_state == PARSE_OK && (node->cond.count == 0 || node->body.count == 0)) parse_state = PARSE_SYNTAX;
@@ -1334,7 +1366,7 @@ static node_t *parse_while(int kind) {
     if (!node) return NULL;
     parse_list(&node->cond, 1);
     if (expect_keyword("do", 0)) parse_list(&node->body, 1);
-    expect_keyword("done", 1);
+    expect_keyword("done", KEYWORD_TAIL);
     if (parse_state == PARSE_OK && (node->cond.count == 0 || node->body.count == 0)) parse_state = PARSE_SYNTAX;
     if (parse_state != PARSE_OK) { free_node(node); return NULL; }
     return node;
@@ -1366,7 +1398,7 @@ static node_t *parse_for(void) {
     else parse_state = PARSE_SYNTAX;
     seg_pos++;
     if (expect_keyword("do", 0)) parse_list(&node->body, 1);
-    expect_keyword("done", 1);
+    expect_keyword("done", KEYWORD_TAIL);
     if (parse_state == PARSE_OK && node->body.count == 0) parse_state = PARSE_SYNTAX;
     if (parse_state != PARSE_OK) { free_node(node); return NULL; }
     return node;
@@ -1392,6 +1424,36 @@ static const char *word_end(const char *p) {
         else if (is_blank(*p) || is_operator(*p) || *p == ')') break;
     }
     return quote ? NULL : p;
+}
+
+/* The next '|' in `p` outside quotes and $( ) (a pipe, not "||", which
+ * the segments were already cut at), or NULL */
+static const char *next_pipe(const char *p) {
+    char quote = 0;
+    for (; *p; p++) {
+        if (quote) { if (*p == quote) quote = 0; continue; }
+        if (*p == '"' || *p == '\'') quote = *p;
+        else if (p[0] == '$' && p[1] == '(') { if (!(p = closing_paren(p + 2))) return NULL; }
+        else if (*p == '|') return p;
+    }
+    return NULL;
+}
+
+/* In a simple command's text, the first '|' followed by a compound
+ * command ("echo x | while ..."), or NULL: the text before it is one
+ * command of a pipeline, what follows is parsed as the next */
+static const char *pipe_into_compound(const char *text) {
+    static const char *const starts[] = { "if", "while", "until", "for", "case", "{" };
+    for (const char *bar = next_pipe(text); bar; bar = next_pipe(bar + 1)) {
+        char word[32];
+        const char *after = bar + 1;
+        while (is_blank(*after)) after++;
+        first_word(after, word);
+        for (unsigned i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+            if (strcmp(word, starts[i]) == 0) return bar;
+        }
+    }
+    return NULL;
 }
 
 /* Make the current segment start at `rest` (blanks skipped), or move to
@@ -1468,7 +1530,7 @@ static node_t *parse_case(void) {
     }
     while (parse_state == PARSE_OK) {
         if (seg_pos >= seg_count) { parse_state = PARSE_INCOMPLETE; break; }
-        if (take_keyword("esac", 1)) break;
+        if (take_keyword("esac", KEYWORD_TAIL)) break;
         if (parse_case_item(node) < 0) break;
     }
     if (parse_state != PARSE_OK) { free_node(node); return NULL; }
@@ -1480,7 +1542,7 @@ static node_t *parse_case(void) {
  * set. */
 static int parse_braces(node_t *node) {
     parse_list(&node->body, 1);
-    expect_keyword("}", 1);
+    expect_keyword("}", KEYWORD_TAIL);
     if (parse_state == PARSE_OK && node->body.count == 0) parse_state = PARSE_SYNTAX;
     return parse_state == PARSE_OK ? 0 : -1;
 }
@@ -1513,6 +1575,11 @@ static node_t *parse_function(const char *after) {
     node->name[n] = '\0';
     continue_segment(after);
     if (!expect_keyword("{", 0) || parse_braces(node) < 0) { free_node(node); return NULL; }
+    if (tail_waiting) {                          /* "f() { ...; } > x": not taken */
+        parse_state = PARSE_SYNTAX;
+        free_node(node);
+        return NULL;
+    }
     return node;
 }
 
@@ -1537,12 +1604,75 @@ static node_t *parse_command(void) {
 
     node_t *node = new_node(NODE_SIMPLE);
     if (!node) return NULL;
-    size_t len = strlen(segs[seg_pos].text);
-    node->text = malloc(len + 1);
-    if (!node->text) { free_node(node); parse_state = PARSE_SYNTAX; return NULL; }
-    memcpy(node->text, segs[seg_pos].text, len + 1);
-    seg_pos++;
+    const char *text = segs[seg_pos].text;
+    const char *bar = pipe_into_compound(text);   /* "a | while ...": a alone, the rest after */
+    if (!(node->text = copy_text(text, bar ? (size_t)(bar - text) : strlen(text)))) {
+        free_node(node);
+        parse_state = PARSE_SYNTAX;
+        return NULL;
+    }
+    if (bar) {
+        continue_segment(bar + 1);
+        pipe_waiting = 1;
+    } else {
+        seg_pos++;
+    }
     return node;
+}
+
+/* The redirections and '|' left after a compound command's closing keyword
+ * (tail_waiting): the redirections become `node`'s, as written (they are
+ * expanded when it runs), and a '|' sets pipe_waiting, the segment then
+ * holding what follows it (or the next segment, if the line ends there).
+ * 0, or -1 with parse_state set. */
+static int take_tail(node_t *node) {
+    tail_waiting = 0;
+    const char *text = segs[seg_pos].text;
+    const char *bar = next_pipe(text);
+    size_t n = bar ? (size_t)(bar - text) : strlen(text);
+    while (n > 0 && is_blank(text[n - 1])) n--;
+    if (n > 0 && !(node->redirs = copy_text(text, n))) { parse_state = PARSE_SYNTAX; return -1; }
+    if (bar) {
+        continue_segment(bar + 1);
+        pipe_waiting = 1;
+    } else {
+        seg_pos++;
+    }
+    return 0;
+}
+
+/* A pipeline: commands joined by '|', any of them compound, a compound one
+ * with redirections after its closing keyword. A single command with no
+ * redirections of its own is returned as it is (it runs in the shell);
+ * anything else becomes a NODE_PIPELINE whose body holds the commands,
+ * each run in a child of the shell. The node, or NULL with parse_state set. */
+static node_t *parse_pipeline(void) {
+    tail_waiting = pipe_waiting = 0;
+    node_t *element = parse_command();
+    if (!element) return NULL;
+    if (!tail_waiting && !pipe_waiting) return element;     /* The usual case */
+
+    node_t *pipeline = new_node(NODE_PIPELINE);
+    if (!pipeline) { free_node(element); return NULL; }
+    for (;;) {
+        if (tail_waiting && take_tail(element) < 0) break;
+        if (pipeline->body.count >= MAX_STAGES || list_add(&pipeline->body, element, JOIN_ALWAYS) < 0) {
+            parse_state = PARSE_SYNTAX;
+            break;
+        }
+        element = NULL;
+        if (!pipe_waiting) return pipeline;
+        pipe_waiting = 0;
+        if (seg_pos >= seg_count) { parse_state = PARSE_INCOMPLETE; break; }   /* "done |" at the end */
+        char word[32];
+        first_word(segs[seg_pos].text, word);
+        if (is_closing_keyword(word) || segs[seg_pos].text[0] == '|') { parse_state = PARSE_SYNTAX; break; }
+        if (!(element = parse_command())) break;
+        if (element->kind == NODE_FUNCTION) { parse_state = PARSE_SYNTAX; break; }
+    }
+    free_node(element);
+    free_node(pipeline);
+    return NULL;
 }
 
 /* Commands up to the end of the text or (if `nested`) up to a keyword that
@@ -1561,7 +1691,7 @@ static void parse_list(cmd_list_t *list, int nested) {
             if (!nested || join != JOIN_ALWAYS) parse_state = PARSE_SYNTAX;   /* "fi" alone; "a && then" */
             return;
         }
-        node_t *node = parse_command();
+        node_t *node = parse_pipeline();
         if (!node) return;
         if (list_add(list, node, join) < 0) { free_node(node); parse_state = PARSE_SYNTAX; return; }
         join = segs[seg_pos - 1].join_next;                /* What ended it says how the next follows */
@@ -1640,6 +1770,7 @@ static node_t *copy_node(const node_t *from) {
     node->kind = from->kind;
     memcpy(node->name, from->name, sizeof(node->name));
     if ((from->text && !(node->text = copy_text(from->text, strlen(from->text)))) ||
+        (from->redirs && !(node->redirs = copy_text(from->redirs, strlen(from->redirs)))) ||
         copy_list(&from->cond, &node->cond) < 0 || copy_list(&from->body, &node->body) < 0 ||
         copy_list(&from->other, &node->other) < 0) {
         free_node(node);
@@ -1810,6 +1941,78 @@ static int exec_case(node_t *node, int *should_exit) {
     return 0;
 }
 
+static int exec_node(node_t *node, int *should_exit);
+
+/* In a child running one command of a pipeline: apply the redirections
+ * written after a compound command (`text`, expanded now), or exit with
+ * status 2 if they are not all redirections ("done > f x") and 1 if one
+ * cannot be done. */
+static void redirect_compound(const char *text) {
+    static stage_t stage;
+    memset(&stage, 0, sizeof(stage));
+    size_t used = 0;
+    const char *p = text;
+    for (;;) {
+        while (is_blank(*p)) p++;
+        if (*p == '\0') break;
+        if (!is_redirect_start(p) || parse_redirect(&p, &used, &stage) < 0) {
+            fprintf(2, "sh: syntax error\n");
+            exit(2);
+        }
+    }
+    apply_redirects(&stage);
+}
+
+/* Run a NODE_PIPELINE: each command in a child of the shell (a copy of it:
+ * what a compound command there sets, variables or the directory, stays
+ * in the child), joined by pipes, a compound command's own redirections
+ * applied after the pipe, as for a program. Waited for like any pipeline,
+ * so Ctrl-C and Ctrl-Z reach all of it. Its status: the last command's. */
+static int exec_pipeline(node_t *node) {
+    int count = node->body.count;
+    long pids[MAX_STAGES];
+    int input = -1;
+    for (int i = 0; i < count; i++) {
+        int link[2] = { -1, -1 };
+        if (i + 1 < count && pipe(link) != 0) {
+            fprintf(2, "sh: cannot create pipe\n");
+            count = i;
+            break;
+        }
+        pids[i] = fork();
+        if (pids[i] == 0) {
+            if (interactive) {
+                setpgid(0, i == 0 ? 0 : pids[0]);     /* (As run_pipeline does) */
+                signal(SIGTSTP, SIG_DFL);
+            }
+            interactive = 0;                          /* The child runs commands, not jobs */
+            ignore_interrupt(0);                      /* Ctrl-C ends it with what it runs */
+            if (script_fd >= 0) { close(script_fd); script_fd = -1; }
+            if (input != -1) { dup2(input, 0); close(input); }
+            if (link[1] != -1) { dup2(link[1], 1); close(link[1]); close(link[0]); }
+            node_t *element = node->body.items[i];
+            if (element->redirs) redirect_compound(element->redirs);
+            int should_exit = 0;
+            exit(exec_node(element, &should_exit));
+        }
+        /* (The parent closes its copies of the pipe ends, as run_pipeline) */
+        if (input != -1) close(input);
+        if (link[1] != -1) close(link[1]);
+        input = link[0];
+        if (pids[i] < 0) {
+            fprintf(2, "sh: fork failed: %s\n", strerror(pids[i]));
+            count = i;
+            break;
+        }
+        if (interactive) setpgid(pids[i], pids[0]);
+    }
+    if (input != -1) close(input);
+    if (count == 0) return 1;
+    int alive[MAX_STAGES];
+    for (int i = 0; i < count; i++) alive[i] = 1;
+    return run_in_foreground(pids, alive, count, "(compound command)", NULL);
+}
+
 /* Run one command of the tree; its status. An if whose branches are not
  * taken, a loop that never runs its body, a case that matches nothing and
  * a function definition give 0. */
@@ -1822,6 +2025,11 @@ static int exec_node(node_t *node, int *should_exit) {
     if (node->kind == NODE_CASE) return exec_case(node, should_exit);
     if (node->kind == NODE_GROUP) return exec_list(&node->body, should_exit);
     if (node->kind == NODE_FUNCTION) return define_function(node);
+    if (node->kind == NODE_PIPELINE) {
+        int status = exec_pipeline(node);
+        if (status == 128 + SIGINT) interrupted = 1;        /* As for a simple command */
+        return status;
+    }
     if (node->kind == NODE_IF) {
         int cond = exec_list(&node->cond, should_exit);
         if (*should_exit || interrupted || pending_break || pending_continue || pending_return) return cond;
