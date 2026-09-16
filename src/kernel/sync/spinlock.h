@@ -47,6 +47,7 @@ enum {
     LOCK_RANK_PMM      = 80,
     LOCK_RANK_POLL     = 85, // "Something may be ready": taken by notifiers under any of the above
     LOCK_RANK_SCHED    = 90, // Task list and task states
+    LOCK_RANK_FD_SLOTS = 91, // Emptying a descriptor slot, against /proc reading another process's (under the task list)
     LOCK_RANK_TIME     = 92,
     LOCK_RANK_KPRINTF  = 100, // Output: may be used while holding anything above
     LOCK_RANK_KLOG     = 101,

@@ -70,6 +70,24 @@ typedef struct {
  */
 bool elf_load(uint64_t *pml4, const void *elf_data, size_t size, uint64_t *out_entry, uint64_t *out_image_end);
 
+// One loaded segment as /proc/<pid>/maps shows it: page-aligned, with the
+// PROT_* bits it was mapped with (PROT_READ always)
+typedef struct {
+    uint64_t start, end;
+    int prot;
+} elf_segment_t;
+
+#define ELF_REPORTED_SEGMENTS 4   // How many segments elf_load_segments reports (the first ones)
+
+/**
+ * @brief As elf_load, and also report where the segments went.
+ * @param segments Receives up to ELF_REPORTED_SEGMENTS segments, in the
+ *        order of the program headers.
+ * @param segment_count Receives how many were stored.
+ */
+bool elf_load_segments(uint64_t *pml4, const void *elf_data, size_t size, uint64_t *out_entry,
+                       uint64_t *out_image_end, elf_segment_t *segments, uint32_t *segment_count);
+
 // Position-independent executables are placed at a random page-aligned
 // address in [ELF_PIE_BASE_MIN, ELF_PIE_BASE_MIN + (ELF_PIE_RANDOM_MASK + 1) pages)
 #define ELF_PIE_BASE_MIN    0x100000000ULL   // 4 GiB

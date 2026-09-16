@@ -31,6 +31,8 @@ typedef struct {
     uint64_t entry;
     uint64_t rsp;
     uint64_t image_end;
+    elf_segment_t segments[ELF_REPORTED_SEGMENTS]; // Where the loader put the program
+    uint32_t segment_count;
     uint64_t stack_top;    // Randomised per program
     char name[32];
     bool setuid;          // The file has the set-uid bit...
@@ -190,7 +192,8 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
 
     image->pml4 = vmm_create_address_space();
     bool ok = image->pml4 != NULL &&
-              elf_load(image->pml4, contents, file->size, &image->entry, &image->image_end) &&
+              elf_load_segments(image->pml4, contents, file->size, &image->entry, &image->image_end,
+                                image->segments, &image->segment_count) &&
               build_user_stack(image->pml4, image->stack_top, path, argv, envp, &image->rsp);
     kfree(loaded);
 
@@ -214,6 +217,8 @@ static void apply_image(task_t *task, const user_image_t *image) {
     task->pml4_phys = (uint64_t *)((uint64_t)image->pml4 - pmm_get_hhdm_offset());
     task->user_entry = image->entry;
     task->user_rsp = image->rsp;
+    memcpy(task->image_segments, image->segments, sizeof(task->image_segments));
+    task->image_segment_count = image->segment_count;
     task->brk_start = page_align_up(image->image_end);
     task->brk_end = task->brk_start;
     task->mmap_next = USER_MMAP_BASE + ((uint64_t)(get_random_u32() & 0xFFFFF) << 12); // Up to 4 GiB in
@@ -382,9 +387,7 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     // Descriptors marked close-on-exec belong to the old program only
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
         if (!(self->fd_cloexec & (1u << fd))) continue;
-        file_t *file = self->fds[fd];
-        self->fds[fd] = NULL;
-        file_close(file);
+        file_close(fd_slot_set(self->fds, fd, NULL));
     }
     self->fd_cloexec = 0;
 
@@ -444,6 +447,8 @@ pid_t process_fork(struct registers *regs) {
     child->is_user = true;
     child->detached = false;
     child->pml4_phys = (uint64_t *)((uint64_t)child_pml4 - pmm_get_hhdm_offset());
+    memcpy(child->image_segments, parent->image_segments, sizeof(child->image_segments));
+    child->image_segment_count = parent->image_segment_count;
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
     child->uid = parent->uid;
