@@ -1238,12 +1238,22 @@ lesson about fallbacks). Spread the vectors over CPUs. **Check:**
 (or `/proc/timers`'s neighbour) shows counts per vector and CPU; QEMU's
 `info pci` / `info irq` confirm the line is no longer used.
 
-### N4. `/etc/hosts` (S)
+### N4. `/etc/hosts` (S) — done
 
 Names are only resolved by DNS. Look in `/etc/hosts` first (address,
 then names, `#` comments), so `ping gateway` works with no DNS server.
 **Check:** syscheck (a name in the file, an alias, a comment, a line too
 long, a name that falls through to DNS), and `make test-net`.
+
+Done as written (`hosts_lookup` in `user/lib/ulib.c`, used by
+`resolve()`): the first line naming a name wins, names are compared
+without regard to case as the DNS does, a line that does not start with
+an address or is longer than 255 bytes is skipped whole. The file names
+QEMU's user-mode addresses (`localhost`, `gateway`, `dns`); after `dhcp`
+on another network they no longer apply, and nothing rewrites them.
+Sabotage: `resolve()` skipping the file failed two syscheck checks and
+`make test-net`. A check of `localhost` alone would not have noticed:
+QEMU's DNS forwarder answers that name from the host.
 
 ---
 

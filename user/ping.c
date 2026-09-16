@@ -1,6 +1,8 @@
 /* ping: send echo requests to a machine and report the round-trip times.
  *
- *   ping ADDRESS|NAME [COUNT]      for example: ping 10.0.2.2
+ *   ping ADDRESS|NAME [COUNT]      for example: ping 10.0.2.2, or ping gateway
+ *
+ * A name is looked up in /etc/hosts first, then in the DNS.
  */
 #include "ulib.h"
 

@@ -23,6 +23,9 @@ The same two directions over TCP:
                   /bin/tcpecho runs. Two megabytes sent here must come back
                   unchanged.
 
+  names           ping gateway and host GateWay must find 10.0.2.2 in
+                  /etc/hosts, without asking a DNS server.
+
 Then a second boot, on a network whose addresses are not the ones the kernel
 starts with: /bin/dhcp must obtain an address from QEMU's DHCP server and the
 machine must work with it; /bin/host must get an answer from a DNS server
@@ -329,6 +332,8 @@ def main():
         f'exec /bin/sh -c "cat /bin/sh | nc 10.0.2.2 {tcp_host_port}"',
         "exec /bin/tcpecho 7 1",     # Returns once it has served the host's connection
         "exec /bin/ping 10.0.2.2 1",
+        "exec /bin/ping gateway 1",  # A name from /etc/hosts: no DNS server is asked
+        "exec /bin/host GateWay",    # Names are compared without regard to case
     ]
     tcp_talker.start()
     result = subprocess.run(command, capture_output=True)
@@ -345,8 +350,10 @@ def main():
         problems.append("the guest did not print the host's answer")
     if echoed != messages:
         problems.append(f"the guest echoed {len(echoed)} of {len(messages)} datagrams correctly")
-    if output.count("1 sent, 1 answered") != 2:
+    if output.count("1 sent, 1 answered") != 3:
         problems.append("ping no longer works after the exchanges")
+    if "reply from gateway" not in output or "GateWay has address 10.0.2.2" not in output:
+        problems.append("/etc/hosts: the name gateway was not found there")
 
     tcp_talker.join(timeout=5)
     with open(os.path.join(HERE, "..", "build", "initrd", "bin", "sh"), "rb") as f:

@@ -155,10 +155,17 @@ long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned 
 long ping(uint32_t ip, unsigned long timeout_ms); /* Round-trip time in microseconds, or a negative error */
 long netconfig(struct net_config *get, const struct net_config *set); /* Read the settings, then (root) replace them; either may be NULL */
 
-/* Names (DNS). resolve() takes an address as it is, and asks the configured
- * server about anything else. Returns 0 and the address, -ENOENT if there
- * is no such name, or another negative error. */
+/* Names (DNS). resolve() takes an address as it is, then looks in
+ * /etc/hosts, and asks the configured server about anything else. Returns
+ * 0 and the address, -ENOENT if there is no such name, or another negative
+ * error. */
 long resolve(const char *name, uint32_t *ip);
+/* Look `name` up in a hosts file (lines "ADDRESS NAME [ALIAS...]", '#'
+ * comments, names compared without regard to case; a line that does not
+ * start with an address, or is longer than 255 bytes, is skipped). 0 and
+ * the address of the first line naming it, or -ENOENT (also when the file
+ * cannot be opened). */
+long hosts_lookup(const char *path, const char *name, uint32_t *ip);
 long dns_lookup(uint32_t server, unsigned port, const char *name, uint32_t *ip); /* Ask one server (resolve() asks the configured one) */
 long dns_build_query(uint8_t *buf, size_t size, unsigned id, const char *name);   /* Returns the length */
 long dns_parse_reply(const uint8_t *buf, size_t len, unsigned id, uint32_t *ip); /* The first address in an answer to query `id` */
