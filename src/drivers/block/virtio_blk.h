@@ -83,6 +83,13 @@ uint64_t virtio_blk_requests(unsigned dev);
 uint64_t virtio_blk_interrupts(unsigned dev);
 
 /**
+ * @brief How disk `dev` interrupts: true if by MSI-X, with the vector and
+ *        the CPU it is sent to; false if on its line (*line set to the IRQ).
+ *        Any pointer may be NULL.
+ */
+bool virtio_blk_interrupt_route(unsigned dev, uint8_t *vector, uint32_t *cpu, uint8_t *line);
+
+/**
  * @brief The most requests any disk has had at one time since boot.
  */
 uint32_t virtio_blk_peak_in_flight(void);

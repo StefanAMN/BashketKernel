@@ -42,8 +42,7 @@ uint8_t pci_read8(const pci_device_t *dev, uint8_t offset) {
     return (uint8_t)(pci_read32(dev, offset) >> ((offset & 3) * 8));
 }
 
-// Write the 16 bits at (even) `offset`, keeping the other half of the register
-static void pci_write16(const pci_device_t *dev, uint8_t offset, uint16_t value) {
+void pci_write16(const pci_device_t *dev, uint8_t offset, uint16_t value) {
     // Registers are 32 bits wide: change the wanted half, keep the other
     uint32_t shift = (offset & 2) * 8;
     uint32_t current = pci_read32(dev, offset);
