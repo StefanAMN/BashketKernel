@@ -2872,6 +2872,16 @@ static int has_text(const char *text, const char *part) {
     return 0;
 }
 
+/* /proc/interrupts: a column per CPU, and each disk either on its own
+ * MSI-X vector or on a line (which one is the kernel's choice, checked by
+ * the boot log; here only that the table says one of them) */
+static void check_proc_interrupts(void) {
+    static char text[2048];
+    CHECK(read_small("/proc/interrupts", text, sizeof(text)) > 0);
+    CHECK(has_text(text, "CPU0"));
+    CHECK(has_text(text, "  MSI-X virtio-blk 0\n") || has_text(text, "  line\n"));
+}
+
 /* /proc/<pid>: this process's own status through /proc/self, a child's
  * exact arguments once it has exec'd, ENOENT once it has been reaped */
 static void check_proc(void) {
@@ -3232,6 +3242,7 @@ int main(void) {
     check_line_tools();
     check_more_tools();
     check_proc();
+    check_proc_interrupts();
     check_groups_and_setuid();
     check_supplementary_groups();
     check_sticky_and_setgid();

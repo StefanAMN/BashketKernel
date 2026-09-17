@@ -33,6 +33,7 @@
 #include "klog.h"
 #include "mount.h"
 #include "smp.h"
+#include "interrupts.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -172,6 +173,12 @@ static size_t gen_mounts(char *buf, size_t size) {
     return mount_describe(buf, size);
 }
 
+// /proc/interrupts: interrupts delivered per line or MSI vector and CPU
+// (interrupts_describe)
+static size_t gen_interrupts(char *buf, size_t size) {
+    return interrupts_describe(buf, size);
+}
+
 // One read function and one ops table per file: read_<name> serves
 // gen_<name>'s text, ops_<name> is what the node is created with
 #define PROC_FILE(name) \
@@ -188,6 +195,7 @@ PROC_FILE(meminfo);
 PROC_FILE(tasks);
 PROC_FILE(cpuinfo);
 PROC_FILE(mounts);
+PROC_FILE(interrupts);
 
 // --- /proc/<pid> ----------------------------------------------------------------
 
@@ -418,6 +426,7 @@ void procfs_init(void) {
     vfs_create_device(proc_dir, "cpuinfo", &ops_cpuinfo);
     vfs_create_device(proc_dir, "kmsg", &ops_kmsg);
     vfs_create_device(proc_dir, "mounts", &ops_mounts);
+    vfs_create_device(proc_dir, "interrupts", &ops_interrupts);
 
     // /proc/self, a link whose target is rewritten at each refresh, and the
     // per-task directories that refresh keeps in step (from now on)
