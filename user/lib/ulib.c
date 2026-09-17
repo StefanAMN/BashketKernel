@@ -498,12 +498,83 @@ long dns_lookup(uint32_t server, unsigned port, const char *name, uint32_t *ip) 
     return result;
 }
 
+/* Whether two names are the same, ignoring the case of ASCII letters (as
+ * names in the DNS are compared) */
+static int same_name(const char *a, const char *b) {
+    for (;; a++, b++) {
+        char x = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char y = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (x != y) return 0;
+        if (x == '\0') return 1;
+    }
+}
+
+/* One line of a hosts file (NUL-terminated, without its '\n'): if one of
+ * its names is `name`, store its address in *ip and return 1. A comment
+ * ('#' to the end) is ignored; a line whose first field is not an address
+ * names nothing. */
+static int hosts_line_matches(char *line, const char *name, uint32_t *ip) {
+    char *hash = strchr(line, '#');
+    if (hash) *hash = '\0';
+    uint32_t address = 0;
+    char *c = line;
+    for (int field = 0;; field++) {
+        while (*c == ' ' || *c == '\t' || *c == '\r') c++;
+        if (*c == '\0') return 0;
+        char *start = c;
+        while (*c && *c != ' ' && *c != '\t' && *c != '\r') c++;
+        int last = (*c == '\0');
+        *c = '\0';
+        if (field == 0) {
+            address = parse_ip(start);
+            if (address == 0) return 0;          /* Not an address: the line is ignored */
+        } else if (same_name(start, name)) {
+            *ip = address;
+            return 1;
+        }
+        if (last) return 0;
+        c++;
+    }
+}
+
+long hosts_lookup(const char *path, const char *name, uint32_t *ip) {
+    long fd = open(path, O_RDONLY);
+    if (fd < 0) return -ENOENT;
+    /* Lines are gathered here; one longer than this is skipped whole (no
+     * address and name fit in it that a shorter line could not hold) */
+    char line[256], chunk[256];
+    size_t len = 0;
+    int too_long = 0, found = 0;
+    long n;
+    while (!found && (n = read((int)fd, chunk, sizeof(chunk))) > 0) {
+        for (long i = 0; i < n && !found; i++) {
+            if (chunk[i] == '\n') {
+                line[len] = '\0';
+                if (!too_long) found = hosts_line_matches(line, name, ip);
+                len = 0;
+                too_long = 0;
+            } else if (len < sizeof(line) - 1) {
+                line[len++] = chunk[i];
+            } else {
+                too_long = 1;
+            }
+        }
+    }
+    if (!found && len > 0 && !too_long) {        /* A last line without '\n' */
+        line[len] = '\0';
+        found = hosts_line_matches(line, name, ip);
+    }
+    close((int)fd);
+    return found ? 0 : -ENOENT;
+}
+
 long resolve(const char *name, uint32_t *ip) {
     uint32_t literal = parse_ip(name);
     if (literal != 0) {
         *ip = literal;
         return 0;
     }
+    if (hosts_lookup("/etc/hosts", name, ip) == 0) return 0;
     struct net_config config;
     long err = netconfig(&config, NULL);
     if (err < 0) return err;

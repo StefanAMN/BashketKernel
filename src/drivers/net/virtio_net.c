@@ -79,6 +79,17 @@ static void virtio_net_irq(struct registers *regs) {
     }
 }
 
+// The receive queue's MSI-X handler: frames came in (the vector is the
+// queue's own, so nothing needs asking; with MSI-X the ISR register is
+// not used, virtio 1.2, 4.1.4.5)
+static void virtio_net_msi(void *arg) {
+    (void)arg;
+    random_add_event(rx_count);
+    uint64_t flags = spinlock_acquire_irqsave(&card_lock);
+    sched_wakeup(&rx_queue);
+    spinlock_release_irqrestore(&card_lock, flags);
+}
+
 // Give receive buffer number `buffer` to the card to fill. Caller holds
 // card_lock (or is setting the card up). False if the queue is full.
 static bool post_rx_buffer(unsigned buffer) {
@@ -107,6 +118,16 @@ int virtio_net_init(void) {
     }
     header_size = card.modern ? HEADER_SIZE_MODERN : HEADER_SIZE_LEGACY;
 
+    // Received frames get a vector of their own if the card can send
+    // messages. Sent ones need none: their buffers are collected by the
+    // next send, so the transmit queue raises no interrupt at all.
+    if (virtio_msix_start(&card)) {
+        uint8_t vector = register_msi_handler("virtio-net rx", virtio_net_msi, NULL);
+        if (!vector || !virtio_msix_assign(&card, QUEUE_RX, 0, vector, virtio_msix_next_cpu())) {
+            card.queue_vector[QUEUE_RX] = VIRTIO_MSI_NO_VECTOR;
+        }
+    }
+
     bool ok = virtqueue_setup(&rx_queue, &card, QUEUE_RX) && virtqueue_setup(&tx_queue, &card, QUEUE_TX) &&
               rx_queue.size <= MAX_QUEUE_SIZE && tx_queue.size <= MAX_QUEUE_SIZE;
 
@@ -133,7 +154,7 @@ int virtio_net_init(void) {
     }
 
     uint8_t irq = card.irq;
-    if (irq > 0 && irq < 16) {
+    if (!virtio_msix_finish(&card) && irq > 0 && irq < 16) {
         register_irq_handler(irq, virtio_net_irq);
         ioapic_route_isa_irq(irq);
     }
@@ -145,9 +166,11 @@ int virtio_net_init(void) {
     virtqueue_kick(&rx_queue);
 
     present = true;
-    kprintf("virtio-net: card ready, MAC %02x:%02x:%02x:%02x:%02x:%02x, IRQ %u, %s interface\n",
-            mac_address[0], mac_address[1], mac_address[2], mac_address[3], mac_address[4], mac_address[5], irq,
-            virtio_interface_name(&card));
+    char how[48];
+    virtio_describe_interrupts(&card, how, sizeof(how));
+    kprintf("virtio-net: card ready, MAC %02x:%02x:%02x:%02x:%02x:%02x, %s interface, interrupts: %s\n",
+            mac_address[0], mac_address[1], mac_address[2], mac_address[3], mac_address[4], mac_address[5],
+            virtio_interface_name(&card), how);
     return 0;
 }
 
