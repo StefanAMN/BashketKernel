@@ -1317,6 +1317,60 @@ QEMU's DNS forwarder answers that name from the host.
 
 ---
 
+## Track O — TCP that recovers, programs loaded on demand
+
+### O1. TCP: reassembly and a measured retransmission time (M)
+
+A segment ahead of the expected one is dropped, and after a loss
+everything from it on is sent again; the retransmission time is fixed
+(`src/net/tcp.h`). Keep out-of-order segments (within the receive window,
+bounded memory, overlapping and duplicate segments trimmed) and deliver
+them when the gap fills; measure round trips and compute the timeout as
+RFC 6298 says (SRTT, RTTVAR, Karn's rule, the 1 s floor relaxed to what a
+virtual network needs, said so); fast retransmit on three duplicate
+acknowledgements (RFC 5681 3.2, without the congestion window, which
+stays out and is said so). **Check:** unit tests for the reassembly
+queue (orders, overlaps, a segment beyond the window, memory returned)
+and for the RTO arithmetic against RFC 6298's formulas; the existing
+loss-injection tests with the counters showing fewer retransmissions;
+`tools/test_net.py` against the host's TCP.
+
+### O2. Programs loaded page by page (M)
+
+`execve` copies every loadable segment in whole. Map file-backed
+segments as private file mappings instead (B4's mechanism), so a page of
+code is read when first run; `.bss` and the part of the last page past
+the file's data are zero-filled. Relocations (programs are static PIE)
+touch pages, which is fine: those become private copies. Without a page
+cache, two processes running one program each read their own copy (said
+so). **Check:** unit tests (a program whose untouched pages are never
+read: disk request counter before and after); every scripted target, as
+all programs now load this way; `make test-lowmem`, `make test-swap`,
+`make fuzz`; the loader's existing hostile-ELF tests.
+
+### O3. `$((...))` and `read` in the shell (S)
+
+Arithmetic expansion with `+ - * / %`, comparisons, `&& || !`, parentheses
+and variables, in 64-bit integers, division by zero an error (not a
+crash); `read [-r] NAME...` assigning a line's fields (the last name takes
+the rest), status 1 at end of input. **Check:** syscheck: precedence,
+negative numbers, overflow wrapping as in C (said so), `$((x+1))` with
+unset `x` as 0, errors; `read` from a pipe and a file, in a `while read`
+loop.
+
+### O4. `mkdir -p`, `rmdir`, `rm -r`, and set-gid directories (S)
+
+`mkdir -p` makes missing parents and accepts existing ones; `rmdir`
+removes only empty directories; `rm -r` removes a tree without following
+symbolic links; a directory with the set-gid bit (stored since M1, without
+effect) gives new entries its group, and new subdirectories the bit.
+**Check:** syscheck (a deep `-p`, `rm -r` over a tree with a link to a
+directory outside it, which must survive; set-gid inheritance on memory
+and ext2 directories) and `make test-home` (the group on disk after a
+reboot).
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1390,6 +1444,8 @@ L2, L3, L4, L5                   done (in parallel)
 M1, M2, M3, M4                   done (in parallel)
         |
 N1, N2, N3, N4                   done (in parallel)
+        |
+O1, O2, O3, O4                   in parallel
 ```
 
 (Track A, once the recommended first step because everything built on
