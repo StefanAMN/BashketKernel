@@ -446,6 +446,7 @@ test-home: iso
 		--forbid 'no such|invalid|error' \
 		'!exec /bin/login alice' '~alice\r' 'cd /home/alice' 'echo kept across the reboot > kept.txt' \
 		'chmod 600 kept.txt' 'mkdir projects' 'mv notes.txt projects/notes.txt' 'cat /bin/sh > projects/shell.bin' \
+		'mkdir team' 'chown :50 team' 'chmod 2775 team' 'mkdir -p team/deep/er' 'echo x > team/file' \
 		'echo gone > temp.txt' 'rm temp.txt' 'rm diary.txt' 'echo no > /home/bob/intruder.txt' 'cat /home/bob/hello.txt' \
 		'ln -s projects/notes.txt short-link' 'ln -s /home/alice/projects/./././././././././././././././notes.txt long-link' \
 		'ln projects/notes.txt notes-again' 'cat /bin/sh > cut.bin' 'truncate -s 400000 cut.bin' \
@@ -458,13 +459,16 @@ test-home: iso
 	tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/home-fat.img --root-disk $(BUILD)/root-persist.img $(SHELL_CPU) \
 		--expect '-rw------- +1 +1000 +100 +23 [0-9-]+ [0-9:]+ kept.txt' \
 		--expect 'drwxr-xr-x +2 +1000 +100 +[0-9]+ [0-9-]+ [0-9:]+ projects' \
+		--expect 'drwxrwsr-x +3 +1000 +50 +[0-9]+ [0-9-]+ [0-9:]+ team' \
+		--expect 'drwxr-sr-x +3 +1000 +50 +[0-9]+ [0-9-]+ [0-9:]+ deep\n' \
+		--expect '-rw-r--r-- +1 +1000 +50 +2 [0-9-]+ [0-9:]+ file\n' \
 		--expect '-rw-r--r-- +1 +1001 +100 +9 [0-9-]+ [0-9:]+ second.txt' \
 		--expect 'kept across the reboot\nAlice keeps her notes here' --expect '\n([0-9]+ [0-9]+ [0-9]+)\n\1\n' \
 		--expect 'lrwxrwxrwx +1 +1000 +100 +18 [0-9-]+ [0-9:]+ short-link -> projects/notes.txt' \
 		--expect 'long-link -> /home/alice/projects/\./\./' --expect '(Alice keeps her notes here\.\n){3}' \
 		--forbid 'diary' --forbid 'temp.txt' --forbid 'intruder' \
 		--expect 'cut.bin\n  Type: file  Size: 1000 ' --expect 'kept.txt\n.*\n.*\n  Modified: 2001-09-09 01:46:40' \
-		'exec /bin/ls -l /home/alice' 'exec /bin/ls -l /home/bob' \
+		'exec /bin/ls -l /home/alice' 'exec /bin/ls -l /home/alice/team' 'exec /bin/ls -l /home/bob' \
 		'exec /bin/cat /home/alice/kept.txt /home/alice/projects/notes.txt' \
 		'exec /bin/cat /home/alice/short-link /home/alice/long-link /home/alice/notes-again' \
 		'exec /bin/sh -c "wc /home/alice/projects/shell.bin > /tmp/a"' 'exec /bin/sh -c "wc /bin/sh > /tmp/b"' \
