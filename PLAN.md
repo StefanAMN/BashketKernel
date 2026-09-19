@@ -19,7 +19,12 @@ that file.
 - **Milestone 3:** done. Programs run in ring 3.
 - **Milestone 4:** done. Blocking, copy-on-write fork, exec, wait, kill, file
   descriptors, pipes and a user-space shell all work.
-- **Milestone 5:** not started.
+- **Milestone 5:** pipes, priority scheduling, FPU/SSE, `/dev` and `/proc` are
+  implemented. The rest of the table below is open, and deleting code is a
+  decision left to the project owners.
+- **Added beyond the original plan:** safe-point kill and Ctrl-C, CPU
+  protections (SMEP, UMIP), low-memory and fuzz test targets. See "What is
+  still wrong" at the end for the known gaps.
 
 ## Where things stand
 
@@ -333,18 +338,20 @@ and its README entry. Suggested calls, in the order worth doing:
 
 | Subsystem | Suggestion |
 |---|---|
-| Pipes | Implement: blocking read/write and EOF, on top of Milestone 4 wait queues. |
-| TTY | Implement: a line discipline between the keyboard and `read`. |
-| Priority scheduling | Implement, or delete. The scheduler never reads the priority table today. |
-| FPU/SSE | Implement `fxsave`/`fxrstor` per task before any user program uses floats. |
-| virtio-blk | Implement against a real `-drive if=virtio` disk. A good first real driver. |
-| FAT32 | Implement read-only on top of real virtio-blk. Parse the BPB and follow cluster chains. |
-| SMP | Defer. Needs per-CPU data, `swapgs` and audited locking first. |
+| Pipes | **Done.** Blocking, EOF, EPIPE, behind file descriptors. |
+| Priority scheduling | **Done.** Weighted time slices; nothing starves. |
+| FPU/SSE | **Done.** FXSAVE area per task, switched eagerly. |
+| `/dev`, `/proc` | **Done.** Device nodes with their own read/write; `/proc` generated on read. |
+| TTY | Open. Implement a line discipline between the keyboard and `read` (today each program does its own echo and backspace in `readline`). Delete `src/drivers/tty/tty.c` when it lands. |
+| virtio-blk | Open. Implement against a real `-drive if=virtio` disk. A good first real driver. |
+| FAT32 | Open. Read-only on top of real virtio-blk. Parse the BPB and follow cluster chains. |
+| SMP | Defer. Needs per-CPU data, `swapgs` and real locks: today "interrupts off" is the lock in the scheduler, pipes, semaphores and the wait path. |
 | virtio-net, sockets | Defer or delete. |
 | Swap | Delete until a real block device and page reclaim exist. |
-| Window manager, auth | Delete or leave clearly marked as stubs. |
+| Window manager, auth, mouse, ANSI | Delete or leave clearly marked as stubs. |
 | `boot_loader.c` | Delete. It is a CPUID check, and Limine boots the kernel. |
-| hrtimer | Delete, or rebuild on a calibrated LAPIC timer. |
+| hrtimer | `nanosleep` now blocks properly but has tick resolution. Rebuild on a calibrated LAPIC timer or fold into `sched_sleep_ticks`. |
+| Environment, shared memory, mount table | Each is a global kernel table no process can reach. Make them per-process/system-call features or delete. |
 | Crypto library | Keep in `lib/` as a separate library. Nothing in the kernel calls it and it has not been audited. |
 
 Add QEMU flags to `make run` as the real drivers land, for example
@@ -362,3 +369,34 @@ Milestones 0 to 2 are small. Milestone 3 is the large one and is where the
 project resumes the original roadmap. After Milestone 4 the kernel matches
 phases 1 to 7 of the original roadmap honestly, which that document already calls a
 success.
+
+---
+
+## What is still wrong
+
+Known gaps in the parts that are otherwise real, most important first.
+
+1. **One CPU only, by construction.** Disabling interrupts is used as the
+   lock in many places. Starting a second CPU would break them all.
+2. **No SMAP.** System calls read and write user buffers directly after
+   `vmm_user_range_ok`. Enabling SMAP needs every such access wrapped
+   (`stac`/`clac`) or moved into copy-in/copy-out helpers.
+3. **No permissions.** Any program can delete or overwrite any file, and kill
+   any user process.
+4. **No signal handlers.** A signal can only end a process (or, for Ctrl-C, be
+   ignored). There is no `sigaction`, no `SIGCHLD`, no job control.
+5. **Orphans are not re-parented.** A process whose parent has exited is
+   reaped by the idle loop when it exits; nobody collects its status. A
+   blocked orphan stays until it is killed.
+6. **Memory is committed eagerly.** `mmap`, `brk` and the 128 KiB user stack
+   are backed by frames at once; the stack does not grow. Only `fork` is lazy.
+7. **A killed process can leak a small kernel buffer** if it dies inside a
+   system call that was holding one (`/proc` reads allocate a page).
+8. **The file system is RAM only**, has no hard limit on file size other than
+   free memory, and directory entries are a linked list.
+9. **Timer ticks are lost while `kprintf` scrolls the framebuffer** with
+   interrupts off, so uptime runs slow during heavy output.
+10. **PID 0 runs on the boot stack**, which has no guard page.
+11. **`kmalloc` and `kfree` are O(number of blocks)**; fine for now, slow with
+    thousands of live allocations.
+12. **The GitHub Actions workflow has never been run.**
