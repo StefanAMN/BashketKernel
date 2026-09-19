@@ -16,12 +16,10 @@ int virtio_net_init(void) {
 
     pci_device_t net_dev;
     if (pci_find_device(0x1AF4, 0x1000, &net_dev) || pci_find_device(0x1AF4, 0x1041, &net_dev)) {
-        kprintf("VirtIO-Net: Detected VirtIO Network PCI Device at %02x:%02x.%x\n",
+        kprintf("virtio-net: STUB, PCI device present at %x:%x.%x but no driver talks to it\n",
                 net_dev.bus, net_dev.device, net_dev.function);
     } else {
-        kprintf("VirtIO-Net: Initialized virtual adapter (MAC: %02x:%02x:%02x:%02x:%02x:%02x)\n",
-                mac_address[0], mac_address[1], mac_address[2],
-                mac_address[3], mac_address[4], mac_address[5]);
+        kprintf("virtio-net: STUB, no device present and no driver (the MAC address is a constant)\n");
     }
 
     net_initialized = true;

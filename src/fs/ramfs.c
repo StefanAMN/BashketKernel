@@ -14,6 +14,6 @@ void ramfs_init(void) {
 
     if (tmp_dir) {
         vfs_create_file(tmp_dir, "scratch.txt", "RamFS Scratch Space", 19);
-        kprintf("RamFS Init: Mounted dynamic RAM filesystem at '/tmp'\n");
+        kprintf("ramfs: created /tmp (part of the one in-memory VFS)\n");
     }
 }

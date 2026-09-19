@@ -32,7 +32,7 @@ int fat32_init(void) {
     memset(file_table, 0, sizeof(file_table));
     fat_initialized = true;
 
-    kprintf("FAT32 Init: Storage volume mounted successfully\n");
+    kprintf("fat32: STUB, an in-memory file table; no on-disk format is read\n");
     return 0;
 }
 

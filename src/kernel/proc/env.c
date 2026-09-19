@@ -23,7 +23,7 @@ void env_init(void) {
     env_set("SHELL", "/bin/sh");
     env_set("OS", "BashketOS");
 
-    kprintf("Env Init: Default process environment registered.\n");
+    kprintf("env: one global variable table (not per process)\n");
 }
 
 int env_set(const char *key, const char *val) {

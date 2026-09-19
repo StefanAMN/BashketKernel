@@ -26,7 +26,7 @@ int virtio_blk_init(void) {
     memset(storage_disk, 0, SIMULATED_SECTORS * VIRTIO_BLK_SECTOR_SIZE);
     initialized = true;
 
-    kprintf("VirtIO-Blk Init: Block Storage device ready (%u sectors, %u KB)\n",
+    kprintf("virtio-blk: STUB, a %u-sector RAM buffer (%u KB); no real device is driven\n",
             SIMULATED_SECTORS, (SIMULATED_SECTORS * VIRTIO_BLK_SECTOR_SIZE) / 1024);
 
     return 0;

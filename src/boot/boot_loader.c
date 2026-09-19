@@ -13,7 +13,7 @@ void boot_loader_init(void) {
     boot_info.kernel_entry = 0xFFFFFFFF80000000ULL;
     boot_info.long_mode_active = boot_loader_check_long_mode();
 
-    kprintf("Custom Bootloader Init: Stage 1/2 transition verified (Long Mode Capable: %s)\n",
+    kprintf("boot_loader: STUB, a CPUID long-mode check (%s); Limine booted this kernel\n",
             boot_info.long_mode_active ? "YES" : "NO");
 }
 
