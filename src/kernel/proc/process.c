@@ -131,6 +131,22 @@ static void user_task_start(void) {
     enter_user_mode(self->user_entry, self->user_rsp);
 }
 
+// The stack starts small and grows when the program touches the page below
+// what it has. The page fault handler calls this for "page not present"
+// faults. The lowest page of the region is never mapped: running into it is
+// how unbounded recursion ends (with a fault) instead of reaching other memory.
+bool process_grow_stack(uint64_t addr) {
+    task_t *self = sched_get_current_task();
+    if (!self || !self->is_user) return false;
+    if (addr < USER_STACK_LIMIT + PAGE_SIZE || addr >= USER_STACK_TOP) return false;
+
+    uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
+    uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
+    if (vmm_get_pte(space, page) & VMM_PRESENT) return false; // Some other kind of fault
+
+    return vmm_alloc_user_page(space, page, VMM_WRITABLE | VMM_NO_EXECUTE) != NULL;
+}
+
 pid_t process_spawn(const char *path, char *const argv[]) {
     if (!path) return -1;
 

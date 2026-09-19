@@ -138,7 +138,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 8. Advanced Memory Management (Phase 8)
-**Status: partial.** Slab works; `mmap`/`brk` work per process; `fork` shares pages copy-on-write (`vmm_clone_user_space`, `vmm_handle_cow_fault`).
+**Status: partial.** Slab works; `mmap`/`brk` work per process; `fork` shares pages copy-on-write (`vmm_clone_user_space`, `vmm_handle_cow_fault`). The user stack grows on demand (`process_grow_stack`).
 
 **Goal:** Slab object allocator, Copy-On-Write (COW), Anonymous memory mapping (`mmap`).
 
