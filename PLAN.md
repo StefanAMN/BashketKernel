@@ -1348,7 +1348,7 @@ read: disk request counter before and after); every scripted target, as
 all programs now load this way; `make test-lowmem`, `make test-swap`,
 `make fuzz`; the loader's existing hostile-ELF tests.
 
-### O3. `$((...))` and `read` in the shell (S)
+### O3. `$((...))` and `read` in the shell (S) — done
 
 Arithmetic expansion with `+ - * / %`, comparisons, `&& || !`, parentheses
 and variables, in 64-bit integers, division by zero an error (not a
@@ -1357,6 +1357,22 @@ the rest), status 1 at end of input. **Check:** syscheck: precedence,
 negative numbers, overflow wrapping as in C (said so), `$((x+1))` with
 unset `x` as 0, errors; `read` from a pipe and a file, in a `while read`
 loop.
+
+Done as written (`check_shell_arith_read`), with C's precedence and
+constants (`0x1f`, `010`); a variable must hold a number (blanks and a
+sign allowed) or be empty; `&&` and `||` skip their right side, errors
+in it included (`x != 0 && 10 / x`); overflow wraps, `LONG_MIN / -1`
+too, instead of trapping. Not done: assignments inside (`=`, `+=`,
+`++`), the bit operators, `?:`, and `$(...)` inside `$((...))`. `read`
+takes a byte at a time, so the rest of the input is left for the next
+reader; it runs in the shell itself (it sets the shell's variables),
+its redirections applied there and undone after, and in a child when it
+is part of a pipeline (`echo x | read v` sets nothing, as in other
+Bourne shells). Found on the way: cutting a text into commands counted
+the parentheses of `$(` but not quotes inside it, so `echo "$(echo a)";
+echo b` ran as one command; a `$(...)` is now taken whole. Sabotage:
+`&&` evaluating its right side failed two checks; `read` not giving
+the last name the rest of the line failed five.
 
 ### O4. `mkdir -p`, `rmdir`, `rm -r`, and set-gid directories (S)
 
@@ -1445,7 +1461,7 @@ M1, M2, M3, M4                   done (in parallel)
         |
 N1, N2, N3, N4                   done (in parallel)
         |
-O1, O2, O3, O4                   in parallel
+O1, O2, O3, O4                   in parallel (O3 done)
 ```
 
 (Track A, once the recommended first step because everything built on
