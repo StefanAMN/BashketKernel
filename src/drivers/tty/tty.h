@@ -1,6 +1,17 @@
 /**
  * @file tty.h
- * @brief Virtual Terminal (TTY) Abstraction Interface
+ * @brief The terminal: line discipline between the keyboard and read()
+ *
+ * Programs reading the console do not get raw key presses. The terminal
+ * collects a line, echoing what is typed and applying the editing keys, and
+ * hands it over only when Enter is pressed ("canonical mode" in Unix terms):
+ *
+ *   Backspace   erase the last character
+ *   Ctrl-U      erase the whole line
+ *   Ctrl-D      end of file if the line is empty, otherwise deliver the line
+ *               as it is, without a newline
+ *   Ctrl-C      never reaches here: the input drivers turn it into an
+ *               interrupt for the running programs
  */
 
 #ifndef TTY_H
@@ -8,25 +19,30 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
-/**
- * @brief Initialize Virtual Terminal TTY subsystem.
- */
+#define TTY_LINE_MAX 256 // Longest line, including its newline
+
 void tty_init(void);
 
 /**
- * @brief Write data to TTY output stream.
- * @param str Input string pointer.
- * @param len Byte count to write.
+ * @brief Feed one typed character through the line discipline.
+ * @return true if a line (or end-of-file) is now ready to be read. A
+ *         character typed while a ready line has not been read is dropped.
  */
-void tty_write(const char *str, size_t len);
+bool tty_input(char c);
 
 /**
- * @brief Read data from TTY input queue.
- * @param buf Destination output buffer.
- * @param max_len Maximum bytes to read.
- * @return Number of bytes read.
+ * @brief Read from the terminal. Sleeps until a whole line has been typed,
+ *        then returns up to `count` bytes of it; the rest of the line is
+ *        kept for the next read.
+ * @return Bytes read, or 0 for end-of-file (Ctrl-D on an empty line).
  */
-size_t tty_read(char *buf, size_t max_len);
+int64_t tty_read(char *out, size_t count);
+
+/**
+ * @brief Write to the screen and the serial port.
+ */
+int64_t tty_write(const char *in, size_t count);
 
 #endif // TTY_H

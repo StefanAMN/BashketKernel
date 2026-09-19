@@ -366,7 +366,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 25. Teletype Subsystem (TTY) (Phase 25)
-**Status: stub.** A ring buffer. No line discipline.
+**Status: real.** Console reads go through a line discipline in the kernel: echo, backspace, Ctrl-U, Ctrl-D for end-of-file, and whole lines delivered on Enter. One terminal; no raw mode.
 
 **Goal:** TTY line discipline, raw vs canonical mode, echo control.
 

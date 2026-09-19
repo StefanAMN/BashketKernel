@@ -1,24 +1,79 @@
 #include "test.h"
 #include "tty.h"
-#include "string_util.h"
+#include "kstring.h"
 
-TEST(tty_write_read_test) {
+// Type a string into the terminal, one key at a time
+static bool type(const char *keys) {
+    bool ready = false;
+    while (*keys) ready = tty_input(*keys++);
+    return ready;
+}
+
+TEST(tty_delivers_whole_edited_lines) {
+    char buf[TTY_LINE_MAX + 8];
     tty_init();
 
-    const char *msg = "TTY Test Input";
-    size_t len = strlen(msg);
+    // Nothing is readable until Enter
+    EXPECT_TRUE(!type("helo"));
+    EXPECT_TRUE(!type("\b"));             // Backspace removes the 'o'
+    EXPECT_TRUE(type("lo\n"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 6);
+    EXPECT_EQ(memcmp(buf, "hello\n", 6), 0);
 
-    tty_write(msg, len);
+    // Backspace on an empty line does nothing; DEL works like backspace
+    EXPECT_TRUE(type("\b\bab\x7f" "c\r"));  // Carriage return ends a line too
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 3);
+    EXPECT_EQ(memcmp(buf, "ac\n", 3), 0);
 
-    char rx[64];
-    size_t read_bytes = tty_read(rx, sizeof(rx) - 1);
-    rx[read_bytes] = '\0';
+    // Ctrl-U throws the line away
+    EXPECT_TRUE(type("garbage\x15" "ok\n"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 3);
+    EXPECT_EQ(memcmp(buf, "ok\n", 3), 0);
+}
 
-    EXPECT_TRUE(read_bytes == len);
-    EXPECT_TRUE(strcmp(rx, msg) == 0);
+TEST(tty_short_reads_and_end_of_file) {
+    char buf[16];
+    tty_init();
+
+    // A read smaller than the line gets part of it; the rest waits
+    EXPECT_TRUE(type("abcdef\n"));
+    EXPECT_EQ(tty_read(buf, 4), 4);
+    EXPECT_EQ(memcmp(buf, "abcd", 4), 0);
+    EXPECT_TRUE(type("XYZ"));             // Typed too early: dropped, the line is still pending
+    EXPECT_EQ(tty_read(buf, 16), 3);
+    EXPECT_EQ(memcmp(buf, "ef\n", 3), 0);
+
+    // Ctrl-D on an empty line is end-of-file ...
+    EXPECT_TRUE(type("\x04"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 0);
+
+    // ... and after some text it delivers the text without a newline
+    EXPECT_TRUE(type("part\x04"));
+    EXPECT_EQ(tty_read(buf, sizeof(buf)), 4);
+    EXPECT_EQ(memcmp(buf, "part", 4), 0);
+
+    EXPECT_EQ(tty_read(buf, 0), 0);       // A zero-length read never waits
+}
+
+TEST(tty_line_length_is_bounded) {
+    static char buf[TTY_LINE_MAX + 64];
+    tty_init();
+
+    // Far more characters than a line holds: the extra ones are refused, and
+    // there is still room for the newline that ends the line
+    for (int i = 0; i < TTY_LINE_MAX + 100; i++) EXPECT_TRUE(!tty_input('x'));
+    EXPECT_TRUE(tty_input('\n'));
+
+    int64_t n = tty_read(buf, sizeof(buf));
+    EXPECT_EQ(n, TTY_LINE_MAX);
+    EXPECT_EQ(buf[TTY_LINE_MAX - 2], 'x');
+    EXPECT_EQ(buf[TTY_LINE_MAX - 1], '\n');
+    kprintf("\n");
 }
 
 void test_suite_tty(void) {
-    kprintf("Suite: Phase 25 Virtual Terminal TTY Device\n");
-    RUN_TEST(tty_write_read_test);
+    kprintf("Suite: Terminal Line Discipline\n");
+    RUN_TEST(tty_delivers_whole_edited_lines);
+    RUN_TEST(tty_short_reads_and_end_of_file);
+    RUN_TEST(tty_line_length_is_bounded);
 }
