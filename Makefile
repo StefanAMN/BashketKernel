@@ -119,12 +119,18 @@ run: iso
 run-gdb: iso
 	$(QEMU) $(QEMU_FLAGS) -s -S
 
+# CPU=max runs the test targets on QEMU's fullest CPU model, which has the
+# protections the default model lacks (SMEP, SMAP, UMIP): make test CPU=max
+CPU ?=
+QEMU_CPU = $(if $(CPU),-cpu $(CPU))
+SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU))
+
 # Build the test kernel, boot it headless, and turn its verdict into an exit
 # status. The kernel writes to the isa-debug-exit port when the tests finish;
 # QEMU then exits with (value << 1) | 1, so 0x10 (pass) becomes 33.
 test:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso
-	@timeout 120 $(QEMU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
+	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
 	status=$$?; \
@@ -139,7 +145,7 @@ test:
 # still working; a crash, a hang or a "FAILED" line fails the target.
 test-lowmem: iso
 	@for mode in mem brk fork cow cowsys file; do \
-		tools/qemu_shell.py --quiet --mem 64M --timeout 120 \
+		tools/qemu_shell.py --quiet --mem 64M --timeout 120 $(SHELL_CPU) \
 			--expect "stress $$mode: ok" --forbid FAILED \
 			"exec /bin/stress $$mode" 'exec /bin/hello' > $(BUILD)/lowmem-$$mode.log 2>&1 \
 			&& echo "lowmem $$mode: ok" \
@@ -153,7 +159,7 @@ FUZZ_SEEDS ?= 1 2 3 4 5 6 7 8
 FUZZ_ROUNDS ?= 40
 fuzz: iso
 	@for seed in $(FUZZ_SEEDS); do \
-		tools/qemu_shell.py --quiet --timeout 300 \
+		tools/qemu_shell.py --quiet --timeout 300 $(SHELL_CPU) \
 			--expect 'fuzz: done' --expect 'syscheck: all checks passed' --forbid 'FAILED' \
 			"exec /bin/fuzz $$seed $(FUZZ_ROUNDS)" 'exec /bin/syscheck' > $(BUILD)/fuzz-$$seed.log 2>&1 \
 			&& echo "fuzz seed $$seed: ok ($$(grep -a -o '[0-9]* ended normally.*' $(BUILD)/fuzz-$$seed.log))" \

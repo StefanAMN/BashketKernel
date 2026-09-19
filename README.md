@@ -16,7 +16,7 @@ that gap.
 | Phase | Subsystem | Status | Notes |
 |---|---|---|---|
 | 1 | Boot, console, serial | real | Framebuffer console, COM1 serial, `kprintf`. |
-| 2 | GDT, TSS, IDT, interrupts | real | Double faults run on their own stack (IST1). Kernel code is read-only; NX, WP, and (where the CPU has them) SMEP and UMIP are on. SMAP is not. |
+| 2 | GDT, TSS, IDT, interrupts | real | Double faults run on their own stack (IST1). Kernel code is read-only; NX, WP, and (where the CPU has them) SMEP, SMAP and UMIP are on. QEMU's default CPU has none of the last three: use `CPU=max`. |
 | 3 | PMM, VMM, kernel heap | real | Bitmap frame allocator, 4-level paging, first-fit heap, per-process address spaces. |
 | 4 | Multitasking | real | Preemptive round-robin kernel threads, guarded kernel stacks, zombie reaping. Tasks block (sleep, input, wait, semaphores) instead of polling. 100 Hz PIT tick. |
 | 5 | Userspace and syscalls | real | Programs run in ring 3 with their own address space. `syscall`/`sysret` entry, validated user pointers, hardened ELF64 loader, per-process file descriptors. |
@@ -100,6 +100,8 @@ BashketKernel has a built-in unit test framework (`tests/`). `make test` builds 
 `make test-lowmem` boots the normal kernel with 64 MB of RAM and runs `/bin/stress`, which exhausts memory in different ways (mappings, `brk`, a fork bomb, copy-on-write, a growing file) and checks that the kernel refuses cleanly and keeps working.
 
 `make fuzz` runs `/bin/fuzz`, which makes random system calls with hostile arguments (kernel addresses, pointers at the edge of a mapping, huge lengths, closed descriptors) from ring 3. The kernel must survive every seed and pass `/bin/syscheck` afterwards. Seeds are fixed, so a failure can be reproduced with `make fuzz FUZZ_SEEDS=<n>`.
+
+All three targets accept `CPU=max` (for example `make test CPU=max`) to run on QEMU's fullest CPU model, where SMEP, SMAP and UMIP are active.
 
 ---
 
