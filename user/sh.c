@@ -56,6 +56,13 @@
  * split nor matched against file names: X=$(ls) keeps the newlines, X=*
  * a star. A for loop's variable is the shell's own.
  *
+ * $((EXPRESSION)) is replaced by its value: 64-bit integers with + - * / %,
+ * < <= > >= == !=, && || !, parentheses, and names of variables holding
+ * numbers (unset: 0); see "Arithmetic" below. "read [-r] NAME..." sets
+ * the names from one line of input, split at blanks (the last takes the
+ * rest); its status is 1 at the end of the input, so
+ * "while read line; do ...; done < file" goes through a file.
+ *
  * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
  * empty prompt leaves the shell. At the terminal the line can be edited
  * (the arrow keys, Home, End, Delete, Ctrl-A, -E, -K, -U, -W) and Up and
@@ -423,6 +430,7 @@ static int append_variable(const char **p, char *word, size_t *len, size_t used,
 static int run_line(const char *line, int *should_exit);
 static int is_function(const char *name);
 static int call_function(int argc, char **argv, int *should_exit);
+static int read_builtin(int argc, char **argv);
 
 #define WORD_QUOTED 1         /* next_word: some part was in quotes */
 #define WORD_SPLIT  2         /* next_word: holds FIELD_BREAKs, to be split into words */
@@ -489,6 +497,280 @@ static long substitute(const char *command, char *out, size_t size) {
     return (long)used;
 }
 
+/* --- Arithmetic: $((...)) ---------------------------------------------------
+ *
+ * 64-bit signed integers, with C's operators and precedence for the ones
+ * there are: unary ! - +, then * / %, + -, < <= > >=, == !=, &&, ||, and
+ * parentheses. A name is a variable holding a number (unset or empty: 0);
+ * $NAME, ${NAME}, $?, $# and $1.. work too. Constants are decimal, octal
+ * (a leading 0) or hexadecimal (0x), as in C. Overflow wraps around as
+ * two's complement (unlike C, where it is undefined); division by zero is
+ * an error. && and || do not evaluate their right side when the left
+ * decides, so "x != 0 && 10 / x" is safe. Not done: assignments (=, +=,
+ * ++), the bit operators, ?:, and $(...) inside. */
+
+typedef struct {
+    const char *p;            /* Where the parser is */
+    const char *error;        /* The first error met, or NULL */
+} arith_t;
+
+/* Skip blanks and newlines in the expression */
+static void arith_blanks(arith_t *a) {
+    while (is_blank(*a->p) || *a->p == '\n') a->p++;
+}
+
+/* Read an unsigned integer constant at *p (C's forms: decimal, 0 octal, 0x
+ * hex; 2^63 and above wrap to negative) into *value, and move *p past it.
+ * 0, or -1 if there is none, it has a wrong digit or letters after it, or
+ * it does not fit in 64 bits. */
+static int arith_constant(const char **p, long *value) {
+    const char *c = *p;
+    unsigned long base = 10, v = 0;
+    if (c[0] == '0' && (c[1] == 'x' || c[1] == 'X')) { base = 16; c += 2; }
+    else if (c[0] == '0') base = 8;
+    const char *digits = c;
+    for (;; c++) {
+        unsigned long d;
+        if (*c >= '0' && *c <= '9') d = (unsigned long)(*c - '0');
+        else if (*c >= 'a' && *c <= 'f') d = (unsigned long)(*c - 'a' + 10);
+        else if (*c >= 'A' && *c <= 'F') d = (unsigned long)(*c - 'A' + 10);
+        else break;
+        if (d >= base) return -1;                         /* "08", "1a" */
+        if (v > (~0UL - d) / base) return -1;             /* More than 64 bits */
+        v = v * base + d;
+    }
+    if (c == digits && base != 8) return -1;              /* "0x" alone; nothing */
+    if (is_name_char(*c)) return -1;                      /* "12abc" */
+    *p = c;
+    *value = (long)v;
+    return 0;
+}
+
+/* The number a variable holds, `text` (blanks around it allowed, a sign
+ * before it; empty or NULL is 0); 0 and an error in `a` naming `what` if
+ * it is not a number */
+static long arith_variable(arith_t *a, const char *text, const char *what) {
+    if (!text) return 0;
+    while (is_blank(*text)) text++;
+    if (*text == '\0') return 0;
+    int negative = (*text == '-');
+    if (*text == '-' || *text == '+') text++;
+    long v;
+    if (arith_constant(&text, &v) == 0) {
+        while (is_blank(*text)) text++;
+        if (*text == '\0') return negative ? (long)(0UL - (unsigned long)v) : v;
+    }
+    if (!a->error) {
+        static char message[64];
+        size_t n = strlen(what);
+        if (n > 40) n = 40;
+        memcpy(message, what, n);
+        strcpy(message + n, ": not a number");
+        a->error = message;
+    }
+    return 0;
+}
+
+static long arith_or(arith_t *a, int live);
+
+/* A number, a variable, or ( expression ). With `live` 0 (the side of an
+ * && or || that does not count) nothing is reported. */
+static long arith_primary(arith_t *a, int live) {
+    arith_blanks(a);
+    const char *c = a->p;
+    if (*c == '(') {
+        a->p++;
+        long v = arith_or(a, live);
+        arith_blanks(a);
+        if (*a->p != ')') { if (!a->error) a->error = "')' expected"; return 0; }
+        a->p++;
+        return v;
+    }
+    if (*c >= '0' && *c <= '9') {
+        long v;
+        if (arith_constant(&a->p, &v) < 0) { if (!a->error) a->error = "bad number"; return 0; }
+        return v;
+    }
+    char name[32];
+    size_t n = 0;
+    if (*c == '$') {
+        c++;
+        int braced = (*c == '{');
+        if (braced) c++;
+        long special = -1;
+        if (*c == '?') { special = last_status; c++; }
+        else if (*c == '#') { special = argument_count; c++; }
+        else if (*c >= '0' && *c <= '9') {
+            int index = *c++ - '0';
+            while (braced && *c >= '0' && *c <= '9' && index < 1000) index = index * 10 + (*c++ - '0');
+            const char *text = index >= 1 && index <= argument_count ? arguments[index - 1] : NULL;
+            if (braced && *c++ != '}') { if (!a->error) a->error = "bad ${"; return 0; }
+            a->p = c;
+            return index == 0 || !live ? 0 : arith_variable(a, text, "argument");
+        }
+        if (special >= 0) {
+            if (braced && *c++ != '}') { if (!a->error) a->error = "bad ${"; return 0; }
+            a->p = c;
+            return special;
+        }
+        while (is_name_char(*c) && n < sizeof(name) - 1) name[n++] = *c++;
+        if (n == 0 || (braced && *c++ != '}')) {
+            if (!a->error) a->error = *c == '(' ? "$(...) is not supported inside $((...))" : "bad $";
+            return 0;
+        }
+    } else if (is_name_char(*c)) {
+        while (is_name_char(*c) && n < sizeof(name) - 1) name[n++] = *c++;
+    } else {
+        if (!a->error) a->error = *c ? "a number or a name expected" : "the expression ends too early";
+        return 0;
+    }
+    name[n] = '\0';
+    a->p = c;
+    if (!is_name(name, NULL)) { if (!a->error) a->error = "bad name"; return 0; }
+    return live ? arith_variable(a, get_variable(name), name) : 0;   /* (Not a number: only an error where it counts) */
+}
+
+/* ! - + in front (any number of them) */
+static long arith_unary(arith_t *a, int live) {
+    arith_blanks(a);
+    char op = *a->p;
+    if (op == '!' && a->p[1] != '=') { a->p++; return !arith_unary(a, live); }
+    if (op == '-' || op == '+') {
+        a->p++;
+        unsigned long v = (unsigned long)arith_unary(a, live);
+        return op == '-' ? (long)(0UL - v) : (long)v;
+    }
+    return arith_primary(a, live);
+}
+
+/* * / % (left to right). Division by zero is an error where it counts;
+ * the one quotient that overflows (the most negative number / -1) wraps. */
+static long arith_mul(arith_t *a, int live) {
+    long v = arith_unary(a, live);
+    for (;;) {
+        arith_blanks(a);
+        char op = *a->p;
+        if (op != '*' && op != '/' && op != '%') return v;
+        a->p++;
+        long w = arith_unary(a, live);
+        if (op == '*') {
+            v = (long)((unsigned long)v * (unsigned long)w);
+        } else if (w == 0) {
+            if (live && !a->error) a->error = "division by zero";
+            v = 0;
+        } else if (w == -1) {
+            v = op == '/' ? (long)(0UL - (unsigned long)v) : 0;   /* (No trap for LONG_MIN / -1) */
+        } else {
+            v = op == '/' ? v / w : v % w;
+        }
+    }
+}
+
+/* + - (left to right, wrapping) */
+static long arith_add(arith_t *a, int live) {
+    long v = arith_mul(a, live);
+    for (;;) {
+        arith_blanks(a);
+        char op = *a->p;
+        if (op != '+' && op != '-') return v;
+        a->p++;
+        unsigned long w = (unsigned long)arith_mul(a, live);
+        v = (long)(op == '+' ? (unsigned long)v + w : (unsigned long)v - w);
+    }
+}
+
+/* < <= > >= : 1 or 0 */
+static long arith_compare(arith_t *a, int live) {
+    long v = arith_add(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if (*a->p != '<' && *a->p != '>') return v;
+        int less = (*a->p == '<'), equal = (a->p[1] == '=');
+        a->p += equal ? 2 : 1;
+        long w = arith_add(a, live);
+        v = less ? (equal ? v <= w : v < w) : (equal ? v >= w : v > w);
+    }
+}
+
+/* == != : 1 or 0 */
+static long arith_equal(arith_t *a, int live) {
+    long v = arith_compare(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if (!((a->p[0] == '=' || a->p[0] == '!') && a->p[1] == '=')) return v;
+        int same = (a->p[0] == '=');
+        a->p += 2;
+        long w = arith_compare(a, live);
+        v = same ? v == w : v != w;
+    }
+}
+
+/* && : 1 or 0; the right side counts only if the left is not 0 */
+static long arith_and(arith_t *a, int live) {
+    long v = arith_equal(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if (!(a->p[0] == '&' && a->p[1] == '&')) return v;
+        a->p += 2;
+        long w = arith_equal(a, live && v != 0);
+        v = v != 0 && w != 0;
+    }
+}
+
+/* || : 1 or 0; the right side counts only if the left is 0 */
+static long arith_or(arith_t *a, int live) {
+    long v = arith_and(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if (!(a->p[0] == '|' && a->p[1] == '|')) return v;
+        a->p += 2;
+        long w = arith_and(a, live && v == 0);
+        v = v != 0 || w != 0;
+    }
+}
+
+static int arith_failed;      /* A $((...)) failed and said why: no "syntax error" on top */
+
+/* Evaluate `expr` into *value. 0, or -1 with a message printed (and
+ * arith_failed set). */
+static int arith_eval(const char *expr, long *value) {
+    arith_t a = { expr, NULL };
+    *value = arith_or(&a, 1);
+    arith_blanks(&a);
+    if (!a.error && *a.p) a.error = "unexpected text";
+    if (a.error) {
+        fprintf(2, "sh: $((%s)): %s\n", expr, a.error);
+        arith_failed = 1;
+        return -1;
+    }
+    return 0;
+}
+
+/* The "))" that ends the "$((" just before `p`: the first ')' outside
+ * parentheses opened since, which must be followed by another. NULL if
+ * there is none. */
+static const char *arith_end(const char *p) {
+    int depth = 0;
+    for (; *p; p++) {
+        if (*p == '(') depth++;
+        else if (*p == ')' && depth > 0) depth--;
+        else if (*p == ')') return p[1] == ')' ? p : NULL;
+    }
+    return NULL;
+}
+
+/* `v` in decimal (with a '-' if negative) into text[24] */
+static void long_text(long v, char text[24]) {
+    unsigned long u = v < 0 ? 0UL - (unsigned long)v : (unsigned long)v;
+    char tmp[24];
+    int digits = 0;
+    do { tmp[digits++] = (char)('0' + u % 10); u /= 10; } while (u > 0);
+    int n = 0;
+    if (v < 0) text[n++] = '-';
+    while (digits > 0) text[n++] = tmp[--digits];
+    text[n] = '\0';
+}
+
 /* The next word of the line at *cursor, stored in word_storage from *used
  * on; moves *cursor past it. A word runs to a blank or an operator outside
  * quotes, and may be made of parts: plain text, "double quoted" ($NAME and
@@ -525,6 +807,21 @@ static char *next_word(const char **cursor, size_t *used, int *flags) {
         } else if (quote && c == quote) {
             quote = 0;
             p++;
+        } else if (c == '$' && quote != '\'' && p[1] == '(' && p[2] == '(') {
+            /* $((expression)): its value, one word (a number has no blanks) */
+            const char *end = arith_end(p + 3);
+            char expr[256];
+            if (!end || (size_t)(end - (p + 3)) >= sizeof(expr)) return NULL;
+            memcpy(expr, p + 3, (size_t)(end - (p + 3)));
+            expr[end - (p + 3)] = '\0';
+            p = end + 2;
+            long value;
+            char text[24];
+            if (arith_eval(expr, &value) < 0) return NULL;
+            long_text(value, text);
+            for (const char *t = text; *t; t++) {
+                if (put_char(word, &len, *used, *t, quote != 0) < 0) return NULL;
+            }
         } else if (c == '$' && quote != '\'' && p[1] == '(') {
             const char *end = closing_paren(p + 2);
             char command[256];
@@ -810,6 +1107,9 @@ static void exec_stage(stage_t *stage) {
         interactive = 0;                          /* (The child runs commands, not jobs) */
         exit(call_function(stage->argc, stage->argv, &should_exit));
     }
+    /* read in a pipeline ("echo a | read x"): it reads, and the variables
+     * it sets go with the child, as in other Bourne shells */
+    if (strcmp(stage->argv[0], "read") == 0) exit(read_builtin(stage->argc, stage->argv));
 
     const char *name = stage->argv[0];
     long err = -ENOENT;
@@ -904,6 +1204,132 @@ static int test_builtin(int argc, char **argv);
 static int loop_control(int argc, char **argv);
 static int return_builtin(int argc, char **argv);
 
+#define READ_LINE_MAX (64 * 1024)   /* The longest line read takes */
+
+/* read [-r] NAME...: one line from standard input, split at blanks into
+ * the names (the last takes the rest of the line, its outer blanks
+ * removed; names left over are set empty). Without -r a backslash takes
+ * the next character as it is (not a separator), and one before the end
+ * of the line joins the next line on. The input is read a byte at a time,
+ * so that what follows the line is left for whoever reads next. 0; 1 at
+ * the end of input (the names set to what there was) or if a variable
+ * cannot be set or the line is longer than READ_LINE_MAX; 2 for wrong
+ * arguments. */
+static int read_builtin(int argc, char **argv) {
+    int raw = 0, first = 1;
+    if (first < argc && strcmp(argv[first], "-r") == 0) { raw = 1; first++; }
+    if (first >= argc) {
+        fprintf(2, "usage: read [-r] NAME...\n");
+        return 2;
+    }
+    for (int i = first; i < argc; i++) {
+        if (!is_name(argv[i], NULL)) {
+            fprintf(2, "sh: read: '%s' is not a name\n", argv[i]);
+            return 2;
+        }
+    }
+
+    /* The line, and for each character whether it was escaped (escaped
+     * blanks do not separate) */
+    size_t cap = 128, len = 0;
+    char *line = malloc(cap), *escaped = malloc(cap);
+    int status = 0, escape = 0;
+    if (!line || !escaped) { free(line); free(escaped); return 1; }
+    for (;;) {
+        char c;
+        long n = read(0, &c, 1);
+        if (n == -EINTR) continue;
+        if (n <= 0) { status = 1; break; }       /* The end of the input (or an error) */
+        if (c == '\0') continue;                 /* (A variable cannot hold one) */
+        int literal = 0;
+        if (escape) {
+            escape = 0;
+            if (c == '\n') continue;             /* "\" at the end of a line: the line goes on */
+            literal = 1;
+        } else if (c == '\\' && !raw) {
+            escape = 1;
+            continue;
+        } else if (c == '\n') {
+            break;
+        }
+        if (len + 1 >= cap) {
+            if (cap >= READ_LINE_MAX) { status = 1; break; }
+            char *grown = malloc(cap * 2), *grown_escaped = malloc(cap * 2);
+            if (!grown || !grown_escaped) { free(grown); free(grown_escaped); status = 1; break; }
+            memcpy(grown, line, len);
+            memcpy(grown_escaped, escaped, len);
+            free(line);
+            free(escaped);
+            line = grown;
+            escaped = grown_escaped;
+            cap *= 2;
+        }
+        escaped[len] = (char)literal;
+        line[len++] = c;
+    }
+    line[len] = '\0';
+
+    /* Fields at unescaped blanks; the last name takes the rest */
+    int names = argc - first;
+    size_t i = 0;
+    for (int k = 0; k < names; k++) {
+        while (i < len && !escaped[i] && is_blank(line[i])) i++;
+        size_t start = i, end;
+        if (k < names - 1) {
+            while (i < len && (escaped[i] || !is_blank(line[i]))) i++;
+            end = i;
+        } else {
+            end = len;
+            while (end > start && !escaped[end - 1] && is_blank(line[end - 1])) end--;
+            i = len;
+        }
+        char kept = line[end];
+        line[end] = '\0';
+        if (set_variable(argv[first + k], line + start) != 0) status = 1;
+        line[end] = kept;
+    }
+    free(escaped);
+    free(line);
+    return status;
+}
+
+/* read with its redirections ("read x < file"), in the shell itself: it
+ * sets the shell's variables, so it cannot run in a child as a program
+ * does. Each redirected descriptor is saved first and put back after.
+ * read's status, or 1 (a message printed) if a redirection fails. */
+static int run_read(stage_t *stage) {
+    long saved[MAX_REDIRECTS];
+    int done = 0, status = 0;
+    for (; done < stage->redirect_count; done++) {
+        redirect_t *r = &stage->redirects[done];
+        saved[done] = dup(r->fd);                /* (Negative if it was not open) */
+        long fd;
+        if (r->kind == REDIRECT_COPY) fd = r->from;
+        else if (r->kind == REDIRECT_IN) fd = open(r->path, O_RDONLY);
+        else fd = open(r->path, O_WRONLY | O_CREAT | (r->kind == REDIRECT_APPEND ? O_APPEND : O_TRUNC));
+        if (fd < 0 || dup2((int)fd, r->fd) < 0) {
+            if (r->kind == REDIRECT_COPY) fprintf(2, "sh: %d: bad file descriptor\n", r->from);
+            else fprintf(2, "sh: %s: %s\n", r->path, strerror(fd < 0 ? fd : -EBADF));
+            if (fd >= 0 && r->kind != REDIRECT_COPY) close((int)fd);
+            done++;
+            status = 1;
+            break;
+        }
+        if (r->kind != REDIRECT_COPY && fd != r->fd) close((int)fd);
+    }
+    if (status == 0) status = read_builtin(stage->argc, stage->argv);
+    for (int i = done - 1; i >= 0; i--) {        /* Back as they were, last first */
+        int fd = stage->redirects[i].fd;
+        if (saved[i] >= 0) {
+            dup2((int)saved[i], fd);
+            close((int)saved[i]);
+        } else {
+            close(fd);
+        }
+    }
+    return status;
+}
+
 /* Run one pipeline (a part of a command line between ';', '&&' and '||'):
  * a built-in, or programs in the foreground or (with a final '&') the
  * background. Returns its status; sets *should_exit for "exit". */
@@ -926,9 +1352,10 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     line = text;
 
     unsigned substitutions_before = substitutions_run;
+    arith_failed = 0;
     int count = parse(line, stages, 1);
     if (count < 0) {
-        fprintf(2, "sh: syntax error\n");
+        if (!arith_failed) fprintf(2, "sh: syntax error\n");   /* (A $((...)) said what was wrong) */
         return 2;
     }
     if (count == 0) return last_status;   /* Nothing to run: $? as it is (or as a $(...) left it) */
@@ -959,6 +1386,9 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     }
     if (count == 1 && (strcmp(stages[0].argv[0], "test") == 0 || strcmp(stages[0].argv[0], "[") == 0)) {
         return test_builtin(stages[0].argc, stages[0].argv);
+    }
+    if (count == 1 && !background && strcmp(stages[0].argv[0], "read") == 0) {
+        return run_read(&stages[0]);
     }
     /* cd has to be a built-in: a child process could only change its own
      * directory, not the shell's */
@@ -1052,6 +1482,8 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
                "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
                "  echo $(date)           the output of a command, in place (up to 4 KiB)\n"
+               "  i=$((i + 1))           arithmetic: + - * / % < <= > >= == != && || ! ( )\n"
+               "  read [-r] a b          set a and b from a line of input (b takes the rest)\n"
                "  cd [dir], pwd          change or print the current directory\n"
                "  NAME=value             set a variable of the shell; $NAME or ${NAME} uses it, $? is the last status\n"
                "  export NAME[=value]    put it in the environment, for every program started after\n"
@@ -1161,21 +1593,28 @@ static int cut_segments(const char *text) {
     const char *p = text;
     while (*p) {
         char quoted = 0;
-        int depth = 0;
         const char *start = p;
         size_t n = 0;
         char *buf = malloc(strlen(p) + 1);
         if (!buf) return PARSE_SYNTAX;
         for (; *p; p++) {
-            if (!quoted && depth == 0 && *p == '#' && (p == start || is_blank(p[-1]) || p[-1] == '\n')) {
+            if (!quoted && *p == '#' && (p == start || is_blank(p[-1]) || p[-1] == '\n')) {
                 while (*p && *p != '\n') p++;              /* A comment, to the end of the line */
                 if (!*p) break;
             }
+            if (quoted != '\'' && p[0] == '$' && p[1] == '(') {
+                /* $(...) and $((...)), taken whole: what is inside has its
+                 * own quotes and separators (the ')' of "$(echo a)" closes
+                 * it although it is between double quotes) */
+                const char *end = closing_paren(p + 2);
+                const char *stop = end ? end + 1 : p + strlen(p);
+                while (p < stop) buf[n++] = *p++;
+                p--;                                        /* (The loop moves on) */
+                continue;
+            }
             if (!quoted && (*p == '"' || *p == '\'')) quoted = *p;
             else if (quoted && *p == quoted) quoted = 0;
-            else if (quoted != '\'' && p[0] == '$' && p[1] == '(') depth++;
-            else if (!quoted && depth > 0 && *p == ')') depth--;
-            if (!quoted && depth == 0 && (*p == ';' || *p == '\n' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
+            if (!quoted && (*p == ';' || *p == '\n' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
             buf[n++] = *p;
         }
         buf[n] = '\0';
