@@ -8,7 +8,6 @@
 #include "kprintf.h"
 #include "kstring.h"
 
-static uint8_t mac_address[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
 static bool net_initialized = false;
 
 int virtio_net_init(void) {
@@ -19,7 +18,7 @@ int virtio_net_init(void) {
         kprintf("virtio-net: STUB, PCI device present at %x:%x.%x but no driver talks to it\n",
                 net_dev.bus, net_dev.device, net_dev.function);
     } else {
-        kprintf("virtio-net: STUB, no device present and no driver (the MAC address is a constant)\n");
+        kprintf("virtio-net: STUB, no device present and no driver\n");
     }
 
     net_initialized = true;
