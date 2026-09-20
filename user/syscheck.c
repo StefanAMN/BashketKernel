@@ -2785,6 +2785,117 @@ static void check_more_tools(void) {
     CHECK(unlink("/tmp/xw") == 0);
 }
 
+/* What lstat says of `path`: its group, and its mode in *mode (if not
+ * NULL); -1 if it cannot be described */
+static long group_of(const char *path, unsigned *mode) {
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    if (mode) *mode = st.mode;
+    return st.gid;
+}
+
+/* `dir` followed by `rest`, in `out` (96 bytes; the paths here are short) */
+static const char *join(char *out, const char *dir, const char *rest) {
+    size_t d = strlen(dir), r = strlen(rest);
+    if (d + r >= 96) return "/too-long";
+    memcpy(out, dir, d);
+    memcpy(out + d, rest, r + 1);
+    return out;
+}
+
+/* In the set-gid directory `dir` (group 50): a new file, directory and link
+ * take its group, a new directory takes the bit too, and that passes
+ * further down; a file gets no bit; in a directory without the bit, the
+ * creator's group (`own_gid`). How many of these did not hold. */
+static int setgid_directory_rule(const char *dir, unsigned own_gid) {
+    char path[96];
+    int failed = 0;
+    unsigned mode = 0;
+    long fd = open(join(path, dir, "/file"), O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0 || close((int)fd) != 0 || group_of(path, NULL) != 50) failed++;
+    if (mkdir(join(path, dir, "/sub")) != 0 || group_of(path, &mode) != 50 || !(mode & 02000)) failed++;
+    if (symlink("file", join(path, dir, "/link")) != 0 || group_of(path, NULL) != 50) failed++;
+    if (mkdir(join(path, dir, "/sub/deeper")) != 0 || group_of(path, &mode) != 50 || !(mode & 02000)) failed++;
+    fd = open(join(path, dir, "/sub/deeper/file"), O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0 || close((int)fd) != 0 || group_of(path, &mode) != 50 || (mode & 02000)) failed++;
+    /* Without the bit, the creator's group */
+    if (chmod(join(path, dir, "/sub/deeper"), 0777) != 0) failed++;
+    fd = open(join(path, dir, "/sub/deeper/plain"), O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0 || close((int)fd) != 0 || group_of(path, NULL) != (long)own_gid) failed++;
+    return failed;
+}
+
+/* rm -r `dir` through the shell: its exit status */
+static int remove_tree(const char *dir) {
+    static char command[128], out[64];
+    memcpy(command, "rm -r ", 6);
+    size_t n = strlen(dir);
+    if (n >= sizeof(command) - 6) return -1;
+    memcpy(command + 6, dir, n + 1);
+    return sh_capture(command, out, sizeof(out));
+}
+
+/* The set-gid directory rule as alice (group 100), in one everyone may
+ * write: it is not a privilege of root's */
+static void setgid_directory_as_alice(void) {
+    CHECK(setgid_directory_rule("/tmp/sga", 100) == 0);
+}
+
+/* mkdir -p, rmdir, rm -r (links removed, never followed), and set-gid
+ * directories, on the memory filesystem and on ext2 */
+static void check_directory_tools(void) {
+    static char out[256];
+    struct stat st;
+    CHECK(sh_prints("mkdir -p /tmp/tt/a/b/c/d && mkdir -p /tmp/tt/a/b /tmp/tt//e/ && echo ok", "ok\n"));
+    CHECK(stat("/tmp/tt/a/b/c/d", &st) == 0 && st.type == S_DIR);
+    CHECK(stat("/tmp/tt/e", &st) == 0 && st.type == S_DIR);
+    CHECK(sh_ends("mkdir /tmp/tt/a", "", 1));                              /* Exists: only -p accepts it */
+    CHECK(put_file("/tmp/tt/f", "x", 1));
+    CHECK(sh_ends("mkdir -p /tmp/tt/f/x", "", 1));                         /* A file on the way */
+    CHECK(sh_ends("mkdir -p /tmp/tt/f", "", 1));                           /* ... or at the end */
+    CHECK(sh_ends("mkdir -z /tmp/tt/z", "", 2));
+
+    /* rmdir: empty directories only, not files, not links to directories */
+    CHECK(symlink("/tmp/tt/e", "/tmp/tt/to-e") == 0);
+    CHECK(sh_ends("rmdir /tmp/tt/a", "", 1) && stat("/tmp/tt/a", &st) == 0);
+    CHECK(sh_ends("rmdir /tmp/tt/f", "", 1) && stat("/tmp/tt/f", &st) == 0);
+    CHECK(sh_ends("rmdir /tmp/tt/to-e", "", 1) && lstat("/tmp/tt/to-e", &st) == 0 && stat("/tmp/tt/e", &st) == 0);
+    CHECK(sh_prints("rmdir /tmp/tt/a/b/c/d && echo gone", "gone\n") && stat("/tmp/tt/a/b/c/d", &st) == -ENOENT);
+
+    /* rm -r: the whole tree, but not what a link in it points at */
+    CHECK(mkdir("/tmp/keep") == 0 && put_file("/tmp/keep/k", "kept", 4));
+    CHECK(symlink("/tmp/keep", "/tmp/tt/a/b/outside") == 0);
+    CHECK(symlink("/tmp/keep/k", "/tmp/tt/a/k-link") == 0);
+    CHECK(sh_ends("rm /tmp/tt/a", "", 1));                                 /* Without -r: not a full directory */
+    CHECK(sh_prints("rm -r /tmp/tt && echo removed", "removed\n"));
+    CHECK(lstat("/tmp/tt", &st) == -ENOENT);
+    CHECK(stat("/tmp/keep/k", &st) == 0 && st.size == 4);
+    CHECK(sh_ends("rm -r /", "", 1) && stat("/bin/sh", &st) == 0);
+    CHECK(sh_ends("rm -r ///", "", 1));
+    CHECK(sh_ends("rm -r /tmp/keep/..", "", 1) && stat("/tmp/keep/k", &st) == 0);
+    CHECK(sh_ends("cd /tmp/keep && rm -r .", "", 1) && stat("/tmp/keep/k", &st) == 0);
+    CHECK(sh_ends("rm -r /tmp/keep/./", "", 1));
+    CHECK(sh_ends("rm -r /tmp/no-such", "", 1));
+    CHECK(sh_ends("rm -x /tmp/keep", "", 2));
+    CHECK(sh_prints("rm -r /tmp/keep/k && rm -r /tmp/keep && echo ok", "ok\n") && stat("/tmp/keep", &st) == -ENOENT);
+
+    /* Set-gid directories, on the memory filesystem (root's group is 0) */
+    CHECK(mkdir("/tmp/sg") == 0 && chown("/tmp/sg", KEEP_ID, 50) == 0 && chmod("/tmp/sg", 02775) == 0);
+    CHECK(setgid_directory_rule("/tmp/sg", 0) == 0);
+    CHECK(sh_capture("ls -l /tmp | grep ' sg'", out, sizeof(out)) == 0 && strncmp(out, "drwxrwsr-x", 10) == 0);
+    CHECK(remove_tree("/tmp/sg") == 0 && stat("/tmp/sg", &st) == -ENOENT);
+    CHECK(mkdir("/tmp/sga") == 0 && chown("/tmp/sga", KEEP_ID, 50) == 0 && chmod("/tmp/sga", 02777) == 0);
+    CHECK(as_user_in_group(1000, 100, setgid_directory_as_alice) == 0);
+    CHECK(remove_tree("/tmp/sga") == 0);
+
+    /* ... and on the system disk, when it is the root (ext2 stores the group) */
+    if (stat("/", &st) == 0 && st.dev == 3) {
+        CHECK(mkdir("/sg-check") == 0 && chown("/sg-check", KEEP_ID, 50) == 0 && chmod("/sg-check", 02775) == 0);
+        CHECK(setgid_directory_rule("/sg-check", 0) == 0);
+        CHECK(remove_tree("/sg-check") == 0 && stat("/sg-check", &st) == -ENOENT);
+    }
+}
+
 /* The shell's if, while and for, break and continue, and test / [ */
 static void check_shell_control(void) {
     /* if: the branch taken; elif; nothing taken is status 0; the status of the branch */
@@ -3486,6 +3597,7 @@ int main(void) {
     check_line_tools();
     check_hosts_file();
     check_more_tools();
+    check_directory_tools();
     check_proc();
     check_proc_maps_fd();
     check_proc_interrupts();
