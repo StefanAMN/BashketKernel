@@ -20,6 +20,7 @@
 #include "auth.h"
 #include "heap.h"
 #include "swap.h"
+#include "region.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
@@ -41,7 +42,21 @@ typedef struct {
     uint32_t group;       // ...and this group
     char cmdline[TASK_CMDLINE_MAX]; // The arguments, NUL after each (for /proc/<pid>/cmdline)
     uint16_t cmdline_len;
+    mem_region_t lazy[ELF_LAZY_SEGMENTS]; // Segments read from the file page by page (files held, pages reserved)
+    uint32_t lazy_count;
+    size_t lazy_pages;                    // Pages of them reserved with region_reserve
 } user_image_t;
+
+// Undo what load_user_image left for a task that will not get it: the
+// address space, the holds on the program's file, the reserved pages
+static void discard_image(user_image_t *image) {
+    for (uint32_t i = 0; i < image->lazy_count; i++) region_hold_program(image->lazy[i].node, -1);
+    region_unreserve(image->lazy_pages);
+    image->lazy_count = 0;
+    image->lazy_pages = 0;
+    if (image->pml4) vmm_destroy_address_space(image->pml4);
+    image->pml4 = NULL;
+}
 
 // Keep the arguments `argv` (or, without any, `path`) as /proc shows them:
 // each followed by a NUL, as many as fit in TASK_CMDLINE_MAX bytes (the
@@ -162,6 +177,7 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
     vnode_t *file = NULL;
     vfs_lookup_as(auth_current_uid(), caller ? caller->cwd : NULL, path, true, &file);   // (Refused: NULL)
     if (!file || file->type != VFS_FILE || file->size == 0) return false;
+    if (file->write_count > 0) return false;  // Open for writing: running it would read a moving target (ETXTBSY)
     if (!auth_may_execute(auth_current_uid(), file)) return false;       // Marked as a program, for this user?
     if (!auth_may_access(auth_current_uid(), file, false)) return false; // Running a program means reading it
     image->setuid = (file->mode & PERM_SETUID) != 0;
@@ -169,37 +185,48 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
     image->setgid = (file->mode & PERM_SETGID) != 0;
     image->group = file->gid;
 
-    // A file in memory (the initrd) can be loaded from where it is. One whose
-    // contents come from elsewhere (the disk) is read into a buffer first.
-    const void *contents = file->data;
-    void *loaded = NULL;
-    if (file->ops) {
-        if (file->size > PROCESS_MAX_IMAGE_BYTES) return false;
-        loaded = kmalloc(file->size);
-        if (!loaded) return false;
-        if (vfs_read(file, 0, file->size, loaded) != file->size) {
-            kfree(loaded);
-            return false;
-        }
-        contents = loaded;
-    }
-    if (!contents) return false;
+    // The loader reads the file where it needs it: from memory for a file
+    // kept there (the initrd, /tmp), through the filesystem for one on a
+    // disk. Read-only segments are not read now at all: they become
+    // regions of the file, read a page at a time as the program touches
+    // them (region.h), so code that never runs is never read.
+    if (file->size > PROCESS_MAX_IMAGE_BYTES) return false;
+    if (!file->ops && !file->data) return false;
+    elf_source_t source = { file->ops ? NULL : (const uint8_t *)file->data, file, file->size };
+    image->lazy_count = 0;
+    image->lazy_pages = 0;
 
     // Address-space layout randomisation: the stack starts up to 16 MiB
     // below its highest possible position (the program itself is placed by
     // the loader, the mmap region by apply_image)
     image->stack_top = USER_STACK_TOP - ((uint64_t)(get_random_u32() & 0xFFF) << 12);
 
-    image->pml4 = vmm_create_address_space();
-    bool ok = image->pml4 != NULL &&
-              elf_load_segments(image->pml4, contents, file->size, &image->entry, &image->image_end,
-                                image->segments, &image->segment_count) &&
+    elf_program_t *program = kmalloc(sizeof(elf_program_t));
+    image->pml4 = program ? vmm_create_address_space() : NULL;
+    bool ok = image->pml4 != NULL && elf_load_program(image->pml4, &source, program) &&
               build_user_stack(image->pml4, image->stack_top, path, argv, envp, &image->rsp);
-    kfree(loaded);
+    if (ok) {
+        image->entry = program->entry;
+        image->image_end = program->image_end;
+        memcpy(image->segments, program->segments, sizeof(image->segments));
+        image->segment_count = program->segment_count;
+        // The segments left to be read later: promised like mmap's pages
+        // (refused if they cannot be), and each a hold on the file
+        size_t pages = 0;
+        for (uint32_t i = 0; i < program->lazy_count; i++) pages += (program->lazy[i].end - program->lazy[i].start) / PAGE_SIZE;
+        ok = region_reserve(pages);
+        if (ok) image->lazy_pages = pages;
+        for (uint32_t i = 0; ok && i < program->lazy_count; i++) {
+            const elf_lazy_t *lazy = &program->lazy[i];
+            image->lazy[i] = (mem_region_t){ lazy->start, lazy->end, lazy->prot, file, lazy->file_offset, true };
+            region_hold_program(file, +1);
+            image->lazy_count++;
+        }
+    }
+    kfree(program);
 
     if (!ok) {
-        if (image->pml4) vmm_destroy_address_space(image->pml4);
-        image->pml4 = NULL;
+        discard_image(image);
         return false;
     }
 
@@ -228,6 +255,7 @@ static void apply_image(task_t *task, const user_image_t *image) {
     task->name[sizeof(task->name) - 1] = '\0';
     task->cmdline_len = image->cmdline_len < TASK_CMDLINE_MAX ? image->cmdline_len : TASK_CMDLINE_MAX;
     memcpy(task->cmdline, image->cmdline, task->cmdline_len);
+    region_adopt(task, image->lazy, image->lazy_count, image->lazy_pages);   // The task's from now on
 }
 
 // First code a new process runs, in ring 0 on its own kernel stack. The
@@ -247,10 +275,8 @@ static void user_task_start(void) {
 // its own, never those of a buffer this system call has already checked
 // (this one included: it is recorded first), because the kernel may be
 // about to use them, and a kernel access to a page that has gone would
-// fault where nothing may sleep. A few attempts, each giving up at least
-// one page, or false.
-#define MAKE_ROOM_ATTEMPTS 4
-
+// fault where nothing may sleep; and if another process takes that room
+// first, it tries again as a page fault would (swap_may_retry), or false.
 bool process_populate(uint64_t addr, size_t len) {
     task_t *self = sched_get_current_task();
     if (!self || !self->is_user || len == 0) return true;
@@ -265,17 +291,13 @@ bool process_populate(uint64_t addr, size_t len) {
         if (vmm_pte_swapped(entry)) {
             // On the swap disk: read it back
             int back = swap_in(space, page);
-            for (int i = 0; back < 0 && i < MAKE_ROOM_ATTEMPTS && swap_make_room_for_call() > 0; i++) {
-                back = swap_in(space, page);
-            }
+            for (int i = 0; back < 0 && swap_may_retry(i); i++) back = swap_in(space, page);
             if (back < 0) return false;
             continue;
         }
         if (process_grow_stack(page)) continue;
         int given = region_fault(self, page);
-        for (int i = 0; given < 0 && i < MAKE_ROOM_ATTEMPTS && swap_make_room_for_call() > 0; i++) {
-            given = region_fault(self, page);
-        }
+        for (int i = 0; given < 0 && swap_may_retry(i); i++) given = region_fault(self, page);
         if (given < 0) return false;  // Promised, and no memory to keep the promise
         // Never promised: the range is bad, and the check that follows will
         // say so. Stop here: the length is the caller's word, and walking
@@ -340,7 +362,7 @@ pid_t process_spawn(const char *path, char *const argv[]) {
 
     task_t *task = task_alloc(image.name, user_task_start);
     if (!task) {
-        vmm_destroy_address_space(image.pml4);
+        discard_image(&image);
         return -1;
     }
 

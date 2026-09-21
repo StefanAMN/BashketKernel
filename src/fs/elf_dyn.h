@@ -56,4 +56,14 @@ typedef struct {
  */
 bool elf_apply_relocations(uint64_t *pml4, const void *file, size_t size, uint64_t bias, size_t *out_count);
 
+/**
+ * @brief The same, reading the dynamic section and the relocation table
+ *        from `src` (a piece at a time: the file need not be in memory).
+ * @param ehdr,ph The executable's header and program headers, already
+ *        checked by the loader (copies: they need not point into the file).
+ *        May sleep when `src` is a disk file.
+ */
+bool elf_apply_relocations_from(uint64_t *pml4, const elf_source_t *src, const Elf64_Ehdr *ehdr,
+                                const Elf64_Phdr *ph, uint64_t bias, size_t *out_count);
+
 #endif // ELF_DYN_H

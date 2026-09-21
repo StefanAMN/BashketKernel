@@ -248,7 +248,7 @@ static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count
         found = true;
         uint64_t mapped = 0;
         for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-            if (t->regions[i].end) mapped += t->regions[i].end - t->regions[i].start;
+            if (t->regions[i].end && !t->regions[i].program) mapped += t->regions[i].end - t->regions[i].start;
         }
         uint64_t heap = t->is_user ? t->brk_end - t->brk_start : 0;
         len = ksnprintf(text, PROC_TEXT_MAX,
@@ -319,7 +319,7 @@ static size_t copy_maps(const task_t *t, map_line_t *lines, char name[32]) {
     }
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
         const mem_region_t *r = &t->regions[i];
-        if (r->end == 0) continue;
+        if (r->end == 0 || r->program) continue;    // (Shown above, as part of the program)
         lines[n++] = (map_line_t){ r->start, r->end, r->prot, r->node ? "file" : "anonymous", r->node, r->file_offset };
     }
     return n;
