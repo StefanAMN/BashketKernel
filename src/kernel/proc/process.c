@@ -92,7 +92,8 @@ static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[
 
 // Build a complete user image for `path`. On failure nothing is left allocated.
 static bool load_user_image(const char *path, char *const argv[], user_image_t *image) {
-    vnode_t *file = vfs_find(NULL, path);
+    task_t *caller = sched_get_current_task();
+    vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
     if (!file || file->type != VFS_FILE || !file->data) return false;
 
     image->pml4 = vmm_create_address_space();
@@ -232,6 +233,7 @@ pid_t process_fork(struct registers *regs) {
     child->brk_end = parent->brk_end;
     child->mmap_next = parent->mmap_next;
     child->ignore_interrupt = parent->ignore_interrupt;
+    task_set_cwd(child, parent->cwd);
 
     // The parent is running, so its FPU registers are in the CPU, not in its
     // task struct: save them straight into the child.

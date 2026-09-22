@@ -37,6 +37,7 @@ static const char *const safe_paths[] = {
     "/tmp/fuzz-a", "/tmp/fuzz-b", "/tmp/fuzz-dir", "/tmp/fuzz-dir/x", "/tmp", "/",
     "/dev/null", "/dev/zero", "/dev/random", "/proc/tasks", "/proc/meminfo",
     "/proc", "/dev", "", "/tmp/", "//", "/tmp/fuzz-a/not-a-dir", "no-slash",
+    ".", "..", "../..", "./fuzz-b", "/tmp/fuzz-dir/../fuzz-a", "/tmp/./.",
 };
 static const char *const programs[] = { "/bin/hello", "/bin/echo", "/tmp/fuzz-a", "/tmp", "/dev/zero" };
 
@@ -103,7 +104,7 @@ static void one_call(void) {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
-        SYS_IGNORE_INTERRUPT,
+        SYS_IGNORE_INTERRUPT, SYS_CHDIR, SYS_SETPRIORITY,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -130,6 +131,9 @@ static void one_call(void) {
         case SYS_OPEN:
             a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
             b = random_flags();
+            break;
+        case SYS_CHDIR:
+            a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
             break;
         case SYS_MKDIR:
         case SYS_UNLINK:

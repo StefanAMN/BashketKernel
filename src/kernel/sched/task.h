@@ -16,6 +16,7 @@
 #define TASK_MAX_FDS 16               // Open file descriptors per process
 
 struct file;
+struct vnode;
 
 // Priorities. Every runnable task gets a turn (round robin), so none can be
 // starved; a higher priority gets a longer turn.
@@ -59,6 +60,7 @@ typedef struct task {
     uint64_t brk_end;        // Current program break (heap end)
     uint64_t mmap_next;      // Next free address in the mmap region
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
+    struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
     int kill_pending;        // Signal that will end this process at its next safe point (0: none)
     bool ignore_interrupt;   // Ctrl-C does not end this process (shells set this)
 

@@ -87,6 +87,11 @@ void sched_check_kill(void);
 void sched_make_zombie(task_t *task, int status);
 
 /**
+ * @brief Change a task's working directory (NULL: the root).
+ */
+void task_set_cwd(task_t *task, struct vnode *dir);
+
+/**
  * @brief Remove one zombie from the task list and free it. The caller must
  *        not be the zombie. On one CPU a zombie other than the caller is never
  *        still on its kernel stack, so freeing it at once is safe.

@@ -27,6 +27,7 @@
 #define SYS_UNAME    63
 #define SYS_READDIR  78
 #define SYS_GETCWD   79
+#define SYS_CHDIR    80
 #define SYS_MKDIR    83
 #define SYS_UNLINK   87
 #define SYS_GETPPID  110

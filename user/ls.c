@@ -1,8 +1,8 @@
-/* ls: list a directory (default "/"). */
+/* ls: list a directory (default: the current one). */
 #include "ulib.h"
 
 int main(int argc, char **argv) {
-    const char *path = argc > 1 ? argv[1] : "/";
+    const char *path = argc > 1 ? argv[1] : ".";
 
     long fd = open(path, O_RDONLY);
     if (fd < 0) {

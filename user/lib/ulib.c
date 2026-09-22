@@ -146,6 +146,8 @@ long pipe(int fds[2])                              { return syscall1(SYS_PIPE, f
 long dup2(int old_fd, int new_fd)                  { return syscall2(SYS_DUP2, old_fd, new_fd); }
 long readdir(int fd, struct dirent *entry)         { return syscall2(SYS_READDIR, fd, entry); }
 long mkdir(const char *path)                       { return syscall1(SYS_MKDIR, path); }
+long chdir(const char *path)                       { return syscall1(SYS_CHDIR, path); }
+long getcwd(char *buf, size_t size)                { return syscall2(SYS_GETCWD, buf, size); }
 long unlink(const char *path)                      { return syscall1(SYS_UNLINK, path); }
 
 const char *strerror(long err) {

@@ -39,15 +39,21 @@ vnode_t *vfs_find_child(vnode_t *dir, const char *name) {
     return NULL;
 }
 
-vnode_t *vfs_find_parent(const char *path, const char **out_leaf) {
+vnode_t *vfs_find_parent_at(vnode_t *base, const char *path, const char **out_leaf) {
     if (!path || !out_leaf) return NULL;
 
-    // Find the last '/' that is followed by something
+    // The leaf is what follows the last '/' that has something after it
     const char *leaf = path;
     for (const char *p = path; *p != '\0'; p++) {
-        if (*p == '/' && p[1] != '\0') leaf = p + 1;
+        if (*p == '/' && p[1] != '\0' && p[1] != '/') leaf = p + 1;
     }
     if (*leaf == '\0' || *leaf == '/') return NULL;
+
+    // "." and ".." name existing directories; nothing can be created or
+    // removed under those names
+    size_t leaf_len = 0;
+    while (leaf[leaf_len] != '\0' && leaf[leaf_len] != '/') leaf_len++;
+    if ((leaf_len == 1 && leaf[0] == '.') || (leaf_len == 2 && leaf[0] == '.' && leaf[1] == '.')) return NULL;
 
     // Everything before the leaf names the parent
     size_t parent_len = (size_t)(leaf - path);
@@ -56,14 +62,42 @@ vnode_t *vfs_find_parent(const char *path, const char **out_leaf) {
     memcpy(parent_path, path, parent_len);
     parent_path[parent_len] = '\0';
 
-    // Drop the separator, but keep a lone "/" meaning the root
-    while (parent_len > 1 && parent_path[parent_len - 1] == '/') parent_path[--parent_len] = '\0';
-
-    vnode_t *parent = (parent_len == 0) ? vfs_root : vfs_find(NULL, parent_path);
+    // No directory part means "in the base directory"
+    vnode_t *parent = (parent_len == 0) ? (base ? base : vfs_root) : vfs_find(base, parent_path);
     if (!parent || parent->type != VFS_DIRECTORY) return NULL;
 
     *out_leaf = leaf;
     return parent;
+}
+
+vnode_t *vfs_find_parent(const char *path, const char **out_leaf) {
+    return vfs_find_parent_at(NULL, path, out_leaf);
+}
+
+size_t vfs_path_of(vnode_t *node, char *buf, size_t size) {
+    if (!node || !buf || size < 2) return 0;
+
+    // Collect the names from the node up to the root, then write them out in
+    // the opposite order
+    const vnode_t *chain[32];
+    size_t depth = 0;
+    for (const vnode_t *n = node; n && n->parent; n = n->parent) {
+        if (depth == 32) return 0;
+        chain[depth++] = n;
+    }
+
+    size_t len = 0;
+    if (depth == 0) buf[len++] = '/';
+    while (depth > 0) {
+        const char *name = chain[--depth]->name;
+        size_t name_len = strlen(name);
+        if (len + 1 + name_len + 1 > size) return 0;
+        buf[len++] = '/';
+        memcpy(buf + len, name, name_len);
+        len += name_len;
+    }
+    buf[len] = '\0';
+    return len;
 }
 
 vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
@@ -133,53 +167,36 @@ vnode_t *vfs_create_device(vnode_t *parent, const char *name, const vnode_ops_t 
 
 vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
     if (!path) return NULL;
-    if (!relative_root || path[0] == '/') {
-        relative_root = vfs_root;
-    }
 
-    if (strcmp(path, "/") == 0) return vfs_root;
-
-    // Skip leading slash
-    if (path[0] == '/') path++;
-
-    char token[128];
-    vnode_t *curr_dir = relative_root;
+    // An absolute path starts at the root whatever the caller's directory is
+    vnode_t *node = (relative_root && path[0] != '/') ? relative_root : vfs_root;
 
     while (*path != '\0') {
+        while (*path == '/') path++;          // Skip separators, including repeated ones
+        if (*path == '\0') break;
+
+        char token[128];
         size_t len = 0;
-        while (path[len] != '\0' && path[len] != '/') {
-            if (len < sizeof(token) - 1) {
-                token[len] = path[len];
-            }
-            len++;
-        }
+        while (path[len] != '\0' && path[len] != '/') len++;
+        if (len >= sizeof(token)) return NULL; // No name is that long
+        memcpy(token, path, len);
         token[len] = '\0';
-
         path += len;
-        if (*path == '/') path++;
 
-        // Search current directory children for token
-        vnode_t *child = curr_dir->children;
-        vnode_t *found = NULL;
-        while (child) {
-            if (strcmp(child->name, token) == 0) {
-                found = child;
-                break;
-            }
-            child = child->next;
+        // Only a directory can have something looked up inside it
+        if (node->type != VFS_DIRECTORY) return NULL;
+
+        if (strcmp(token, ".") == 0) {
+            continue;                          // The directory itself
+        } else if (strcmp(token, "..") == 0) {
+            if (node->parent) node = node->parent; // The root is its own parent
+        } else {
+            node = vfs_find_child(node, token);
+            if (!node) return NULL;
         }
-
-        if (!found) return NULL;
-
-        if (*path == '\0') {
-            return found; // Reached target node
-        }
-
-        if (found->type != VFS_DIRECTORY) return NULL;
-        curr_dir = found;
     }
 
-    return NULL;
+    return node;
 }
 
 size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {

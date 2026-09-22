@@ -192,10 +192,28 @@ static int run_line(const char *line, int *should_exit) {
         *should_exit = 1;
         return stages[0].argc > 1 ? (int)atoi(stages[0].argv[1]) : 0;
     }
+    /* cd has to be a built-in: a child process could only change its own
+     * directory, not the shell's */
+    if (count == 1 && strcmp(stages[0].argv[0], "cd") == 0) {
+        const char *target = stages[0].argc > 1 ? stages[0].argv[1] : "/";
+        long err = chdir(target);
+        if (err < 0) {
+            fprintf(2, "sh: cd: %s: %s\n", target, strerror(err));
+            return 1;
+        }
+        return 0;
+    }
+    if (count == 1 && strcmp(stages[0].argv[0], "pwd") == 0) {
+        char cwd[128];
+        if (getcwd(cwd, sizeof(cwd)) < 0) return 1;
+        printf("%s\n", cwd);
+        return 0;
+    }
     if (count == 1 && strcmp(stages[0].argv[0], "help") == 0) {
         printf("Programs live in /bin (try: ls /bin). Syntax:\n"
                "  prog args | prog2      pipe output into another program\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
+               "  cd [dir], pwd          change or print the current directory\n"
                "  exit [status]          leave the shell\n");
         return 0;
     }
