@@ -167,6 +167,7 @@ void panic(const char* msg) {
     kprintf("\n\n!!! KERNEL PANIC !!!\n");
     kprintf("%s\n", msg);
     kprintf("System halted.\n");
+    console_refresh(); // The timer will not do it: interrupts stay off
     while (1) {
         asm volatile("cli; hlt");
     }
