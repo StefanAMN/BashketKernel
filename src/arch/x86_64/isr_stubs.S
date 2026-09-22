@@ -68,6 +68,12 @@ ISR_NOERRCODE 31
 .extern isr_handler
 .global common_isr_stub
 common_isr_stub:
+    // The C ABI requires the direction flag to be clear on function entry,
+    // and compiled code relies on it for rep movs/stos. The interrupted code
+    // (a user program, for instance) may have set it. iretq restores the
+    // interrupted flags, so this needs no undoing.
+    cld
+
     // Push all general purpose registers
     push rax
     push rbx

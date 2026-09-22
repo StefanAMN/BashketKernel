@@ -42,6 +42,52 @@ TEST(lib_string_ctype_test) {
     EXPECT_TRUE(tolower('B') == 'b');
 }
 
+TEST(memory_routines) {
+    static uint8_t a[300], b[300];
+
+    // Every length from 0 to 40 at several alignments: the 8-byte and the
+    // single-byte parts of each routine both get used, and nothing may be
+    // written outside the requested range.
+    for (size_t align = 0; align < 9; align++) {
+        for (size_t len = 0; len <= 40; len++) {
+            memset(a, 0xEE, sizeof(a));
+            memset(a + 64 + align, 0x5A, len);
+            int ok = (a[63 + align] == 0xEE) && (a[64 + align + len] == 0xEE);
+            for (size_t i = 0; i < len; i++) ok &= (a[64 + align + i] == 0x5A);
+
+            for (size_t i = 0; i < sizeof(b); i++) b[i] = (uint8_t)(i * 7 + 1);
+            memset(a, 0xEE, sizeof(a));
+            memcpy(a + 64 + align, b + 3, len);
+            ok &= (a[63 + align] == 0xEE) && (a[64 + align + len] == 0xEE);
+            ok &= (memcmp(a + 64 + align, b + 3, len) == 0);
+            EXPECT_TRUE(ok);
+        }
+    }
+    EXPECT_TRUE(memset(a, 1, 0) == a && memcpy(a, b, 0) == a);
+
+    // memmove with overlap in both directions, including by one byte
+    for (size_t shift = 1; shift <= 17; shift += 4) {
+        for (size_t i = 0; i < sizeof(a); i++) a[i] = (uint8_t)i;
+        EXPECT_TRUE(memmove(a + shift, a, 200) == a + shift);    // Destination above source
+        int ok = 1;
+        for (size_t i = 0; i < 200; i++) ok &= (a[shift + i] == (uint8_t)i);
+        ok &= (a[shift + 200] == (uint8_t)(shift + 200));        // Nothing past the end
+        EXPECT_TRUE(ok);
+
+        for (size_t i = 0; i < sizeof(a); i++) a[i] = (uint8_t)i;
+        memmove(a, a + shift, 200);                              // Destination below source
+        ok = 1;
+        for (size_t i = 0; i < 200; i++) ok &= (a[i] == (uint8_t)(i + shift));
+        ok &= (a[200] == 200);
+        EXPECT_TRUE(ok);
+    }
+
+    // The direction flag is clear again after a backwards memmove
+    uint64_t rflags;
+    asm volatile("pushfq\n\tpop %0" : "=r"(rflags));
+    EXPECT_TRUE((rflags & (1 << 10)) == 0);
+}
+
 TEST(string_search) {
     const char *text = "one two three two";
     EXPECT_TRUE(strstr(text, "two") == text + 4);          // The first match
@@ -96,6 +142,7 @@ void test_suite_lib(void) {
     kprintf("Suite: Core Standard Library & Crypto (lib/)\n");
     RUN_TEST(lib_crypto_hashing_cipher_test);
     RUN_TEST(lib_string_ctype_test);
+    RUN_TEST(memory_routines);
     RUN_TEST(string_search);
     RUN_TEST(ksnprintf_formats_and_truncates);
 }

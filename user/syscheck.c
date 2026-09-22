@@ -9,6 +9,22 @@ static int failures = 0;
         if (!(cond)) { printf("syscheck: FAIL line %d: %s\n", __LINE__, #cond); failures++; } \
     } while (0)
 
+/* A program may set the direction flag. The kernel must not inherit it when
+ * an interrupt arrives: its own copies would then run backwards. */
+static void check_direction_flag(void) {
+    long pid = fork();
+    if (pid == 0) {
+        asm volatile("std");
+        volatile unsigned long spin = 0;
+        unsigned long until = (unsigned long)uptime_ticks() + 6;
+        while ((unsigned long)uptime_ticks() < until) spin++;   /* Timer interrupts and system calls with DF set */
+        asm volatile("cld");
+        exit(0);
+    }
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+}
+
 static void check_bad_pointers(void) {
     /* The kernel must refuse pointers outside our address space ... */
     CHECK(write(1, (void *)0xffffffff80000000, 16) == -EFAULT);
@@ -450,6 +466,7 @@ static void check_copy_on_write(void) {
 
 int main(void) {
     check_basics();
+    check_direction_flag();
     check_bad_pointers();
     check_memory();
     check_fork();

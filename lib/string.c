@@ -5,35 +5,46 @@
 
 #include "string.h"
 
+// memset, memcpy and memmove use the CPU's string instructions: eight bytes
+// at a time with "rep stosq/movsq", then the last few bytes one at a time.
+// A plain C byte loop here was the slowest code in the kernel: every page
+// clear, page copy and screen scroll goes through these three functions.
+// (The direction flag is clear on entry, as the C ABI guarantees.)
+
 void *memset(void *dest, int val, size_t count) {
-    uint8_t *ptr = (uint8_t *)dest;
-    for (size_t i = 0; i < count; i++) {
-        ptr[i] = (uint8_t)val;
-    }
+    void *d = dest;
+    uint64_t pattern = 0x0101010101010101ULL * (uint8_t)val; // The byte, eight times
+    size_t qwords = count / 8, bytes = count % 8;
+
+    asm volatile("rep stosq" : "+D"(d), "+c"(qwords) : "a"(pattern) : "memory");
+    asm volatile("rep stosb" : "+D"(d), "+c"(bytes) : "a"(pattern) : "memory");
     return dest;
 }
 
 void *memcpy(void *dest, const void *src, size_t count) {
-    uint8_t *d = (uint8_t *)dest;
-    const uint8_t *s = (const uint8_t *)src;
-    for (size_t i = 0; i < count; i++) {
-        d[i] = s[i];
-    }
+    void *d = dest;
+    const void *s = src;
+    size_t qwords = count / 8, bytes = count % 8;
+
+    asm volatile("rep movsq" : "+D"(d), "+S"(s), "+c"(qwords) : : "memory");
+    asm volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(bytes) : : "memory");
     return dest;
 }
 
 void *memmove(void *dest, const void *src, size_t count) {
     uint8_t *d = (uint8_t *)dest;
     const uint8_t *s = (const uint8_t *)src;
-    if (d < s) {
-        for (size_t i = 0; i < count; i++) {
-            d[i] = s[i];
-        }
-    } else if (d > s) {
-        for (size_t i = count; i > 0; i--) {
-            d[i - 1] = s[i - 1];
-        }
-    }
+
+    // Copying forwards is safe unless the destination starts inside the
+    // source, in which case it would overwrite bytes it has yet to read.
+    if (d <= s || d >= s + count) return memcpy(dest, src, count);
+
+    // Overlap with the destination higher: copy backwards, from the last
+    // byte down. "std" makes the string instructions count downwards; it must
+    // be cleared again before any other code runs.
+    const uint8_t *s_last = s + count - 1;
+    uint8_t *d_last = d + count - 1;
+    asm volatile("std\n\trep movsb\n\tcld" : "+D"(d_last), "+S"(s_last), "+c"(count) : : "memory", "cc");
     return dest;
 }
 
