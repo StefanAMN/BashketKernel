@@ -27,30 +27,35 @@ static void emit_string(sink_t *out, const char *s) {
     while (*s) out->put(out->ctx, *s++);
 }
 
-static void emit_uint(sink_t *out, uint64_t val, unsigned base) {
+// Print a number right-aligned in a field of at least `width` characters,
+// padded with spaces or (zero_pad) zeros. A minus sign goes before the zeros.
+static void emit_number(sink_t *out, uint64_t val, unsigned base, bool negative, int width, bool zero_pad) {
     char buf[32];
-    int i = 0;
+    int len = 0;
 
     do {
         unsigned rem = (unsigned)(val % base);
-        buf[i++] = (char)((rem < 10) ? (rem + '0') : (rem - 10 + 'a'));
+        buf[len++] = (char)((rem < 10) ? (rem + '0') : (rem - 10 + 'a'));
         val /= base;
     } while (val > 0);
 
-    while (i > 0) out->put(out->ctx, buf[--i]);
+    int padding = width - len - (negative ? 1 : 0);
+    if (!zero_pad) while (padding-- > 0) out->put(out->ctx, ' ');
+    if (negative) out->put(out->ctx, '-');
+    if (zero_pad) while (padding-- > 0) out->put(out->ctx, '0');
+    while (len > 0) out->put(out->ctx, buf[--len]);
 }
 
-static void emit_int(sink_t *out, int64_t val) {
-    if (val < 0) {
-        out->put(out->ctx, '-');
-        emit_uint(out, 0 - (uint64_t)val, 10); // Negate as unsigned: INT64_MIN has no positive
-    } else {
-        emit_uint(out, (uint64_t)val, 10);
-    }
+static void emit_int(sink_t *out, int64_t val, int width, bool zero_pad) {
+    // Negate as unsigned: INT64_MIN has no positive counterpart
+    uint64_t magnitude = val < 0 ? 0 - (uint64_t)val : (uint64_t)val;
+    emit_number(out, magnitude, 10, val < 0, width, zero_pad);
 }
 
-// Supports %d %u %x %p %s %c %%. A 'z' or 'l' before d/u/x means a 64-bit
-// argument (size_t, long).
+// Supports %d %u %x %p %s %c %%.
+//   A width may come first (%5d, %8s), with a leading 0 for zero padding
+//   (%02d, %08x). Fields are right-aligned.
+//   A 'z' or 'l' before d/u/x means a 64-bit argument (size_t, long).
 static void format(sink_t *out, const char *fmt, va_list args) {
     for (const char *p = fmt; *p != '\0'; p++) {
         if (*p != '%') {
@@ -59,6 +64,15 @@ static void format(sink_t *out, const char *fmt, va_list args) {
         }
 
         p++; // Skip '%'
+
+        bool zero_pad = (*p == '0');
+        if (zero_pad) p++;
+        int width = 0;
+        while (*p >= '0' && *p <= '9') {
+            if (width < 64) width = width * 10 + (*p - '0'); // Bounded: no runaway padding
+            p++;
+        }
+
         bool is_long = false;
         while (*p == 'z' || *p == 'l') {
             is_long = true;
@@ -67,21 +81,25 @@ static void format(sink_t *out, const char *fmt, va_list args) {
 
         switch (*p) {
             case 'd':
-                emit_int(out, is_long ? va_arg(args, int64_t) : va_arg(args, int));
+                emit_int(out, is_long ? va_arg(args, int64_t) : va_arg(args, int), width, zero_pad);
                 break;
             case 'u':
-                emit_uint(out, is_long ? va_arg(args, uint64_t) : va_arg(args, unsigned int), 10);
+                emit_number(out, is_long ? va_arg(args, uint64_t) : va_arg(args, unsigned int), 10, false, width, zero_pad);
                 break;
             case 'x':
-                emit_uint(out, is_long ? va_arg(args, uint64_t) : va_arg(args, unsigned int), 16);
+                emit_number(out, is_long ? va_arg(args, uint64_t) : va_arg(args, unsigned int), 16, false, width, zero_pad);
                 break;
             case 'p':
                 emit_string(out, "0x");
-                emit_uint(out, (uint64_t)va_arg(args, void *), 16);
+                emit_number(out, (uint64_t)va_arg(args, void *), 16, false, 0, false);
                 break;
             case 's': {
-                const char *s = va_arg(args, const char *);
-                emit_string(out, s ? s : "(null)");
+                const char *str = va_arg(args, const char *);
+                if (!str) str = "(null)";
+                int len = 0;
+                while (str[len]) len++;
+                for (int pad = width - len; pad > 0; pad--) out->put(out->ctx, ' ');
+                emit_string(out, str);
                 break;
             }
             case 'c':
@@ -91,7 +109,7 @@ static void format(sink_t *out, const char *fmt, va_list args) {
                 out->put(out->ctx, '%');
                 break;
             case '\0':
-                return; // Format ended with a lone '%'
+                return; // Format ended in the middle of a specifier
             default:
                 out->put(out->ctx, '%');
                 out->put(out->ctx, *p);

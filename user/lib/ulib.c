@@ -207,7 +207,7 @@ static void out_string(outbuf_t *out, const char *s) {
     while (*s) out_char(out, *s++);
 }
 
-static void out_number(outbuf_t *out, unsigned long value, unsigned base, int negative) {
+static void out_number(outbuf_t *out, unsigned long value, unsigned base, int negative, int width, int zero_pad) {
     char digits[24];
     int n = 0;
     do {
@@ -215,11 +215,16 @@ static void out_number(outbuf_t *out, unsigned long value, unsigned base, int ne
         digits[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
         value /= base;
     } while (value);
+
+    int padding = width - n - (negative ? 1 : 0);
+    if (!zero_pad) while (padding-- > 0) out_char(out, ' ');
     if (negative) out_char(out, '-');
+    if (zero_pad) while (padding-- > 0) out_char(out, '0');
     while (n) out_char(out, digits[--n]);
 }
 
-/* Supports %d %u %x %p %s %c %% and the l length modifier. */
+/* Supports %d %u %x %p %s %c %%, the l length modifier, and a field width
+ * with optional zero padding (%5d, %02d, %8s). Fields are right-aligned. */
 static void format(int fd, const char *fmt, va_list args) {
     outbuf_t out;
     out.fd = fd;
@@ -229,19 +234,32 @@ static void format(int fd, const char *fmt, va_list args) {
         if (*fmt != '%') { out_char(&out, *fmt); continue; }
 
         fmt++;
+        int zero_pad = (*fmt == '0');
+        if (zero_pad) fmt++;
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') {
+            if (width < 64) width = width * 10 + (*fmt - '0');
+            fmt++;
+        }
         int is_long = 0;
         if (*fmt == 'l') { is_long = 1; fmt++; }
 
         switch (*fmt) {
             case 'd': {
                 long v = is_long ? va_arg(args, long) : va_arg(args, int);
-                out_number(&out, v < 0 ? -(unsigned long)v : (unsigned long)v, 10, v < 0);
+                out_number(&out, v < 0 ? -(unsigned long)v : (unsigned long)v, 10, v < 0, width, zero_pad);
                 break;
             }
-            case 'u': out_number(&out, is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned), 10, 0); break;
-            case 'x': out_number(&out, is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned), 16, 0); break;
-            case 'p': out_string(&out, "0x"); out_number(&out, (unsigned long)va_arg(args, void *), 16, 0); break;
-            case 's': { const char *s = va_arg(args, const char *); out_string(&out, s ? s : "(null)"); break; }
+            case 'u': out_number(&out, is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned), 10, 0, width, zero_pad); break;
+            case 'x': out_number(&out, is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned), 16, 0, width, zero_pad); break;
+            case 'p': out_string(&out, "0x"); out_number(&out, (unsigned long)va_arg(args, void *), 16, 0, 0, 0); break;
+            case 's': {
+                const char *str = va_arg(args, const char *);
+                if (!str) str = "(null)";
+                for (int pad = width - (int)strlen(str); pad > 0; pad--) out_char(&out, ' ');
+                out_string(&out, str);
+                break;
+            }
             case 'c': out_char(&out, (char)va_arg(args, int)); break;
             case '%': out_char(&out, '%'); break;
             case '\0': fmt--; break;
