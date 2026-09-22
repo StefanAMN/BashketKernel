@@ -13,7 +13,9 @@
  *    window allows, a FIN, or a bare acknowledgement. Everything that is
  *    transmitted goes through it, so a retransmission is nothing special:
  *    the timer moves "next to send" back to "oldest unacknowledged" and
- *    calls it.
+ *    calls it. (A fast retransmit is the one exception: tcp_input sets a
+ *    flag, and output() sends the oldest segment alone, leaving "next to
+ *    send" where it was.)
  *  - The tcpd thread runs the timers and calls output() for every socket
  *    whenever tcp_input() has left work (an acknowledgement to send) or
  *    time has passed.
@@ -33,6 +35,7 @@
 #include "kerrno.h"
 #include "random.h"
 #include "poll.h"
+#include "hrtimer.h"
 
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
@@ -44,8 +47,11 @@
 #define TCP_OUR_MSS 1460            // 1500 (Ethernet payload) - 20 (IPv4) - 20 (TCP)
 #define TCP_DEFAULT_MSS 536         // What to assume of a peer that does not say (RFC 9293, 3.7.1)
 
-#define TCP_RTO_INITIAL 20          // Ticks (200 ms) before the first retransmission
-#define TCP_RTO_MAX 300             // The back-off doubles up to 3 s
+#define TCP_RTO_INITIAL 20          // Ticks (200 ms) before the first retransmission, until a round trip is measured
+#define TCP_RTO_MAX 300             // The back-off doubles up to 3 s (TCP_RTO_MAX_US)
+#define TCP_US_PER_TICK 10000u      // The timers run in 10 ms ticks
+#define TCP_DUP_ACKS 3              // Duplicate acknowledgements that mean "lost" (RFC 5681, 3.2)
+#define TCP_DUP_ACKS_OWED_MAX 4     // Out-of-order arrivals answered one acknowledgement each, at most
 #define TCP_MAX_RETRIES 8           // Then the connection is given up
 #define TCP_TIME_WAIT_TICKS 200     // 2 s in TIME_WAIT (stands in for twice the segment lifetime)
 #define TCP_ORPHAN_TICKS 2000       // A closed socket may take 20 s to finish closing, no more
@@ -113,18 +119,33 @@ struct tcp_socket {
     uint8_t *tx;
     size_t tx_head, tx_len;
 
-    // Receiving. The ring holds data not yet read by the owner.
+    uint8_t dupacks;                // Duplicate acknowledgements of snd_una in a row
+    bool retransmit_one;            // Fast retransmit: send the segment at snd_una again, alone
+
+    // Receiving. The ring holds data not yet read by the owner, then (in
+    // the part that is free) data kept out of order: the byte with sequence
+    // number s sits (s - rcv_nxt) places after the ring's tail.
     uint32_t irs;                   // The other end's first sequence number
     uint32_t rcv_nxt;               // Next sequence number expected
     bool peer_fin;                  // The other end has finished sending
     bool ack_pending;               // Something arrived that must be acknowledged
+    uint8_t dup_acks_owed;          // Out-of-order arrivals not yet each acknowledged on their own
     uint8_t *rx;
     size_t rx_head, rx_len;
+    tcp_ooo_t ooo;                  // What is kept beyond rcv_nxt
+    bool fin_known;                 // The other end's FIN has arrived, at fin_seq,
+    uint32_t fin_seq;               // ... perhaps ahead of data still missing
 
     // Timers, in timer ticks (0: not running)
     uint64_t rto_deadline;          // Retransmit if nothing is acknowledged by then
-    uint32_t rto;                   // Current timeout
+    uint32_t rto;                   // Current timeout (backed off after each expiry)
     uint32_t retries;
+
+    // Round-trip measurement (RFC 6298): one segment at a time is timed
+    tcp_rtt_t rtt;
+    bool timing;                    // A segment is being timed
+    uint32_t timed_end;             // ... and is acknowledged once the ack reaches this
+    uint64_t timed_at_ns;           // ... sent then (clock_ns)
     uint64_t reap_deadline;         // Free the socket then, whatever state it is in
 
     // Only one CPU at a time sends for a socket: two doing it at once would
@@ -165,6 +186,22 @@ void tcp_test_drop_every(uint32_t n) {
     spinlock_release_irqrestore(&tcp_lock, flags);
 }
 
+bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack,
+                        uint32_t *unacked) {
+    bool found = false;
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    for (int i = 0; i < TCP_MAX_SOCKETS && !found; i++) {
+        struct tcp_socket *s = &sockets[i];
+        if (!s->used || s->state == TCP_LISTEN || s->local_port != local_port || s->remote_port != remote_port) continue;
+        found = true;
+        *rcv_nxt = s->rcv_nxt;
+        *ack = s->snd_max;
+        *unacked = s->snd_una;
+    }
+    spinlock_release_irqrestore(&tcp_lock, flags);
+    return found;
+}
+
 size_t tcp_sockets_in_use(void) {
     size_t n = 0;
     uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
@@ -173,7 +210,72 @@ size_t tcp_sockets_in_use(void) {
     return n;
 }
 
+// --- The reassembly list and the round-trip estimate (no locks: tcp.h) ------
+
+bool tcp_ooo_add(tcp_ooo_t *q, uint32_t start, uint32_t end) {
+    // Build the new list aside, so that "no room" changes nothing: the
+    // stretches before the new one, the new one joined with every stretch
+    // it touches or overlaps, then the stretches after it
+    tcp_ooo_t out = { .count = 0 };
+    uint32_t i = 0;
+    for (; i < q->count && SEQ_LT(q->range[i].end, start); i++) out.range[out.count++] = q->range[i];
+    for (; i < q->count && SEQ_LEQ(q->range[i].start, end); i++) {
+        if (SEQ_LT(q->range[i].start, start)) start = q->range[i].start;
+        if (SEQ_GT(q->range[i].end, end)) end = q->range[i].end;
+    }
+    if (out.count == TCP_OOO_RANGES) return false;
+    out.range[out.count].start = start;
+    out.range[out.count].end = end;
+    out.count++;
+    for (; i < q->count; i++) {
+        if (out.count == TCP_OOO_RANGES) return false;
+        out.range[out.count++] = q->range[i];
+    }
+    *q = out;
+    return true;
+}
+
+uint32_t tcp_ooo_take(tcp_ooo_t *q, uint32_t rcv_nxt) {
+    uint32_t gone = 0;
+    while (gone < q->count && SEQ_LEQ(q->range[gone].start, rcv_nxt)) {
+        if (SEQ_GT(q->range[gone].end, rcv_nxt)) rcv_nxt = q->range[gone].end;
+        gone++;
+    }
+    for (uint32_t i = gone; i < q->count; i++) q->range[i - gone] = q->range[i];
+    q->count -= gone;
+    return rcv_nxt;
+}
+
+void tcp_rtt_sample(tcp_rtt_t *t, uint32_t r) {
+    if (!t->measured) {
+        // RFC 6298 2.2: the first measurement R
+        t->srtt_us = r;
+        t->rttvar_us = r / 2;
+        t->measured = true;
+    } else {
+        // 2.3, with alpha = 1/8 and beta = 1/4, RTTVAR first: it uses the
+        // SRTT from before this sample. (Integer arithmetic: each step
+        // rounds down by under a microsecond.)
+        uint32_t diff = t->srtt_us > r ? t->srtt_us - r : r - t->srtt_us;
+        t->rttvar_us = t->rttvar_us - t->rttvar_us / 4 + diff / 4;
+        t->srtt_us = t->srtt_us - t->srtt_us / 8 + r / 8;
+    }
+    // 2.3: RTO = SRTT + max(G, K * RTTVAR) with K = 4, then the limits (tcp.h)
+    uint64_t variance = 4ull * t->rttvar_us;
+    uint64_t rto = (uint64_t)t->srtt_us + (variance > TCP_CLOCK_GRANULARITY_US ? variance : TCP_CLOCK_GRANULARITY_US);
+    if (rto < TCP_RTO_MIN_US) rto = TCP_RTO_MIN_US;
+    if (rto > TCP_RTO_MAX_US) rto = TCP_RTO_MAX_US;
+    t->rto_us = (uint32_t)rto;
+}
+
 // --- Helpers (callers hold tcp_lock) -------------------------------------------
+
+// The timeout to start from, in ticks (rounded up): the measured one once
+// there is a measurement, else the initial guess. Caller holds tcp_lock.
+static uint32_t base_rto(const struct tcp_socket *sock) {
+    if (!sock->rtt.measured) return TCP_RTO_INITIAL;
+    return (sock->rtt.rto_us + TCP_US_PER_TICK - 1) / TCP_US_PER_TICK;
+}
 
 // Wake whoever waits on a socket (its owner in read, write, connect or
 // accept) and anyone polling. Caller holds tcp_lock.
@@ -209,7 +311,9 @@ static void abort_connection(struct tcp_socket *sock, int error) {
     if (sock->listener || !sock->user_open) free_socket(sock);
 }
 
-// Room left in the receive ring: what we offer the other end as window
+// Room left in the receive ring: what we offer the other end as window.
+// (Data kept out of order lies inside it, at the place its sequence number
+// gives it: it is in the window, and is counted once it is in order.)
 static size_t rx_free(const struct tcp_socket *sock) {
     return TCP_BUFFER_SIZE - sock->rx_len;
 }
@@ -352,8 +456,21 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
         }
 
         uint32_t seq = sock->snd_nxt;
+        uint32_t snd_max_before = sock->snd_max;
+        bool fast = false;
 
-        if (!sock->syn_acked) {
+        if (sock->retransmit_one) {
+            // Fast retransmit: the oldest unacknowledged segment, once,
+            // without moving snd_nxt (what follows it was not lost). (Only
+            // data: tcp_input asks for it only while data is outstanding.)
+            sock->retransmit_one = false;
+            len = sock->tx_len < sock->mss ? sock->tx_len : sock->mss;
+            for (size_t i = 0; i < len; i++) data[i] = sock->tx[(sock->tx_head + i) % TCP_BUFFER_SIZE];
+            seq = sock->snd_una;
+            flags = TCP_ACK | TCP_PSH;
+            fast = true;
+            stats.fast_retransmissions++;
+        } else if (!sock->syn_acked) {
             // Still opening: the only thing to send is the SYN, once per
             // (re)transmission
             if (sock->snd_nxt == sock->iss) {
@@ -388,7 +505,12 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
                 sock->snd_nxt++;
             }
 
-            if (flags == 0 && sock->ack_pending) flags = TCP_ACK;
+            if (flags == 0 && (sock->ack_pending || sock->dup_acks_owed > 0)) {
+                // A bare acknowledgement. One is owed for every segment that
+                // arrived out of order: they are the sender's duplicates
+                flags = TCP_ACK;
+                if (sock->dup_acks_owed > 0) sock->dup_acks_owed--;
+            }
         }
 
         if (flags == 0) {
@@ -397,11 +519,19 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
         }
 
         bool takes_sequence_space = len > 0 || (flags & (TCP_SYN | TCP_FIN));
-        if (takes_sequence_space) {
+        if (takes_sequence_space && !fast) {
             if (SEQ_GT(sock->snd_nxt, sock->snd_max)) sock->snd_max = sock->snd_nxt;
             if (sock->rto_deadline == 0) sock->rto_deadline = timer_ticks() + sock->rto;
+            // Time this one if nothing is being timed and it is new: a
+            // segment sent before can not be timed (Karn's rule, RFC 6298 3)
+            if (!sock->timing && !SEQ_LT(seq, snd_max_before)) {
+                sock->timing = true;
+                sock->timed_end = sock->snd_nxt;
+                sock->timed_at_ns = clock_ns();
+            }
         }
         if (flags & TCP_ACK) sock->ack_pending = false;
+        bool more_acks = sock->dup_acks_owed > 0;
 
         uint32_t ip = sock->remote_ip;
         uint16_t local_port = sock->local_port, remote_port = sock->remote_port;
@@ -412,7 +542,7 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
 
         transmit(ip, local_port, remote_port, seq, ack, flags, window, data, len, can_block);
 
-        if (!takes_sequence_space) return; // A bare acknowledgement: nothing more can be due
+        if (!takes_sequence_space && !more_acks) return; // A bare acknowledgement: nothing more can be due
     }
 }
 
@@ -506,6 +636,18 @@ static void accept_syn(struct tcp_socket *listener, uint32_t src, const struct t
     kick_tcpd();                                    // To send the SYN+ACK
 }
 
+// An acknowledgement up to `ack` has arrived: if it covers the segment
+// being timed, that is a round trip (RFC 6298), and the timeout becomes the
+// newly computed one. Caller holds tcp_lock.
+static void ack_timed(struct tcp_socket *sock, uint32_t ack) {
+    if (!sock->timing || SEQ_LT(ack, sock->timed_end)) return;
+    sock->timing = false;
+    uint64_t elapsed_us = (clock_ns() - sock->timed_at_ns) / 1000;
+    tcp_rtt_sample(&sock->rtt, elapsed_us > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)elapsed_us);
+    stats.rtt_samples++;
+    sock->rto = base_rto(sock);    // A valid sample ends any back-off (Karn: RFC 6298 5.7 and 3)
+}
+
 // The other end acknowledged everything up to `ack`
 static void process_ack(struct tcp_socket *sock, uint32_t ack) {
     uint32_t acked = ack - sock->snd_una;
@@ -516,9 +658,13 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
     sock->tx_len -= data_acked;
     sock->snd_una = ack;
     if (SEQ_LT(sock->snd_nxt, sock->snd_una)) sock->snd_nxt = sock->snd_una;
+    sock->dupacks = 0;
+    sock->retransmit_one = false;   // What it would have sent may be acknowledged now
 
-    // Progress: start timing afresh, for whatever is still outstanding
-    sock->rto = TCP_RTO_INITIAL;
+    // Progress: restart the timer for whatever is still outstanding (RFC
+    // 6298 5.3), with the current timeout. That stays backed off until a
+    // segment sent only once is timed (Karn's rule).
+    ack_timed(sock, ack);
     sock->rto_deadline = (sock->snd_una == sock->snd_max) ? 0 : timer_ticks() + sock->rto;
 
     if (fin_acked) {
@@ -583,6 +729,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
             sock->snd_wnd = swap16(tcp->window);
             sock->mss = mss_from_options(segment + TCP_HEADER_LEN, header_len - TCP_HEADER_LEN);
             sock->rto = TCP_RTO_INITIAL;
+            ack_timed(sock, ack);                   // The SYN's round trip, unless it was sent twice
             sock->rto_deadline = 0;
             sock->retries = 0;
             sock->state = TCP_ESTABLISHED;
@@ -621,6 +768,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         sock->snd_una = ack;
         sock->syn_acked = true;
         sock->rto = TCP_RTO_INITIAL;
+        ack_timed(sock, ack);                       // The SYN+ACK's round trip
         sock->rto_deadline = 0;
         sock->retries = 0;
         sock->state = TCP_ESTABLISHED;
@@ -633,6 +781,18 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
     } else if (SEQ_GT(ack, sock->snd_una)) {
         process_ack(sock, ack);
         if (!sock->used) goto done; // That was the last thing it was waiting for
+    } else if (ack == sock->snd_una && data_len == 0 && !(flags & TCP_FIN) && sock->tx_len > 0 &&
+               sock->snd_una != sock->snd_max && swap16(tcp->window) == sock->snd_wnd) {
+        // A duplicate acknowledgement (RFC 5681, 2: nothing new acknowledged,
+        // no data, the window the same, data outstanding). The third in a
+        // row says the segment at snd_una was lost while later ones arrived:
+        // send it again now (3.2). Later duplicates change nothing, since
+        // there is no congestion window to inflate (tcp.h).
+        if (++sock->dupacks == TCP_DUP_ACKS) {
+            sock->retransmit_one = true;
+            sock->timing = false;                   // Karn: what is timed may be the one sent again
+            kick_tcpd();
+        }
     }
 
     // Any acceptable segment shows the other end is alive and tells us its window
@@ -667,34 +827,68 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         data_len -= repeated;
         seq += repeated;
     }
+    bool receiving = sock->state == TCP_ESTABLISHED || sock->state == TCP_FIN_WAIT_1 || sock->state == TCP_FIN_WAIT_2;
+    // (A connection still waiting for tcp_accept keeps what arrives: the
+    // other end may start talking as soon as it is connected.)
+    bool keeping = sock->user_open || sock->listener;
+
     if (seq != sock->rcv_nxt) {
-        // A gap: something before this was lost. It is not kept (tcp.h);
-        // saying again what we expect makes the sender's timer bring it back.
+        // A gap: something before this was lost. Keep what fits of this
+        // segment in the window, at the place its sequence number gives it
+        // (the free part of the ring), and acknowledge what we expect once
+        // for each such segment: those are the duplicates that tell the
+        // sender which one to send again (RFC 5681, 3.2, and 4.2: an
+        // out-of-order segment is acknowledged at once).
         stats.out_of_order++;
+        uint32_t offset = seq - sock->rcv_nxt;
+        size_t room = rx_free(sock);
+        if (receiving && keeping && offset < room) {
+            size_t fits = data_len < room - offset ? data_len : room - offset;
+            if (fits == 0 || tcp_ooo_add(&sock->ooo, seq, seq + (uint32_t)fits)) {
+                size_t tail = (sock->rx_head + sock->rx_len) % TCP_BUFFER_SIZE;
+                for (size_t i = 0; i < fits; i++) sock->rx[(tail + offset + i) % TCP_BUFFER_SIZE] = data[i];
+                if (fits > 0) stats.out_of_order_kept++;
+                if (fin && fits == data_len) {
+                    sock->fin_known = true;
+                    sock->fin_seq = seq + (uint32_t)data_len;
+                }
+            }
+        }
+        if (sock->dup_acks_owed < TCP_DUP_ACKS_OWED_MAX) sock->dup_acks_owed++;
         sock->ack_pending = true;
         kick_tcpd();
         goto done;
     }
 
-    bool receiving = sock->state == TCP_ESTABLISHED || sock->state == TCP_FIN_WAIT_1 || sock->state == TCP_FIN_WAIT_2;
     size_t accepted = 0;
     if (receiving) {
-        if (!sock->user_open && !sock->listener) {
+        uint32_t before = sock->rcv_nxt;
+        if (!keeping) {
             accepted = data_len;                    // Its owner has closed it: take it and drop it
         } else {
-            // (A connection still waiting for tcp_accept keeps what arrives:
-            // the other end may start talking as soon as it is connected.)
             accepted = data_len < rx_free(sock) ? data_len : rx_free(sock);
             size_t tail = (sock->rx_head + sock->rx_len) % TCP_BUFFER_SIZE;
             for (size_t i = 0; i < accepted; i++) sock->rx[(tail + i) % TCP_BUFFER_SIZE] = data[i];
-            sock->rx_len += accepted;
         }
         sock->rcv_nxt += (uint32_t)accepted;
+        if (fin && accepted == data_len) {
+            sock->fin_known = true;
+            sock->fin_seq = sock->rcv_nxt;
+        }
+        // What was kept ahead and is now reached is in order: it is already
+        // in the ring, after what just arrived
+        if (sock->ooo.count > 0) {
+            sock->rcv_nxt = tcp_ooo_take(&sock->ooo, sock->rcv_nxt);
+            sock->dup_acks_owed = 0;                // The gap has moved: those would not be duplicates
+        }
+        if (keeping) sock->rx_len += sock->rcv_nxt - before;
     }
 
     // The FIN comes after the data: it only counts once all of that is in
-    if (fin && accepted == data_len && seq + (uint32_t)data_len == sock->rcv_nxt) {
+    // (it may have arrived earlier, ahead of a gap)
+    if (sock->fin_known && sock->fin_seq == sock->rcv_nxt) {
         if (receiving) {
+            sock->fin_known = false;
             sock->rcv_nxt++;
             sock->peer_fin = true;
             if (sock->state == TCP_ESTABLISHED) {
@@ -746,6 +940,9 @@ static void run_timers(struct tcp_socket *sock, uint64_t now) {
         // Go back to the oldest thing not acknowledged and send from there
         // again; wait twice as long for the answer this time
         stats.retransmissions++;
+        sock->timing = false;                       // Karn's rule: nothing sent twice is timed
+        sock->dupacks = 0;
+        sock->retransmit_one = false;               // Everything from snd_una goes again anyway
         sock->snd_nxt = sock->syn_acked ? sock->snd_una : sock->iss;
         sock->rto = sock->rto * 2 > TCP_RTO_MAX ? TCP_RTO_MAX : sock->rto * 2;
         sock->rto_deadline = now + sock->rto;
@@ -981,6 +1178,7 @@ void tcp_close(tcp_socket_t *sock) {
     }
     sock->user_open = false;
     sock->rx_len = 0; // Nobody will read it
+    sock->ooo.count = 0; // Nor what was kept out of order: from now on it is taken and dropped
 
     switch (sock->state) {
         case TCP_LISTEN:

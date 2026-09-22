@@ -87,7 +87,7 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
         // set what it shows for every file.)
         if (!parent->ops || !parent->ops->create || (node->ops && node->ops->setattr)) {
             node->uid = uid;
-            node->gid = (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT;
+            node->gid = auth_new_entry_group(parent, (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT);
             node->mode = (uint16_t)(PERM_NEW_FILE & ~auth_current_umask());
             if (node->ops && node->ops->setattr) node->ops->setattr(node);
         }
@@ -97,6 +97,9 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     if (node->read_only && writable) return -EROFS;
     if (access != O_WRONLY && !auth_may_access(uid, node, false)) return -EACCES;
     if (writable && !auth_may_access(uid, node, true)) return -EACCES;
+    // A running program reads its file page by page: changing it would
+    // change code not read yet under the program's feet
+    if (writable && node->exec_count > 0) return -ETXTBSY;
 
     file_t *file = file_alloc(FILE_VNODE, access != O_WRONLY, writable);
     if (!file) return -ENOMEM;
@@ -119,6 +122,7 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     file->append = (flags & O_APPEND) != 0;
     file->node = node;
     node->open_count++;
+    if (writable) node->write_count++;   // (Until closed, the file cannot be run: see process.c)
 
     *out = file;
     return 0;
@@ -207,6 +211,7 @@ void file_close(file_t *file) {
         // to it (another CPU may be opening the same node)
         vfs_lock();
         file->node->open_count--;
+        if (file->writable) file->node->write_count--;
         if (file->node->ops && file->node->ops->closed) file->node->ops->closed(file->node, file->writable);
         vfs_unlock();
     } else if (file->kind == FILE_PIPE) {

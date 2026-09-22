@@ -1025,10 +1025,41 @@ static long meminfo(const char *label) {
     return atoi(at);
 }
 
+/* Read every page of this program's own code and constants once. They are
+ * read from the file as they are first used, and each counts as promised
+ * until then: a check of "Promised" before and after would otherwise see
+ * syscheck's own code arrive. Returns how many pages were touched. */
+static long touch_own_program(void) {
+    static char text[2048];
+    long fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return -1;
+    long n = read((int)fd, text, sizeof(text) - 1);
+    close((int)fd);
+    if (n <= 0) return -1;
+    text[n] = '\0';
+    long pages = 0;
+    for (char *line = text; *line; ) {
+        unsigned long start = 0, end = 0;
+        char *c = line;
+        for (; (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f'); c++) start = start * 16 + (unsigned long)(*c <= '9' ? *c - '0' : *c - 'a' + 10);
+        if (*c == '-') c++;
+        for (; (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f'); c++) end = end * 16 + (unsigned long)(*c <= '9' ? *c - '0' : *c - 'a' + 10);
+        char *eol = strchr(line, '\n');
+        if (eol) *eol = '\0';
+        if (c[0] == ' ' && strncmp(c + 5, "program", 7) == 0) {        /* "start-end rwx program" */
+            for (unsigned long page = start; page < end; page += 4096, pages++) (void)*(volatile char *)page;
+        }
+        if (!eol) break;
+        line = eol + 1;
+    }
+    return pages;
+}
+
 /* Mapped memory costs nothing until touched (MemFree and Promised in
  * /proc/meminfo say so), and file mappings read the file */
 static void check_lazy_memory(void) {
     const size_t big = 64UL << 20;                         /* 64 MiB */
+    CHECK(touch_own_program() > 0);
     long free_before = meminfo("MemFree:");
     long promised_before = meminfo("Promised:");
     CHECK(free_before > 0 && promised_before >= 0);
@@ -2138,6 +2169,39 @@ static int run_quietly(const char *path, const char *a1, const char *a2, const c
     return status;
 }
 
+/* A running program is read from its file page by page, so the file must
+ * stay as it is while it runs: not opened for writing or truncated
+ * (-ETXTBSY), not removed (-EBUSY); and a file open for writing cannot be
+ * run. All on a copy, so a failure harms nothing that matters. */
+static void check_running_program_file(void) {
+    CHECK(run_quietly("/bin/cp", "/bin/sleep", "/tmp/running", NULL) == 0);
+    long pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/tmp/running", "30", NULL };
+        execv("/tmp/running", args);
+        exit(127);
+    }
+    CHECK(pid > 0);
+    sleep_ms(300);                                         /* Running: asleep in its nanosleep */
+    CHECK(open("/tmp/running", O_WRONLY) == -ETXTBSY);
+    CHECK(open("/tmp/running", O_RDWR | O_APPEND) == -ETXTBSY);
+    CHECK(truncate("/tmp/running", 0) == -ETXTBSY);
+    CHECK(unlink("/tmp/running") == -EBUSY);
+    long fd = open("/tmp/running", O_RDONLY);              /* Reading it is fine */
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    int status = -1;
+    CHECK(kill(pid, SIGKILL) == 0 && waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
+
+    /* Not running any more: it may be written; while it is open for that, run it may not */
+    fd = open("/tmp/running", O_WRONLY | O_APPEND);
+    CHECK(fd >= 0);
+    CHECK(run_quietly("/tmp/running", "0", NULL, NULL) == 127);
+    if (fd >= 0) close((int)fd);
+    CHECK(run_quietly("/tmp/running", "0", NULL, NULL) == 0);
+    CHECK(unlink("/tmp/running") == 0);
+}
+
 /* /bin/dhcp's lease arithmetic (its own checks, -T: when to renew, rebind
  * and give up, from what a server may send), and options it must refuse
  * before touching the network */
@@ -2565,6 +2629,58 @@ static int put_file(const char *path, const char *text, size_t size) {
     return ok;
 }
 
+/* The shell's $((...)) (precedence, signs, bases, wrapping, variables,
+ * && and || that skip, the errors) and read (fields, the rest, -r and
+ * backslashes, the end of input, from a file, a pipe and a loop) */
+static void check_shell_arith_read(void) {
+    CHECK(sh_prints("echo $((1 + 2 * 3)) $(( (1 + 2) * 3 )) $((10 - 4 - 3)) $((2 * 3 % 4))", "7 9 3 2\n"));
+    CHECK(sh_prints("echo $((-7 / 2)) $((-7 % 2)) $((- -3)) $((+4)) $((!0)) $((!5))", "-3 -1 3 4 1 0\n"));
+    CHECK(sh_prints("echo $((0x1f)) $((010)) $((1 < 2)) $((2 <= 1)) $((3 == 3)) $((3 != 3)) $((2 >= 2))",
+                    "31 8 1 0 1 0 1\n"));
+    CHECK(sh_prints("echo $((9223372036854775807 + 1)) $((-9223372036854775807 - 1 - 1))",
+                    "-9223372036854775808 9223372036854775807\n"));        /* Wraps, as said */
+    CHECK(sh_prints("echo $((-9223372036854775807 - 1)) $(((-9223372036854775807 - 1) / -1))",
+                    "-9223372036854775808 -9223372036854775808\n"));
+    CHECK(sh_prints("i=4; echo $((i * i)) $(($i + 1)) $((${i} - 1)) $((unset_x + 1))", "16 5 3 1\n"));
+    CHECK(sh_prints("n=-3; s=' 7 '; e=; echo $((n * 2)) $((s + 1)) $((e))", "-6 8 0\n"));
+    CHECK(sh_prints("i=0; while [ $i -lt 5 ]; do i=$((i + 1)); done; echo $i", "5\n"));
+    CHECK(sh_prints("f() { echo $(($1 + $2)) $(($#)); }; f 40 2", "42 2\n"));
+    CHECK(sh_prints("false; echo $(($? * 10))", "10\n"));
+    CHECK(sh_prints("echo \"[$((1+1))]\" x$((2))y", "[2] x2y\n"));
+    CHECK(sh_prints("x=0; echo $((x != 0 && 10 / x)) $((x == 0 || 10 / x))", "0 1\n"));  /* Not evaluated */
+    CHECK(sh_prints("x=abc; echo $((0 && x))", "0\n"));
+    CHECK(sh_prints("echo \"$(echo a)\"; echo b", "a\nb\n"));                /* ')' inside quotes */
+    CHECK(sh_ends("echo $((1 / 0))", "", 2));
+    CHECK(sh_ends("echo $((5 % 0))", "", 2));
+    CHECK(sh_ends("x=abc; echo $((x + 1))", "", 2));
+    CHECK(sh_ends("echo $((1 +))", "", 2));
+    CHECK(sh_ends("echo $((1 2))", "", 2));
+    CHECK(sh_ends("echo $(((1 + 2))", "", 2));
+    CHECK(sh_ends("echo $((08))", "", 2));
+    CHECK(sh_ends("echo $((99999999999999999999))", "", 2));
+    CHECK(sh_ends("echo $((1 / 0)) never; echo after", "after\n", 0));      /* Only that command fails */
+
+    static const char rd[] = "one two three four\n  lead  trail  \nlast";
+    CHECK(put_file("/tmp/rd", rd, strlen(rd)));
+    CHECK(sh_prints("read a b < /tmp/rd; echo [$a][$b]", "[one][two three four]\n"));
+    CHECK(sh_prints("read a b c d e < /tmp/rd; echo [$a][$d][$e]", "[one][four][]\n"));
+    CHECK(sh_prints("while read l; do echo [$l]; done < /tmp/rd", "[one two three four]\n[lead  trail]\n"));
+    CHECK(sh_prints("{ read x; read y z; read w; echo [$x][$y][$z][$w] $?; } < /tmp/rd",
+                    "[one two three four][lead][trail][last] 1\n"));            /* Last line, no '\n': 1 */
+    CHECK(sh_prints("echo 'a b' | { read p q; echo [$p][$q]; }", "[a][b]\n"));
+    CHECK(sh_prints("x=kept; echo new | read x; echo $x", "kept\n"));      /* In a child: lost */
+    CHECK(sh_prints("echo 'a\\ b c\\\\d' | { read p q; echo [$p][$q]; }", "[a b][c\\d]\n"));
+    CHECK(sh_prints("echo 'a\\ b c' | { read -r p q; echo [$p][$q]; }", "[a\\][b c]\n"));
+    CHECK(sh_prints("printf_free() { echo 'jo\\'; echo 'ined'; }; printf_free | { read v; echo $v; }", "joined\n"));
+    CHECK(sh_ends("read v; echo [$v]", "[]\n", 0));                         /* Empty input: the echo's status */
+    CHECK(sh_ends("read v", "", 1));
+    CHECK(sh_ends("read", "", 2));
+    CHECK(sh_ends("read 1x", "", 2));
+    CHECK(sh_ends("read v < /no/such", "", 1));
+    CHECK(sh_prints("read v < /no/such; read w < /tmp/rd; echo $w", "one two three four\n"));  /* Input put back */
+    CHECK(unlink("/tmp/rd") == 0);
+}
+
 /* uniq, cut and tr: their basic forms, a line longer than any fixed buffer
  * (two equal ones, then a last line without '\n'), and what they refuse */
 static void check_line_tools(void) {
@@ -2731,6 +2847,117 @@ static void check_more_tools(void) {
     CHECK(put_file("/tmp/xw", big, sizeof(big)));
     CHECK(sh_capture("xargs < /tmp/xw", out, sizeof(out)) == 1);
     CHECK(unlink("/tmp/xw") == 0);
+}
+
+/* What lstat says of `path`: its group, and its mode in *mode (if not
+ * NULL); -1 if it cannot be described */
+static long group_of(const char *path, unsigned *mode) {
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    if (mode) *mode = st.mode;
+    return st.gid;
+}
+
+/* `dir` followed by `rest`, in `out` (96 bytes; the paths here are short) */
+static const char *join(char *out, const char *dir, const char *rest) {
+    size_t d = strlen(dir), r = strlen(rest);
+    if (d + r >= 96) return "/too-long";
+    memcpy(out, dir, d);
+    memcpy(out + d, rest, r + 1);
+    return out;
+}
+
+/* In the set-gid directory `dir` (group 50): a new file, directory and link
+ * take its group, a new directory takes the bit too, and that passes
+ * further down; a file gets no bit; in a directory without the bit, the
+ * creator's group (`own_gid`). How many of these did not hold. */
+static int setgid_directory_rule(const char *dir, unsigned own_gid) {
+    char path[96];
+    int failed = 0;
+    unsigned mode = 0;
+    long fd = open(join(path, dir, "/file"), O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0 || close((int)fd) != 0 || group_of(path, NULL) != 50) failed++;
+    if (mkdir(join(path, dir, "/sub")) != 0 || group_of(path, &mode) != 50 || !(mode & 02000)) failed++;
+    if (symlink("file", join(path, dir, "/link")) != 0 || group_of(path, NULL) != 50) failed++;
+    if (mkdir(join(path, dir, "/sub/deeper")) != 0 || group_of(path, &mode) != 50 || !(mode & 02000)) failed++;
+    fd = open(join(path, dir, "/sub/deeper/file"), O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0 || close((int)fd) != 0 || group_of(path, &mode) != 50 || (mode & 02000)) failed++;
+    /* Without the bit, the creator's group */
+    if (chmod(join(path, dir, "/sub/deeper"), 0777) != 0) failed++;
+    fd = open(join(path, dir, "/sub/deeper/plain"), O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0 || close((int)fd) != 0 || group_of(path, NULL) != (long)own_gid) failed++;
+    return failed;
+}
+
+/* rm -r `dir` through the shell: its exit status */
+static int remove_tree(const char *dir) {
+    static char command[128], out[64];
+    memcpy(command, "rm -r ", 6);
+    size_t n = strlen(dir);
+    if (n >= sizeof(command) - 6) return -1;
+    memcpy(command + 6, dir, n + 1);
+    return sh_capture(command, out, sizeof(out));
+}
+
+/* The set-gid directory rule as alice (group 100), in one everyone may
+ * write: it is not a privilege of root's */
+static void setgid_directory_as_alice(void) {
+    CHECK(setgid_directory_rule("/tmp/sga", 100) == 0);
+}
+
+/* mkdir -p, rmdir, rm -r (links removed, never followed), and set-gid
+ * directories, on the memory filesystem and on ext2 */
+static void check_directory_tools(void) {
+    static char out[256];
+    struct stat st;
+    CHECK(sh_prints("mkdir -p /tmp/tt/a/b/c/d && mkdir -p /tmp/tt/a/b /tmp/tt//e/ && echo ok", "ok\n"));
+    CHECK(stat("/tmp/tt/a/b/c/d", &st) == 0 && st.type == S_DIR);
+    CHECK(stat("/tmp/tt/e", &st) == 0 && st.type == S_DIR);
+    CHECK(sh_ends("mkdir /tmp/tt/a", "", 1));                              /* Exists: only -p accepts it */
+    CHECK(put_file("/tmp/tt/f", "x", 1));
+    CHECK(sh_ends("mkdir -p /tmp/tt/f/x", "", 1));                         /* A file on the way */
+    CHECK(sh_ends("mkdir -p /tmp/tt/f", "", 1));                           /* ... or at the end */
+    CHECK(sh_ends("mkdir -z /tmp/tt/z", "", 2));
+
+    /* rmdir: empty directories only, not files, not links to directories */
+    CHECK(symlink("/tmp/tt/e", "/tmp/tt/to-e") == 0);
+    CHECK(sh_ends("rmdir /tmp/tt/a", "", 1) && stat("/tmp/tt/a", &st) == 0);
+    CHECK(sh_ends("rmdir /tmp/tt/f", "", 1) && stat("/tmp/tt/f", &st) == 0);
+    CHECK(sh_ends("rmdir /tmp/tt/to-e", "", 1) && lstat("/tmp/tt/to-e", &st) == 0 && stat("/tmp/tt/e", &st) == 0);
+    CHECK(sh_prints("rmdir /tmp/tt/a/b/c/d && echo gone", "gone\n") && stat("/tmp/tt/a/b/c/d", &st) == -ENOENT);
+
+    /* rm -r: the whole tree, but not what a link in it points at */
+    CHECK(mkdir("/tmp/keep") == 0 && put_file("/tmp/keep/k", "kept", 4));
+    CHECK(symlink("/tmp/keep", "/tmp/tt/a/b/outside") == 0);
+    CHECK(symlink("/tmp/keep/k", "/tmp/tt/a/k-link") == 0);
+    CHECK(sh_ends("rm /tmp/tt/a", "", 1));                                 /* Without -r: not a full directory */
+    CHECK(sh_prints("rm -r /tmp/tt && echo removed", "removed\n"));
+    CHECK(lstat("/tmp/tt", &st) == -ENOENT);
+    CHECK(stat("/tmp/keep/k", &st) == 0 && st.size == 4);
+    CHECK(sh_ends("rm -r /", "", 1) && stat("/bin/sh", &st) == 0);
+    CHECK(sh_ends("rm -r ///", "", 1));
+    CHECK(sh_ends("rm -r /tmp/keep/..", "", 1) && stat("/tmp/keep/k", &st) == 0);
+    CHECK(sh_ends("cd /tmp/keep && rm -r .", "", 1) && stat("/tmp/keep/k", &st) == 0);
+    CHECK(sh_ends("rm -r /tmp/keep/./", "", 1));
+    CHECK(sh_ends("rm -r /tmp/no-such", "", 1));
+    CHECK(sh_ends("rm -x /tmp/keep", "", 2));
+    CHECK(sh_prints("rm -r /tmp/keep/k && rm -r /tmp/keep && echo ok", "ok\n") && stat("/tmp/keep", &st) == -ENOENT);
+
+    /* Set-gid directories, on the memory filesystem (root's group is 0) */
+    CHECK(mkdir("/tmp/sg") == 0 && chown("/tmp/sg", KEEP_ID, 50) == 0 && chmod("/tmp/sg", 02775) == 0);
+    CHECK(setgid_directory_rule("/tmp/sg", 0) == 0);
+    CHECK(sh_capture("ls -l /tmp | grep ' sg'", out, sizeof(out)) == 0 && strncmp(out, "drwxrwsr-x", 10) == 0);
+    CHECK(remove_tree("/tmp/sg") == 0 && stat("/tmp/sg", &st) == -ENOENT);
+    CHECK(mkdir("/tmp/sga") == 0 && chown("/tmp/sga", KEEP_ID, 50) == 0 && chmod("/tmp/sga", 02777) == 0);
+    CHECK(as_user_in_group(1000, 100, setgid_directory_as_alice) == 0);
+    CHECK(remove_tree("/tmp/sga") == 0);
+
+    /* ... and on the system disk, when it is the root (ext2 stores the group) */
+    if (stat("/", &st) == 0 && st.dev == 3) {
+        CHECK(mkdir("/sg-check") == 0 && chown("/sg-check", KEEP_ID, 50) == 0 && chmod("/sg-check", 02775) == 0);
+        CHECK(setgid_directory_rule("/sg-check", 0) == 0);
+        CHECK(remove_tree("/sg-check") == 0 && stat("/sg-check", &st) == -ENOENT);
+    }
 }
 
 /* The shell's if, while and for, break and continue, and test / [ */
@@ -3424,15 +3651,18 @@ int main(void) {
     check_stat();
     check_truncate();
     check_text_tools();
+    check_running_program_file();
     check_shell_words();
     check_shell_control();
     check_shell_redirects();
     check_shell_variables();
     check_shell_case_functions();
     check_shell_compound_redirects();
+    check_shell_arith_read();
     check_line_tools();
     check_hosts_file();
     check_more_tools();
+    check_directory_tools();
     check_proc();
     check_proc_maps_fd();
     check_proc_interrupts();

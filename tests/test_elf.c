@@ -6,6 +6,7 @@
 #include "pmm.h"
 #include "heap.h"
 #include "kstring.h"
+#include "mmap.h"
 
 // Load `image` into a throwaway address space and report whether the loader
 // accepted it. Also checks that a rejected image leaves no frames behind.
@@ -273,6 +274,62 @@ TEST(elf_rejects_bad_placement_and_relocations) {
     release_program(file);
 }
 
+// Loaded from a file (a source with a node), the read-only segments are
+// not loaded but listed, to be read page by page; the writable one is
+// loaded and relocated. A relocation aimed at a segment left for later is
+// refused: its page is not there to patch (and must not be: it would be
+// read again from the file).
+TEST(elf_leaves_read_only_segments_to_the_file) {
+    program_t *file = load_program("/bin/colors");
+    vnode_t *node = vfs_find(NULL, "/bin/colors");
+    if (!file || !node) return;
+    size_t free_before = test_free_frames();
+    uint8_t *copy = kmalloc(file->size);
+    elf_program_t *out = kmalloc(sizeof(elf_program_t));
+    EXPECT_TRUE(copy != NULL && out != NULL);
+    if (!copy || !out) return;
+    memcpy(copy, file->data, file->size);
+
+    elf_source_t from_file = { copy, node, file->size };   // (Read from `copy`; `node` only says "a file")
+    uint64_t *space = vmm_create_address_space();
+    EXPECT_TRUE(elf_load_program(space, &from_file, out));
+    EXPECT_TRUE(out->lazy_count >= 2);                    // Code and constants
+    bool code_listed = false, none_mapped = true;
+    for (uint32_t i = 0; i < out->lazy_count; i++) {
+        const elf_lazy_t *lazy = &out->lazy[i];
+        EXPECT_TRUE(!(lazy->prot & PROT_WRITE) && (lazy->file_offset & 0xFFF) == 0 && lazy->end > lazy->start);
+        if (lazy->prot & PROT_EXEC) code_listed = code_listed || (out->entry >= lazy->start && out->entry < lazy->end);
+        for (uint64_t page = lazy->start; page < lazy->end; page += PAGE_SIZE) {
+            none_mapped = none_mapped && !(vmm_get_pte(space, page) & VMM_PRESENT);
+        }
+    }
+    EXPECT_TRUE(code_listed);                             // The entry point is in a listed segment
+    EXPECT_TRUE(none_mapped);                             // ...and nothing of them was read
+    vmm_destroy_address_space(space);
+
+    // A relocation into the code: loads when everything is loaded (it is
+    // inside the image), refused when the code is left to the file
+    size_t count = 0;
+    const Elf64_Dyn *dyn = NULL;
+    Elf64_Rela *rela = (Elf64_Rela *)find_relocations(copy, &count, &dyn);
+    EXPECT_TRUE(rela != NULL && count > 0);
+    if (rela) {
+        rela[0].r_offset = 0x10;                          // In the text segment, which starts at 0
+        space = vmm_create_address_space();
+        uint64_t entry = 0;
+        EXPECT_TRUE(elf_load_at(space, copy, file->size, TEST_BASE, &entry, NULL, NULL));
+        vmm_destroy_address_space(space);
+        space = vmm_create_address_space();
+        EXPECT_TRUE(!elf_load_program(space, &from_file, out));
+        vmm_destroy_address_space(space);
+    }
+
+    kfree(out);
+    kfree(copy);
+    EXPECT_TRUE(test_free_frames() == free_before);
+    release_program(file);
+}
+
 TEST(elf_rejects_malformed_files) {
     program_t *file = load_program("/bin/hello");
     EXPECT_TRUE(file != NULL);
@@ -347,6 +404,7 @@ void test_suite_elf(void) {
     RUN_TEST(elf_loads_real_program);
     RUN_TEST(elf_applies_relocations);
     RUN_TEST(elf_load_address_is_random);
+    RUN_TEST(elf_leaves_read_only_segments_to_the_file);
     RUN_TEST(elf_rejects_bad_placement_and_relocations);
     RUN_TEST(elf_rejects_malformed_files);
 }

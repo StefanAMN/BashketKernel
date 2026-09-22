@@ -56,6 +56,8 @@ static bool can_promise(size_t pages) {
     return free_frames > spoken_for && pages <= free_frames - spoken_for;
 }
 
+static mem_region_t *free_slot(struct task *task);
+
 // Pages of [start, end) that have no frame yet
 static size_t untouched_pages(const struct task *task, uint64_t start, uint64_t end) {
     size_t count = 0;
@@ -68,12 +70,37 @@ static size_t untouched_pages(const struct task *task, uint64_t start, uint64_t 
 }
 
 // A region's file must not be removed while the region exists: it counts as
-// open, like a file descriptor or a working directory
-static void pin(struct vnode *node, int by) {
-    if (!node) return;
+// open, like a file descriptor or a working directory. A region of the
+// program itself also keeps the file from being written (exec_count).
+static void pin(const mem_region_t *region, int by) {
+    if (!region->node) return;
     vfs_lock();
-    node->open_count += by;
+    region->node->open_count += by;
+    if (region->program) region->node->exec_count += by;
     vfs_unlock();
+}
+
+void region_hold_program(struct vnode *node, int by) {
+    mem_region_t region = { .node = node, .program = true };
+    pin(&region, by);
+}
+
+bool region_reserve(size_t pages) {
+    if (!can_promise(pages)) return false;
+    __atomic_add_fetch(&promised_total, pages, __ATOMIC_RELAXED);
+    return true;
+}
+
+void region_unreserve(size_t pages) {
+    __atomic_sub_fetch(&promised_total, pages, __ATOMIC_RELAXED);
+}
+
+void region_adopt(struct task *task, const mem_region_t *regions, uint32_t count, size_t pages) {
+    for (uint32_t i = 0; i < count; i++) {
+        mem_region_t *slot = free_slot(task);
+        if (slot) *slot = regions[i];      // (Always: the caller made room)
+    }
+    task->promised_pages += pages;         // Already in the system's total (region_reserve)
 }
 
 // An unused entry of the task's table of regions, or NULL if all are in use
@@ -105,7 +132,8 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
     region->prot = prot;
     region->node = node;
     region->file_offset = offset;
-    pin(node, +1);
+    region->program = false;
+    pin(region, +1);
     charge(task, size / PAGE_SIZE);
 
     task->mmap_next = addr + size;
@@ -137,9 +165,9 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
             // The entry goes before the file's pin: /proc/<pid>/maps reads
             // the entries of other processes under the tree lock, and must
             // never find one naming a file that could already be gone
-            struct vnode *node = r->node;
+            mem_region_t gone = *r;
             memset(r, 0, sizeof(*r));
-            pin(node, -1);
+            pin(&gone, -1);
         } else if (cut_start == r->start) {
             r->file_offset += cut_end - r->start;                   // The front goes
             r->start = cut_end;
@@ -150,7 +178,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
             *tail = *r;
             tail->start = cut_end;
             tail->file_offset = r->file_offset + (cut_end - r->start);
-            pin(tail->node, +1);
+            pin(tail, +1);
             r->end = cut_start;
         }
     }
@@ -223,7 +251,7 @@ int region_fault(struct task *task, uint64_t addr) {
 void region_fork(struct task *child, const struct task *parent) {
     memcpy(child->regions, parent->regions, sizeof(child->regions));
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        if (child->regions[i].end != 0) pin(child->regions[i].node, +1);
+        if (child->regions[i].end != 0) pin(&child->regions[i], +1);
     }
     // The child may touch every page the parent has not: the same promise
     // made a second time. (Not refused for lack of memory: fork has its own
@@ -237,9 +265,9 @@ void region_release_all(struct task *task) {
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
         mem_region_t *r = &task->regions[i];
         if (r->end == 0) continue;
-        struct vnode *node = r->node;
+        mem_region_t gone = *r;
         memset(r, 0, sizeof(*r));
-        pin(node, -1);
+        pin(&gone, -1);
     }
     uncharge(task, task->promised_pages);
 }

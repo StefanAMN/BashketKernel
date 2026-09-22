@@ -41,8 +41,11 @@
  * directory, or root) may delete or rename it away. Without the bit,
  * permission to write in the directory is enough, as in Unix.
  *
- * Not done: set-gid on a directory (in Unix, new files there take the
- * directory's group); here it is stored and shown, and means nothing.
+ * Set-gid on a directory makes it a group's directory: a file, directory
+ * or link made in it takes the directory's group rather than its creator's,
+ * and a new subdirectory gets the bit too, so the rule reaches the whole
+ * tree (auth_new_entry_group). A file system that cannot store owners
+ * (FAT) shows root for everything regardless.
  */
 
 #ifndef AUTH_H
@@ -113,6 +116,12 @@ bool auth_may_search(uint32_t uid, const vnode_t *dir);
  *        Root may remove anything.
  */
 bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child);
+
+/**
+ * @brief The group a new entry in `dir` belongs to: the directory's own if
+ *        it has the set-gid bit, else `creator_gid` (the creator's group).
+ */
+uint32_t auth_new_entry_group(const vnode_t *dir, uint32_t creator_gid);
 
 /**
  * @brief May `uid` send a signal to a process running as `target_uid`?
