@@ -201,9 +201,12 @@ void tcp_test_drop_every(uint32_t n);
  * @brief For tests: of the connection between local_port and remote_port
  *        (at our own address), the next sequence number it expects, and
  *        the acknowledgement number its peer should send now (all it has
- *        sent so far, so its SYN only once that has gone out). false if
+ *        sent so far, so its SYN only once that has gone out), and the
+ *        oldest of its sequence numbers not yet acknowledged (its initial
+ *        sequence number until the handshake ends, sent or not). false if
  *        there is no such connection.
  */
-bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack);
+bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack,
+                        uint32_t *unacked);
 
 #endif // TCP_H

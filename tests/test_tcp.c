@@ -426,13 +426,15 @@ TEST(tcp_reassembles_out_of_order_segments) {
 
     const uint16_t peer = 40107;
     const uint32_t s = 0xFFFFFFF0u;              // The peer's first sequence number: the stream wraps
-    uint32_t rcv_nxt = 0, ack = 0;
+    uint32_t rcv_nxt = 0, ack = 0, iss = 0;
     tcp_test_drop_every(1);
     inject(peer, 7107, s, 0, 0x02, NULL, 0);                      // SYN
-    EXPECT_TRUE(tcp_test_sequences(7107, peer, &rcv_nxt, &ack));
+    EXPECT_TRUE(tcp_test_sequences(7107, peer, &rcv_nxt, &ack, &iss));
     EXPECT_EQ(rcv_nxt, s + 1);
-    uint32_t iss = ack;                                           // tcpd has yet to send the SYN+ACK
-    TEST_WAIT(tcp_test_sequences(7107, peer, &rcv_nxt, &ack) && ack == iss + 1, 100);
+    // The SYN+ACK goes out from tcpd, which on another CPU may already have
+    // sent it: the initial sequence number is the unacknowledged one, sent
+    // or not (taking it from what had been sent was off by one on 4 CPUs)
+    TEST_WAIT(tcp_test_sequences(7107, peer, &rcv_nxt, &ack, &iss) && ack == iss + 1, 100);
     EXPECT_EQ(ack, iss + 1);
     inject(peer, 7107, s + 1, ack, 0x10, NULL, 0);                // ACK of its SYN+ACK
     int error = 0;
@@ -448,10 +450,10 @@ TEST(tcp_reassembles_out_of_order_segments) {
     inject(peer, 7107, next + 10, ack, 0x11, NULL, 0);
     inject(peer, 7107, next + 3, ack, 0x10, "defg", 4);
     inject(peer, 7107, next + 5, ack, 0x10, "fg", 2);
-    EXPECT_TRUE(tcp_test_sequences(7107, peer, &rcv_nxt, &ack) && rcv_nxt == next);
+    EXPECT_TRUE(tcp_test_sequences(7107, peer, &rcv_nxt, &ack, &iss) && rcv_nxt == next);
     EXPECT_TRUE(!(tcp_poll(server) & POLLIN));
     inject(peer, 7107, next, ack, 0x10, "abc", 3);
-    EXPECT_TRUE(tcp_test_sequences(7107, peer, &rcv_nxt, &ack) && rcv_nxt == next + 11); // Ten bytes and the FIN
+    EXPECT_TRUE(tcp_test_sequences(7107, peer, &rcv_nxt, &ack, &iss) && rcv_nxt == next + 11); // Ten bytes and the FIN
     uint8_t buf[64];
     size_t got = 0;
     // (Read only if the stream is complete: otherwise the read would wait
