@@ -211,22 +211,6 @@ static bool try_copy_on_write(struct registers *regs) {
     return false;
 }
 
-#define FRAME_WAIT_TICKS 25   // How long a fault waits for others to free a frame (fault_may_retry)
-
-// A fault from user mode needs a frame and found none: the room made at its
-// start (try_swap) was taken by another process since. Should it try again?
-// Yes after making more room from the process's own pages; when it has
-// none it may give (a fork child whose pages are all still shared), after
-// waiting a tick for other processes, which make room at their own faults,
-// for a quarter of a second at most. `attempt` counts from 0. Interrupts
-// must be on: this may sleep.
-static bool fault_may_retry(int attempt) {
-    if (!swap_active() || attempt >= FRAME_WAIT_TICKS) return false;
-    if (swap_make_room_for_call() > 0) return true;
-    sched_sleep_ticks(1);
-    return true;
-}
-
 // A program's first touch of memory that mmap or brk promised it: now is
 // when it gets the frame (see region.h). Only for faults from ring 3: the
 // kernel gives a program's buffers their frames before it uses them
@@ -245,7 +229,7 @@ static bool try_promised_page(struct registers *regs) {
     // call. The frame on this stack is complete, so being preempted is fine.
     asm volatile("sti");
     int result = region_fault(task, cr2);
-    for (int i = 0; result < 0 && fault_may_retry(i); i++) result = region_fault(task, cr2);
+    for (int i = 0; result < 0 && swap_may_retry(i); i++) result = region_fault(task, cr2);
     asm volatile("cli");
 
     if (result < 0) {
@@ -279,7 +263,7 @@ static bool try_swap(struct registers *regs) {
     // fault whose page is present no longer)
     uint64_t *space = vmm_space_from_phys((uint64_t)task->pml4_phys);
     int result = swap_in(space, cr2);
-    for (int i = 0; result < 0 && fault_may_retry(i); i++) result = swap_in(space, cr2);
+    for (int i = 0; result < 0 && swap_may_retry(i); i++) result = swap_in(space, cr2);
     asm volatile("cli");
     asm volatile("mov cr2, %0" : : "r"(cr2));
 

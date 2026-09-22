@@ -1025,10 +1025,41 @@ static long meminfo(const char *label) {
     return atoi(at);
 }
 
+/* Read every page of this program's own code and constants once. They are
+ * read from the file as they are first used, and each counts as promised
+ * until then: a check of "Promised" before and after would otherwise see
+ * syscheck's own code arrive. Returns how many pages were touched. */
+static long touch_own_program(void) {
+    static char text[2048];
+    long fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return -1;
+    long n = read((int)fd, text, sizeof(text) - 1);
+    close((int)fd);
+    if (n <= 0) return -1;
+    text[n] = '\0';
+    long pages = 0;
+    for (char *line = text; *line; ) {
+        unsigned long start = 0, end = 0;
+        char *c = line;
+        for (; (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f'); c++) start = start * 16 + (unsigned long)(*c <= '9' ? *c - '0' : *c - 'a' + 10);
+        if (*c == '-') c++;
+        for (; (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f'); c++) end = end * 16 + (unsigned long)(*c <= '9' ? *c - '0' : *c - 'a' + 10);
+        char *eol = strchr(line, '\n');
+        if (eol) *eol = '\0';
+        if (c[0] == ' ' && strncmp(c + 5, "program", 7) == 0) {        /* "start-end rwx program" */
+            for (unsigned long page = start; page < end; page += 4096, pages++) (void)*(volatile char *)page;
+        }
+        if (!eol) break;
+        line = eol + 1;
+    }
+    return pages;
+}
+
 /* Mapped memory costs nothing until touched (MemFree and Promised in
  * /proc/meminfo say so), and file mappings read the file */
 static void check_lazy_memory(void) {
     const size_t big = 64UL << 20;                         /* 64 MiB */
+    CHECK(touch_own_program() > 0);
     long free_before = meminfo("MemFree:");
     long promised_before = meminfo("Promised:");
     CHECK(free_before > 0 && promised_before >= 0);
@@ -2136,6 +2167,39 @@ static int run_quietly(const char *path, const char *a1, const char *a2, const c
     int status = -1;
     if (pid < 0 || waitpid(pid, &status, 0) != pid) return -1;
     return status;
+}
+
+/* A running program is read from its file page by page, so the file must
+ * stay as it is while it runs: not opened for writing or truncated
+ * (-ETXTBSY), not removed (-EBUSY); and a file open for writing cannot be
+ * run. All on a copy, so a failure harms nothing that matters. */
+static void check_running_program_file(void) {
+    CHECK(run_quietly("/bin/cp", "/bin/sleep", "/tmp/running", NULL) == 0);
+    long pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/tmp/running", "30", NULL };
+        execv("/tmp/running", args);
+        exit(127);
+    }
+    CHECK(pid > 0);
+    sleep_ms(300);                                         /* Running: asleep in its nanosleep */
+    CHECK(open("/tmp/running", O_WRONLY) == -ETXTBSY);
+    CHECK(open("/tmp/running", O_RDWR | O_APPEND) == -ETXTBSY);
+    CHECK(truncate("/tmp/running", 0) == -ETXTBSY);
+    CHECK(unlink("/tmp/running") == -EBUSY);
+    long fd = open("/tmp/running", O_RDONLY);              /* Reading it is fine */
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    int status = -1;
+    CHECK(kill(pid, SIGKILL) == 0 && waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
+
+    /* Not running any more: it may be written; while it is open for that, run it may not */
+    fd = open("/tmp/running", O_WRONLY | O_APPEND);
+    CHECK(fd >= 0);
+    CHECK(run_quietly("/tmp/running", "0", NULL, NULL) == 127);
+    if (fd >= 0) close((int)fd);
+    CHECK(run_quietly("/tmp/running", "0", NULL, NULL) == 0);
+    CHECK(unlink("/tmp/running") == 0);
 }
 
 /* /bin/dhcp's lease arithmetic (its own checks, -T: when to renew, rebind
@@ -3587,6 +3651,7 @@ int main(void) {
     check_stat();
     check_truncate();
     check_text_tools();
+    check_running_program_file();
     check_shell_words();
     check_shell_control();
     check_shell_redirects();

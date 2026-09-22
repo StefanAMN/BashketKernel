@@ -538,7 +538,9 @@ test-paint: iso
 # the second rather than a fixed time, because which of two processes
 # swapping against each other gets ahead is chance (it once lagged by 20
 # seconds, after a change that only moved the C library's code).
-# Killed half way, it leaves no frame and no swap slot behind. (That this
+# Killed half way, it leaves no frame and no swap slot behind, and no
+# promise beyond a few pages: init's code it has not run yet (a program
+# is read page by page, and each page is promised until it is). (That this
 # happens as it dies, not when it is reaped, is a_zombie_holds_no_memory's
 # check: here both are reaped at once.) Ctrl-C kills its forked child as
 # well, which the kernel shell does not wait for, so the check waits (ten
@@ -561,7 +563,7 @@ test-swap: iso
 		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
 		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
 	tools/qemu_shell.py --quiet --mem 64M --timeout 120 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
-		--expect 'MemFree:    [45][0-9]{4} kB\nPromised:   0 kB\nSwapTotal:  65532 kB\nSwapFree:   65532 kB' \
+		--expect 'MemFree:    [45][0-9]{4} kB\nPromised:   [0-9]{1,3} kB\nSwapTotal:  65532 kB\nSwapFree:   65532 kB' \
 		--expect 'Swapped:    [0-9]{4,} pages out' --forbid 'swapper: ' \
 		'!exec /bin/swapper 80' '@wait:6' '^C' 'exec /bin/sh' \
 		'for i in 1 2 3 4 5 6 7 8 9 10; do ps | grep -v zombie | grep swapper > /dev/null || break; sleep 1; done' \

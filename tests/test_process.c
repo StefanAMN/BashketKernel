@@ -12,6 +12,10 @@
 #include "spinlock.h"
 #include "vfs.h"
 #include "cpu.h"
+#include "kerrno.h"
+#include "mmap.h"
+#include "auth.h"
+#include "file.h"
 
 // Start a program and wait for it: its exit status, -1 if it could not be
 // started, -2 if waiting failed
@@ -202,6 +206,52 @@ TEST(a_zombie_holds_no_memory) {
     EXPECT_EQ(status, 128 + SIGKILL);
     sched_reap();
     EXPECT_TRUE(test_free_frames() == free_before);
+}
+
+// A program's code and constants are read from its file a page at a time,
+// as it runs them: a program that has only started has most of them
+// untouched (promised, never read). Meanwhile its file may not be written
+// (ETXTBSY) or removed (it is open); once it is dead, it may again.
+TEST(programs_are_read_page_by_page) {
+    sched_reap();
+    size_t promised_before = region_promised_pages();
+    vnode_t *file = vfs_find(NULL, "/bin/sleep");
+    EXPECT_TRUE(file != NULL);
+    if (!file) return;
+    uint32_t exec_before = file->exec_count;
+
+    char *argv[] = { "/bin/sleep", "30", NULL };
+    pid_t pid = process_spawn("/bin/sleep", argv);
+    EXPECT_TRUE(pid > 0);
+    task_t *task = sched_find_task((uint32_t)pid);
+    EXPECT_TRUE(task != NULL);
+    if (!task) return;
+    TEST_WAIT(task->state == TASK_BLOCKED, 200);     // Asleep in nanosleep: it has run all it will for now
+
+    size_t program_regions = 0, program_pages = 0;
+    for (int i = 0; i < TASK_MAX_REGIONS; i++) {
+        const mem_region_t *r = &task->regions[i];
+        if (r->end == 0 || !r->program) continue;
+        EXPECT_TRUE(r->node == file && !(r->prot & PROT_WRITE));
+        program_regions++;
+        program_pages += (r->end - r->start) / PAGE_SIZE;
+    }
+    EXPECT_TRUE(program_regions >= 1);                       // Its code at least
+    EXPECT_TRUE(task->promised_pages > 0);                    // Pages of it never touched, so never read...
+    EXPECT_TRUE(task->promised_pages < program_pages);        // ...and some that were (its first instruction)
+    EXPECT_EQ(file->exec_count, exec_before + program_regions);
+
+    file_t *writer = NULL;
+    EXPECT_EQ(file_open_as(UID_ROOT, NULL, "/bin/sleep", O_WRONLY, &writer), -ETXTBSY);
+    if (writer) file_close(writer);
+    EXPECT_TRUE(file->open_count > 0);                       // So unlink would say EBUSY
+
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    int status = -1;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    sched_reap();
+    EXPECT_EQ(file->exec_count, exec_before);
+    EXPECT_EQ(region_promised_pages(), promised_before);
 }
 
 // A task doing something that must not be abandoned (shutting the system
@@ -467,6 +517,7 @@ void test_suite_process(void) {
     RUN_TEST(kill_takes_effect_at_a_safe_point);
     RUN_TEST(an_unkillable_task_survives_sigkill);
     RUN_TEST(a_zombie_holds_no_memory);
+    RUN_TEST(programs_are_read_page_by_page);
     RUN_TEST(orphans_are_adopted_and_collected_by_init);
     RUN_TEST(mapped_file_pages_are_read_only_when_touched);
     RUN_TEST(interrupt_spares_processes_that_ignore_it);
