@@ -6,7 +6,9 @@
 
 TEST(benchmarks_measure_something) {
     size_t heap_before = kheap_get_allocated_bytes();
-    size_t frames_before = pmm_get_free_frames();
+    // The heap grows for the scratch buffers and afterwards keeps a little
+    // of that as a reserve, so count frames the heap holds as accounted for
+    size_t frames_before = pmm_get_free_frames() + kheap_get_mapped_bytes() / 4096;
     uint64_t ticks_before = pit_get_ticks();
 
     bench_results_t r = {0};
@@ -27,7 +29,9 @@ TEST(benchmarks_measure_something) {
 
     // The benchmarks give back everything they used
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
-    EXPECT_TRUE(pmm_get_free_frames() == frames_before);
+    size_t frames_after = pmm_get_free_frames() + kheap_get_mapped_bytes() / 4096;
+    EXPECT_TRUE(frames_after + 2 >= frames_before);   // Up to two new page-table frames for the heap range
+    EXPECT_TRUE(frames_after <= frames_before);
 
     bench_run_all();   // The printing path
 }

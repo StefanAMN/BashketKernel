@@ -59,6 +59,7 @@
 #include "acpi.h"
 #include "io.h"
 #include "cpu.h"
+#include "file.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -198,6 +199,7 @@ void _start(void) {
 
     // Phase 6: Filesystem & Initrd
     vfs_init();
+    file_init();
     if (module_request.response && module_request.response->module_count > 0) {
         struct limine_file *initrd = module_request.response->modules[0];
         if (!initrd_mount(initrd->address, initrd->size)) {

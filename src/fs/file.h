@@ -59,6 +59,11 @@ struct dirent_info {
 };
 
 /**
+ * @brief Set up the open-file allocator. Call once, before any file is opened.
+ */
+void file_init(void);
+
+/**
  * @brief Open a path. On success *out holds a file with one reference.
  * @return 0 or a negative error number.
  */

@@ -32,8 +32,9 @@ Any warning is a failure: the tree builds clean, so a new warning is yours.
 make test 2>&1 | tail -8
 ```
 
-Do not `grep FAIL` the make output: the compiler command lines contain
-`-DKERNEL_TESTS` and will match. To see failures: `grep -n '\[FAIL\]' -A1 build-test/test.log`.
+Do not `grep FAIL` or `grep TESTS` the make output: the compiler command
+lines contain `-DKERNEL_TESTS` and will match. Anchor the pattern
+(`grep -aE '^TESTS|ALL CHECKS'`) or use `tail`. To see failures: `grep -n '\[FAIL\]' -A1 build-test/test.log`.
 
 Builds a separate test kernel in `build-test/` (with `-DKERNEL_TESTS`), boots
 it headless, and exits 0 only if the kernel reported every expectation passed.

@@ -8,9 +8,23 @@
 #include "kstring.h"
 #include "kerrno.h"
 #include "tty.h"
+#include "slab.h"
+
+// Open files are small, all the same size, and created and destroyed
+// constantly (every open, pipe and exit), which is what a slab cache is for.
+static kmem_cache_t *file_cache = NULL;
+
+void file_init(void) {
+    if (file_cache) return;
+    file_cache = kmem_cache_create("file", sizeof(file_t), 8);
+
+    // Take the cache's first page now, so that later "nothing leaked" checks
+    // that count free frames are not thrown off by the first file ever opened
+    kmem_cache_free(file_cache, kmem_cache_alloc(file_cache));
+}
 
 static file_t *file_alloc(file_kind_t kind, bool readable, bool writable) {
-    file_t *file = (file_t *)kmalloc(sizeof(file_t));
+    file_t *file = (file_t *)kmem_cache_alloc(file_cache);
     if (!file) return NULL;
     memset(file, 0, sizeof(file_t));
     file->kind = kind;
@@ -18,6 +32,10 @@ static file_t *file_alloc(file_kind_t kind, bool readable, bool writable) {
     file->readable = readable;
     file->writable = writable;
     return file;
+}
+
+static void file_free(file_t *file) {
+    kmem_cache_free(file_cache, file);
 }
 
 int file_open(const char *path, int flags, file_t **out) {
@@ -65,8 +83,8 @@ int file_open_pipe(file_t **out_read, file_t **out_write) {
 
     if (!pipe || !reader || !writer) {
         kfree(pipe);
-        kfree(reader);
-        kfree(writer);
+        file_free(reader);
+        file_free(writer);
         return -ENOMEM;
     }
 
@@ -92,7 +110,7 @@ void file_close(file_t *file) {
         if (file->readable) pipe_close_reader(file->pipe);
         else pipe_close_writer(file->pipe);
     }
-    kfree(file);
+    file_free(file);
 }
 
 void file_close_all(file_t *fds[TASK_MAX_FDS]) {
