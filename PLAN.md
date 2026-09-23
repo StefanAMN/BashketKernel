@@ -1489,13 +1489,27 @@ job. **Check:** syscheck: expansion and quoting, `<<-`, two here-
 documents on one line, one in a pipeline and a loop; `make test-jobs`
 for a backgrounded loop stopped and continued.
 
-### P4. Options for the text tools (S)
+### P4. Options for the text tools (S) — done
 
 `grep -i -n -c -l -v` (combinations), `sort -n -r -u -k N -t C`,
 `head -c N`, `tail -c N`, `wc -l -w -c`, `uniq -i`. POSIX's meanings, one
 option parser in `user/lib` used by all of them. **Check:** syscheck and
 `make test-tools`, including `sort -k` on fields of different widths and
 `-n` with negative numbers and blanks.
+
+Done as written (`user/lib/opts.c`, `check_tool_options`, and a "tool
+options" scenario in `make test-tools`). The parser follows POSIX's
+utility syntax guidelines: grouped letters, values joined or apart, `--`,
+`-` an operand. `sort -n` compares numbers as text (sign, whole part with
+leading zeros dropped, fraction), so numbers longer than a `long` order
+correctly; `sort -k` without `-t` keeps the blanks before a field, as
+POSIX says, so `-t` or `-n` is the way to sort columns of different
+widths; `sort` now takes several files. `grep -l` wins over `-c` (as in
+GNU grep). `wc` with one file still prints the counts alone (scripts
+here read "N N N"); several files are named, with a total. Not done:
+`sort -b`, `-f`, `-k` with character positions (`2.3`), and several
+`-k` keys. Sabotage: `sort -n` ignoring the sign failed three checks; the
+parser reading only the first letter of a group failed seven.
 
 ---
 
@@ -1575,7 +1589,7 @@ N1, N2, N3, N4                   done (in parallel)
         |
 O1, O2, O3, O4                   done (in parallel)
         |
-P1, P2, P3, P4                   in parallel
+P1, P2, P3, P4                   in parallel (P4 done)
 ```
 
 (Track A, once the recommended first step because everything built on
