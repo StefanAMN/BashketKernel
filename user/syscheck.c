@@ -2629,6 +2629,47 @@ static int put_file(const char *path, const char *text, size_t size) {
     return ok;
 }
 
+/* Here-documents: expanded unless the word is quoted, <<- taking tabs off,
+ * several on a line, in a pipeline, a loop, a function and after a
+ * compound command, one larger than a pipe holds; and '&' after a
+ * compound command, which needs the terminal */
+static void check_shell_heredocs(void) {
+    CHECK(sh_prints("X=v; cat <<EOF\nhello $X ${X}y $((2 + 3)) $(echo sub)\nEOF", "hello v vy 5 sub\n"));
+    CHECK(sh_prints("X=v; cat <<'EOF'\nraw $X $(echo no)\nEOF", "raw $X $(echo no)\n"));
+    CHECK(sh_prints("X=v; cat <<E\"O\"F\npart $X\nEOF", "part $X\n"));            /* Any quoted part */
+    CHECK(sh_prints("X=v; cat <<\\E\nslash $X\nE", "slash $X\n"));
+    CHECK(sh_prints("X=v; cat <<E\n\\$X \\\\ a\\\nb \\q\nE", "$X \\ ab \\q\n"));  /* \$ \\ \newline; \q kept */
+    CHECK(sh_prints("cat <<E\na;b 'q' \"d\" # kept | && <x\nE x\n  E\nE", "a;b 'q' \"d\" # kept | && <x\nE x\n  E\n"));
+    CHECK(sh_prints("cat <<-E\n\tone\n\t\ttwo\n\tE\necho after", "one\ntwo\nafter\n"));
+    CHECK(sh_prints("cat <<A; cat <<B; echo end\nfirst\nA\nsecond\nB", "first\nsecond\nend\n"));
+    CHECK(sh_prints("cat <<E | sort\nb\na\nE", "a\nb\n"));
+    CHECK(sh_prints("for i in 1 2; do cat <<E\nround $i\nE\ndone", "round 1\nround 2\n"));    /* Expanded each time */
+    CHECK(sh_prints("while read l; do echo [$l]; done <<E\nx\ny z\nE", "[x]\n[y z]\n"));
+    CHECK(sh_prints("f() { cat <<E\n$# $@\nE\n}; f a b; f c", "2 a b\n1 c\n"));
+    CHECK(sh_prints("read a b <<E\none two three\nE\necho $a/$b", "one/two three\n"));     /* read: in the shell */
+    CHECK(sh_prints("cat 3<<E 0<&3\nthree\nE", "three\n"));
+    CHECK(sh_prints("cat <<E\nE", ""));
+
+    /* 6000 bytes, more than the pipe holds, so written by a process of its
+     * own: made by expanding a variable twice (a command line or a script's
+     * command may not be that long: 4 KiB of arguments, 4 KiB pending) */
+    static char lines[3000];
+    for (int line = 0; line < 30; line++) {
+        memset(lines + line * 100, 'x', 99);
+        lines[line * 100 + 99] = '\n';
+    }
+    CHECK(put_file("/tmp/hd", lines, sizeof(lines)));
+    CHECK(sh_prints("X=$(cat /tmp/hd); cat <<E | wc\n$X\n$X\nE", "60 60 6000\n"));
+    CHECK(unlink("/tmp/hd") == 0);
+
+    CHECK(sh_ends("cat <<E\nno end", "", 2));                 /* The text ended before WORD */
+    CHECK(sh_ends("cat <<", "", 2));
+    CHECK(sh_ends("cat <<'E\nx\nE", "", 2));
+    CHECK(sh_ends("cat <<E\n$(echo unclosed\nE", "", 1));     /* Fails when it is expanded */
+    CHECK(sh_ends("while false; do true; done &", "", 2));     /* '&': only at the terminal */
+    CHECK(sh_ends("{ echo a; } & x", "", 2));
+}
+
 /* The shell's $((...)) (precedence, signs, bases, wrapping, variables,
  * && and || that skip, the errors) and read (fields, the rest, -r and
  * backslashes, the end of input, from a file, a pipe and a loop) */
@@ -3723,6 +3764,7 @@ int main(void) {
     check_shell_case_functions();
     check_shell_compound_redirects();
     check_shell_arith_read();
+    check_shell_heredocs();
     check_line_tools();
     check_hosts_file();
     check_more_tools();

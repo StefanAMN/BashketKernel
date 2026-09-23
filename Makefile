@@ -698,6 +698,17 @@ test-jobs: iso
 		'exec /bin/sh' '!if true; then' '@wait:1' '!echo inner' '@wait:1' 'fi' \
 		'for x in 1 2; do echo n$$x; done' 'exit' > $(BUILD)/control.log 2>&1 \
 		&& echo "if and for at the prompt: ok" || { echo "if and for at the prompt: FAILED (see $(BUILD)/control.log)"; exit 1; }
+	@# A loop in the background is a job like any: listed, brought back,
+	@# stopped with Ctrl-Z, continued, ended with Ctrl-C; and a here-
+	@# document typed at the prompt, whose lines are asked for with "> "
+	@tools/qemu_shell.py --quiet --timeout 60 --prompt '> ' $(SHELL_CPU) \
+		--expect '\[1\] [0-9]+\n\$$ jobs\n\[1\] Running   while \.\.\.; done\n' \
+		--expect '\[1\] Stopped   while \.\.\.; done' --expect '\[1\] while \.\.\.; done &' \
+		--expect 'jobs-left:\n\$$ ' --expect '> EOF\nfrom the prompt: typed\n\$$ ' \
+		'exec /bin/sh' 'while true; do sleep 1; done &' 'jobs' '!fg' '@wait:1' '^Z' 'bg' 'jobs' '!fg' '@wait:1' '^C' \
+		'echo jobs-left:' 'jobs' 'X=typed' 'cat <<EOF' 'from the prompt: $$X' 'EOF' 'exit' > $(BUILD)/background-loop.log 2>&1 \
+		&& echo "a loop in the background, a here-document at the prompt: ok" \
+		|| { echo "a loop in the background, a here-document at the prompt: FAILED (see $(BUILD)/background-loop.log)"; exit 1; }
 
 # The text tools against files with known answers: head, tail, grep (with
 # -v, -c, several files, the exit status), sort (-n, -r, stable), cp (into
