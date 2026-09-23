@@ -49,7 +49,7 @@ USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker
 # sha256.o and date.o are the kernel tree's own lib/crypto/sha256.c and
 # lib/time/date.c, compiled again for user programs (login hashes passwords
 # with the one; date and ls turn seconds into dates with the other)
-USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o $(BUILD)/user/lib/lines.o
+USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o $(BUILD)/user/lib/lines.o $(BUILD)/user/lib/opts.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
@@ -74,7 +74,7 @@ $(BUILD)/user/lib/date.o: lib/time/date.c Makefile
 
 $(BUILD)/initrd/bin/%: $(BUILD)/user/%.o $(USER_LIB_OBJS) user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o $(BUILD)/user/lib/lines.o -o $@
+	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o $(BUILD)/user/lib/lines.o $(BUILD)/user/lib/opts.o -o $@
 
 # USTAR archive of bin/ plus the static files under user/rootfs
 $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
@@ -735,6 +735,21 @@ test-tools: iso
 		'cut -c 1-3 w2 | uniq' 'echo Mixed Case | tr a-z A-Z' 'cat w | tr -d aeiou | head -n 2' \
 		'rm w ; rm w2 ; cd / ; rm /tmp/u' 'exit' > $(BUILD)/line-tools.log 2>&1 \
 		&& echo "line tools (uniq, cut, tr): ok" || { echo "line tools: FAILED (see $(BUILD)/line-tools.log)"; exit 1; }
+	@# Options as they are typed: grouped, joined values, a column of
+	@# /etc/passwd sorted by number, a byte count from either end
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'grep -in root /etc/passwd \| head -c 6 ; echo\n1:root\n\$$ ' \
+		--expect 'sort -t : -k 3,3 -n /etc/passwd \| cut -d : -f 1 \| tail -n 2\nalice\nbob\n\$$ ' \
+		--expect 'seq 3 \| tail -c 2\n3\n\$$ ' \
+		--expect 'echo A > c ; echo a >> c ; echo b >> c ; uniq -ic c ; rm c\n2 A\n1 b\n\$$ ' \
+		--expect 'seq 10 \| wc -lw\n10 10\n\$$ ' \
+		--expect 'seq 5 \| sort -nru \| head -n1\n5\n\$$ ' \
+		--forbid 'not found|usage:' \
+		'exec /bin/sh' 'cd /tmp' 'grep -in root /etc/passwd | head -c 6 ; echo' \
+		'sort -t : -k 3,3 -n /etc/passwd | cut -d : -f 1 | tail -n 2' 'seq 3 | tail -c 2' \
+		'echo A > c ; echo a >> c ; echo b >> c ; uniq -ic c ; rm c' 'seq 10 | wc -lw' 'seq 5 | sort -nru | head -n1' \
+		'exit' > $(BUILD)/tool-options.log 2>&1 \
+		&& echo "tool options (grep, sort, head, tail, wc, uniq): ok" || { echo "tool options: FAILED (see $(BUILD)/tool-options.log)"; exit 1; }
 	@# tee, xargs, seq, basename and dirname as they are used together:
 	@# a copy kept on the way through a pipe, names fed to a command (wc
 	@# prints no name: "4 4 8" is the file, its empty standard input "0 0 0")

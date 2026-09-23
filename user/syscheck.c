@@ -2795,6 +2795,70 @@ static void check_hosts_file(void) {
     CHECK(close((int)server) == 0);
 }
 
+/* The options of grep, sort, head, tail, wc and uniq, read by one parser
+ * (user/lib/opts.h): grouped and separate, values joined and apart, "--",
+ * and the refusals; sort -k on columns of different widths, -n with
+ * negative numbers, fractions and blanks */
+static void check_tool_options(void) {
+    static char out[256];
+    const char *t = "b 10\na  2\nc -3\nA 2\nd 1.5\n";
+    CHECK(put_file("/tmp/to", t, strlen(t)));
+    CHECK(sh_prints("grep -in a /tmp/to", "2:a  2\n4:A 2\n"));
+    CHECK(sh_prints("grep -i -n a /tmp/to", "2:a  2\n4:A 2\n"));
+    CHECK(sh_prints("grep -cv a /tmp/to", "4\n"));                     /* 'A' is not 'a' without -i */
+    CHECK(sh_prints("grep -civ a /tmp/to", "3\n"));
+    CHECK(sh_prints("grep -l 10 /tmp/to /etc/motd", "/tmp/to\n"));
+    CHECK(sh_prints("grep -lc 10 /tmp/to", "/tmp/to\n"));              /* -l wins over -c */
+    CHECK(sh_prints("grep -nc 10 /tmp/to /etc/motd", "/tmp/to:1\n/etc/motd:0\n"));
+    CHECK(sh_prints("grep -- -3 /tmp/to", "c -3\n"));                  /* "--" ends the options */
+    CHECK(sh_ends("grep -x a /tmp/to", "", 2));
+    CHECK(sh_ends("grep -i", "", 2));
+
+    /* sort: numbers with signs, fractions and blanks before them */
+    CHECK(sh_prints("sort -k 2 -n /tmp/to", "c -3\nd 1.5\na  2\nA 2\nb 10\n"));
+    CHECK(sh_prints("sort -nk2 -r /tmp/to", "b 10\na  2\nA 2\nd 1.5\nc -3\n"));  /* Equal keys keep their order */
+    CHECK(sh_prints("sort -u -k 2 -n /tmp/to", "c -3\nd 1.5\na  2\nb 10\n"));
+    CHECK(sh_prints("sort -t ' ' -k 1,1 -r /tmp/to", "d 1.5\nc -3\nb 10\na  2\nA 2\n"));
+    const char *w = "x:30:b\nyy:4:a\nz:100:c\n";                       /* Fields of different widths */
+    CHECK(put_file("/tmp/to2", w, strlen(w)));
+    CHECK(sh_prints("sort -t : -k 2,2 -n /tmp/to2", "yy:4:a\nx:30:b\nz:100:c\n"));
+    CHECK(sh_prints("sort -t: -k3 /tmp/to2", "yy:4:a\nx:30:b\nz:100:c\n"));
+    CHECK(sh_prints("sort -t : -k 2,2 /tmp/to2", "z:100:c\nx:30:b\nyy:4:a\n"));   /* As text */
+    CHECK(sh_prints("echo 123456789012345678901234567890 > /tmp/to3; echo 99 >> /tmp/to3; sort -n /tmp/to3",
+                    "99\n123456789012345678901234567890\n"));         /* Longer than a long */
+    CHECK(sh_prints("sort /tmp/to2 /tmp/to3 | head -n 1", "123456789012345678901234567890\n"));  /* Two files */
+    CHECK(sh_ends("sort -k 0 /tmp/to", "", 2));
+    CHECK(sh_ends("sort -k 2,1 /tmp/to", "", 2));
+    CHECK(sh_ends("sort -t ab /tmp/to", "", 2));
+    CHECK(sh_ends("sort -k", "", 2));
+
+    /* head and tail by bytes, and N joined to its option */
+    CHECK(sh_prints("head -c 6 /tmp/to", "b 10\na"));
+    CHECK(sh_prints("head -n2 /tmp/to", "b 10\na  2\n"));
+    CHECK(sh_prints("tail -c 4 /tmp/to", "1.5\n"));
+    CHECK(sh_prints("tail -c 100 /tmp/to2", "x:30:b\nyy:4:a\nz:100:c\n"));
+    CHECK(sh_prints("tail -n1 /tmp/to2", "z:100:c\n"));
+    CHECK(sh_prints("cat /tmp/to | tail -c 3", ".5\n"));
+    CHECK(sh_ends("head -n x /tmp/to", "", 2));
+    CHECK(sh_ends("head -c -1 /tmp/to", "", 2));
+    CHECK(sh_ends("tail -c 2000000 /tmp/to", "", 2));
+
+    /* wc: what is asked for, in its fixed order; names with several files */
+    CHECK(sh_prints("wc -l /tmp/to", "5\n"));
+    CHECK(sh_prints("wc -cw /tmp/to", "10 25\n"));                       /* Words before bytes */
+    CHECK(sh_prints("wc -l /tmp/to /tmp/to2", "5 /tmp/to\n3 /tmp/to2\n8 total\n"));
+    CHECK(sh_prints("wc /tmp/to", "5 10 25\n"));
+    CHECK(sh_ends("wc -x /tmp/to", "", 2));
+
+    /* uniq -i: runs that differ only in case; the first one is shown */
+    CHECK(put_file("/tmp/to", "AB\nab\nAb\nb\nB\n", 13));
+    CHECK(sh_prints("uniq -ic /tmp/to", "3 AB\n2 b\n"));
+    CHECK(sh_prints("uniq -i -d /tmp/to", "AB\nb\n"));
+    CHECK(sh_prints("uniq /tmp/to | wc -l", "5\n"));
+    CHECK(sh_capture("uniq -q /tmp/to", out, sizeof(out)) == 2);
+    CHECK(unlink("/tmp/to") == 0 && unlink("/tmp/to2") == 0 && unlink("/tmp/to3") == 0);
+}
+
 /* tee, xargs, seq, basename and dirname: their forms, POSIX's edge cases
  * for the two name tools, and xargs keeping every command line within
  * what execve takes (32 arguments, 4096 bytes with the environment) */
@@ -3662,6 +3726,7 @@ int main(void) {
     check_line_tools();
     check_hosts_file();
     check_more_tools();
+    check_tool_options();
     check_directory_tools();
     check_proc();
     check_proc_maps_fd();
