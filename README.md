@@ -101,6 +101,8 @@ BashketKernel has a built-in unit test framework (`tests/`). `make test` builds 
 
 `make fuzz` runs `/bin/fuzz`, which makes random system calls with hostile arguments (kernel addresses, pointers at the edge of a mapping, huge lengths, closed descriptors) from ring 3. The kernel must survive every seed and pass `/bin/syscheck` afterwards. Seeds are fixed, so a failure can be reproduced with `make fuzz FUZZ_SEEDS=<n>`.
 
+`make check` runs all of these on both CPU models.
+
 All three targets accept `CPU=max` (for example `make test CPU=max`) to run on QEMU's fullest CPU model, where SMEP, SMAP and UMIP are active.
 
 ---
