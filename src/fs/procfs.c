@@ -18,6 +18,7 @@
 #include "spinlock.h"
 #include "kerrno.h"
 #include "cpu.h"
+#include "klog.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -135,6 +136,14 @@ PROC_FILE(meminfo);
 PROC_FILE(tasks);
 PROC_FILE(cpuinfo);
 
+// /proc/kmsg: the kernel message log. Too large for serve_text's buffer, and
+// already stored as text, so it is read straight from the log.
+static int64_t read_kmsg(vnode_t *node, size_t offset, void *buf, size_t count) {
+    (void)node;
+    return (int64_t)klog_read(offset, buf, count);
+}
+static const vnode_ops_t ops_kmsg = { .read = read_kmsg, .write = NULL };
+
 void procfs_init(void) {
     vfs_init();
     vnode_t *proc_dir = vfs_create_dir(vfs_get_root(), "proc");
@@ -146,5 +155,6 @@ void procfs_init(void) {
     vfs_create_device(proc_dir, "meminfo", &ops_meminfo);
     vfs_create_device(proc_dir, "tasks", &ops_tasks);
     vfs_create_device(proc_dir, "cpuinfo", &ops_cpuinfo);
-    kprintf("ProcFS Init: /proc/version, uptime, meminfo, tasks, cpuinfo\n");
+    vfs_create_device(proc_dir, "kmsg", &ops_kmsg);
+    kprintf("ProcFS Init: /proc/version, uptime, meminfo, tasks, cpuinfo, kmsg\n");
 }

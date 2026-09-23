@@ -450,7 +450,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 32. Kernel Ring Buffer & dmesg (Phase 32)
-**Status: real.** 4 KiB ring buffer.
+**Status: real.** Everything `kprintf` prints is kept in a 64 KiB ring buffer from the first boot message; `dmesg` (both shells) and `/proc/kmsg` read it.
 
 **Goal:** Kernel syslog ring buffer (`klog_write`), `dmesg` shell command.
 

@@ -30,7 +30,7 @@ that gap.
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | One global table, not per process. |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -38,7 +38,7 @@ that gap.
 | 21 | RamFS | stub | Creates `/tmp` in the VFS tree. Not a separate filesystem. |
 | 22 | Priority scheduling | real | Round robin with weighted time slices: high, normal and low priority tasks run for 4, 2 and 1 ticks per turn, so priority sets the CPU share and nothing is starved. Per-task CPU ticks are in `/proc/tasks`. |
 | 23 | Semaphores | real | Counting semaphores whose waiters block and are woken by `sem_post`. |
-| 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks` and `cpuinfo` are generated from live kernel state on every read. |
+| 24 | ProcFS | real | `/proc/version`, `uptime`, `meminfo`, `tasks`, `cpuinfo` and `kmsg` are generated from live kernel state on every read. |
 | 25 | TTY | real | Console reads go through a line discipline in the kernel: echo, backspace, Ctrl-U, Ctrl-D for end-of-file, and whole lines delivered on Enter. One terminal; no raw mode. |
 | 26 | FPU/SSE | real | Each user task has its own x87/SSE state (FXSAVE), switched eagerly. AVX is not enabled. |
 | 27 | Swap | stub | A slot bitmap. No page is ever written out. |
@@ -46,7 +46,7 @@ that gap.
 | 29 | UDP/IP sockets | stub | Internet checksum works. No packets are built or sent. |
 | 30 | Window manager | stub | Allocates a pixel buffer. Nothing is composited. |
 | 31 | User authentication | stub | Accepts `root` with any password. |
-| 32 | Kernel log, `dmesg` | real | 4 KiB ring buffer. |
+| 32 | Kernel log, `dmesg` | real | Everything `kprintf` prints is kept in a 64 KiB ring buffer from the first boot message; `dmesg` (both shells) and `/proc/kmsg` read it. |
 | 33 | High-resolution timers | partial | `nanosleep` blocks without using CPU, but its resolution is the 10 ms tick. |
 | 34 | Mount table | partial | Records mount points; path lookup does not use them. |
 | 35 | Shared memory | partial | Keyed kernel heap buffers. Not mapped into processes. |

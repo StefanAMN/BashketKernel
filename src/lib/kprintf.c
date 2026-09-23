@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "spinlock.h"
+#include "klog.h"
 
 // Keeps output from two tasks (or a task and an interrupt handler) from
 // interleaving mid-line. This is a leaf lock: nothing is acquired under it.
@@ -122,6 +123,7 @@ static void put_to_console(void *ctx, char c) {
     (void)ctx;
     serial_putchar(c);
     console_putchar(c);
+    klog_putchar(c); // Kept for dmesg and /proc/kmsg
 }
 
 void kprintf(const char* fmt, ...) {
