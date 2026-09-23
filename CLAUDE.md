@@ -282,6 +282,14 @@ machine never gets near these paths.
 - **Look at the screen, not only the serial log**, after changing the
   console. QEMU's monitor `screendump file.ppm` works with `-display none`;
   the unix socket path for `-monitor unix:...` must be short (108 bytes).
+- **Two buffers exactly 1 MiB apart benchmark QEMU's TLB, not the code.**
+  QEMU's software TLB is indexed by low page-number bits, so source and
+  destination pages evicted each other on every access and `memcpy` measured
+  90 MiB/s against 1500 for `memset`. Moving one buffer by 148 KiB gave
+  1200. Before optimising on a benchmark number, change the benchmark's
+  layout and see whether the number moves. (Measured after that:
+  `rep movsq` 1200 MiB/s, a 32-byte-per-iteration C loop 1420; kept the
+  former.)
 - **"Real" in the status table has to be checked by using the thing.** The
   kernel log was listed as real with a passing test; `dmesg` showed one line,
   because nothing ever wrote to the buffer. The test only checked that calling
