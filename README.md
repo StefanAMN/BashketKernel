@@ -5,9 +5,13 @@ BashketKernel is a 64-bit x86_64 higher-half operating system kernel developed f
 ## Status
 
 The kernel boots under QEMU into a kernel-mode shell that can run user
-programs in ring 3. The core (phases 1 to 6, 12 and 16) is real; much of the
-rest is placeholder code. `PLAN.md` is the plan for closing
-that gap.
+programs in ring 3, including a user-space shell (`exec /bin/sh`) with
+pipelines, redirection and job interruption. Processes, memory management,
+the file layer, the terminal and the scheduler are real and tested. The
+hardware drivers beyond keyboard, serial, timer and framebuffer (disk,
+network, mouse) and several later phases are still placeholders, and the
+table below says which. `PLAN.md` tracks the work and ends with a list of
+known gaps in the parts that are real.
 
 - **real**: implemented and exercised at runtime.
 - **partial**: some of it works; the note says what does not.
@@ -65,30 +69,36 @@ src/
 ├── arch/x86_64/         # CPU architecture, GDT/IDT/ISRs, APIC, SMP, FPU, low-level assembly
 ├── boot/                # Limine bootloader protocol handover & headers
 ├── drivers/
-│   ├── block/           # VirtIO Block storage driver
+│   ├── block/           # virtio-blk (stub)
 │   ├── bus/             # PCI Bus enumerator & config space
 │   ├── char/            # Serial (COM1 UART), RTC, /dev virtual devices
 │   ├── console/         # Framebuffer console & bitmap font blitter
-│   ├── input/           # PS/2 Keyboard, Mouse & Cursor blitter
-│   ├── net/             # VirtIO NIC driver
-│   └── tty/             # TTY line discipline
-├── fs/                  # VFS, InitRD, RAMFS, FAT32, ProcFS, Mount Manager, Pipes, ELF loaders
+│   ├── input/           # PS/2 keyboard; mouse and cursor (stubs)
+│   ├── net/             # virtio-net (stub)
+│   └── tty/             # Terminal line discipline
+├── fs/                  # VFS, open files and descriptors, pipes, initrd, /proc, ELF loader; FAT32 (stub)
 ├── gui/
-│   └── compositor/      # Desktop window manager/compositor & ANSI escape parser
+│   └── compositor/      # Window manager and ANSI colors (stubs)
 ├── include/             # Global test & subsystem headers
 ├── init/                # Kernel entry point (kmain in main.c)
 ├── kernel/
-│   ├── ipc/             # POSIX Shared Memory (SHM)
-│   ├── log/             # Kernel syslog ring buffer (klog & dmesg)
-│   ├── proc/            # Process control, User apps, Environment vars, Auth, Shell
-│   ├── sched/           # Task scheduler, Task Control Block, Priority scheduling
+│   ├── ipc/             # Shared memory (partial)
+│   ├── log/             # Kernel message log (dmesg, /proc/kmsg)
+│   ├── proc/            # Processes (spawn, fork, exec, wait, kill), kernel shell, environment, auth (stub)
+│   ├── sched/           # Scheduler, task struct, blocking and wakeup, priorities
 │   ├── sync/            # Spinlocks & Semaphores
 │   ├── syscall/         # System call dispatcher & table
-│   ├── time/            # High-resolution timers (hrtimer & nanosleep), PIT driver
-│   └── bench.{c,h}      # Kernel diagnostic benchmark suite
+│   ├── time/            # PIT timer, sleeping
+│   └── bench.{c,h}      # Timed benchmarks
 ├── lib/                 # Kernel utility functions (kprintf, kstring, string_util)
-├── mm/                  # Memory Management (PMM, VMM, Heap, Slab, COW, MMAP, Swap)
-└── net/                 # UDP/IP Network socket stack
+├── mm/                  # Frames, paging and address spaces, heap, slab, copy-on-write, mmap/brk; swap (stub)
+└── net/                 # Sockets (stub)
+
+user/                    # Programs that run in ring 3, built into /bin of the initrd
+├── lib/                 # Their C library, crt0 and system call wrappers
+└── *.c                  # sh, ls, cat, echo, wc, ps, kill, ... and the test programs
+tests/                   # In-kernel unit tests (make test)
+tools/                   # qemu_shell.py (scripted boots), symbolize.sh
 ```
 
 ---
