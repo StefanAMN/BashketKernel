@@ -91,6 +91,7 @@ void test_suite_procfs(void);    /* /proc */
 void test_suite_tty(void);       /* The terminal's line discipline and raw mode */
 void test_suite_fpu(void);       /* FPU and SSE state per task */
 void test_suite_auth(void);      /* Users, groups and permission checks */
+void test_suite_pcache(void);    /* The page cache: one frame per file page, coherence, reclaim, sharing */
 void test_suite_klog(void);      /* The kernel message log */
 void test_suite_hrtimer(void);   /* Sleeping and the clocks: precision, order, no TSC, idle CPUs left alone */
 void test_suite_mount(void);     /* The mount table */
@@ -117,10 +118,13 @@ void test_suite_poll(void);      /* poll: readiness of pipes, the terminal, sock
 // they have become heap, available to the next allocation. When that first
 // happens depends on what ran before (and, with several CPUs, in what
 // order), so comparing pmm_get_free_frames() alone fails now and then.
+// Likewise the page cache keeps pages of files that were mapped and are
+// not any more (pcache.h): mapped nowhere, they are as good as free.
 static inline size_t test_free_frames(void) {
     extern size_t pmm_get_free_frames(void);
     extern size_t kheap_get_mapped_bytes(void);
-    return pmm_get_free_frames() + kheap_get_mapped_bytes() / 4096;
+    extern size_t pcache_unmapped_pages(void);
+    return pmm_get_free_frames() + kheap_get_mapped_bytes() / 4096 + pcache_unmapped_pages();
 }
 
 #endif // TEST_H

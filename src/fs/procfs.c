@@ -46,6 +46,7 @@
 #include "process.h"
 #include "interrupts.h"
 #include "tcp.h"
+#include "pcache.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -89,7 +90,8 @@ static size_t gen_uptime(char *buf, size_t size) {
                      ticks, (unsigned)TIMER_HZ);
 }
 
-// /proc/meminfo: frames, promised pages, swap and the kernel heap
+// /proc/meminfo: frames, promised pages, swap, the kernel heap and the page
+// cache (whose pages mapped nowhere could be free at once: pcache.h)
 static size_t gen_meminfo(char *buf, size_t size) {
     return ksnprintf(buf, size,
                      "MemTotal:   %lu kB\n"
@@ -99,7 +101,8 @@ static size_t gen_meminfo(char *buf, size_t size) {
                      "SwapFree:   %lu kB\n"
                      "Swapped:    %lu pages out, %lu back in\n"
                      "KernelHeap: %lu bytes in use, %lu kB mapped\n"
-                     "Refused:    %lu frame requests, %lu kernel heap requests\n",
+                     "Refused:    %lu frame requests, %lu kernel heap requests\n"
+                     "Cached:     %lu kB of file pages, %lu kB of them mapped nowhere\n",
                      (uint64_t)pmm_get_total_frames() * 4,
                      (uint64_t)pmm_get_free_frames() * 4,
                      (uint64_t)region_promised_pages() * 4,
@@ -109,7 +112,9 @@ static size_t gen_meminfo(char *buf, size_t size) {
                      (uint64_t)kheap_get_allocated_bytes(),
                      (uint64_t)kheap_get_mapped_bytes() / 1024,
                      (uint64_t)pmm_get_failed_allocations(),
-                     (uint64_t)kheap_get_failed_allocations());
+                     (uint64_t)kheap_get_failed_allocations(),
+                     (uint64_t)pcache_pages() * 4,
+                     (uint64_t)pcache_unmapped_pages() * 4);
 }
 
 // /proc/tasks: one line per task (taken under the scheduler lock)
