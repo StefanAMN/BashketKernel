@@ -22,9 +22,11 @@
  * kill at the first touch). It is not a guarantee: fork, the kernel itself
  * and copy-on-write also use frames, and none of those is counted here.
  *
- * Not done: shared file mappings, writing changes back to a file, and a
- * cache that would let two processes share the pages of one file (each
- * reads its own copy).
+ * The pages of a file come from the page cache (pcache.h): every process
+ * mapping one maps the same frame, read-only, or copy-on-write in a
+ * writable mapping, so the first write gives the process its own copy.
+ *
+ * Not done: shared file mappings and writing changes back to a file.
  */
 
 #ifndef REGION_H
