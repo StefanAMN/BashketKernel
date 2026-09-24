@@ -9,7 +9,8 @@ void exit(int status) {
 }
 
 long fork(void)                                    { return syscall0(SYS_FORK); }
-long execve(const char *path, char *const argv[])  { return syscall2(SYS_EXECVE, path, argv); }
+long execve(const char *path, char *const argv[], char *const envp[]) { return syscall3(SYS_EXECVE, path, argv, envp); }
+long execv(const char *path, char *const argv[])   { return execve(path, argv, environ); }
 long waitpid(long pid, int *status)                { return syscall2(SYS_WAITPID, pid, status); }
 long getpid(void)                                  { return syscall0(SYS_GETPID); }
 long getppid(void)                                 { return syscall0(SYS_GETPPID); }
@@ -19,6 +20,49 @@ void sleep_ms(unsigned long ms)                    { syscall1(SYS_SLEEP, ms); }
 long uptime_ticks(void)                            { return syscall0(SYS_TIME); }
 long set_priority(int priority)                    { return syscall1(SYS_SETPRIORITY, priority); }
 void ignore_interrupt(int ignore)                  { syscall1(SYS_IGNORE_INTERRUPT, ignore); }
+
+/* --- Environment ---------------------------------------------------------- */
+
+/* Set by crt0 to the vector the kernel put on our stack. The environment is
+ * ordinary memory of this process: the kernel does not know what is in it,
+ * it only copies the strings when we exec. */
+char **environ;
+
+const char *getenv(const char *name) {
+    size_t len = strlen(name);
+    for (char **e = environ; e && *e; e++) {
+        if (strncmp(*e, name, len) == 0 && (*e)[len] == '=') return *e + len + 1;
+    }
+    return NULL;
+}
+
+int setenv(const char *name, const char *value) {
+    size_t name_len = strlen(name), value_len = strlen(value);
+    char *entry = malloc(name_len + value_len + 2);
+    if (!entry) return -1;
+    memcpy(entry, name, name_len);
+    entry[name_len] = '=';
+    memcpy(entry + name_len + 1, value, value_len + 1);
+
+    /* Replace an existing entry in place */
+    size_t count = 0;
+    for (char **e = environ; e && *e; e++, count++) {
+        if (strncmp(*e, name, name_len) == 0 && (*e)[name_len] == '=') {
+            *e = entry;
+            return 0;
+        }
+    }
+
+    /* Otherwise the vector has to grow: copy it with room for one more.
+     * (The old vector may be the one on the stack, so it is never freed.) */
+    char **grown = malloc((count + 2) * sizeof(char *));
+    if (!grown) return -1;
+    for (size_t i = 0; i < count; i++) grown[i] = environ[i];
+    grown[count] = entry;
+    grown[count + 1] = NULL;
+    environ = grown;
+    return 0;
+}
 
 /* --- Memory -------------------------------------------------------------- */
 
@@ -155,6 +199,7 @@ const char *strerror(long err) {
         case 0:         return "success";
         case ENOENT:    return "no such file or directory";
         case ESRCH:     return "no such process";
+        case E2BIG:     return "argument list too long";
         case EBADF:     return "bad file descriptor";
         case ECHILD:    return "no child processes";
         case ENOMEM:    return "out of memory";

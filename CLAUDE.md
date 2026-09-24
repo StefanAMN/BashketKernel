@@ -150,6 +150,15 @@ would change how the next problem is approached.
 - A side effect worth knowing: `kill()` returning does not mean the target is
   gone yet. Wait for it before testing for the consequences.
 
+### Environment
+
+- **The environment is not kernel state.** The first version was a global
+  table in the kernel. The Unix design needs almost nothing from the kernel:
+  `execve` copies one more vector of strings onto the new stack, next to
+  `argv`. `getenv`, `setenv`, `export`, `$NAME` and `PATH` lookup are all
+  user-space code. When a feature seems to need a kernel table, first ask
+  whether it is really per-process data the kernel only has to carry.
+
 ### Terminal
 
 - **Echo and line editing belong in the kernel, once.** While each program

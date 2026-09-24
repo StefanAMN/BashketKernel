@@ -6,7 +6,9 @@
  *
  * A command line is one or more programs joined by '|'. Each may redirect
  * its input with "< file" and its output with "> file" or ">> file".
- * A program name without a '/' is looked up in /bin.
+ * A program name without a '/' is looked up in the directories of $PATH.
+ * $NAME expands to an environment variable and $? to the last exit status;
+ * "export NAME=value" sets one for the shell and everything it starts.
  *
  * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
  * empty prompt leaves the shell.
@@ -31,12 +33,17 @@ typedef struct {
  * (instead of cutting the input line up in place) keeps "a|b" simple: there
  * is no room in the line itself for a terminator between 'a' and '|'. */
 static char word_storage[512];
+static int last_status = 0;   /* Exit status of the previous command, for $? */
 
 static int is_operator(char c) { return c == '|' || c == '<' || c == '>'; }
 static int is_blank(char c)    { return c == ' ' || c == '\t'; }
 
 /* Copy the next word from *cursor into word_storage. Handles "double quotes".
  * Returns the copy, or NULL if there is no word here or no room left. */
+static int is_name_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
 static char *next_word(const char **cursor, size_t *used) {
     const char *p = *cursor;
     while (is_blank(*p)) p++;
@@ -45,16 +52,44 @@ static char *next_word(const char **cursor, size_t *used) {
     size_t len = 0;
     int quoted = (*p == '"');
     if (quoted) p++;
+    const char *start = p;
 
     while (*p != '\0' && (quoted ? *p != '"' : (!is_blank(*p) && !is_operator(*p)))) {
+        /* $NAME is replaced by the value of that environment variable
+         * (nothing, if it is not set); $? by the last exit status */
+        if (*p == '$' && (is_name_char(p[1]) || p[1] == '?')) {
+            char name[32], status_text[12];
+            const char *value;
+            size_t n = 0;
+            p++;
+            if (*p == '?') {
+                p++;
+                int v = last_status, digits = 0;
+                char tmp[12];
+                do { tmp[digits++] = (char)('0' + v % 10); v /= 10; } while (v > 0);
+                for (int i = 0; i < digits; i++) status_text[i] = tmp[digits - 1 - i];
+                status_text[digits] = '\0';
+                value = status_text;
+            } else {
+                while (is_name_char(*p) && n < sizeof(name) - 1) name[n++] = *p++;
+                name[n] = '\0';
+                value = getenv(name);
+            }
+            for (; value && *value; value++) {
+                if (*used + len + 1 >= sizeof(word_storage)) return NULL;
+                word[len++] = *value;
+            }
+            continue;
+        }
+
         if (*used + len + 1 >= sizeof(word_storage)) return NULL;
         word[len++] = *p++;
     }
     if (quoted) {
         if (*p != '"') return NULL; /* Missing closing quote */
         p++;
-    } else if (len == 0) {
-        return NULL;
+    } else if (p == start) {
+        return NULL;                /* No word here at all */
     }
 
     word[len] = '\0';
@@ -120,16 +155,33 @@ static void exec_stage(stage_t *stage) {
                         O_WRONLY | O_CREAT | (stage->out_append ? O_APPEND : O_TRUNC), 1);
     }
 
-    char path[160];
     const char *name = stage->argv[0];
+    long err = -ENOENT;
+    char path[160];
+
     if (strchr(name, '/')) {
-        strcpy(path, strlen(name) < sizeof(path) ? name : "");
+        /* A name with a slash is a path: run exactly that */
+        err = execv(name, stage->argv);
     } else {
-        strcpy(path, "/bin/");
-        if (strlen(name) < sizeof(path) - 5) strcpy(path + 5, name);
+        /* Otherwise try each directory in PATH (colon-separated) in turn */
+        const char *dirs = getenv("PATH");
+        if (!dirs) dirs = "/bin";
+        while (*dirs) {
+            size_t dir_len = 0;
+            while (dirs[dir_len] && dirs[dir_len] != ':') dir_len++;
+
+            if (dir_len > 0 && dir_len + 1 + strlen(name) < sizeof(path)) {
+                memcpy(path, dirs, dir_len);
+                path[dir_len] = '/';
+                strcpy(path + dir_len + 1, name);
+                long e = execv(path, stage->argv); /* Only returns on failure */
+                if (e != -ENOENT) err = e;         /* Remember a more telling error */
+            }
+            dirs += dir_len;
+            if (*dirs == ':') dirs++;
+        }
     }
 
-    long err = execve(path, stage->argv);
     fprintf(2, "sh: %s: %s\n", name, err == -ENOENT ? "command not found" : strerror(err));
     exit(127);
 }
@@ -203,6 +255,21 @@ static int run_line(const char *line, int *should_exit) {
         }
         return 0;
     }
+    /* export NAME=value: change the shell's own environment, which every
+     * program started afterwards inherits */
+    if (count == 1 && strcmp(stages[0].argv[0], "export") == 0) {
+        for (int i = 1; i < stages[0].argc; i++) {
+            char *assignment = stages[0].argv[i];
+            char *equals = strchr(assignment, '=');
+            if (!equals || equals == assignment) {
+                fprintf(2, "sh: export: expected NAME=value, got '%s'\n", assignment);
+                return 1;
+            }
+            *equals = '\0';
+            if (setenv(assignment, equals + 1) != 0) return 1;
+        }
+        return 0;
+    }
     if (count == 1 && strcmp(stages[0].argv[0], "pwd") == 0) {
         char cwd[128];
         if (getcwd(cwd, sizeof(cwd)) < 0) return 1;
@@ -214,6 +281,7 @@ static int run_line(const char *line, int *should_exit) {
                "  prog args | prog2      pipe output into another program\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
                "  cd [dir], pwd          change or print the current directory\n"
+               "  export NAME=value      set an environment variable; $NAME uses it, $? is the last status\n"
                "  exit [status]          leave the shell\n");
         return 0;
     }
@@ -232,11 +300,10 @@ int main(int argc, char **argv) {
     }
 
     static char line[256];
-    int status = 0;
     while (!should_exit) {
         printf("$ ");
         if (readline(line, sizeof(line)) < 0) break; /* End of input */
-        status = run_line(line, &should_exit);
+        last_status = run_line(line, &should_exit);
     }
-    return status;
+    return last_status;
 }

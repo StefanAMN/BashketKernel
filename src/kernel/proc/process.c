@@ -33,19 +33,40 @@ static uint64_t page_align_up(uint64_t value) {
     return (value + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
 }
 
-// Lay out argc/argv on the new program's stack the way the System V AMD64
-// ABI specifies for process entry:
+// Lay out the arguments and environment on the new program's stack the way
+// the System V AMD64 ABI specifies for process entry:
 //
-//   high addresses   argument strings
+//   high addresses   argument and environment strings
 //                    padding to 16 bytes
 //                    NULL                  (end of envp)
+//                    envp[envc-1] ... envp[0]
 //                    NULL                  (end of argv)
 //                    argv[argc-1] ... argv[0]
 //   RSP ->           argc
 //
 // RSP must be 16-byte aligned at entry. The stack belongs to another address
 // space, so it is written through vmm_copy_to_space.
-static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[], uint64_t *out_rsp) {
+
+// Copy one NULL-terminated vector of strings below *sp and record where each
+// string went. Returns the number of strings, or -1 if there are too many or
+// they are too long in total.
+static int push_strings(uint64_t *pml4, char *const strings[], uint64_t *sp, size_t *bytes_used, uint64_t *addrs) {
+    int count = 0;
+    for (; strings && strings[count] != NULL; count++) {
+        if (count >= PROCESS_MAX_ARGS) return -1;
+
+        size_t len = strlen(strings[count]) + 1;
+        *bytes_used += len;
+        if (*bytes_used > PROCESS_ARG_BYTES) return -1;
+
+        *sp -= len;
+        if (vmm_copy_to_space(pml4, *sp, strings[count], len) != len) return -1;
+        addrs[count] = *sp;
+    }
+    return count;
+}
+
+static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[], char *const envp[], uint64_t *out_rsp) {
     uint64_t stack_bottom = USER_STACK_TOP - (uint64_t)USER_STACK_PAGES * PAGE_SIZE;
     if (user_map_range(pml4, stack_bottom, USER_STACK_PAGES * PAGE_SIZE, PROT_READ | PROT_WRITE) != 0) {
         return false;
@@ -54,34 +75,28 @@ static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[
     char *const default_argv[] = { (char *)path, NULL };
     if (!argv || !argv[0]) argv = default_argv;
 
-    uint64_t arg_addrs[PROCESS_MAX_ARGS];
-    size_t argc = 0;
+    uint64_t arg_addrs[PROCESS_MAX_ARGS], env_addrs[PROCESS_MAX_ARGS];
     size_t string_bytes = 0;
     uint64_t sp = USER_STACK_TOP;
 
-    for (; argv[argc] != NULL; argc++) {
-        if (argc >= PROCESS_MAX_ARGS) return false;
-
-        size_t len = strlen(argv[argc]) + 1;
-        string_bytes += len;
-        if (string_bytes > PROCESS_ARG_BYTES) return false;
-
-        sp -= len;
-        if (vmm_copy_to_space(pml4, sp, argv[argc], len) != len) return false;
-        arg_addrs[argc] = sp;
-    }
+    int argc = push_strings(pml4, argv, &sp, &string_bytes, arg_addrs);
+    int envc = push_strings(pml4, envp, &sp, &string_bytes, env_addrs);
+    if (argc < 0 || envc < 0) return false;
 
     sp &= ~0xFULL;
 
-    // argc + argv pointers + two NULLs; pad so the final RSP is 16-byte aligned
-    size_t slots = 1 + argc + 2;
+    // argc, the argv pointers and their NULL, the envp pointers and their
+    // NULL; pad so that the final RSP is 16-byte aligned
+    size_t slots = 1 + (size_t)argc + 1 + (size_t)envc + 1;
     if (slots % 2) sp -= 8;
 
-    uint64_t vec[PROCESS_MAX_ARGS + 3];
-    vec[0] = argc;
-    for (size_t i = 0; i < argc; i++) vec[1 + i] = arg_addrs[i];
-    vec[1 + argc] = 0;
-    vec[2 + argc] = 0;
+    uint64_t vec[2 * PROCESS_MAX_ARGS + 3];
+    size_t n = 0;
+    vec[n++] = (uint64_t)argc;
+    for (int i = 0; i < argc; i++) vec[n++] = arg_addrs[i];
+    vec[n++] = 0;
+    for (int i = 0; i < envc; i++) vec[n++] = env_addrs[i];
+    vec[n++] = 0;
 
     sp -= slots * sizeof(uint64_t);
     if (vmm_copy_to_space(pml4, sp, vec, slots * sizeof(uint64_t)) != slots * sizeof(uint64_t)) return false;
@@ -91,7 +106,7 @@ static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[
 }
 
 // Build a complete user image for `path`. On failure nothing is left allocated.
-static bool load_user_image(const char *path, char *const argv[], user_image_t *image) {
+static bool load_user_image(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
     task_t *caller = sched_get_current_task();
     vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
     if (!file || file->type != VFS_FILE || !file->data) return false;
@@ -100,7 +115,7 @@ static bool load_user_image(const char *path, char *const argv[], user_image_t *
     if (!image->pml4) return false;
 
     if (!elf_load(image->pml4, file->data, file->size, &image->entry, &image->image_end) ||
-        !build_user_stack(image->pml4, path, argv, &image->rsp)) {
+        !build_user_stack(image->pml4, path, argv, envp, &image->rsp)) {
         vmm_destroy_address_space(image->pml4);
         image->pml4 = NULL;
         return false;
@@ -151,8 +166,12 @@ bool process_grow_stack(uint64_t addr) {
 pid_t process_spawn(const char *path, char *const argv[]) {
     if (!path) return -1;
 
+    // A process started by the kernel has no parent to inherit from, so it
+    // gets a minimal environment
+    static char *const default_env[] = { "PATH=/bin", "HOME=/", NULL };
+
     user_image_t image;
-    if (!load_user_image(path, argv, &image)) return -1;
+    if (!load_user_image(path, argv, default_env, &image)) return -1;
 
     task_t *task = task_alloc(image.name, user_task_start);
     if (!task) {
@@ -178,14 +197,14 @@ pid_t process_spawn(const char *path, char *const argv[]) {
     return pid;
 }
 
-int process_exec(struct registers *regs, const char *path, char *const argv[]) {
+int process_exec(struct registers *regs, const char *path, char *const argv[], char *const envp[]) {
     task_t *self = sched_get_current_task();
     if (!self || !self->is_user || !regs || !path) return -1;
 
     // Build the new image completely before touching the old one, so a
     // failed exec returns to a program that still exists.
     user_image_t image;
-    if (!load_user_image(path, argv, &image)) return -1;
+    if (!load_user_image(path, argv, envp, &image)) return -1;
 
     uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
     apply_image(self, &image);

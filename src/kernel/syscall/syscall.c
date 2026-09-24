@@ -265,45 +265,65 @@ static int64_t sys_sleep(uint64_t milliseconds) {
     return 0;
 }
 
-static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t user_argv) {
-    // Copy the path and arguments into kernel memory first: exec destroys the
-    // address space they live in.
+// Copy a NULL-terminated vector of strings (argv or envp) from user memory.
+// The strings go into `storage` starting at *used; out[] receives pointers
+// to them and a final NULL. Returns the count or a negative error number.
+static int64_t copy_string_vector(uint64_t user_vec, char *storage, size_t *used, char *out[]) {
+    size_t count = 0;
+
+    for (; user_vec != 0; count++) {
+        uint64_t slot = user_vec + count * sizeof(uint64_t);
+        if (!user_range_ok(slot, sizeof(uint64_t), false)) return -EFAULT;
+
+        user_access_begin();
+        uint64_t user_string = *(const uint64_t *)slot;
+        user_access_end();
+        if (user_string == 0) break;
+
+        if (count >= PROCESS_MAX_ARGS) return -E2BIG;
+        if (*used >= PROCESS_ARG_BYTES) return -E2BIG;
+
+        int64_t len = copy_string_from_user(storage + *used, user_string, PROCESS_ARG_BYTES - *used);
+        if (len < 0) {
+            // Unreadable, or it did not fit in what is left of the storage
+            return user_range_ok(user_string, 1, false) ? -E2BIG : -EFAULT;
+        }
+        out[count] = storage + *used;
+        *used += (size_t)len + 1;
+    }
+
+    out[count] = NULL;
+    return (int64_t)count;
+}
+
+static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t user_argv, uint64_t user_envp) {
+    // Copy the path, arguments and environment into kernel memory first:
+    // exec destroys the address space they live in.
     char path[PATH_MAX];
     char *argv[PROCESS_MAX_ARGS + 1];
+    char *envp[PROCESS_MAX_ARGS + 1];
 
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
 
-    char *arg_storage = kmalloc(PROCESS_ARG_BYTES);
-    if (!arg_storage) return -ENOMEM;
+    char *storage = kmalloc(PROCESS_ARG_BYTES);
+    if (!storage) return -ENOMEM;
 
-    int64_t result = 0;
-    size_t argc = 0;
     size_t used = 0;
-    if (user_argv != 0) {
-        for (; argc < PROCESS_MAX_ARGS; argc++) {
-            uint64_t slot = user_argv + argc * sizeof(uint64_t);
-            if (!user_range_ok(slot, sizeof(uint64_t), false)) { result = -EFAULT; break; }
+    int64_t argc = copy_string_vector(user_argv, storage, &used, argv);
+    int64_t envc = (argc >= 0) ? copy_string_vector(user_envp, storage, &used, envp) : 0;
 
-            user_access_begin();
-            uint64_t user_arg = *(const uint64_t *)slot;
-            user_access_end();
-            if (user_arg == 0) break;
-
-            int64_t len = copy_string_from_user(arg_storage + used, user_arg, PROCESS_ARG_BYTES - used);
-            if (len < 0) { result = -EFAULT; break; }
-            argv[argc] = arg_storage + used;
-            used += (size_t)len + 1;
-        }
-    }
-    argv[argc] = NULL;
-
-    // On success the frame describes the new program, and the 0 returned here
-    // lands in its RAX, which a new program does not look at.
-    if (result == 0 && process_exec(regs, path, argc ? argv : NULL) != 0) {
-        result = -ENOENT;
+    int64_t result;
+    if (argc < 0) {
+        result = argc;
+    } else if (envc < 0) {
+        result = envc;
+    } else {
+        // On success the frame describes the new program, and the 0 returned
+        // here lands in its RAX, which a new program does not look at.
+        result = (process_exec(regs, path, argc ? argv : NULL, envp) == 0) ? 0 : -ENOENT;
     }
 
-    kfree(arg_storage);
+    kfree(storage);
     return result;
 }
 
@@ -425,7 +445,7 @@ static int64_t dispatch(struct registers *regs) {
             pid_t child = process_fork(regs);
             return child < 0 ? -ENOMEM : child;
         }
-        case SYS_EXECVE:  return sys_execve(regs, regs->rdi, regs->rsi);
+        case SYS_EXECVE:  return sys_execve(regs, regs->rdi, regs->rsi, regs->rdx);
         case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi);
         case SYS_KILL:
             return process_kill((pid_t)regs->rdi, (int)regs->rsi) == 0 ? 0 : -ESRCH;
