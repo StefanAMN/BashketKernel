@@ -41,6 +41,7 @@ enum {
     LOCK_RANK_BCACHE   = 61, // The cache of disk sectors
     LOCK_RANK_HEAP     = 70, // kmalloc and the slab caches
     LOCK_RANK_KSTACK   = 72,
+    LOCK_RANK_PCACHE   = 73, // The page cache's table (takes frame sharing counts under it)
     LOCK_RANK_VMM      = 75,
     LOCK_RANK_COW      = 78,
     LOCK_RANK_SWAP     = 79, // Which swap slots are in use

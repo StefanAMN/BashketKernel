@@ -2,6 +2,7 @@
 #include "tcp.h"
 #include "net.h"
 #include "pit.h"
+#include "hrtimer.h"
 #include "heap.h"
 #include "sched.h"
 #include "kstring.h"
@@ -220,9 +221,19 @@ static void transfer(uint16_t port) {
     EXPECT_EQ(tcp_listen(sink_listener, 1), 0);
     EXPECT_TRUE(task_create("tcp_sink", sink_entry) != NULL);
 
+    uint64_t started_ns = clock_ns();
     tcp_socket_t *client = tcp_open();
     EXPECT_TRUE(client != NULL);
     EXPECT_EQ(tcp_connect(client, NET_LOCAL_IP, port), 0);
+
+    // /proc/tcp: the client, connected and nothing sent, at the initial
+    // window (3 segments of 1460, RFC 5681 eq. 1) and ssthresh "high"
+    static char text[4096];
+    char expected[48];
+    tcp_describe(text, sizeof(text));
+    ksnprintf(expected, sizeof(expected), ":%u  established  4380  65535  ", (unsigned)port);
+    EXPECT_TRUE(strstr(text, expected) != NULL);
+    if (!strstr(text, expected)) kprintf("%s", text);
 
     static uint8_t chunk[5000];
     uint64_t sent = 0;
@@ -237,21 +248,45 @@ static void transfer(uint16_t port) {
     tcp_close(client);   // What is still queued is sent before the connection closes
 
     TEST_WAIT(sink_done, 6000);
+    uint64_t elapsed_ms = (clock_ns() - started_ns) / 1000000;
     EXPECT_EQ(sink_done, 1);
     EXPECT_TRUE(sink_bytes == TRANSFER_BYTES);
     EXPECT_TRUE(sink_errors == 0);
     tcp_close(sink_listener);
     const tcp_stats_t *st = tcp_stats();
-    kprintf("    %lu segments out, %lu in, %lu retransmissions, %lu fast, %lu out of order (%lu kept), %lu round trips, %lu resets\n",
-            st->segments_out, st->segments_in, st->retransmissions, st->fast_retransmissions, st->out_of_order,
-            st->out_of_order_kept, st->rtt_samples, st->resets_sent);
+    kprintf("    %lu ms; %lu segments out, %lu in, %lu retransmissions, %lu fast, %lu recoveries (%lu partial acks), "
+            "%lu out of order (%lu kept), %lu round trips, %lu resets\n",
+            elapsed_ms, st->segments_out, st->segments_in, st->retransmissions, st->fast_retransmissions, st->recoveries,
+            st->partial_acks, st->out_of_order, st->out_of_order_kept, st->rtt_samples, st->resets_sent);
+}
+
+static uint32_t cwnd_trace[TCP_TRACE_MAX];
+
+// Print the start of a congestion window trace, in segments of 1460 bytes
+// (rounded down), on one line
+static void print_trace(size_t n) {
+    kprintf("    cwnd (segments):");
+    for (size_t i = 0; i < n && i < 48; i++) kprintf(" %u", cwnd_trace[i] / 1460);
+    kprintf(n > 48 ? " ... (%zu values)\n" : " (%zu values)\n", n);
 }
 
 TEST(tcp_large_transfer_arrives_intact) {
     size_t sockets_before = tcp_sockets_in_use();
     uint64_t samples_before = tcp_stats()->rtt_samples;
+    tcp_test_trace_cwnd(7103);
     transfer(7103);
+    tcp_test_trace_cwnd(0);
     EXPECT_TRUE(tcp_stats()->rtt_samples > samples_before + 10);  // Round trips are measured
+
+    // Slow start: from the initial window, one segment more per
+    // acknowledgement, well past it
+    size_t n = tcp_test_cwnd_trace(cwnd_trace, TCP_TRACE_MAX);
+    print_trace(n);
+    EXPECT_TRUE(n > 3 && cwnd_trace[0] == 3 * 1460);
+    EXPECT_TRUE(n > 3 && cwnd_trace[1] > cwnd_trace[0] && cwnd_trace[1] <= 4 * 1460);
+    uint32_t largest = 0;
+    for (size_t i = 0; i < n; i++) if (cwnd_trace[i] > largest) largest = cwnd_trace[i];
+    EXPECT_TRUE(largest > 6 * 3 * 1460);
     wait_for_sockets_to_go(sockets_before);
     EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
 }
@@ -265,10 +300,26 @@ TEST(tcp_survives_lost_segments) {
     uint64_t fast_before = tcp_stats()->fast_retransmissions;
     uint64_t kept_before = tcp_stats()->out_of_order_kept;
 
+    uint64_t recoveries_before = tcp_stats()->recoveries;
     tcp_test_drop_every(7);
+    tcp_test_trace_cwnd(7104);
     transfer(7104);
+    tcp_test_trace_cwnd(0);
     wait_for_sockets_to_go(sockets_before);
     tcp_test_drop_every(0);
+
+    // The congestion window falls at a loss and grows again after it, and
+    // never below one segment
+    size_t n = tcp_test_cwnd_trace(cwnd_trace, TCP_TRACE_MAX);
+    print_trace(n);
+    size_t fall = 0;
+    for (size_t i = 1; i < n && !fall; i++) if (cwnd_trace[i] < cwnd_trace[i - 1]) fall = i;
+    EXPECT_TRUE(fall > 0);
+    bool grew_again = false;
+    for (size_t i = fall + 1; i < n; i++) if (cwnd_trace[i] > cwnd_trace[fall]) grew_again = true;
+    EXPECT_TRUE(grew_again);
+    for (size_t i = 0; i < n; i++) EXPECT_TRUE(cwnd_trace[i] >= 1460 && cwnd_trace[i] <= TCP_CWND_MAX);
+    EXPECT_TRUE(tcp_stats()->recoveries > recoveries_before + 5);   // Fast recovery, not only timeouts
 
     EXPECT_TRUE(tcp_stats()->dropped_for_test > dropped_before + 20);
     // Losses are mended, mostly without waiting for the timer: segments
@@ -386,6 +437,87 @@ TEST(tcp_rto_follows_rfc6298) {
     EXPECT_EQ(c.rto_us, TCP_RTO_MAX_US);
 }
 
+// The congestion window's arithmetic against RFC 5681 (eq. 1 to 4, and
+// 3.2) and RFC 6582 (NewReno), worked by hand
+TEST(tcp_congestion_window_follows_rfc5681) {
+    tcp_cc_t cc;
+    // The initial window (eq. 1): 4, 3 or 2 segments as they are small or large
+    tcp_cc_init(&cc, 536, 1000);
+    EXPECT_EQ(cc.cwnd, 4u * 536);
+    tcp_cc_init(&cc, 2200, 1000);
+    EXPECT_EQ(cc.cwnd, 2u * 2200);
+    tcp_cc_init(&cc, 1460, 1000);
+    EXPECT_EQ(cc.cwnd, 3u * 1460);
+    EXPECT_EQ(cc.ssthresh, 65535u);
+    EXPECT_TRUE(!cc.in_recovery && cc.recover == 1000);
+
+    // Slow start (eq. 2): what was acknowledged, at most a segment each time
+    EXPECT_TRUE(!tcp_cc_new_ack(&cc, 1460, 1460, 2461, 0));
+    EXPECT_EQ(cc.cwnd, 5840u);
+    tcp_cc_new_ack(&cc, 1460, 4000, 6461, 0);
+    EXPECT_EQ(cc.cwnd, 7300u);
+    tcp_cc_new_ack(&cc, 1460, 100, 6561, 0);
+    EXPECT_EQ(cc.cwnd, 7400u);
+    // Congestion avoidance (eq. 3): SMSS * SMSS / cwnd each time
+    cc.cwnd = cc.ssthresh = 14600;
+    tcp_cc_new_ack(&cc, 1460, 1460, 8021, 0);
+    EXPECT_EQ(cc.cwnd, 14600u + 146);
+
+    // Three duplicates: fast retransmit, ssthresh half the flight (eq. 4),
+    // the window inflated by the three (3.2, 3) and by each one after (3.2, 4)
+    tcp_cc_init(&cc, 1460, 1000);
+    cc.cwnd = 14600;
+    EXPECT_TRUE(!tcp_cc_dup_ack(&cc, 1460, 1, 5000, 20001, 15001));
+    EXPECT_TRUE(!tcp_cc_dup_ack(&cc, 1460, 2, 5000, 20001, 15001));
+    EXPECT_EQ(cc.cwnd, 14600u);
+    EXPECT_TRUE(tcp_cc_dup_ack(&cc, 1460, 3, 5000, 20001, 15001));
+    EXPECT_EQ(cc.ssthresh, 7500u);
+    EXPECT_EQ(cc.cwnd, 7500u + 3 * 1460);
+    EXPECT_TRUE(cc.in_recovery && cc.recover == 20000);
+    EXPECT_TRUE(!tcp_cc_dup_ack(&cc, 1460, 4, 5000, 20001, 15001));
+    EXPECT_EQ(cc.cwnd, 7500u + 4 * 1460);
+    // Partial acknowledgements (RFC 6582 3.2, 5): send the next hole, take
+    // off what was acknowledged, give back a segment if that much was
+    EXPECT_TRUE(tcp_cc_new_ack(&cc, 1460, 2920, 7920, 12081));
+    EXPECT_EQ(cc.cwnd, 7500u + 4 * 1460 - 2920 + 1460);
+    EXPECT_TRUE(tcp_cc_new_ack(&cc, 1460, 500, 8420, 11581));
+    EXPECT_EQ(cc.cwnd, 7500u + 4 * 1460 - 2920 + 1460 - 500);
+    EXPECT_TRUE(cc.in_recovery);
+    // The full acknowledgement (3.2, 6): min(ssthresh, max(FlightSize, SMSS) + SMSS)
+    EXPECT_TRUE(!tcp_cc_new_ack(&cc, 1460, 11581, 20001, 0));
+    EXPECT_EQ(cc.cwnd, 2u * 1460);
+    EXPECT_TRUE(!cc.in_recovery);
+    EXPECT_TRUE(tcp_cc_dup_ack(&cc, 1460, 3, 20001, 40001, 20000));
+    EXPECT_TRUE(!tcp_cc_new_ack(&cc, 1460, 20000, 40001, 30000));
+    EXPECT_EQ(cc.cwnd, 10000u);                                      // ssthresh, the smaller
+
+    // A timeout: one segment; ssthresh half the flight at the first expiry
+    // for a segment only, and never below two segments
+    tcp_cc_timeout(&cc, 1460, 20000, 60001, true);
+    EXPECT_EQ(cc.cwnd, 1460u);
+    EXPECT_EQ(cc.ssthresh, 10000u);
+    tcp_cc_timeout(&cc, 1460, 1000, 60001, false);
+    EXPECT_EQ(cc.ssthresh, 10000u);
+    tcp_cc_timeout(&cc, 1460, 1000, 60001, true);
+    EXPECT_EQ(cc.ssthresh, 2u * 1460);
+    EXPECT_TRUE(!cc.in_recovery && cc.recover == 60000);
+    // Duplicates of what was sent before the timeout start nothing (RFC
+    // 6582 3.2, 2); once that is all acknowledged, they do
+    EXPECT_TRUE(!tcp_cc_dup_ack(&cc, 1460, 3, 50000, 60001, 10001));
+    EXPECT_TRUE(!cc.in_recovery && cc.cwnd == 1460);
+    EXPECT_TRUE(tcp_cc_dup_ack(&cc, 1460, 3, 60001, 70001, 10000));
+
+    // Sequence numbers that wrap: beyond recover across 2^32
+    tcp_cc_init(&cc, 1460, 0xFFFFFF00u);
+    EXPECT_TRUE(tcp_cc_dup_ack(&cc, 1460, 3, 0x10, 0x2000, 0x1FF0));
+    // The window grows no further than TCP_CWND_MAX
+    tcp_cc_init(&cc, 1460, 0);
+    cc.ssthresh = TCP_CWND_MAX;
+    cc.cwnd = TCP_CWND_MAX - 10;
+    tcp_cc_new_ack(&cc, 1460, 1460, 1461, 0);
+    EXPECT_EQ(cc.cwnd, TCP_CWND_MAX);
+}
+
 // --- Segments made by hand, to put them in the order a test wants ------------
 
 static uint16_t be16(uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); }
@@ -488,6 +620,66 @@ TEST(tcp_rejects_bad_segments) {
     EXPECT_TRUE(tcp_stats()->bad_segments == bad_before + 4);
 }
 
+// The sender keeps to the congestion window, not only to the receiver's.
+// The peer is played by hand (from port 40108; everything the server sends
+// is thrown away) and offers 8192 bytes of window; its SYN names no segment
+// size, so segments are 536 bytes and the initial window four of them
+// (RFC 5681 eq. 1). Of the 8000 bytes the server has to send, only those
+// four go out; an acknowledgement of one grows the window by one segment
+// (slow start), so two more go; three duplicate acknowledgements then bring
+// a fast retransmit and start a recovery. (What the server has sent is read
+// from its sequence numbers, which only it changes, not from timing.)
+TEST(tcp_sender_keeps_to_the_congestion_window) {
+    size_t sockets_before = tcp_sockets_in_use();
+    uint64_t fast_before = tcp_stats()->fast_retransmissions;
+    uint64_t recoveries_before = tcp_stats()->recoveries;
+    tcp_socket_t *listener = tcp_open();
+    EXPECT_TRUE(listener != NULL);
+    EXPECT_EQ(tcp_bind(listener, 7108), 0);
+    EXPECT_EQ(tcp_listen(listener, 1), 0);
+
+    const uint16_t peer = 40108;
+    const uint32_t s = 5000;                     // The peer's first sequence number
+    uint32_t rcv_nxt = 0, sent = 0, iss = 0;
+    tcp_test_drop_every(1);
+    inject(peer, 7108, s, 0, 0x02, NULL, 0);                        // SYN, no options
+    EXPECT_TRUE(tcp_test_sequences(7108, peer, &rcv_nxt, &sent, &iss));
+    TEST_WAIT(tcp_test_sequences(7108, peer, &rcv_nxt, &sent, &iss) && sent == iss + 1, 100);
+    inject(peer, 7108, s + 1, iss + 1, 0x10, NULL, 0);             // ACK of the SYN+ACK
+    int error = 0;
+    tcp_socket_t *server = tcp_accept(listener, &error);
+    EXPECT_TRUE(server != NULL);
+    if (!server) { tcp_test_drop_every(0); tcp_close(listener); return; }
+
+    static uint8_t data[8000];
+    memset(data, 'w', sizeof(data));
+    EXPECT_EQ(tcp_write(server, data, sizeof(data)), (int64_t)sizeof(data));
+    const uint32_t first = iss + 1;
+    TEST_WAIT(tcp_test_sequences(7108, peer, &rcv_nxt, &sent, &iss) && sent == first + 4 * 536, 100);
+    sched_sleep_ticks(5);                       // Nothing more follows (the receiver would take 8192)
+    EXPECT_TRUE(tcp_test_sequences(7108, peer, &rcv_nxt, &sent, &iss));
+    EXPECT_EQ(sent, first + 4 * 536);
+
+    inject(peer, 7108, s + 1, first + 536, 0x10, NULL, 0);          // One segment acknowledged
+    TEST_WAIT(tcp_test_sequences(7108, peer, &rcv_nxt, &sent, &iss) && sent == first + 536 + 5 * 536, 100);
+    sched_sleep_ticks(5);
+    EXPECT_TRUE(tcp_test_sequences(7108, peer, &rcv_nxt, &sent, &iss));
+    EXPECT_EQ(sent, first + 536 + 5 * 536);
+
+    for (int i = 0; i < 3; i++) inject(peer, 7108, s + 1, first + 536, 0x10, NULL, 0);
+    TEST_WAIT(tcp_stats()->fast_retransmissions > fast_before, 100);
+    EXPECT_TRUE(tcp_stats()->fast_retransmissions == fast_before + 1);
+    EXPECT_TRUE(tcp_stats()->recoveries == recoveries_before + 1);
+
+    // The end: what the server sends now reaches port 40108, where nothing
+    // listens, and the reset that answers it ends the connection
+    tcp_close(server);
+    tcp_close(listener);
+    tcp_test_drop_every(0);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
 void test_suite_tcp(void) {
     kprintf("Suite: TCP\n");
     if (!net_up()) {
@@ -503,5 +695,7 @@ void test_suite_tcp(void) {
     RUN_TEST(tcp_rejects_bad_segments);
     RUN_TEST(tcp_reassembly_list);
     RUN_TEST(tcp_rto_follows_rfc6298);
+    RUN_TEST(tcp_congestion_window_follows_rfc5681);
     RUN_TEST(tcp_reassembles_out_of_order_segments);
+    RUN_TEST(tcp_sender_keeps_to_the_congestion_window);
 }
