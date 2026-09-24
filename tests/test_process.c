@@ -3,6 +3,9 @@
 #include "sched.h"
 #include "pmm.h"
 #include "heap.h"
+#include "kstring.h"
+#include "vmm.h"
+#include "elf.h"
 #include "spinlock.h"
 #include "vfs.h"
 #include "string_util.h"
@@ -190,6 +193,67 @@ TEST(interrupt_spares_processes_that_ignore_it) {
     EXPECT_TRUE(pmm_get_free_frames() == free_before);
 }
 
+// A hostile executable: its code sits in the very last page of user address
+// space and ends with a `syscall` instruction in the last two bytes. The
+// return address of that system call is 0x0000800000000000, which is not a
+// valid ("canonical") address. If the kernel returned with sysretq, the CPU
+// would fault in ring 0 while already on the program's stack: the classic way
+// to take over a kernel (CVE-2012-0217). The process must be killed instead.
+TEST(syscall_at_the_top_of_user_space_is_survived) {
+    static struct {
+        Elf64_Ehdr ehdr;
+        Elf64_Phdr phdr;
+        uint8_t code[7];
+    } __attribute__((packed)) image;
+
+    static const uint8_t code[7] = {
+        0xB8, 0x06, 0x00, 0x00, 0x00,   // mov eax, 6   (SYS_GETPID)
+        0x0F, 0x05,                     // syscall      <- last two bytes of user space
+    };
+    const uint64_t code_addr = USER_SPACE_END - sizeof(code);
+
+    memset(&image, 0, sizeof(image));
+    image.ehdr.e_ident[0] = 0x7F; image.ehdr.e_ident[1] = 'E';
+    image.ehdr.e_ident[2] = 'L';  image.ehdr.e_ident[3] = 'F';
+    image.ehdr.e_ident[4] = 2;    // 64-bit
+    image.ehdr.e_ident[5] = 1;    // Little endian
+    image.ehdr.e_ident[6] = 1;    // ELF version
+    image.ehdr.e_type = ET_EXEC;
+    image.ehdr.e_machine = EM_X86_64;
+    image.ehdr.e_version = 1;
+    image.ehdr.e_entry = code_addr;
+    image.ehdr.e_phoff = sizeof(Elf64_Ehdr);
+    image.ehdr.e_ehsize = sizeof(Elf64_Ehdr);
+    image.ehdr.e_phentsize = sizeof(Elf64_Phdr);
+    image.ehdr.e_phnum = 1;
+    image.phdr.p_type = PT_LOAD;
+    image.phdr.p_flags = PF_R | PF_X;
+    image.phdr.p_offset = sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr);
+    image.phdr.p_vaddr = code_addr;
+    image.phdr.p_filesz = sizeof(code);
+    image.phdr.p_memsz = sizeof(code);
+    image.phdr.p_align = 0x1000;
+    memcpy(image.code, code, sizeof(code));
+
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    EXPECT_TRUE(vfs_create_file(tmp, "top-of-memory", &image, sizeof(image)) != NULL);
+
+    // Either the loader refuses the image, or the process runs and is killed.
+    // What must not happen is the kernel faulting, which would end this test run.
+    // Note: under QEMU this passed even before syscall_handler checked the
+    // return address, because QEMU (like AMD CPUs) delivers the fault in
+    // ring 3. The test documents the case; it cannot prove the Intel fix.
+    pid_t pid = process_spawn("/tmp/top-of-memory", NULL);
+    if (pid > 0) {
+        int status = -1;
+        EXPECT_EQ(process_wait(pid, &status), pid);
+        EXPECT_EQ(status, 128 + SIGSEGV);
+    }
+
+    EXPECT_EQ(vfs_unlink(tmp, "top-of-memory"), 0);
+    EXPECT_EQ(run("/bin/hello", NULL), 0);   // Everything still works
+}
+
 void test_suite_process(void) {
     kprintf("Suite: User Processes\n");
     RUN_TEST(spawn_runs_program_and_returns_status);
@@ -199,4 +263,5 @@ void test_suite_process(void) {
     RUN_TEST(shell_pipelines_and_redirection);
     RUN_TEST(kill_takes_effect_at_a_safe_point);
     RUN_TEST(interrupt_spares_processes_that_ignore_it);
+    RUN_TEST(syscall_at_the_top_of_user_space_is_survived);
 }

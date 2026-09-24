@@ -88,8 +88,9 @@ syscall_entry:
     add rsp, 16                 // int_no, err_code
 
     // sysretq takes RIP from RCX and RFLAGS from R11, and sets CS/SS from
-    // STAR[63:48]. The frame's RIP was validated as a canonical user address
-    // when it was written (a non-canonical RCX would fault in ring 0 here).
+    // STAR[63:48]. syscall_handler has already refused to return to a
+    // non-canonical RIP: on Intel CPUs that would fault here in ring 0, after
+    // RSP has been switched back to the user's stack.
     pop rcx                     // RIP
     add rsp, 8                  // CS (sysretq supplies it)
     pop r11                     // RFLAGS

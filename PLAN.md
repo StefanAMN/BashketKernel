@@ -384,25 +384,28 @@ Known gaps in the parts that are otherwise real, most important first.
    the task sleeps in a pipe or the terminal, rather than only around the
    final copy. Narrowing it means passing "this is a user buffer" down to the
    copy sites.
-3. **No permissions.** Any program can delete or overwrite any file, and kill
+3. **A fault between `pop rsp` and `sysretq` would run on the user stack.**
+   Nothing can fault there today (interrupts are off and NMIs are not used),
+   but an NMI handler would need its own IST stack before one is enabled.
+4. **No permissions.** Any program can delete or overwrite any file, and kill
    any user process.
-4. **No signal handlers.** A signal can only end a process (or, for Ctrl-C, be
+5. **No signal handlers.** A signal can only end a process (or, for Ctrl-C, be
    ignored). There is no `sigaction`, no `SIGCHLD`, no job control.
-5. **Orphans are not re-parented.** A process whose parent has exited is
+6. **Orphans are not re-parented.** A process whose parent has exited is
    reaped by the idle loop when it exits; nobody collects its status. A
    blocked orphan stays until it is killed.
-6. **`mmap` and `brk` memory is committed eagerly.** Only `fork` (copy-on-write)
+7. **`mmap` and `brk` memory is committed eagerly.** Only `fork` (copy-on-write)
    and the user stack (grows on demand to 8 MiB) are lazy. The stack grows
    only on faults taken by the program itself: a system call given a buffer
    below the mapped part of the stack returns `EFAULT`.
-7. **A killed process can leak a small kernel buffer** if it dies inside a
+8. **A killed process can leak a small kernel buffer** if it dies inside a
    system call that was holding one (`/proc` reads allocate a page).
-8. **The file system is RAM only**, has no hard limit on file size other than
+9. **The file system is RAM only**, has no hard limit on file size other than
    free memory, and directory entries are a linked list.
-9. **A few timer ticks are lost under heavy console output** (measured: under
+10. **A few timer ticks are lost under heavy console output** (measured: under
    1% over 200 s of continuous scrolling), because drawing happens with
    interrupts off. Uptime is therefore slightly slow, never fast.
-10. **PID 0 runs on the boot stack**, which has no guard page.
-11. **`kmalloc` and `kfree` are O(number of blocks)**; fine for now, slow with
+11. **PID 0 runs on the boot stack**, which has no guard page.
+12. **`kmalloc` and `kfree` are O(number of blocks)**; fine for now, slow with
     thousands of live allocations.
-12. **The GitHub Actions workflow has never been run.**
+13. **The GitHub Actions workflow has never been run.**
