@@ -110,6 +110,7 @@ typedef struct task {
     uint32_t sig_masks[TASK_NSIG]; // Per signal: what else to block while its handler runs
     uint8_t sig_flags[TASK_NSIG];  // Per signal: SA_RESTART
     uint32_t restart_syscall;      // Number + 1 of the system call a signal has just cut short, if it can be made again
+    uint32_t in_syscall;           // Number + 1 of the system call the task is in (0: none), for /proc: tests wait on it
     char cmdline[TASK_CMDLINE_MAX]; // The program's arguments, each followed by a NUL (cut to fit), for /proc
     uint16_t cmdline_len;          // Bytes of it in use (0: a kernel task)
 

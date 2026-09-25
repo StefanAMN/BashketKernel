@@ -394,7 +394,10 @@ code comments and commit messages; `git log` is the full history.
   blocked before its first instruction. Another took "what tcpd has sent"
   as "before tcpd sends", and on four CPUs tcpd had already sent. Wait
   for evidence of the point reached (pages touched, a field only that
-  step sets), not for a state or a value several points share.
+  step sets), not for a state or a value several points share. From ring
+  3, "Syscall:" in `/proc/<pid>/status` names the call a process is in
+  (syscheck's `wait_in_syscall`): a sleep before signalling a child failed
+  on GitHub's slower runners, where the child had not yet got there.
 - **Do not inject faults on a regular beat.** "Drop every 7th TCP segment"
   fell into step with a retransmission round that happened to be 7 segments
   long (6 data, 1 acknowledgement): the same acknowledgement was lost every

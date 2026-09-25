@@ -13,6 +13,59 @@ static int failures = 0;
         if (!(cond)) { printf("syscheck: FAIL line %d: %s\n", __LINE__, #cond); failures++; } \
     } while (0)
 
+/* The system call process `pid` is in, from "Syscall:" in its
+ * /proc/<pid>/status: its number, -1 if it is in none, -2 if there is no
+ * such process (or the line is missing) */
+static long syscall_of(long pid) {
+    char path[40] = "/proc/", text[512];
+    char digits[20];
+    int d = 0;
+    do { digits[d++] = (char)('0' + pid % 10); pid /= 10; } while (pid > 0);
+    size_t at = 6;
+    while (d > 0) path[at++] = digits[--d];
+    memcpy(path + at, "/status", 8);
+
+    long fd = open(path, O_RDONLY);
+    if (fd < 0) return -2;
+    long total = 0, n;
+    while (total < (long)sizeof(text) - 1 && (n = read((int)fd, text + total, sizeof(text) - 1 - (size_t)total)) > 0) total += n;
+    close((int)fd);
+    text[total] = '\0';
+    const char *line = NULL;
+    for (const char *c = text; *c && !line; c++) {
+        if (*c == '\n' && strncmp(c + 1, "Syscall:\t", 9) == 0) line = c + 10;
+    }
+    if (!line) return -2;
+    if (*line == '-') return -1;
+    long number = 0;
+    while (*line >= '0' && *line <= '9') number = number * 10 + (*line++ - '0');
+    return number;
+}
+
+/* Wait (5 seconds at most) until process `pid` is inside system call
+ * `number`; whether it got there. This, not a sleep, is how a check knows
+ * that a child has reached a call before signalling it: on a slow machine
+ * a child can take longer than any fixed sleep to get anywhere. (A
+ * handled signal that arrives once the call has begun ends it with EINTR
+ * even if the child had not yet gone to sleep in it.) */
+static int wait_in_syscall(long pid, long number) {
+    for (int tries = 0; tries < 500; tries++) {
+        if (syscall_of(pid) == number) return 1;
+        sleep_ms(10);
+    }
+    return 0;
+}
+
+/* Wait (5 seconds at most) until `*counter` has moved past `from`: a
+ * process sharing it is running. Whether it did. */
+static int wait_counter_past(volatile unsigned long *counter, unsigned long from) {
+    for (int tries = 0; tries < 500; tries++) {
+        if (*counter > from) return 1;
+        sleep_ms(10);
+    }
+    return 0;
+}
+
 /* A program may set the direction flag. The kernel must not inherit it when
  * an interrupt arrives: its own copies would then run backwards. */
 static void check_direction_flag(void) {
@@ -613,12 +666,12 @@ static void check_signals(void) {
     pid = fork();
     if (pid == 0) {
         for (int s = 1; s < 32; s++) signal(s, SIG_IGN);
-        for (;;) yield();
+        for (;;) sleep_ms(600000);                       /* In SYS_SLEEP: everything is ignored by now */
     }
-    sleep_ms(20);
-    CHECK(kill(pid, SIGTERM) == 0);
+    CHECK(wait_in_syscall(pid, SYS_SLEEP));             /* (A sleep here failed on a slow machine: */
+    CHECK(kill(pid, SIGTERM) == 0);                      /*  SIGTERM came before the child ignored it) */
     CHECK(kill(pid, SIGINT) == 0);
-    sleep_ms(20);
+    CHECK(syscall_of(pid) == SYS_SLEEP);                 /* Neither disturbed it */
     CHECK(kill(pid, SIGKILL) == 0);
     CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
 
@@ -638,8 +691,8 @@ static void check_signals(void) {
         execv("/bin/spin", args);
         exit(99);
     }
-    sleep_ms(30);
-    CHECK(kill(pid, SIGUSR2) == 0);
+    CHECK(wait_in_syscall(pid, SYS_SLEEP));            /* spin's sleep: the exec is done (before it, the */
+    CHECK(kill(pid, SIGUSR2) == 0);                     /* inherited handler would catch the signal) */
     CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGUSR2);
     signal(SIGUSR2, SIG_DFL);
 
@@ -714,7 +767,15 @@ static int interrupted_child(int what) {
     char byte;
     read(ready[0], &byte, 1);
     close(ready[0]);
-    sleep_ms(50);                                /* Let it get as far as going to sleep */
+    /* In the call being tested (a signal before it would only run the
+     * handler, and the call would then wait for ever) */
+    if (!wait_in_syscall(pid, what == 0 ? SYS_READ : what == 1 ? SYS_SLEEP : SYS_WAITPID)) {
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        close(ends[0]);
+        close(ends[1]);
+        return 101;                              /* 101: it never got there */
+    }
     long start = uptime_ticks();
     kill(pid, SIGUSR1);
 
@@ -735,6 +796,16 @@ static volatile int order[8], order_count;
 static void count_mask_calls(int sig) {
     (void)sig;
     mask_calls++;
+}
+
+static int handler_notify_fd = -1;  /* Where notify_handler reports that it ran */
+
+/* Counts calls like count_mask_calls, and writes a byte to
+ * handler_notify_fd, so that another process can tell the handler has run */
+static void notify_handler(int sig) {
+    (void)sig;
+    mask_calls++;
+    write(handler_notify_fd, "h", 1);
 }
 
 /* Sends itself the same signal again, twice, while running */
@@ -816,22 +887,32 @@ static void check_signal_masks(void) {
      * child starts with its parent's mask */
     set = sigbit(SIGTERM);
     sigprocmask(SIG_BLOCK, &set, NULL);
+    int unblocking[2], go[2];
+    CHECK(pipe(unblocking) == 0 && pipe(go) == 0);
     long pid = fork();
     if (pid == 0) {
+        close(unblocking[0]);
+        close(go[1]);
         uint32_t mine = 0;
         sigprocmask(SIG_BLOCK, NULL, &mine);
         if (mine != sigbit(SIGTERM)) exit(1);
-        sleep_ms(200);                            /* The signal arrives during this, and must wait */
+        char byte;
+        read(go[0], &byte, 1);                    /* The signal arrives before this returns, and must wait */
+        write(unblocking[1], "u", 1);             /* Still alive: it did wait */
         sigprocmask(SIG_UNBLOCK, &set, NULL);     /* Here it takes effect */
         exit(2);
     }
+    close(unblocking[1]);
+    close(go[0]);
     sigprocmask(SIG_UNBLOCK, &set, NULL);
-    sleep_ms(50);
-    CHECK(kill(pid, SIGTERM) == 0);
+    CHECK(kill(pid, SIGTERM) == 0);               /* Blocked in the child (inherited mask): pending */
+    CHECK(write(go[1], "g", 1) == 1);
+    close(go[1]);
     int status = -1;
-    unsigned long start = clock_ns();
     CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGTERM);
-    CHECK((clock_ns() - start) / 1000000UL >= 100);   /* Not at once: only when it unblocked */
+    char unblocked = 0;
+    CHECK(read(unblocking[0], &unblocked, 1) == 1 && unblocked == 'u');  /* Not at once: only when it unblocked */
+    close(unblocking[0]);
 
     /* SIGCHLD: nothing by default, a handler call if one is set */
     mask_calls = 0;
@@ -851,27 +932,38 @@ static void check_signal_masks(void) {
         int p[2];
         char byte = 0;
         CHECK(pipe(p) == 0);
+        int notify[2];
+        CHECK(pipe(notify) == 0);
+        handler_notify_fd = notify[1];
         mask_calls = 0;
-        action.handler = count_mask_calls;
+        action.handler = notify_handler;
         action.mask = 0;
         action.flags = restart ? SA_RESTART : 0;
         CHECK(sigaction(SIGUSR1, &action, NULL) == 0);
         long parent = getpid();
         pid = fork();
         if (pid == 0) {
-            sleep_ms(80);
+            /* The signal once the parent is in read(), the data only once
+             * its handler has run (by then the read has failed, or been
+             * made again): no timing involved */
+            char seen;
+            if (!wait_in_syscall(parent, SYS_READ)) exit(1);
             kill((int)parent, SIGUSR1);
-            sleep_ms(80);
+            if (read(notify[0], &seen, 1) != 1) exit(1);
             write(p[1], "r", 1);
             exit(0);
         }
+        close(p[1]);                       /* A child that gives up then means end-of-file, not a hang */
         long n = read(p[0], &byte, 1);
         CHECK(mask_calls == 1);
         if (restart) CHECK(n == 1 && byte == 'r');
         else CHECK(n == -EINTR);
         while (waitpid(pid, &status, 0) == -EINTR) { }
+        CHECK(status == 0);
+        close(notify[0]);
+        close(notify[1]);
+        handler_notify_fd = -1;
         close(p[0]);
-        close(p[1]);
     }
     signal(SIGUSR1, SIG_DFL);
 }
@@ -939,16 +1031,14 @@ static void check_jobs(void) {
 
     /* SIGCONT lets it go on */
     CHECK(kill(pid, SIGCONT) == 0);
-    sleep_ms(50);
-    CHECK(*counter > frozen);
+    CHECK(wait_counter_past(counter, frozen));
 
     /* A stop that has been asked for and cancelled before it took effect,
      * or taken back at once, leaves it running */
     CHECK(kill(pid, SIGSTOP) == 0 && kill(pid, SIGCONT) == 0);
     sleep_ms(50);
     frozen = *counter;
-    sleep_ms(50);
-    CHECK(*counter > frozen);
+    CHECK(wait_counter_past(counter, frozen));
 
     /* A stopped process can still be killed */
     CHECK(kill(pid, SIGSTOP) == 0);
@@ -959,19 +1049,29 @@ static void check_jobs(void) {
 
     /* A process stopped while asleep goes back to its sleep when continued:
      * the sleep is neither cut short nor reported as interrupted */
-    pid = fork();
-    if (pid == 0) {
-        unsigned long start = clock_ns();
-        long r = syscall1(SYS_SLEEP, 300);
-        unsigned long ms = (clock_ns() - start) / 1000000UL;
-        exit(r == 0 && ms >= 290 ? 0 : 1);
+    /* (The stop must land inside the second's sleep. If this process is held
+     * up for longer than that between seeing the child in it and stopping
+     * it, the child has finished: that round proves nothing, and is made
+     * again rather than counted as a failure.) */
+    int stopped_asleep = 0, resumed_right = 0;
+    for (int round = 0; round < 3 && !stopped_asleep; round++) {
+        pid = fork();
+        if (pid == 0) {
+            unsigned long start = clock_ns();
+            long r = syscall1(SYS_SLEEP, 1000);
+            unsigned long ms = (clock_ns() - start) / 1000000UL;
+            exit(r == 0 && ms >= 990 ? 0 : 1);
+        }
+        CHECK(wait_in_syscall(pid, SYS_SLEEP));
+        CHECK(kill(pid, SIGSTOP) == 0);            /* (Succeeds on an unreaped zombie too) */
+        CHECK(waitpid(pid, &status, WUNTRACED) == pid);
+        if (!WIFSTOPPED(status)) continue;          /* Too late: it had already exited */
+        stopped_asleep = 1;
+        sleep_ms(50);
+        CHECK(kill(pid, SIGCONT) == 0);
+        resumed_right = waitpid(pid, &status, 0) == pid && status == 0;
     }
-    sleep_ms(50);
-    CHECK(kill(pid, SIGSTOP) == 0);
-    CHECK(waitpid(pid, &status, WUNTRACED) == pid && WIFSTOPPED(status));
-    sleep_ms(50);
-    CHECK(kill(pid, SIGCONT) == 0);
-    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    CHECK(stopped_asleep && resumed_right);
 
     /* SIGTSTP is the polite form: it stops by default, but a program may
      * ignore it or handle it. SIGSTOP may not be touched. */
@@ -1244,14 +1344,23 @@ static void check_interrupted_calls(void) {
     CHECK(interrupted_child(1) == 0);            /* sleep */
     CHECK(interrupted_child(2) == 0);            /* waitpid */
 
-    /* An ignored signal does not disturb a sleeper at all */
+    /* An ignored signal does not disturb a sleeper at all: the read goes
+     * on to get its byte, rather than failing with EINTR */
+    int go[2];
+    CHECK(pipe(go) == 0);
     long pid = fork();
     if (pid == 0) {
+        close(go[1]);
         signal(SIGUSR1, SIG_IGN);
-        exit(syscall1(SYS_SLEEP, 150) == 0 ? 0 : 1);
+        char byte = 0;
+        exit(read(go[0], &byte, 1) == 1 && byte == 'g' ? 0 : 1);
     }
-    sleep_ms(30);
+    close(go[0]);
+    CHECK(wait_in_syscall(pid, SYS_READ));       /* Asleep in it, the signal already ignored */
     kill(pid, SIGUSR1);
+    sleep_ms(50);                                 /* Time for a wrongly woken read to fail (no false */
+    CHECK(write(go[1], "g", 1) == 1);             /* alarm if it is longer: the byte is read either way) */
+    close(go[1]);
     int status = -1;
     CHECK(waitpid(pid, &status, 0) == pid && status == 0);
 }
@@ -1491,7 +1600,7 @@ static void check_network(void) {
         signal(SIGUSR1, counting_handler);
         exit(recvfrom((int)s, buf, sizeof(buf), NULL, 0) == -EINTR ? 0 : 1);
     }
-    sleep_ms(50);
+    CHECK(wait_in_syscall(waiting, SYS_RECVFROM));       /* The handler is set by then */
     kill(waiting, SIGUSR1);
     CHECK(waitpid(waiting, &status, 0) == waiting && status == 0);
 }
@@ -2208,7 +2317,7 @@ static void check_running_program_file(void) {
         exit(127);
     }
     CHECK(pid > 0);
-    sleep_ms(300);                                         /* Running: asleep in its nanosleep */
+    CHECK(wait_in_syscall(pid, SYS_SLEEP));                /* Running (exec done): asleep in its sleep */
     CHECK(open("/tmp/running", O_WRONLY) == -ETXTBSY);
     CHECK(open("/tmp/running", O_RDWR | O_APPEND) == -ETXTBSY);
     CHECK(truncate("/tmp/running", 0) == -ETXTBSY);
@@ -3565,23 +3674,31 @@ static unsigned long ms_until_eof(int fd) {
 
 /* A child that execs a program which runs for a second, holding whatever
  * descriptors survived the exec. Returns how long the read end of a pipe
- * takes to see end-of-file: at once if the child's copy of the write end
- * was closed by the exec, a second if it was not. */
-static unsigned long exec_holding_pipe(int flags) {
+ * takes to see end-of-file (-1 if the child failed), and in *alive_at_eof
+ * whether the program was still running then: it is if the child's copy
+ * of the write end was closed by the exec, and not if it was kept. (That,
+ * rather than a time limit, says "at once": a slow machine can take long
+ * to start a program.) */
+static long exec_holding_pipe(int flags, const char *seconds, int *alive_at_eof) {
     int p[2];
-    if (pipe2(p, flags) != 0) return 0;
+    *alive_at_eof = 0;
+    if (pipe2(p, flags) != 0) return -1;
     long pid = fork();
     if (pid == 0) {
-        char *args[] = { "/bin/sleep", "1", NULL };
+        char *args[] = { "/bin/sleep", (char *)seconds, NULL };
         execve("/bin/sleep", args, NULL);
         exit(99);
     }
     close(p[1]);
     unsigned long ms = ms_until_eof(p[0]);
+    /* In a system call (exec or its sleep): alive. A dying process is in
+     * none, and that is so before its files close. */
+    *alive_at_eof = syscall_of(pid) >= 0;
     close(p[0]);
+    if (*alive_at_eof) kill(pid, SIGKILL);      /* Seen alive: no need to wait out its sleep */
     int status = -1;
     waitpid(pid, &status, 0);
-    return status == 0 ? ms : 0;
+    return status == 0 || (*alive_at_eof && status == 128 + SIGKILL) ? (long)ms : -1;
 }
 
 /* dup, dup2, close-on-exec, and waitpid's options and errors */
@@ -3625,30 +3742,39 @@ static void check_descriptors_and_wait(void) {
     close((int)fd);
 
     /* What the flag does: the descriptor does not survive an exec */
-    unsigned long kept = exec_holding_pipe(0);
-    unsigned long closed = exec_holding_pipe(O_CLOEXEC);
-    CHECK(kept >= 800);                                   /* Held open by the new program for its whole second */
-    CHECK(closed < 500);                                  /* Gone as soon as it started */
+    int kept_alive = 0, closed_alive = 0;
+    long kept = exec_holding_pipe(0, "1", &kept_alive);
+    long closed = exec_holding_pipe(O_CLOEXEC, "5", &closed_alive);  /* Killed once seen: no wait */
+    CHECK(kept >= 800 && !kept_alive);                    /* Held open by the new program for its whole second */
+    CHECK(closed >= 0 && closed_alive);                   /* Gone as soon as it started, while it still ran */
 
     /* waitpid that does not wait */
     while (waitpid(-1, &status, WNOHANG) > 0) { }
     CHECK(waitpid(-1, &status, WNOHANG) == -ECHILD);      /* Nobody to wait for */
+    int go[2];
+    CHECK(pipe(go) == 0);
     long pid = fork();
     if (pid == 0) {
-        sleep_ms(300);
+        close(go[1]);
+        char byte;
+        read(go[0], &byte, 1);                            /* Alive until told otherwise */
         exit(7);
     }
+    close(go[0]);
     status = -1;
     CHECK(waitpid(pid, &status, WNOHANG) == 0 && status == -1); /* Alive: 0, and status untouched */
     CHECK(waitpid(-1, &status, WNOHANG) == 0);
     CHECK(waitpid(pid, &status, 0x40) == -EINVAL);
+    CHECK(waitpid(pid, &status, WNOHANG) == 0);          /* Asking again does not wait either */
+    CHECK(write(go[1], "x", 1) == 1);
+    close(go[1]);
     int polls = 0;
     long got = 0;
-    while ((got = waitpid(pid, &status, WNOHANG)) == 0 && polls < 100) {
-        sleep_ms(20);
+    while ((got = waitpid(pid, &status, WNOHANG)) == 0 && polls < 500) {
+        sleep_ms(10);
         polls++;
     }
-    CHECK(got == pid && status == 7 && polls >= 5);
+    CHECK(got == pid && status == 7);
     CHECK(waitpid(pid, &status, WNOHANG) == -ECHILD);
 }
 

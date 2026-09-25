@@ -787,6 +787,7 @@ void task_exit_status(int status) {
     self->exiting = true;
     self->kill_pending = 0;
     self->sig_pending = 0;
+    self->in_syscall = 0;   // Dying, not in a call (exit, or one it was killed in, never returns): before its files close
     sched_unlock_irqrestore(flags);
 
     // Close its files now rather than when it is reaped: a reader at the
