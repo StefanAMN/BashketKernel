@@ -316,9 +316,11 @@ TEST(tasks_run_on_every_cpu_at_once) {
     }
 
     // With more runnable tasks than CPUs (the burners and this test), every
-    // CPU must be running one at the same moment
+    // CPU must be running one at the same moment. (Looked at for up to three
+    // seconds: a host short of free cores runs QEMU's CPUs in turn, and a
+    // few looks can all miss the moment.)
     uint32_t most_at_once = 0;
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < 300 && most_at_once < cpus; i++) {
         sched_sleep_ticks(1);
         uint32_t now = sched_running_count();
         if (now > most_at_once) most_at_once = now;
@@ -326,6 +328,8 @@ TEST(tasks_run_on_every_cpu_at_once) {
     EXPECT_TRUE(most_at_once == cpus);
 
     // ...and between them the burners got onto every CPU
+    uint64_t every_cpu = cpus >= 64 ? ~0ULL : (1ULL << cpus) - 1;
+    TEST_WAIT((burner_cpus_seen & every_cpu) == every_cpu, 300);
     for (uint32_t i = 0; i < cpus; i++) EXPECT_TRUE(burner_cpus_seen & (1ULL << i));
 
     // A task tied to one CPU is seen there and nowhere else from then on
@@ -387,18 +391,21 @@ TEST(more_cpus_do_more_work) {
     uint32_t cpus = online_cpus();
     int workers = cpus > 4 ? 4 : (int)cpus;
 
-    worker_sums = 0;
-    uint64_t one = time_workers(1);
-    uint64_t many = time_workers(workers);
-    EXPECT_TRUE(worker_sums == (uint64_t)(workers + 1) * (SUM_TO * (SUM_TO + 1) / 2)); // Nobody's sum was disturbed
-
-    kprintf("    1 worker: %lu ms; %d workers on %u CPUs: %lu ms\n", one / 1000000, workers, cpus, many / 1000000);
-    if (workers > 1) {
-        // Perfect scaling would take as long as one worker; no scaling,
-        // `workers` times as long. Half way is asked for: the machine under
-        // QEMU may not have that many free cores of its own.
-        EXPECT_TRUE(many * 2 < one * (uint64_t)(workers + 1));
+    // Perfect scaling would take as long as one worker; no scaling,
+    // `workers` times as long. Half way is asked for: the machine under QEMU
+    // may not have that many free cores of its own. The best of three
+    // rounds counts, so that a moment's stall of the host decides nothing.
+    uint64_t one = 0, many = 0;
+    bool scaled = workers <= 1;
+    for (int round = 0; round < 3 && !scaled; round++) {
+        worker_sums = 0;
+        one = time_workers(1);
+        many = time_workers(workers);
+        EXPECT_TRUE(worker_sums == (uint64_t)(workers + 1) * (SUM_TO * (SUM_TO + 1) / 2)); // Nobody's sum was disturbed
+        kprintf("    1 worker: %lu ms; %d workers on %u CPUs: %lu ms\n", one / 1000000, workers, cpus, many / 1000000);
+        scaled = many * 2 < one * (uint64_t)(workers + 1);
     }
+    EXPECT_TRUE(scaled);
 }
 
 // --- Stale page-table lookups on other CPUs ----------------------------------
