@@ -3691,13 +3691,21 @@ static long exec_holding_pipe(int flags, const char *seconds, int *alive_at_eof)
     }
     close(p[1]);
     unsigned long ms = ms_until_eof(p[0]);
-    /* In a system call (exec or its sleep): alive. A dying process is in
-     * none, and that is so before its files close. */
-    *alive_at_eof = syscall_of(pid) >= 0;
+    /* Alive if seen in a system call (exec, or its sleep) after the end of
+     * file: a dying process is in none from before its files close, and
+     * makes no new one. Not being in one proves nothing: a live program
+     * also runs its own code and takes page faults loading itself (one
+     * look, on a slow machine, landed there). So look until it is seen in
+     * a call or can be reaped; one of the two always comes. */
+    int status = -1, reaped = 0;
+    while (!*alive_at_eof && !reaped) {
+        if (syscall_of(pid) >= 0) *alive_at_eof = 1;
+        else if (waitpid(pid, &status, WNOHANG) == pid) reaped = 1;
+        else sleep_ms(1);
+    }
     close(p[0]);
     if (*alive_at_eof) kill(pid, SIGKILL);      /* Seen alive: no need to wait out its sleep */
-    int status = -1;
-    waitpid(pid, &status, 0);
+    if (!reaped) waitpid(pid, &status, 0);
     return status == 0 || (*alive_at_eof && status == 128 + SIGKILL) ? (long)ms : -1;
 }
 
