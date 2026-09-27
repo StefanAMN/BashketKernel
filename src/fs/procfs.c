@@ -246,6 +246,7 @@ static int64_t serve_slice(const char *text, size_t len, size_t offset, void *bu
 // /proc/<pid>/status: who the task is and what it is doing, "Key:\tvalue"
 // a line. Memory as the task records it: the heap (brk), mmap'd regions,
 // and how much of those has not been touched yet (no frames behind it).
+// "Syscall" is the number of the system call the task is in, or "-".
 // -ENOENT once the task is gone.
 static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count) {
     char *text = kmalloc(PROC_TEXT_MAX);
@@ -263,13 +264,15 @@ static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count
             if (t->regions[i].end && !t->regions[i].program) mapped += t->regions[i].end - t->regions[i].start;
         }
         uint64_t heap = t->is_user ? t->brk_end - t->brk_start : 0;
+        char syscall_text[12] = "-";
+        if (t->in_syscall) ksnprintf(syscall_text, sizeof(syscall_text), "%u", t->in_syscall - 1);
         len = ksnprintf(text, PROC_TEXT_MAX,
                         "Name:\t%s\nState:\t%s\nPid:\t%u\nPPid:\t%u\nPgid:\t%u\n"
                         "Uid:\t%u\nRuid:\t%u\nGid:\t%u\nRgid:\t%u\nKind:\t%s\nPriority:\t%u\n"
-                        "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\n",
+                        "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\nSyscall:\t%s\n",
                         t->name, (unsigned)t->state < 5 ? state_words[t->state] : "?", t->pid, t->parent_pid, t->pgid,
                         t->uid, t->ruid, t->gid, t->rgid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
-                        t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->promised_pages * 4);
+                        t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->promised_pages * 4, syscall_text);
     }
     sched_unlock_irqrestore(flags);
 

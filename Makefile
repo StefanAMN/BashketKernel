@@ -243,9 +243,12 @@ SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-ar
 # Build the test kernel, boot it headless, and turn its verdict into an exit
 # status. The kernel writes to the isa-debug-exit port when the tests finish;
 # QEMU then exits with (value << 1) | 1, so 0x10 (pass) becomes 33.
+# The time limits only catch a hang. A run takes 80 to 120 s here, more on
+# a slower machine (GitHub's runners); once a passing run was cut off at
+# the old limit of 120 s just as it finished.
 test:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
-	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel-dev.iso -boot d \
+	@timeout 360 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel-dev.iso -boot d \
 		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(ROOT_FLAGS),-drive file=build-test/root.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
@@ -378,7 +381,7 @@ test-net: iso
 SMP_PROGRAM_CPUS ?= 2 4 8
 test-smp:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
-	@timeout 180 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel-dev.iso -boot d \
+	@timeout 480 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel-dev.iso -boot d \
 		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(ROOT_FLAGS),-drive file=build-test/root.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
