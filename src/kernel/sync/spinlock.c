@@ -12,6 +12,7 @@
 static bool tracking = false;
 
 static volatile uint32_t violation_count = 0;
+static volatile bool violations_expected = false;   // A test is causing them (lock_debug_expect)
 static struct {
     const char *what;
     const char *lock_a;
@@ -50,8 +51,12 @@ void lock_debug_reset(void) {
     violation_count = 0;
 }
 
+void lock_debug_expect(bool expected) {
+    violations_expected = expected;
+}
+
 void lock_debug_poll(void) {
-    if (violation_count == 0) return;
+    if (violation_count == 0 || violations_expected) return;
     kprintf_force_unlock();
     kprintf("\nLOCK RULE VIOLATION on CPU %u: %s: %s%s%s (%u in total)\n",
             first_violation.cpu_id, first_violation.what,
