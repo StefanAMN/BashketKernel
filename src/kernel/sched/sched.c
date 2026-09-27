@@ -266,6 +266,13 @@ void sched_block(void *channel, uint64_t wake_tick) {
     // lose the CPU, so this is a safe place to end it.
     if (self->kill_pending) task_exit_status(128 + self->kill_pending);
 
+    // A signal with a handler is waiting: do not sleep on it. The caller
+    // sees sched_interrupted() and abandons its wait with EINTR.
+    if (self->sig_pending) {
+        irq_restore(flags);
+        return;
+    }
+
     self->wait_channel = channel;
     self->wake_tick = wake_tick;
     self->state = TASK_BLOCKED;
@@ -284,6 +291,16 @@ void sched_block(void *channel, uint64_t wake_tick) {
     self->state = TASK_RUNNING;
 
     if (self->kill_pending) task_exit_status(128 + self->kill_pending); // Woken to die
+    irq_restore(flags);
+}
+
+bool sched_interrupted(void) {
+    return current_task && current_task->sig_pending != 0;
+}
+
+void sched_interrupt_sleep(task_t *task) {
+    uint64_t flags = irq_save();
+    if (task->state == TASK_BLOCKED) wake_task(task);
     irq_restore(flags);
 }
 

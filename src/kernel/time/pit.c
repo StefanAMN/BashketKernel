@@ -51,15 +51,21 @@ void pit_init(uint32_t frequency_hz) {
     console_set_deferred_refresh(true);
 }
 
-void sched_sleep_ticks(uint64_t count) {
-    if (count == 0) return;
+bool sched_sleep_ticks(uint64_t count) {
+    if (count == 0) return true;
 
     uint64_t flags = irq_save();
     uint64_t deadline = ticks + count;
+    bool completed = true;
     while (ticks < deadline) {
+        if (sched_interrupted()) {
+            completed = false;
+            break;
+        }
         sched_block(NULL, deadline);
     }
     irq_restore(flags);
+    return completed;
 }
 
 uint64_t pit_get_ticks(void) {

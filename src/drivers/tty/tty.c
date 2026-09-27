@@ -9,6 +9,7 @@
 #include "console.h"
 #include "spinlock.h"
 #include "kprintf.h"
+#include "kerrno.h"
 
 #define CTRL_D 0x04
 #define CTRL_U 0x15
@@ -78,7 +79,14 @@ int64_t tty_read(char *out, size_t count) {
     // sleeps (and lets everything else run) while there is nothing typed.
     uint64_t flags = irq_save();
     while (!line_ready) {
-        tty_input(keyboard_getchar());
+        char c = keyboard_getchar();
+        if (c == 0) {
+            // Interrupted by a signal. What has been typed so far stays in
+            // the line for the next read.
+            irq_restore(flags);
+            return -EINTR;
+        }
+        tty_input(c);
     }
 
     size_t n = 0;

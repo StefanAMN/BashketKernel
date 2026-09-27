@@ -494,6 +494,70 @@ static void check_signals(void) {
     CHECK(status == 0);
 }
 
+/* A signal with a handler wakes a process that is asleep in a system call:
+ * the call returns -EINTR and the handler has run by then. `what` selects
+ * the call. The child exits 0 if that is what it saw. */
+static int interrupted_child(int what) {
+    int ends[2], ready[2];
+    if (pipe(ends) != 0 || pipe(ready) != 0) return -1;
+
+    long pid = fork();
+    if (pid == 0) {
+        char byte;
+        handler_calls = 0;
+        signal(SIGUSR1, counting_handler);
+        close(ready[0]);
+        write(ready[1], "r", 1);                /* Handler installed: the parent may fire */
+        close(ready[1]);
+
+        long result;
+        if (what == 0) {
+            result = read(ends[0], &byte, 1);    /* Empty pipe, writer still open: sleeps */
+        } else if (what == 1) {
+            result = syscall1(SYS_SLEEP, 60000); /* A minute */
+        } else {
+            long grandchild = fork();
+            if (grandchild == 0) { for (;;) sleep_ms(60000); }
+            result = waitpid(grandchild, NULL);  /* The grandchild never exits */
+            kill(grandchild, SIGKILL);
+            while (waitpid(grandchild, NULL) == -EINTR) { }
+        }
+        exit(result == -EINTR && handler_calls == 1 ? 0 : 1);
+    }
+
+    close(ready[1]);
+    char byte;
+    read(ready[0], &byte, 1);
+    close(ready[0]);
+    sleep_ms(50);                                /* Let it get as far as going to sleep */
+    long start = uptime_ticks();
+    kill(pid, SIGUSR1);
+
+    int status = -1;
+    waitpid(pid, &status);
+    long waited = uptime_ticks() - start;
+    close(ends[0]);
+    close(ends[1]);
+    return (status == 0 && waited < 300) ? 0 : (status == 0 ? 100 : status); /* 100: it only woke by itself */
+}
+
+static void check_interrupted_calls(void) {
+    CHECK(interrupted_child(0) == 0);            /* read on a pipe */
+    CHECK(interrupted_child(1) == 0);            /* sleep */
+    CHECK(interrupted_child(2) == 0);            /* waitpid */
+
+    /* An ignored signal does not disturb a sleeper at all */
+    long pid = fork();
+    if (pid == 0) {
+        signal(SIGUSR1, SIG_IGN);
+        exit(syscall1(SYS_SLEEP, 150) == 0 ? 0 : 1);
+    }
+    sleep_ms(30);
+    kill(pid, SIGUSR1);
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+}
+
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -670,6 +734,7 @@ int main(void) {
     check_directories();
     check_environment();
     check_signals();
+    check_interrupted_calls();
     check_pipes();
 
     if (failures == 0) {

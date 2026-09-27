@@ -319,6 +319,11 @@ pid_t process_wait(pid_t pid, int *status) {
 
         if (found != -1 || !have_child) break;
 
+        if (sched_interrupted()) {
+            found = PROCESS_WAIT_INTERRUPTED;
+            break;
+        }
+
         // sched_make_zombie wakes this channel when a child of ours dies
         sched_block(self, 0);
     }

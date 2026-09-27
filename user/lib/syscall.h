@@ -38,6 +38,7 @@
 
 #define ENOENT   2
 #define ESRCH    3
+#define EINTR    4
 #define E2BIG    7
 #define EBADF    9
 #define ECHILD  10

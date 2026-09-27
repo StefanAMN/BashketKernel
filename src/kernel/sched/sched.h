@@ -53,6 +53,26 @@ task_t *sched_find_task(uint32_t pid);
 void sched_block(void *channel, uint64_t wake_tick);
 
 /**
+ * @brief True if the current task has a signal waiting for its handler. Code
+ *        that waits in a loop around sched_block must check this after each
+ *        wakeup and give up (EINTR) instead of going back to sleep:
+ *
+ *     while (!condition) {
+ *         if (sched_interrupted()) { ...undo...; return -EINTR; }
+ *         sched_block(channel, 0);
+ *     }
+ *
+ * sched_block itself returns at once while this is true.
+ */
+bool sched_interrupted(void);
+
+/**
+ * @brief Wake a task out of whatever it is blocked on, without the event it
+ *        was waiting for having happened.
+ */
+void sched_interrupt_sleep(task_t *task);
+
+/**
  * @brief Wake every task blocked on `channel`. Safe to call from interrupts.
  */
 void sched_wakeup(void *channel);
@@ -64,8 +84,9 @@ void sched_wake_sleepers(uint64_t now);
 
 /**
  * @brief Sleep for at least `ticks` timer ticks without using CPU time.
+ * @return true if the full time passed, false if a signal cut the sleep short.
  */
-void sched_sleep_ticks(uint64_t ticks);
+bool sched_sleep_ticks(uint64_t ticks);
 
 /**
  * @brief Ask for a process to be ended. It does not die here: it may be in

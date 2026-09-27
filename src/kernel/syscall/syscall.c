@@ -261,8 +261,7 @@ static int64_t sys_munmap(uint64_t addr, size_t length) {
 
 static int64_t sys_sleep(uint64_t milliseconds) {
     if (milliseconds > 24ULL * 60 * 60 * 1000) return -EINVAL;
-    sched_sleep_ticks((milliseconds * TIMER_HZ + 999) / 1000);
-    return 0;
+    return sched_sleep_ticks((milliseconds * TIMER_HZ + 999) / 1000) ? 0 : -EINTR;
 }
 
 // Copy a NULL-terminated vector of strings (argv or envp) from user memory.
@@ -332,6 +331,7 @@ static int64_t sys_waitpid(int pid, uint64_t user_status) {
 
     int status = 0;
     pid_t child = process_wait(pid, &status);
+    if (child == PROCESS_WAIT_INTERRUPTED) return -EINTR;
     if (child < 0) return -ECHILD;
 
     if (user_status != 0) {

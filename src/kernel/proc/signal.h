@@ -20,10 +20,13 @@
  * therefore treats it as untrusted input and never restores anything that
  * would give the program more privilege than it had.
  *
- * Limits: a handler runs only when the process next returns to user mode by
- * itself. A process asleep in a system call (reading the terminal, say) is
- * not woken for a handled signal; there is no EINTR. SIGKILL and signals with
- * the default action do wake it, to end it.
+ * A process asleep in a system call (reading the terminal or a pipe, waiting
+ * for a child, sleeping) is woken for a signal: to be ended, or, if the
+ * signal has a handler, the call returns -EINTR and the handler runs on the
+ * way back to user mode.
+ *
+ * Limits: no signal mask, and an interrupted call is never restarted
+ * automatically; the program has to call it again.
  */
 
 #ifndef SIGNAL_H
