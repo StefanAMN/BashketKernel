@@ -13,6 +13,10 @@
 
 #include <stdint.h>
 
+// Value of int_no in a system call frame that must be restored completely
+// with iretq (see syscall_entry.S). A system call frame normally has 0 there.
+#define SYSCALL_RETURN_FULL_FRAME 0x100
+
 struct registers {
     // Pushed by common_isr_stub (Pushed last -> lowest memory address)
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;

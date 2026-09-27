@@ -32,7 +32,8 @@
 #define SYS_UNLINK   87
 #define SYS_GETPPID  110
 #define SYS_TIME     201
-#define SYS_IGNORE_INTERRUPT 300
+#define SYS_SIGNAL   300
+#define SYS_SIGRETURN 302
 #define SYS_SETPRIORITY 301
 
 #define ENOENT   2

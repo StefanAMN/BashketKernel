@@ -46,7 +46,8 @@
 #define SYS_CLEAR       100
 #define SYS_TIME        201  // Timer ticks since boot
 #define SYS_SETPRIORITY 301 // (priority): 0 high, 1 normal, 2 low; for the caller itself
-#define SYS_IGNORE_INTERRUPT 300 // (flag): whether Ctrl-C leaves this process alone
+#define SYS_SIGNAL      300  // (sig, handler, restorer): returns the previous handler
+#define SYS_SIGRETURN   302  // Only for the C library's handler-return stub
 
 struct utsname {
     char sysname[65];

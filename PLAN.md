@@ -390,8 +390,10 @@ Known gaps in the parts that are otherwise real, most important first.
    but an NMI handler would need its own IST stack before one is enabled.
 4. **No permissions.** Any program can delete or overwrite any file, and kill
    any user process.
-5. **No signal handlers.** A signal can only end a process (or, for Ctrl-C, be
-   ignored). There is no `sigaction`, no `SIGCHLD`, no job control.
+5. **Signal handlers are basic.** A handler runs only when the process next
+   returns to user mode by itself: a process asleep in `read` or `waitpid`
+   is not woken for it (no `EINTR`). There is no signal mask, no `sigaction`
+   flags, no `SIGCHLD`, and no job control.
 6. **Orphans are not re-parented.** A process whose parent has exited is
    reaped by the idle loop when it exits; nobody collects its status. A
    blocked orphan stays until it is killed.

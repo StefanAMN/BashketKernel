@@ -14,6 +14,7 @@
 
 #define KERNEL_STACK_SIZE (16 * 1024) // 16 KiB kernel stack per task
 #define TASK_MAX_FDS 16               // Open file descriptors per process
+#define TASK_NSIG 32                  // Signal numbers 1..31
 
 struct file;
 struct vnode;
@@ -62,7 +63,9 @@ typedef struct task {
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
     int kill_pending;        // Signal that will end this process at its next safe point (0: none)
-    bool ignore_interrupt;   // Ctrl-C does not end this process (shells set this)
+    uint64_t sig_handlers[TASK_NSIG]; // Per signal: 0 default (terminate), 1 ignore, else handler address
+    uint64_t sig_restorer;   // Where handlers return to: the C library's sigreturn stub
+    uint32_t sig_pending;    // Bit n set: signal n is waiting for its handler to run
 
     // FPU/SSE registers while the task is not running (FXSAVE format).
     // FXSAVE needs 16-byte alignment: kmalloc guarantees it for the struct,

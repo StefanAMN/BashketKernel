@@ -362,6 +362,138 @@ static void check_environment(void) {
     CHECK(execve("/bin/hello", args, one_huge) == -E2BIG);
 }
 
+static volatile int handler_calls = 0;
+static volatile int handler_last_signal = 0;
+
+static void counting_handler(int sig) {
+    handler_calls++;
+    handler_last_signal = sig;
+}
+
+/* A handler that uses the FPU and makes a system call, to check that neither
+ * disturbs the code it interrupted */
+static void busy_handler(int sig) {
+    volatile double scratch = 3.25;
+    for (int i = 0; i < 50; i++) scratch = scratch * 1.5 + (double)sig;
+    getpid();
+    handler_calls++;
+}
+
+/* Integer and floating point work with many live registers. The result
+ * depends on every step, so a register changed behind its back shows. */
+__attribute__((noinline)) static unsigned long register_churn(unsigned long seed, long rounds) {
+    unsigned long a = seed, b = seed ^ 0x9E3779B97F4A7C15UL, c = 1, d = 2, e = 3, f = 5;
+    double x = 0.5, y = 1.25;
+    for (long i = 0; i < rounds; i++) {
+        a = a * 6364136223846793005UL + b;
+        b = (b << 7) | (b >> 57);
+        c += a ^ d;
+        d = d * 31 + e;
+        e ^= f + (unsigned long)i;
+        f = (f >> 3) + c;
+        x = x * 3.9 * (1.0 - x);
+        y += x;
+    }
+    return a ^ b ^ c ^ d ^ e ^ f ^ (unsigned long)(y * 1000.0);
+}
+
+static void check_signals(void) {
+    int status;
+
+    /* A handler runs, gets the signal number, and the program carries on */
+    handler_calls = 0;
+    CHECK(signal(SIGUSR1, counting_handler) == SIG_DFL);
+    CHECK(kill(getpid(), SIGUSR1) == 0);                 /* Runs before kill() returns to us */
+    CHECK(handler_calls == 1 && handler_last_signal == SIGUSR1);
+    CHECK(kill(getpid(), SIGUSR1) == 0 && handler_calls == 2);
+
+    /* Ignoring, and going back to the default */
+    CHECK(signal(SIGUSR1, SIG_IGN) == counting_handler);
+    CHECK(kill(getpid(), SIGUSR1) == 0 && handler_calls == 2);
+    CHECK(signal(SIGUSR1, SIG_DFL) == SIG_IGN);
+
+    /* Requests that are refused */
+    CHECK(signal(SIGKILL, counting_handler) == SIG_ERR);
+    CHECK(signal(0, counting_handler) == SIG_ERR);
+    CHECK(signal(32, counting_handler) == SIG_ERR);
+    CHECK(kill(getpid(), 32) == -ESRCH);
+
+    /* The default action still ends a process, with the signal in its status */
+    long pid = fork();
+    if (pid == 0) { for (;;) yield(); }
+    CHECK(kill(pid, SIGTERM) == 0);
+    CHECK(waitpid(pid, &status) == pid && status == 128 + SIGTERM);
+
+    /* SIGKILL ends a process even if it ignores everything else */
+    pid = fork();
+    if (pid == 0) {
+        for (int s = 1; s < 32; s++) signal(s, SIG_IGN);
+        for (;;) yield();
+    }
+    sleep_ms(20);
+    CHECK(kill(pid, SIGTERM) == 0);
+    CHECK(kill(pid, SIGINT) == 0);
+    sleep_ms(20);
+    CHECK(kill(pid, SIGKILL) == 0);
+    CHECK(waitpid(pid, &status) == pid && status == 128 + SIGKILL);
+
+    /* Handlers are inherited by fork; exec goes back to the default, because
+     * the handler's code is gone with the old program */
+    signal(SIGUSR2, counting_handler);
+    pid = fork();
+    if (pid == 0) {
+        handler_calls = 0;
+        kill(getpid(), SIGUSR2);
+        exit(handler_calls == 1 ? 0 : 1);
+    }
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+    pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/bin/spin", "sleep", NULL };
+        execv("/bin/spin", args);
+        exit(99);
+    }
+    sleep_ms(30);
+    CHECK(kill(pid, SIGUSR2) == 0);
+    CHECK(waitpid(pid, &status) == pid && status == 128 + SIGUSR2);
+    signal(SIGUSR2, SIG_DFL);
+
+    /* The hard part: a handler may run between any two instructions. Send a
+     * computing child a stream of signals; its results must be exactly those
+     * of an undisturbed run, which means every register and the FPU state
+     * came back as they were. */
+    unsigned long expected = register_churn(12345, 400000);
+    int ends[2];
+    CHECK(pipe(ends) == 0);
+    pid = fork();
+    if (pid == 0) {
+        close(ends[0]);
+        handler_calls = 0;
+        signal(SIGUSR1, busy_handler);
+        write(ends[1], "r", 1);                          /* Ready for signals */
+        /* Keep computing until the handler has cut in 20 times (with an upper
+         * bound, in case no signal ever arrives) */
+        int correct = 1;
+        volatile unsigned long seed = 12345; /* Volatile, or the compiler computes the result once and skips the loop */
+        for (int run = 0; run < 5000 && handler_calls < 20; run++) {
+            if (register_churn(seed, 400000) != expected) correct = 0;
+        }
+        /* 2: hardly interrupted, so the run proves little */
+        exit(!correct ? 1 : (handler_calls >= 20 ? 0 : 2));
+    }
+    close(ends[1]);
+    char ready;
+    CHECK(read(ends[0], &ready, 1) == 1);
+    close(ends[0]);
+    for (int i = 0; i < 400; i++) {
+        if (kill(pid, SIGUSR1) != 0) break;              /* It has finished */
+        sleep_ms(10);
+    }
+    CHECK(waitpid(pid, &status) == pid);
+    if (status != 0) printf("syscheck: signal flood child ended with status %d\n", status);
+    CHECK(status == 0);
+}
+
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -537,6 +669,7 @@ int main(void) {
     check_files();
     check_directories();
     check_environment();
+    check_signals();
     check_pipes();
 
     if (failures == 0) {

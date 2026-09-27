@@ -150,6 +150,28 @@ would change how the next problem is approached.
 - A side effect worth knowing: `kill()` returning does not mean the target is
   gone yet. Wait for it before testing for the consequences.
 
+### Signals
+
+- **`sigreturn` must leave through `iretq`.** A handler can interrupt the
+  program between any two instructions, so every register has to come back,
+  and `sysretq` destroys RCX and R11. The system call frame carries a marker
+  (`int_no`) that sends the exit path to the full restore. The marker is in
+  the frame, not in a global, because the task can be preempted in between.
+- **The frame saved for a handler must show the interrupted system call as
+  finished**, with its result already in RAX; otherwise the program resumes
+  after the handler with a stale RAX.
+- **Save the FPU state in the signal frame too.** Handlers compiled with SSE
+  overwrite XMM registers the interrupted code was using.
+- **A test loop that calls a pure function with constant arguments is not a
+  loop.** GCC computed the result once and hoisted it, so the "computation
+  under a flood of signals" ran no computation, and the test reported that
+  it had hardly been interrupted. Feeding the argument through a volatile
+  fixed it. Then the mutation check (disable the full restore) made it fail
+  as intended.
+- **A fuzzer needs retuning when a new call can end the process.** Random
+  `sigreturn` calls killed every round within a few calls; coverage silently
+  dropped to almost nothing while every seed still reported "ok".
+
 ### Environment
 
 - **The environment is not kernel state.** The first version was a global

@@ -403,15 +403,22 @@ int64_t syscall_handler(struct registers *regs) {
     // control of the kernel to the program (CVE-2012-0217). AMD CPUs and QEMU
     // fault after the switch to ring 3 instead, so this cannot be seen under
     // QEMU; the check is here for real Intel hardware.
-    if (regs->rip >= USER_SPACE_END) {
-        task_t *task = sched_get_current_task();
-        if (task && task->is_user) {
-            kprintf("\n[pid %u %s] killed: system call would return to invalid address 0x%lx\n",
-                    task->pid, task->name, regs->rip);
-            task_exit_status(128 + SIGSEGV);
-        }
+    task_t *task = sched_get_current_task();
+    if (regs->rip >= USER_SPACE_END && task && task->is_user) {
+        kprintf("\n[pid %u %s] killed: system call would return to invalid address 0x%lx\n",
+                task->pid, task->name, regs->rip);
+        task_exit_status(128 + SIGSEGV);
     }
-    return result;
+
+    // sigreturn replaced the whole frame, RAX included: leave it alone. The
+    // entry stub sees int_no and restores the frame with iretq.
+    if (regs->int_no == SYSCALL_RETURN_FULL_FRAME) return (int64_t)regs->rax;
+
+    // If a signal handler has to run, the frame saved for it must show this
+    // system call as finished, with its result in RAX.
+    regs->rax = (uint64_t)result;
+    signal_deliver(regs);
+    return (int64_t)regs->rax;
 }
 
 static int64_t dispatch(struct registers *regs) {
@@ -455,9 +462,11 @@ static int64_t dispatch(struct registers *regs) {
             task_set_priority(task, (uint8_t)regs->rdi);
             return 0;
 
-        case SYS_IGNORE_INTERRUPT:
-            task->ignore_interrupt = (regs->rdi != 0);
-            return 0;
+        case SYS_SIGNAL:
+            return signal_set_handler(task, (int)regs->rdi, regs->rsi, regs->rdx);
+        case SYS_SIGRETURN:
+            signal_return(regs);
+            return 0; // Ignored: the frame's own RAX is what the program gets
 
         case SYS_UNAME:   return sys_uname(regs->rdi);
         case SYS_GETCWD:  return sys_getcwd(regs->rdi, (size_t)regs->rsi);

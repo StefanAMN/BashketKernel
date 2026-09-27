@@ -27,6 +27,22 @@ long uptime_ticks(void);
 long set_priority(int priority);    /* 0 high, 1 normal, 2 low */
 void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 
+/* Signals */
+#define SIGINT   2
+#define SIGKILL  9
+#define SIGUSR1 10
+#define SIGSEGV 11
+#define SIGUSR2 12
+#define SIGTERM 15
+typedef void (*sighandler_t)(int);
+#define SIG_DFL ((sighandler_t)0)   /* End the process */
+#define SIG_IGN ((sighandler_t)1)   /* Do nothing */
+#define SIG_ERR ((sighandler_t)-1)
+/* Choose what a signal does; returns the previous choice or SIG_ERR.
+ * A handler runs when the process next returns from the kernel; a process
+ * asleep in a system call is not interrupted for it. */
+sighandler_t signal(int sig, sighandler_t handler);
+
 /* Memory */
 void *sbrk(long increment);
 void *mmap_anon(size_t length);

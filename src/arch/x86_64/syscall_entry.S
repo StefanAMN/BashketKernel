@@ -68,6 +68,14 @@ syscall_entry:
     call syscall_handler
 
     cli
+
+    // sigreturn replaces the whole frame with the state a signal interrupted,
+    // which may be any point in the program, so every register has to come
+    // back exactly. sysretq cannot do that (it uses RCX and R11), so such a
+    // frame is marked with a non-zero int_no and restored with iretq.
+    cmp qword ptr [rsp + 15*8], 0
+    jne user_frame_return
+
     mov [rsp + 14*8], rax       // Return value goes into the saved RAX slot
 
     pop r15
@@ -102,7 +110,8 @@ syscall_entry:
  *
  * Entered with RSP pointing at a complete struct registers. Restores it and
  * drops to ring 3 with iretq. Used for a task's first entry to user mode
- * after fork(): the frame is a copy of the parent's syscall frame.
+ * after fork() (the frame is a copy of the parent's syscall frame) and for
+ * the return from sigreturn.
  */
 user_frame_return:
     cli

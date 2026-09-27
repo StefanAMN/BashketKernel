@@ -209,6 +209,8 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
     apply_image(self, &image);
 
+    signal_reset_on_exec(self);
+
     // The old program's floating point registers are still live in the CPU
     fpu_restore(self->fpu_state);
 
@@ -251,7 +253,8 @@ pid_t process_fork(struct registers *regs) {
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
     child->mmap_next = parent->mmap_next;
-    child->ignore_interrupt = parent->ignore_interrupt;
+    memcpy(child->sig_handlers, parent->sig_handlers, sizeof(child->sig_handlers));
+    child->sig_restorer = parent->sig_restorer;
     task_set_cwd(child, parent->cwd);
 
     // The parent is running, so its FPU registers are in the CPU, not in its
@@ -327,22 +330,19 @@ pid_t process_wait(pid_t pid, int *status) {
 int process_kill(pid_t pid, int sig) {
     task_t *target = sched_find_task((uint32_t)pid);
     if (!target || !target->is_user || target->state == TASK_ZOMBIE) return -1;
-    if (sig <= 0 || sig > 64) return -1;
+    if (sig <= 0 || sig >= TASK_NSIG) return -1;
 
-    if (target == sched_get_current_task()) {
-        task_exit_status(128 + sig);
-    }
-
-    // The target is somewhere else, possibly half way through a system call.
-    // Only it can stop itself cleanly, so this just leaves the request.
-    sched_request_kill(target, sig);
+    // The target may be half way through a system call, so nothing is done
+    // to it here: the signal is recorded and takes effect at its next safe
+    // point. That is true even when the target is the caller.
+    signal_send(target, sig);
     return 0;
 }
 
 void process_interrupt_all(void) {
     uint64_t flags = irq_save();
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (t->is_user && !t->ignore_interrupt) sched_request_kill(t, SIGINT);
+        if (t->is_user) signal_send(t, SIGINT);
     }
     irq_restore(flags);
 }

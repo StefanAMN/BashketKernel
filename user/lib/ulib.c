@@ -19,7 +19,16 @@ void yield(void)                                   { syscall0(SYS_YIELD); }
 void sleep_ms(unsigned long ms)                    { syscall1(SYS_SLEEP, ms); }
 long uptime_ticks(void)                            { return syscall0(SYS_TIME); }
 long set_priority(int priority)                    { return syscall1(SYS_SETPRIORITY, priority); }
-void ignore_interrupt(int ignore)                  { syscall1(SYS_IGNORE_INTERRUPT, ignore); }
+void ignore_interrupt(int ignore)                  { signal(SIGINT, ignore ? SIG_IGN : SIG_DFL); }
+
+/* In crt0.S: where a signal handler returns to. It asks the kernel to put
+ * back whatever the signal interrupted. */
+extern void __sigreturn(void);
+
+sighandler_t signal(int sig, sighandler_t handler) {
+    long previous = syscall3(SYS_SIGNAL, sig, handler, __sigreturn);
+    return previous < 0 ? SIG_ERR : (sighandler_t)previous;
+}
 
 /* --- Environment ---------------------------------------------------------- */
 
