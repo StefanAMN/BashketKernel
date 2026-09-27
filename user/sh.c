@@ -3,6 +3,7 @@
  *
  *   sh                 read commands from standard input until "exit"
  *   sh -c "command"    run one command line and exit with its status
+ *   sh FILE            run the commands in FILE (lines starting with # are comments)
  *
  * A command line is one or more programs joined by '|'. Each may redirect
  * its input with "< file" and its output with "> file" or ">> file".
@@ -34,6 +35,7 @@ typedef struct {
  * is no room in the line itself for a terminator between 'a' and '|'. */
 static char word_storage[512];
 static int last_status = 0;   /* Exit status of the previous command, for $? */
+static int script_fd = -1;    /* The script being run, or -1 when reading the terminal */
 
 static int is_operator(char c) { return c == '|' || c == '<' || c == '>'; }
 static int is_blank(char c)    { return c == ' ' || c == '\t'; }
@@ -148,6 +150,7 @@ static void redirect_or_die(const char *path, int flags, int target) {
 
 static void exec_stage(stage_t *stage) {
     ignore_interrupt(0); /* Unlike the shell, the program should die on Ctrl-C */
+    if (script_fd >= 0) close(script_fd); /* The script is the shell's business, not the program's */
 
     if (stage->in_path) redirect_or_die(stage->in_path, O_RDONLY, 0);
     if (stage->out_path) {
@@ -299,11 +302,30 @@ int main(int argc, char **argv) {
         return run_line(argv[2], &should_exit);
     }
 
+    /* "sh FILE": read commands from the file instead of the terminal. The
+     * file gets its own descriptor rather than becoming standard input, so
+     * that a command in the script which reads its input (cat, wc) reads the
+     * terminal and not the rest of the script. */
+    if (argc >= 2) {
+        long fd = open(argv[1], O_RDONLY);
+        if (fd < 0) {
+            fprintf(2, "sh: %s: %s\n", argv[1], strerror(fd));
+            return 127;
+        }
+        script_fd = (int)fd;
+    }
+
     static char line[256];
     while (!should_exit) {
-        printf("$ ");
-        if (readline(line, sizeof(line)) < 0) break; /* End of input */
-        last_status = run_line(line, &should_exit);
+        if (script_fd < 0) printf("$ ");
+        if (fdreadline(script_fd < 0 ? 0 : script_fd, line, sizeof(line)) < 0) break; /* End of input */
+
+        /* Skip leading blanks; a line starting with # is a comment */
+        const char *command = line;
+        while (is_blank(*command)) command++;
+        if (*command == '#') continue;
+
+        last_status = run_line(command, &should_exit);
     }
     return last_status;
 }

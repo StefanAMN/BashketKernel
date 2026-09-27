@@ -52,7 +52,8 @@ long unlink(const char *path);
 void puts(const char *s);
 void printf(const char *fmt, ...);               /* To standard output */
 void fprintf(int fd, const char *fmt, ...);
-long readline(char *buf, size_t size);           /* -1 at end of input */
+long readline(char *buf, size_t size);           /* From standard input; -1 at end of input */
+long fdreadline(int fd, char *buf, size_t size);
 const char *strerror(long err);
 
 /* Strings */
