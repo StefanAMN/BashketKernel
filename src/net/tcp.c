@@ -931,6 +931,12 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         sock->retries = 0;
         sock->state = TCP_ESTABLISHED;
         if (sock->listener) wake(sock->listener); // tcp_accept may be waiting
+        else if (!sock->user_open) {
+            // Its listener closed during the handshake: nobody will accept
+            // it, so it closes now, as the others did then (tcp_close)
+            sock->state = TCP_FIN_WAIT_1;
+            sock->fin_queued = true;
+        }
     } else if (SEQ_GT(ack, sock->snd_max)) {
         // Acknowledges something we never sent: say where we really are
         sock->ack_pending = true;
@@ -1354,8 +1360,12 @@ void tcp_close(tcp_socket_t *sock) {
 
     switch (sock->state) {
         case TCP_LISTEN:
-            // Connections nobody accepted are closed like any other; ones
-            // still half open are forgotten
+            // Connections nobody accepted are closed like any other. One
+            // still half open is kept to finish its handshake and then
+            // closed (tcp_input): the other end may already count itself
+            // connected, its last ACK still on the way, and forgetting the
+            // connection would answer that ACK with a reset instead of the
+            // end of the stream (RFC 9293 3.10.4, CLOSE in SYN-RECEIVED).
             for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
                 struct tcp_socket *s = &sockets[i];
                 if (!s->used || s->listener != sock) continue;
@@ -1363,6 +1373,8 @@ void tcp_close(tcp_socket_t *sock) {
                 if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) {
                     s->state = (s->state == TCP_ESTABLISHED) ? TCP_FIN_WAIT_1 : TCP_LAST_ACK;
                     s->fin_queued = true;
+                    s->reap_deadline = timer_ticks() + TCP_ORPHAN_TICKS;
+                } else if (s->state == TCP_SYN_RECEIVED) {
                     s->reap_deadline = timer_ticks() + TCP_ORPHAN_TICKS;
                 } else {
                     free_socket(s);
