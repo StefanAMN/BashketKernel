@@ -173,16 +173,25 @@ static size_t gen_cpuinfo(char *buf, size_t size) {
     uint64_t nmis = 0;
     for (uint32_t i = 0; i < smp_get_cpu_total(); i++) nmis += cpu_get(i)->nmis;
 
-    return ksnprintf(buf, size,
-                     "vendor_id:  %s\n"
-                     "model name: %s\n"
-                     "family:     %u\n"
-                     "model:      %u\n"
-                     "cpus:       %lu started, %u running tasks\n"
-                     "protection: %s\n"
-                     "nmis:       %lu\n",
-                     vendor, brand, family, model, (uint64_t)smp_get_cpu_count(), sched_running_count(),
-                     cpu_protection_summary(), nmis);
+    size_t len = ksnprintf(buf, size,
+                           "vendor_id:  %s\n"
+                           "model name: %s\n"
+                           "family:     %u\n"
+                           "model:      %u\n"
+                           "cpus:       %lu started, %u running tasks\n"
+                           "protection: %s\n"
+                           "nmis:       %lu\n",
+                           vendor, brand, family, model, (uint64_t)smp_get_cpu_count(), sched_running_count(),
+                           cpu_protection_summary(), nmis);
+
+    // One line per CPU taking part in scheduling: the ticks that found it
+    // busy. Against the tick count of /proc/uptime, its load (/bin/top).
+    for (uint32_t i = 0; i < smp_get_cpu_total() && len + 1 < size; i++) {
+        cpu_t *cpu = cpu_get(i);
+        if (cpu && cpu->online) len += ksnprintf(buf + len, size - len, "cpu%u:%s%lu busy ticks\n",
+                                                 i, i < 10 ? "       " : "      ", cpu->busy_ticks);
+    }
+    return len;
 }
 
 // /proc/mounts: the mount table (mount_describe)
@@ -245,8 +254,8 @@ static int64_t serve_slice(const char *text, size_t len, size_t offset, void *bu
 
 // /proc/<pid>/status: who the task is and what it is doing, "Key:\tvalue"
 // a line. Memory as the task records it: the heap (brk), mmap'd regions,
-// and how much of those has not been touched yet (no frames behind it).
-// "Syscall" is the number of the system call the task is in, or "-".
+// how much of those has not been touched yet (no frames behind it), and
+// "Size", all of that plus the program. "Syscall" is the number of the system call the task is in, or "-".
 // -ENOENT once the task is gone.
 static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count) {
     char *text = kmalloc(PROC_TEXT_MAX);
@@ -264,15 +273,26 @@ static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count
             if (t->regions[i].end && !t->regions[i].program) mapped += t->regions[i].end - t->regions[i].start;
         }
         uint64_t heap = t->is_user ? t->brk_end - t->brk_start : 0;
+        // Size: the program's segments, the heap and every mapped region,
+        // as /proc/<pid>/maps lists them, without the stack's reservation.
+        // (Not what is resident: that would mean walking another process's
+        // page tables, which its exit frees without this lock.)
+        uint64_t program = 0;
+        if (t->is_user && t->state != TASK_ZOMBIE) {
+            for (uint32_t i = 0; i < t->image_segment_count && i < ELF_REPORTED_SEGMENTS; i++) {
+                program += t->image_segments[i].end - t->image_segments[i].start;
+            }
+        }
         char syscall_text[12] = "-";
         if (t->in_syscall) ksnprintf(syscall_text, sizeof(syscall_text), "%u", t->in_syscall - 1);
         len = ksnprintf(text, PROC_TEXT_MAX,
                         "Name:\t%s\nState:\t%s\nPid:\t%u\nPPid:\t%u\nPgid:\t%u\n"
                         "Uid:\t%u\nRuid:\t%u\nGid:\t%u\nRgid:\t%u\nKind:\t%s\nPriority:\t%u\n"
-                        "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\nSyscall:\t%s\n",
+                        "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\nSize:\t%lu kB\nSyscall:\t%s\n",
                         t->name, (unsigned)t->state < 5 ? state_words[t->state] : "?", t->pid, t->parent_pid, t->pgid,
                         t->uid, t->ruid, t->gid, t->rgid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
-                        t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->promised_pages * 4, syscall_text);
+                        t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->promised_pages * 4,
+                        (program + heap + mapped) / 1024, syscall_text);
     }
     sched_unlock_irqrestore(flags);
 

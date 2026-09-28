@@ -3457,6 +3457,19 @@ static void check_proc(void) {
     CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
     CHECK(status_number(text, "Pid") == getpid() && status_number(text, "Uid") == (long)getuid());
     CHECK(has_text(text, "Name:\tsyscheck\n") && has_text(text, "Kind:\tuser\n"));
+
+    /* Size: the program, heap and mappings (what /bin/top shows); a mapping
+     * counts in full at once, touched or not, and goes when unmapped */
+    long size_before = status_number(text, "Size");
+    CHECK(size_before > status_number(text, "Heap") + status_number(text, "Mapped"));  /* The program too */
+    void *block = mmap_anon(256 * 1024);
+    CHECK(block != NULL);
+    CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
+    CHECK(status_number(text, "Size") == size_before + 256);
+    CHECK(block && munmap(block, 256 * 1024) == 0);
+    CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
+    CHECK(status_number(text, "Size") == size_before);
+
     char target[16];
     long n = readlink("/proc/self", target, sizeof(target) - 1);
     CHECK(n > 0 && n < (long)sizeof(target));
