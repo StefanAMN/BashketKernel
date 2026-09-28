@@ -723,6 +723,19 @@ test-jobs: iso
 		'echo jobs-left:' 'jobs' 'X=typed' 'cat <<EOF' 'from the prompt: $$X' 'EOF' 'exit' > $(BUILD)/background-loop.log 2>&1 \
 		&& echo "a loop in the background, a here-document at the prompt: ok" \
 		|| { echo "a loop in the background, a here-document at the prompt: FAILED (see $(BUILD)/background-loop.log)"; exit 1; }
+	@# trap on Ctrl-C in a script run at the terminal: the trap runs once the
+	@# command Ctrl-C ended has finished, and the script goes on (the script
+	@# prints "trap-set" first, so the key comes after the trap is in place);
+	@# wait for a background job, ended by Ctrl-C with 130 while the job runs
+	@# on, then waited for by number; after trap '' INT the programs the
+	@# shell starts ignore Ctrl-C too
+	@tools/qemu_shell.py --quiet --timeout 60 --prompt 'trap-set' $(SHELL_CPU) \
+		--expect 'caught-int\nafter-int\n' --expect 'wait-status 130\n' --expect '\[1\] Running   sleep 5\n' \
+		--expect 'waited 0\n' --expect 'slept-through 0\n' --forbid 'after-int\n(.*\n)*caught-int' \
+		'exec /bin/sh' "sh -c \"trap 'echo caught-int' INT; echo trap-''set; sleep 5; echo after-int\"" '^C' \
+		'sleep 5 &' '!wait' '@wait:1' '^C' 'echo wait-status $$?' 'jobs' 'wait %1' 'echo waited $$?' \
+		"trap '' INT" '!sleep 2' '@wait:1' '^C' 'echo slept-through $$?' 'exit' > $(BUILD)/trap-wait.log 2>&1 \
+		&& echo "trap and wait at the terminal: ok" || { echo "trap and wait at the terminal: FAILED (see $(BUILD)/trap-wait.log)"; exit 1; }
 
 # The text tools against files with known answers: head, tail, grep (with
 # -v, -c, several files, the exit status), sort (-n, -r, stable), cp (into
