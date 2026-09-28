@@ -109,6 +109,7 @@ make test-paint                 # /bin/paint driven by the mouse, screenshots ch
 make test-crash                 # kill QEMU during ext2 writes, reboot, e2fsck; CRASH_ROUNDS=20 for more (~1 min)
 make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
 make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
+make test-top                   # /bin/top beside a spinning process, which it must list first (~5 s)
 make test CPU=qemu64,-tsc       # no timestamp counter: the periodic-tick fallback
 make test VIRTIO=legacy         # devices with only the legacy virtio interface (VIRTIO=modern: only the modern one)
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs

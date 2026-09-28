@@ -1645,7 +1645,7 @@ background jobs, `local NAME[=value]` in functions. **Check:** syscheck,
 one check per exception of `set -e`; `make test-jobs` for `wait` and a
 `trap` on Ctrl-C.
 
-### Q4. `/bin/top` (S)
+### Q4. `/bin/top` (S) — done
 
 A full-screen list of processes, refreshed every second, sorted by CPU
 use over the last interval (from the tick counts in `/proc/<pid>/status`,
@@ -1655,6 +1655,27 @@ and the totals of `/proc/meminfo`; `q` quits, the terminal restored
 **Check:** a scripted run (`tools/qemu_shell.py` with `/bin/spin`
 running) that finds the spinning process at the top, then `q`; the
 terminal usable after.
+
+Done (`user/top.c`, `make test-top` on one CPU and on four). CPU use per
+process is the difference in `Ticks` between two refreshes over the ticks
+that passed; a process missing from the previous refresh is capped at the
+whole interval. The load of each CPU needed a field: `cpu_t.busy_ticks`,
+counted in `sched_tick` unless the idle task is running, shown as a line
+per CPU at the end of `/proc/cpuinfo` (`proc_cpuinfo_counts_busy_ticks_per_cpu`;
+sabotage: never counting failed it, and counting the idle task failed it
+under the periodic tick). Memory per process is `Size`, a new line in
+`/proc/<pid>/status`: the program's segments, heap and mappings, as
+`maps` lists them, without the stack's 8 MiB reservation (syscheck: a
+256 KiB mapping adds exactly 256 and goes again with `munmap`; leaving
+mappings out failed it). Not resident memory: counting present pages
+means walking another process's page tables, and exit and `execve`
+destroy those without the scheduler lock, so a reader could follow a
+freed table; doing it needs that teardown changed, or a count kept on
+every map, unmap, copy-on-write, swap and fork path. Sabotage of the
+scripted test: sorting the quietest first failed it. `top` leaving raw
+mode on did not, and cannot: raw mode dies with its program (CLAUDE.md),
+so the terminal is restored either way, and `top`'s own `tty_raw(0)` is
+not visible from outside.
 
 ---
 
@@ -1741,7 +1762,8 @@ O1, O2, O3, O4                   done (in parallel)
         |
 P1, P2, P3, P4                   done (in parallel)
         |
-Q1, Q2, Q3, Q4                   next (planned, not started)
+Q4                               done
+Q1, Q2, Q3                       next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on

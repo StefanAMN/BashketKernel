@@ -130,7 +130,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-kshell test-nmi test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-tools test-net fuzz check
+.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-kshell test-nmi test-boot test-shutdown test-crash test-paint test-swap test-edit test-top test-login test-jobs test-tools test-net fuzz check
 
 all: $(KERNEL)
 
@@ -346,6 +346,17 @@ test-disk: iso
 			&& echo "damaged disk ($$kind): survived" \
 			|| { echo "damaged disk ($$kind): FAILED (see $(BUILD)/damaged-$$kind.log)"; exit 1; }; \
 	done
+
+# /bin/top with /bin/spin running in the background: some refresh lists the
+# spinning process first (right under the header), using at least half a
+# CPU; a key other than q does not quit; after q the shell is back in line
+# mode (it echoes what is typed) and runs commands.
+test-top: iso
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'SIZE kB  NAME[^\n]*\n +[0-9]+ +[0-9]+ +[a-z]+ +([5-9][0-9]|100) +[0-9]+ +[0-9]+  spin ' \
+		--expect 'echo after-top\nafter-top\n' \
+		'exec /bin/sh' 'spin &' '!top' '~x' '@wait:3' '~q' 'echo after-top' 'exit' > $(BUILD)/top.log 2>&1 \
+		&& echo "top: ok" || { echo "top: FAILED (see $(BUILD)/top.log)"; exit 1; }
 
 # The full-screen editor, driven by scripted keystrokes: type, move with the
 # arrow keys, insert in three places, save, quit; then check the file. Also
@@ -821,6 +832,8 @@ check:
 	@$(MAKE) --no-print-directory test-net VIRTIO=legacy
 	@$(MAKE) --no-print-directory test-net VIRTIO=modern SMP=2
 	@$(MAKE) --no-print-directory test-edit
+	@$(MAKE) --no-print-directory test-top
+	@$(MAKE) --no-print-directory test-top SMP=4
 	@$(MAKE) --no-print-directory test-home
 	@$(MAKE) --no-print-directory test-rescue
 	@$(MAKE) --no-print-directory test-kshell

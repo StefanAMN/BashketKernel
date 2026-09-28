@@ -69,6 +69,7 @@ typedef struct cpu {
     void *fault_stack;         // Its stack for double faults (TSS IST1)
     void *nmi_stack;           // Its stack for NMIs (TSS IST2)
     volatile uint64_t nmis;    // NMIs this CPU has taken
+    volatile uint64_t busy_ticks; // Scheduler ticks that found it running a task other than its idle one (/proc/cpuinfo)
 
     // Work another CPU has asked this one to do (smp_call)
     void (*call_fn)(void *);

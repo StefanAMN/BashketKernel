@@ -10,6 +10,9 @@
 #include "sched.h"
 #include "signal.h"
 #include "syscall.h"
+#include "smp.h"
+#include "timer.h"
+#include "hrtimer.h"
 
 // Read a whole /proc file through the open-file layer, in small pieces so
 // the offset handling is exercised too.
@@ -210,13 +213,54 @@ TEST(proc_pid_status_names_the_system_call) {
     proc_path(path, pid, "status");
     EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
     EXPECT_EQ(number_after(text, "Syscall:\t"), (int64_t)SYS_SLEEP);
+    EXPECT_TRUE(number_after(text, "Size:\t") > 0);              // Its program at least
 
     EXPECT_TRUE(slurp("/proc/self/status", text, sizeof(text)) > 0);
     EXPECT_TRUE(strstr(text, "Syscall:\t-\n") != NULL);
+    EXPECT_TRUE(strstr(text, "Size:\t0 kB\n") != NULL);         // A kernel task has no address space of its own
 
     EXPECT_EQ(process_kill(pid, SIGKILL), 0);
     int status = 0;
     EXPECT_EQ(process_wait(pid, &status), pid);
+}
+
+// The "busy ticks" of each CPU in /proc/cpuinfo: sum and number of lines
+static uint64_t busy_ticks(const char *text, size_t *cpus) {
+    uint64_t sum = 0;
+    *cpus = 0;
+    for (const char *p = strstr(text, "\ncpu"); p; p = strstr(p + 1, "\ncpu")) {
+        if (p[4] < '0' || p[4] > '9') continue;      // "cpus:", not "cpuN:"
+        const char *colon = strstr(p, ":");
+        if (!colon) break;
+        int64_t n = number_after(colon, ":");
+        if (n < 0) continue;
+        sum += (uint64_t)n;
+        (*cpus)++;
+    }
+    return sum;
+}
+
+// /proc/cpuinfo counts, for each CPU, the ticks that found it running a
+// task: they grow while this task computes, and hardly at all while every
+// CPU is idle (the idle task is not counted, so periodic and one-shot
+// timers mean the same)
+TEST(proc_cpuinfo_counts_busy_ticks_per_cpu) {
+    static char text[2048];
+    size_t cpus = 0;
+    EXPECT_TRUE(slurp("/proc/cpuinfo", text, sizeof(text)) > 0);
+    uint64_t before = busy_ticks(text, &cpus);
+    EXPECT_EQ(cpus, smp_get_cpu_count());
+
+    uint64_t until = timer_ticks() + 5;
+    while (timer_ticks() < until) asm volatile("pause");
+    EXPECT_TRUE(slurp("/proc/cpuinfo", text, sizeof(text)) > 0);
+    uint64_t computed = busy_ticks(text, &cpus);
+    EXPECT_TRUE(computed > before);
+
+    nanosleep(300000000ULL);                       // 30 ticks with nothing to do
+    EXPECT_TRUE(slurp("/proc/cpuinfo", text, sizeof(text)) > 0);
+    uint64_t slept = busy_ticks(text, &cpus);
+    EXPECT_TRUE(slept - computed < 15);
 }
 
 void test_suite_procfs(void) {
@@ -226,4 +270,5 @@ void test_suite_procfs(void) {
     RUN_TEST(proc_pid_maps_and_fds);
     RUN_TEST(fd_slot_reference_outlives_close);
     RUN_TEST(proc_pid_status_names_the_system_call);
+    RUN_TEST(proc_cpuinfo_counts_busy_ticks_per_cpu);
 }
