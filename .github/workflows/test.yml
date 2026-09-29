@@ -1,22 +1,30 @@
 name: kernel tests
 
+# Never run so far: written against the Makefile targets, not yet tried on
+# GitHub's runners. See PLAN.md, "What is still wrong".
+
 on: [push, pull_request]
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools and QEMU
-        run: sudo apt-get update && sudo apt-get install -y build-essential xorriso qemu-system-x86
+        run: sudo apt-get update && sudo apt-get install -y build-essential xorriso qemu-system-x86 python3
       - name: Build with warnings as failures
         run: |
+          set -o pipefail
           make -j"$(nproc)" iso 2>&1 | tee build.log
           ! grep -q 'warning:' build.log
-      - name: Run in-kernel unit tests
-        run: make test
+      - name: Unit tests, low-memory scenarios and fuzzing on both CPU models
+        run: make check
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-log
-          path: build-test/test.log
+          name: test-logs
+          path: |
+            build-test/test.log
+            build/lowmem-*.log
+            build/fuzz-*.log
