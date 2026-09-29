@@ -1325,7 +1325,7 @@ static void check_lazy_memory(void) {
     /* What can not be mapped */
     fd = open("/bin/hello", O_RDONLY);
     CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, fd, 100) == -EINVAL);       /* Offset not on a page boundary */
-    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_SHARED, fd, 0) == -EINVAL);          /* Shared file mappings: not offered */
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) == -EACCES); /* Writing the file needs it open for writing */
     CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, 99, 0) == -EBADF);
     CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, 1, 0) == -EACCES);          /* The console is not a file */
     CHECK(syscall6(SYS_MMAP, 0, 4096, 0x80, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == -EINVAL);
@@ -1333,6 +1333,151 @@ static void check_lazy_memory(void) {
     close((int)fd);
     fd = open("/tmp", O_RDONLY);
     CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, fd, 0) == -EACCES);         /* Nor is a directory */
+    close((int)fd);
+    CHECK(meminfo("Promised:") == promised_before);
+}
+
+/* Shared mappings of the file at `path` (MAP_SHARED): one copy of each
+ * page for every mapping, read() and write(); what is written reaches the
+ * file; a truncation cuts pages off (SIGBUS) */
+static void check_shared_mapping_of(const char *path) {
+    long fd = open(path, O_RDWR | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    static char page[4096];
+    memset(page, 'a', sizeof(page));
+    CHECK(write((int)fd, page, 4096) == 4096 && write((int)fd, page, 4096) == 4096 && write((int)fd, "tail", 4) == 4);
+    char *map = mmap_file_shared((int)fd, 4 * 4096, 0, PROT_READ | PROT_WRITE);   /* The 4th page: past the end */
+    CHECK(map != NULL);
+    if (!map) { close((int)fd); unlink(path); return; }
+    CHECK(map[0] == 'a' && map[8192] == 't' && map[8195] == 'l' && map[8196] == 0);   /* Past the end of the file: zeros */
+
+    /* A page wholly past the end of the file is not the file's: SIGBUS */
+    int status = -1;
+    long pid = fork();
+    if (pid == 0) {
+        volatile char c = map[3 * 4096];
+        (void)c;
+        exit(0);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGBUS);
+
+    /* A child writes through the mapping it inherited: the parent sees it */
+    pid = fork();
+    if (pid == 0) {
+        memcpy(map + 10, "child", 5);
+        exit(0);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    CHECK(memcmp(map + 10, "child", 5) == 0);
+
+    /* read() sees what was written through a mapping, before any msync;
+     * write() shows in the mapping at once */
+    char buf[8];
+    CHECK(lseek((int)fd, 10, SEEK_SET) == 10 && read((int)fd, buf, 5) == 5 && memcmp(buf, "child", 5) == 0);
+    memcpy(map + 40, "own", 3);                            /* (Not written back by anyone yet) */
+    CHECK(lseek((int)fd, 40, SEEK_SET) == 40 && read((int)fd, buf, 3) == 3 && memcmp(buf, "own", 3) == 0);
+    CHECK(lseek((int)fd, 4096, SEEK_SET) == 4096 && write((int)fd, "write", 5) == 5);
+    CHECK(memcmp(map + 4096, "write", 5) == 0);
+
+    /* Another mapping of its own, made afresh in another process, has the
+     * same pages; what it writes is seen here (and was written to the file
+     * when it exited) */
+    pid = fork();
+    if (pid == 0) {
+        long again = open(path, O_RDWR);
+        char *other = again >= 0 ? mmap_file_shared((int)again, 4096, 0, PROT_READ | PROT_WRITE) : NULL;
+        if (!other || memcmp(other + 10, "child", 5) != 0) exit(1);
+        memcpy(other + 20, "second", 6);
+        exit(0);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    CHECK(memcmp(map + 20, "second", 6) == 0);
+
+    /* A read-only shared mapping follows the file too, and cannot be written */
+    long reader = open(path, O_RDONLY);
+    char *view = reader >= 0 ? mmap_file_shared((int)reader, 4096, 0, PROT_READ) : NULL;
+    CHECK(view != NULL);
+    if (view) {
+        memcpy(map + 30, "seen", 4);
+        CHECK(memcmp(view + 30, "seen", 4) == 0);
+        pid = fork();
+        if (pid == 0) {
+            view[0] = 'x';                                 /* Faults: SIGSEGV */
+            exit(0);
+        }
+        CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGSEGV);
+        CHECK(munmap(view, 4096) == 0);
+    }
+    close((int)reader);
+
+    CHECK(msync(map, 4 * 4096, MS_SYNC) == 0);
+    CHECK(msync(map, 4096, MS_ASYNC | MS_INVALIDATE) == 0);
+    CHECK(msync(map + 1, 4096, MS_SYNC) == -EINVAL);        /* Not on a page boundary */
+    CHECK(msync(map, 4096, MS_SYNC | MS_ASYNC) == -EINVAL);
+    CHECK(msync(map, 4096, 0x40) == -EINVAL);
+    CHECK(msync((void *)0x10000000000UL, 4096, MS_SYNC) == -ENOMEM);   /* Nothing mapped there */
+    CHECK(msync(map, 0, MS_SYNC) == 0);
+
+    /* Truncation: pages past the new end are not the file's. A process that
+     * had one mapped loses it at its next safe point (here, the return of
+     * the read it waits in), and touching it is SIGBUS; so does the one that
+     * truncated (here, at the return of ftruncate: a child it starts has
+     * nothing there). The page the file ends in stays. */
+    CHECK(map[4096] == 'w');                               /* Present here, so in the children too */
+    int go[2];
+    CHECK(pipe(go) == 0);
+    pid = fork();
+    if (pid == 0) {
+        close(go[1]);
+        volatile char c = map[4096];                       /* Mapped in this process too */
+        (void)c;
+        read(go[0], buf, 1);                               /* Until the file has been cut */
+        c = map[4096];
+        exit(0);
+    }
+    close(go[0]);
+    CHECK(ftruncate((int)fd, 100) == 0);
+    CHECK(write(go[1], "x", 1) == 1);
+    close(go[1]);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGBUS);
+    pid = fork();
+    if (pid == 0) {
+        volatile char c = map[8192];
+        (void)c;
+        exit(0);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGBUS);
+    CHECK(memcmp(map + 10, "child", 5) == 0 && map[100] == 0 && map[4095] == 0);   /* Past 100: zeros */
+
+    /* munmap writes it to the file: read back with no mapping left */
+    memcpy(map, "unmapped", 8);
+    CHECK(munmap(map, 4 * 4096) == 0);
+    CHECK(lseek((int)fd, 0, SEEK_SET) == 0 && read((int)fd, buf, 8) == 8 && memcmp(buf, "unmapped", 8) == 0);
+    close((int)fd);
+    CHECK(unlink(path) == 0);
+}
+
+/* Whether the root is the ext2 system disk (/proc/mounts says "/ ext2"):
+ * the rescue system has none, and its /root is in memory, if there */
+static int root_on_disk(void) {
+    static char mounts[512];
+    long fd = open("/proc/mounts", O_RDONLY);
+    long n = fd >= 0 ? read((int)fd, mounts, sizeof(mounts) - 1) : 0;
+    if (fd >= 0) close((int)fd);
+    mounts[n > 0 ? n : 0] = '\0';
+    for (long i = 0; i + 7 < n; i++) if (memcmp(mounts + i, " / ext2", 7) == 0) return 1;
+    return 0;
+}
+
+/* Shared file mappings, in memory and (with a system disk) on ext2, and
+ * what cannot be mapped shared */
+static void check_shared_mappings(void) {
+    long promised_before = meminfo("Promised:");
+    check_shared_mapping_of("/tmp/shared-map");
+    if (root_on_disk()) check_shared_mapping_of("/root/shared-map");
+    long fd = open("/dev/zero", O_RDWR);
+    CHECK(fd >= 0 && syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_SHARED, fd, 0) == -ENODEV);   /* A device: no pages to share */
     close((int)fd);
     CHECK(meminfo("Promised:") == promised_before);
 }
@@ -2386,14 +2531,7 @@ static void check_links(void) {
 
     /* The rest needs the system disk as the root (the rescue system has
      * none: its /root is in memory too) */
-    static char mounts[512];
-    fd = open("/proc/mounts", O_RDONLY);
-    long n = fd >= 0 ? read((int)fd, mounts, sizeof(mounts) - 1) : 0;
-    if (fd >= 0) close((int)fd);
-    mounts[n > 0 ? n : 0] = '\0';
-    int on_disk = 0;
-    for (long i = 0; i + 7 < n; i++) if (memcmp(mounts + i, " / ext2", 7) == 0) on_disk = 1;
-    if (!on_disk) goto clean_up;
+    if (!root_on_disk()) goto clean_up;
 
     CHECK(link("/tmp/link-target", "/root/hard") == -EXDEV);      /* Not across filesystems */
     /* On the disk: a hard link is the same file */
@@ -4003,6 +4141,7 @@ int main(void) {
     check_text_tools();
     check_running_program_file();
     check_shell_words();
+    check_shared_mappings();
     check_shell_control();
     check_shell_options();
     check_shell_redirects();

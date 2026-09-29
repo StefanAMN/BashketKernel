@@ -36,6 +36,7 @@
 #include "poll.h"
 #include "power.h"
 #include "auth.h"
+#include "pcache.h"
 
 extern void syscall_entry(void);
 
@@ -695,8 +696,10 @@ static int64_t sys_brk(uint64_t new_brk) {
 // mmap(0, length, prot, flags, fd, offset): map memory at an address the
 // kernel chooses: anonymous (private: promised and given frames when
 // touched; shared: given frames at once and shared with forked children),
-// or a private copy of part of a file opened for reading. Returns the
-// address or a negative error.
+// or part of a file opened for reading: a private copy, or (MAP_SHARED)
+// the file itself, whose changes reach the file (region.h), writable only
+// if the file was opened for writing too. Returns the address or a
+// negative error.
 static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
     // Always at an address the kernel chooses
     if (addr != 0 || (flags & MAP_FIXED) || length == 0) return -EINVAL;
@@ -714,21 +717,37 @@ static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int f
             return mapped ? (int64_t)mapped : -ENOMEM;
         }
         int error = 0;
-        uint64_t mapped = region_map(task, length, prot, NULL, 0, &error);
+        uint64_t mapped = region_map(task, length, prot, NULL, 0, false, &error);
         return mapped ? (int64_t)mapped : error;
     }
 
-    // A file: private only (changes stay in this process), and the file must
-    // have been opened for reading, which is what its pages will be
-    if (shared) return -EINVAL;
+    // A file: it must have been opened for reading, which is what its pages
+    // will be; writing to it through a shared mapping needs writing rights
+    // as write() would. Only files whose pages the cache keeps can be shared
+    // (not devices or /proc: their pages are not the same twice).
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
     if (file->kind != FILE_VNODE || file->node->type != VFS_FILE || !file->readable) return -EACCES;
     if (offset & (PAGE_SIZE - 1)) return -EINVAL;
+    if (shared && (prot & PROT_WRITE) && !file->writable) return -EACCES;
+    if (shared && !pcache_cacheable(file->node)) return -ENODEV;
 
     int error = 0;
-    uint64_t mapped = region_map(task, length, prot, file->node, offset, &error);
+    uint64_t mapped = region_map(task, length, prot, file->node, offset, shared, &error);
     return mapped ? (int64_t)mapped : error;
+}
+
+// msync(addr, length, flags): write to their files what the shared
+// mappings in the range have written (MS_SYNC or MS_ASYNC, which does the
+// same here; MS_INVALIDATE has nothing to do). 0; -EINVAL for an address
+// not on a page boundary or flags that make no sense; -ENOMEM if part of
+// the range is not mapped; -EIO if a page could not be written.
+static int64_t sys_msync(uint64_t addr, size_t length, int flags) {
+    if ((addr & (PAGE_SIZE - 1)) || (flags & ~(MS_ASYNC | MS_SYNC | MS_INVALIDATE))) return -EINVAL;
+    if ((flags & MS_ASYNC) && (flags & MS_SYNC)) return -EINVAL;
+    if (length == 0) return 0;
+    if (addr >= USER_SPACE_END || length > USER_SPACE_END - addr) return -ENOMEM;
+    return region_sync(sched_get_current_task(), addr, length);
 }
 
 // munmap(addr, length): give back mapped memory, its frames and its promise
@@ -1226,6 +1245,7 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_BRK:     return sys_brk(regs->rdi);
         case SYS_MMAP:    return sys_mmap(regs->rdi, (size_t)regs->rsi, (int)regs->rdx, (int)regs->r10, (int)regs->r8, regs->r9);
         case SYS_MUNMAP:  return sys_munmap(regs->rdi, (size_t)regs->rsi);
+        case SYS_MSYNC:   return sys_msync(regs->rdi, (size_t)regs->rsi, (int)regs->rdx);
         case SYS_SLEEP:   return sys_sleep(regs->rdi);
         case SYS_TIME:    return (int64_t)timer_ticks();
         case SYS_CLOCK_NS: return (int64_t)clock_ns();

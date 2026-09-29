@@ -471,6 +471,9 @@ code comments and commit messages; `git log` is the full history.
   creates a long name and looks it up proves nothing about the entries on
   disk. The disk tests drop a directory's nodes (`vfs_forget_directory`)
   and read it back; `fsck.fat` on the image is the outside opinion.
+  The same goes for anything a cache answers: with shared mappings, `read()`
+  shows the cached page, so from ring 3 a write-back that wrote nothing
+  passed every check. Only a read with the cache dropped failed.
 - **`make` cannot have prerequisites with spaces in their names** unless
   each space is escaped; a test file called "Long Names/..." made the disk
   image rule fail with "No rule to make target 'disk/Long'".
