@@ -31,6 +31,10 @@ tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell comm
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
+
+# A 64 MiB disk image (build/disk.img) is attached to every run as a virtio
+# disk. Scripted runs and tests discard their writes (snapshot=on);
+# `make run` and qemu_shell.py --keep-disk-writes really modify it.
 ```
 
 Two project skills in `.claude/skills/` hold the full procedures:
@@ -139,5 +143,14 @@ code comments and commit messages; `git log` is the full history.
 - **Do not redraw the screen per scrolled line.** Mark it stale and refresh
   from the timer; set the flag only after the RAM copy is consistent, and
   refresh explicitly on every path that halts with interrupts off.
+- **A wait during which the task owns a device must be uninterruptible**
+  (`sched_block_uninterruptible`). A disk request in flight cannot be
+  abandoned half way: a task killed there would leave the virtqueue mid-
+  request and the device marked busy for good. The kill waits a few
+  milliseconds for the request to finish instead.
+- **Device DMA needs physical addresses of memory that stays put**: frames
+  from the frame allocator, reached through the direct map, with data copied
+  to and from the caller. Heap memory is neither contiguous nor identity-
+  related to physical addresses.
 - **Lock order:** heap or slab, then VMM, then PMM; `kprintf` is a leaf and
   fatal paths force-unlock it. Locks shared with interrupts disable them.

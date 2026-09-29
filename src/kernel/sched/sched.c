@@ -255,22 +255,25 @@ static void wake_task(task_t *t) {
     t->state = TASK_READY;
 }
 
-void sched_block(void *channel, uint64_t wake_tick) {
+static void block_current(void *channel, uint64_t wake_tick, bool interruptible) {
     task_t *self = current_task;
     if (!scheduler_active || !self) return;
 
     uint64_t flags = irq_save();
 
-    // A process that has been killed must not go (back) to sleep. Anything
-    // that sleeps is at a point where it holds no lock and is prepared to
-    // lose the CPU, so this is a safe place to end it.
-    if (self->kill_pending) task_exit_status(128 + self->kill_pending);
+    if (interruptible) {
+        // A process that has been killed must not go (back) to sleep.
+        // Anything that sleeps interruptibly is at a point where it holds
+        // nothing and is prepared to lose the CPU, so this is a safe place
+        // to end it.
+        if (self->kill_pending) task_exit_status(128 + self->kill_pending);
 
-    // A signal with a handler is waiting: do not sleep on it. The caller
-    // sees sched_interrupted() and abandons its wait with EINTR.
-    if (self->sig_pending) {
-        irq_restore(flags);
-        return;
+        // A signal with a handler is waiting: do not sleep on it. The caller
+        // sees sched_interrupted() and abandons its wait with EINTR.
+        if (self->sig_pending) {
+            irq_restore(flags);
+            return;
+        }
     }
 
     self->wait_channel = channel;
@@ -290,8 +293,16 @@ void sched_block(void *channel, uint64_t wake_tick) {
     // the state still says READY.
     self->state = TASK_RUNNING;
 
-    if (self->kill_pending) task_exit_status(128 + self->kill_pending); // Woken to die
+    if (interruptible && self->kill_pending) task_exit_status(128 + self->kill_pending); // Woken to die
     irq_restore(flags);
+}
+
+void sched_block(void *channel, uint64_t wake_tick) {
+    block_current(channel, wake_tick, true);
+}
+
+void sched_block_uninterruptible(void *channel, uint64_t wake_tick) {
+    block_current(channel, wake_tick, false);
 }
 
 bool sched_interrupted(void) {

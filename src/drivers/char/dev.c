@@ -12,6 +12,8 @@
 #include "kprintf.h"
 #include "kstring.h"
 #include "spinlock.h"
+#include "virtio_blk.h"
+#include "kerrno.h"
 
 static inline uint64_t rdtsc(void) {
     uint32_t low, high;
@@ -83,6 +85,49 @@ static int64_t dev_console_write(vnode_t *node, size_t offset, const void *buf, 
     return tty_write(buf, count);
 }
 
+// /dev/vda: the whole disk as one long file. Reads and writes may start and
+// end anywhere; the disk itself only deals in whole 512-byte sectors, so a
+// partial sector is read, changed and written back.
+static int64_t disk_transfer(size_t offset, uint8_t *buf, size_t count, bool write) {
+    uint64_t disk_bytes = virtio_blk_capacity() * VIRTIO_BLK_SECTOR_SIZE;
+    if (!virtio_blk_present()) return -ENODEV;
+    if (offset >= disk_bytes) return write ? -ENOSPC : 0;   // Past the end
+    if (count > disk_bytes - offset) count = (size_t)(disk_bytes - offset);
+
+    uint8_t sector[VIRTIO_BLK_SECTOR_SIZE];
+    size_t done = 0;
+    while (done < count) {
+        uint64_t lba = (offset + done) / VIRTIO_BLK_SECTOR_SIZE;
+        size_t within = (offset + done) % VIRTIO_BLK_SECTOR_SIZE;
+        size_t chunk = VIRTIO_BLK_SECTOR_SIZE - within;
+        if (chunk > count - done) chunk = count - done;
+
+        bool whole_sector = (chunk == VIRTIO_BLK_SECTOR_SIZE);
+        if (!write || !whole_sector) {
+            if (virtio_blk_read(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
+        }
+        if (write) {
+            memcpy(sector + within, buf + done, chunk);
+            if (virtio_blk_write(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
+        } else {
+            memcpy(buf + done, sector + within, chunk);
+        }
+        done += chunk;
+    }
+    return (int64_t)done;
+}
+
+static int64_t disk_read(vnode_t *node, size_t offset, void *buf, size_t count) {
+    (void)node;
+    return disk_transfer(offset, buf, count, false);
+}
+
+static int64_t disk_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
+    (void)node;
+    return disk_transfer(offset, (uint8_t *)buf, count, true);
+}
+
+static const vnode_ops_t disk_ops = { .read = disk_read, .write = disk_write };
 static const vnode_ops_t null_ops    = { .read = NULL,             .write = null_write };
 static const vnode_ops_t zero_ops    = { .read = zero_read,        .write = null_write };
 static const vnode_ops_t random_ops  = { .read = random_read,      .write = null_write };
@@ -100,5 +145,10 @@ void dev_init(void) {
     vfs_create_device(dev_dir, "zero", &zero_ops);
     vfs_create_device(dev_dir, "random", &random_ops);
     vfs_create_device(dev_dir, "console", &console_ops);
-    kprintf("Dev Init: /dev/null, /dev/zero, /dev/random, /dev/console\n");
+    if (virtio_blk_present()) {
+        vnode_t *disk = vfs_create_device(dev_dir, "vda", &disk_ops);
+        if (disk) disk->size = virtio_blk_capacity() * VIRTIO_BLK_SECTOR_SIZE; // So lseek(SEEK_END) works
+    }
+    kprintf("Dev Init: /dev/null, /dev/zero, /dev/random, /dev/console%s\n",
+            virtio_blk_present() ? ", /dev/vda" : "");
 }

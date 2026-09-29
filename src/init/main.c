@@ -227,6 +227,7 @@ void _start(void) {
     smp_init();
 
     // Phase 11: Real Block Storage & Persistent Filesystem (VirtIO-Blk & FAT32)
+    virtio_blk_init();
     fat32_init();
 
     // Phase 13: PCI Bus & VirtIO Network Stack

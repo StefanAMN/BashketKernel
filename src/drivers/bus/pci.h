@@ -23,7 +23,26 @@ typedef struct {
 /**
  * @brief Scan PCI bus for connected devices.
  */
+// Configuration space registers (offsets)
+#define PCI_COMMAND        0x04
+#define PCI_BAR0           0x10
+#define PCI_INTERRUPT_LINE 0x3C
+
 void pci_init(void);
+
+/**
+ * @brief Read or write a device's configuration space.
+ */
+uint32_t pci_read32(const pci_device_t *dev, uint8_t offset);
+uint16_t pci_read16(const pci_device_t *dev, uint8_t offset);
+uint8_t pci_read8(const pci_device_t *dev, uint8_t offset);
+void pci_write32(const pci_device_t *dev, uint8_t offset, uint32_t value);
+void pci_write16(const pci_device_t *dev, uint8_t offset, uint16_t value);
+
+/**
+ * @brief Let a device use its I/O ports and do DMA.
+ */
+void pci_enable_io_and_bus_master(const pci_device_t *dev);
 
 /**
  * @brief Find PCI device matching vendor and device IDs.

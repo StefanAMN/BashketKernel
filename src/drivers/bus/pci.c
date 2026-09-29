@@ -5,6 +5,7 @@
 
 #include "pci.h"
 #include "kprintf.h"
+#include "io.h"
 
 #define PCI_CONFIG_ADDRESS 0xCF8
 #define PCI_CONFIG_DATA    0xCFC
@@ -14,23 +15,56 @@
 static pci_device_t pci_devices[MAX_PCI_DEVICES];
 static size_t pci_device_count = 0;
 
-static inline void outl(uint16_t port, uint32_t val) {
-    asm volatile("out dx, eax" : : "a"(val), "d"(port));
+// Configuration space is reached through two I/O ports: write the address of
+// a 32-bit register (bus, device, function, offset) to 0xCF8, then read or
+// write its contents at 0xCFC.
+static uint32_t config_address(const pci_device_t *dev, uint8_t offset) {
+    return 0x80000000u | ((uint32_t)dev->bus << 16) | ((uint32_t)dev->device << 11) |
+           ((uint32_t)dev->function << 8) | (offset & 0xFC);
 }
 
-static inline uint32_t inl(uint16_t port) {
-    uint32_t ret;
-    asm volatile("in eax, dx" : "=a"(ret) : "d"(port));
-    return ret;
-}
-
-static uint32_t pci_config_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset) {
-    uint32_t address = (uint32_t)((bus << 16) | (dev << 11) | (func << 8) | (offset & 0xFC) | ((uint32_t)0x80000000));
-    outl(PCI_CONFIG_ADDRESS, address);
+uint32_t pci_read32(const pci_device_t *dev, uint8_t offset) {
+    outl(PCI_CONFIG_ADDRESS, config_address(dev, offset));
     return inl(PCI_CONFIG_DATA);
 }
 
+void pci_write32(const pci_device_t *dev, uint8_t offset, uint32_t value) {
+    outl(PCI_CONFIG_ADDRESS, config_address(dev, offset));
+    outl(PCI_CONFIG_DATA, value);
+}
+
+uint16_t pci_read16(const pci_device_t *dev, uint8_t offset) {
+    return (uint16_t)(pci_read32(dev, offset) >> ((offset & 2) * 8));
+}
+
+uint8_t pci_read8(const pci_device_t *dev, uint8_t offset) {
+    return (uint8_t)(pci_read32(dev, offset) >> ((offset & 3) * 8));
+}
+
+void pci_write16(const pci_device_t *dev, uint8_t offset, uint16_t value) {
+    // Registers are 32 bits wide: change the wanted half, keep the other
+    uint32_t shift = (offset & 2) * 8;
+    uint32_t current = pci_read32(dev, offset);
+    current = (current & ~(0xFFFFu << shift)) | ((uint32_t)value << shift);
+    pci_write32(dev, offset, current);
+}
+
+void pci_enable_io_and_bus_master(const pci_device_t *dev) {
+    // Command register: bit 0 lets the device respond on its I/O ports,
+    // bit 2 lets it read and write memory by itself (DMA)
+    pci_write16(dev, PCI_COMMAND, pci_read16(dev, PCI_COMMAND) | 0x0005);
+}
+
+static uint32_t pci_config_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset) {
+    pci_device_t where = { .bus = bus, .device = dev, .function = func };
+    return pci_read32(&where, offset);
+}
+
 void pci_init(void) {
+    static bool scanned = false;
+    if (scanned) return; // Devices do not come and go; one scan is enough
+    scanned = true;
+
     pci_device_count = 0;
 
     for (uint16_t bus = 0; bus < 256; bus++) {

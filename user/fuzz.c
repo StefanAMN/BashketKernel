@@ -35,7 +35,7 @@ static char scratch[8192];
 static unsigned char *mapped;      /* One page from mmap */
 static const char *const safe_paths[] = {
     "/tmp/fuzz-a", "/tmp/fuzz-b", "/tmp/fuzz-dir", "/tmp/fuzz-dir/x", "/tmp", "/",
-    "/dev/null", "/dev/zero", "/dev/random", "/proc/tasks", "/proc/meminfo",
+    "/dev/null", "/dev/zero", "/dev/random", "/dev/vda", "/proc/tasks", "/proc/meminfo",
     "/proc", "/dev", "", "/tmp/", "//", "/tmp/fuzz-a/not-a-dir", "no-slash",
     ".", "..", "../..", "./fuzz-b", "/tmp/fuzz-dir/../fuzz-a", "/tmp/./.",
 };

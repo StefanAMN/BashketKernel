@@ -4,7 +4,6 @@
  */
 
 #include "fat32.h"
-#include "virtio_blk.h"
 #include "kprintf.h"
 #include "heap.h"
 #include "kstring.h"
@@ -25,10 +24,6 @@ static bool fat_initialized = false;
 int fat32_init(void) {
     if (fat_initialized) return 0;
     
-    if (virtio_blk_init() != 0) {
-        return -1;
-    }
-
     memset(file_table, 0, sizeof(file_table));
     fat_initialized = true;
 
@@ -45,11 +40,6 @@ int fat32_write_file(const char *filename, const uint8_t *data, size_t len) {
             memcpy(file_table[i].data, data, len);
             file_table[i].size = len;
             file_table[i].used = true;
-
-            // Flush first sector to block storage
-            uint8_t sector_buf[512] = {0};
-            memcpy(sector_buf, data, len < 512 ? len : 512);
-            virtio_blk_write_sector(i + 1, sector_buf);
 
             return 0;
         }

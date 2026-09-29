@@ -68,9 +68,14 @@ $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
 .PRECIOUS: $(BUILD)/user/%.o
 
 QEMU = qemu-system-x86_64
-QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d
+# The disk QEMU presents as a virtio block device. `make run` writes to it
+# for real, so what is stored there survives a reboot.
+DISK = $(BUILD)/disk.img
+DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw
 
-.PHONY: all clean iso run run-gdb test test-lowmem fuzz check
+QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS)
+
+.PHONY: all clean iso run run-gdb test test-lowmem test-disk fuzz check
 
 all: $(KERNEL)
 
@@ -99,7 +104,7 @@ limine/limine.c:
 limine/limine: limine/limine.c
 	$(CC) -O2 -pipe $< -o $@
 
-iso: $(ISO)
+iso: $(ISO) $(DISK)
 
 $(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
 	rm -rf $(ISO_ROOT)
@@ -113,7 +118,11 @@ $(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
 		$(ISO_ROOT) -o $(ISO) 2>/dev/null
 	./limine/limine bios-install $(ISO) 2>/dev/null
 
-run: iso
+$(DISK):
+	@mkdir -p $(BUILD)
+	truncate -s 64M $@
+
+run: iso $(DISK)
 	$(QEMU) $(QEMU_FLAGS) -serial mon:stdio
 
 run-gdb: iso
@@ -129,8 +138,9 @@ SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU))
 # status. The kernel writes to the isa-debug-exit port when the tests finish;
 # QEMU then exits with (value << 1) | 1, so 0x10 (pass) becomes 33.
 test:
-	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso
+	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso build-test/disk.img
 	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
 	status=$$?; \
@@ -166,6 +176,21 @@ fuzz: iso
 			|| { echo "fuzz seed $$seed: FAILED (see $(BUILD)/fuzz-$$seed.log)"; exit 1; }; \
 	done
 
+# The disk keeps its contents across reboots: write a sector in one boot of
+# the kernel, read it in a second boot, and look for it in the image file
+# from the host as well. Uses its own scratch image.
+test-disk: iso
+	@rm -f $(BUILD)/persist.img && truncate -s 64M $(BUILD)/persist.img
+	@tools/qemu_shell.py --quiet --disk $(BUILD)/persist.img --keep-disk-writes $(SHELL_CPU) \
+		'exec /bin/diskio write 1000 "written in boot one"' > $(BUILD)/disk-boot1.log 2>&1 \
+		|| { echo "disk: FAILED in the first boot (see $(BUILD)/disk-boot1.log)"; exit 1; }
+	@tools/qemu_shell.py --quiet --disk $(BUILD)/persist.img $(SHELL_CPU) \
+		--expect '\nwritten in boot one' 'exec /bin/diskio read 1000' > $(BUILD)/disk-boot2.log 2>&1 \
+		|| { echo "disk: FAILED, the second boot did not read the data back (see $(BUILD)/disk-boot2.log)"; exit 1; }
+	@dd if=$(BUILD)/persist.img bs=512 skip=1000 count=1 2>/dev/null | grep -aq 'written in boot one' \
+		|| { echo "disk: FAILED, the data is not in the image file"; exit 1; }
+	@echo "disk persistence: ok"
+
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
 check:
@@ -173,6 +198,7 @@ check:
 	@$(MAKE) --no-print-directory test CPU=max
 	@$(MAKE) --no-print-directory test-lowmem
 	@$(MAKE) --no-print-directory test-lowmem CPU=max
+	@$(MAKE) --no-print-directory test-disk
 	@$(MAKE) --no-print-directory fuzz FUZZ_SEEDS="1 2 3"
 	@$(MAKE) --no-print-directory fuzz CPU=max FUZZ_SEEDS="4 5"
 	@echo "ALL CHECKS PASSED"
