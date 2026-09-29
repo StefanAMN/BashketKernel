@@ -29,7 +29,7 @@ known gaps in the parts that are real.
 | 8 | Slab, COW, mmap | partial | The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects. Anonymous `mmap`, `munmap` and `brk` work per process. `fork` shares pages copy-on-write. The user stack grows on demand up to 8 MiB. `mmap` and `brk` memory is still allocated at once, and nothing is file-backed. |
 | 9 | LAPIC and I/O APIC | real | ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used. |
 | 10 | SMP and spinlocks | stub | Spinlocks are real. Only the boot CPU is ever started. |
-| 11 | virtio-blk and FAT32 | partial | virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, one request at a time) and `/dev/vda` is the raw disk; data survives a reboot. FAT32 is still a stub: an in-memory file table. |
+| 11 | virtio-blk and FAT32 | partial | virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, one request at a time); `/dev/vda` is the raw disk and data survives a reboot. FAT32 is read-only: the volume on the disk is mounted at `/disk` (8.3 names, subdirectories), files are read on demand, and programs can be run from it. Nothing can be written through the filesystem yet. |
 | 12 | fork, exec, wait, kill | real | `fork` (copy-on-write), `execve`, `waitpid`, `kill`, exit statuses. A faulting process is killed without affecting the kernel. Signals can end a process, be ignored, or run a handler in the program (`signal`), with the interrupted state saved on the user stack and restored by `sigreturn`. They take effect at safe points; a process asleep in a system call is woken, and for a handler the call returns `EINTR`. There is no signal masking and no automatic restart of an interrupted call. |
 | 13 | PCI and virtio-net | partial | PCI scan works (function 0 only). virtio-net only logs. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
@@ -76,7 +76,7 @@ src/
 │   ├── input/           # PS/2 keyboard; mouse and cursor (stubs)
 │   ├── net/             # virtio-net (stub)
 │   └── tty/             # Terminal line discipline
-├── fs/                  # VFS, open files and descriptors, pipes, initrd, /proc, ELF loader; FAT32 (stub)
+├── fs/                  # VFS, open files and descriptors, pipes, initrd, /proc, ELF loader, FAT32 (read-only)
 ├── gui/
 │   └── compositor/      # Window manager and ANSI colors (stubs)
 ├── include/             # Global test & subsystem headers
@@ -97,8 +97,9 @@ src/
 user/                    # Programs that run in ring 3, built into /bin of the initrd
 ├── lib/                 # Their C library, crt0 and system call wrappers
 └── *.c                  # sh, ls, cat, echo, wc, ps, kill, ... and the test programs
+disk/                    # Files put on the FAT32 disk image (build/disk.img), seen at /disk
 tests/                   # In-kernel unit tests (make test)
-tools/                   # qemu_shell.py (scripted boots), symbolize.sh
+tools/                   # qemu_shell.py (scripted boots), mkfat.py (disk image), symbolize.sh
 ```
 
 ---
@@ -111,7 +112,7 @@ BashketKernel has a built-in unit test framework (`tests/`). `make test` builds 
 
 `make fuzz` runs `/bin/fuzz`, which makes random system calls with hostile arguments (kernel addresses, pointers at the edge of a mapping, huge lengths, closed descriptors) from ring 3. The kernel must survive every seed and pass `/bin/syscheck` afterwards. Seeds are fixed, so a failure can be reproduced with `make fuzz FUZZ_SEEDS=<n>`.
 
-`make test-disk` writes a disk sector in one boot, reads it back in a second boot, and checks the image file from the host.
+`make test-disk` writes a disk sector in one boot, reads it back in a second boot, and checks the image file from the host. It then boots against six deliberately damaged FAT32 images and requires the kernel to carry on.
 
 `make check` runs all of these on both CPU models.
 
@@ -171,6 +172,8 @@ BashketOS> exec /bin/hello one two
 BashketOS> exec /bin/syscheck          # exercises the system call interface
 BashketOS> exec /bin/fault kread       # tries to read kernel memory; gets killed
 BashketOS> exec /bin/sh /etc/demo.sh   # a scripted tour of the system
+BashketOS> cat disk/readme.txt         # a file on the FAT32 disk
+BashketOS> exec /disk/bin/hello        # a program loaded from the disk
 BashketOS> exec /bin/sh                # user-space shell
 $ ls /bin | wc > /tmp/count
 $ cat /tmp/count

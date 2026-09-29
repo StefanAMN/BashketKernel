@@ -186,7 +186,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 11. Storage Subsystem & FAT32 Filesystem (Phase 11)
-**Status: partial.** virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, one request at a time) and `/dev/vda` is the raw disk; data survives a reboot. FAT32 is still a stub: an in-memory file table. See `src/drivers/block/virtio_blk.c`.
+**Status: partial.** virtio-blk is a real driver (legacy PCI interface, one virtqueue, interrupt-driven, one request at a time); `/dev/vda` is the raw disk and data survives a reboot. FAT32 is read-only: the volume on the disk is mounted at `/disk` (8.3 names, subdirectories), files are read on demand, and programs can be run from it. Nothing can be written through the filesystem yet. See `src/drivers/block/virtio_blk.c`, `src/fs/fat32.c`, `tools/mkfat.py`.
 
 **Goal:** VirtIO Block device driver, FAT32 directory and file reading/writing.
 

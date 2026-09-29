@@ -20,6 +20,7 @@ extern void test_suite_mmap(void);
 extern void test_suite_apic(void);
 extern void test_suite_smp(void);
 extern void test_suite_storage(void);
+extern void test_suite_fat32(void);
 extern void test_suite_process(void);
 extern void test_suite_net(void);
 extern void test_suite_boot(void);
@@ -65,6 +66,7 @@ bool run_all_tests(void) {
     test_suite_apic();
     test_suite_smp();
     test_suite_storage();
+    test_suite_fat32();
     test_suite_process();
     test_suite_net();
     test_suite_boot();

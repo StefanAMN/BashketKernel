@@ -25,7 +25,8 @@
 #define EINVAL  22   // Invalid argument
 #define EMFILE  24   // Too many open files
 #define ENOSPC  28   // No space left
-#define ESPIPE  29   // Illegal seek
+#define ESPIPE  29
+#define EROFS   30   // Read-only filesystem   // Illegal seek
 #define EPIPE   32   // Broken pipe
 #define ENOSYS  38   // Not implemented
 #define ENOTEMPTY 39 // Directory not empty

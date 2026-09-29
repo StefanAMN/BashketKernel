@@ -345,7 +345,7 @@ and its README entry. Suggested calls, in the order worth doing:
 | `/dev`, `/proc` | **Done.** Device nodes with their own read/write; `/proc` generated on read. |
 | TTY | **Done.** Canonical-mode line discipline in `src/drivers/tty/tty.c`. No raw mode, so a full-screen program (an editor) is not possible yet. |
 | virtio-blk | **Done.** Legacy PCI transport, interrupt-driven, `/dev/vda`. One request in flight at a time; no modern (MMIO capability) transport. |
-| FAT32 | Open. Read-only on top of real virtio-blk. Parse the BPB and follow cluster chains. |
+| FAT32 | **Read-only done**: mounted at `/disk`, 8.3 names, validated against damaged images. Open: writing (cluster allocation, directory updates), long file names, and reading directories on demand instead of all at mount time. |
 | SMP | Defer. Needs per-CPU data, `swapgs` and real locks: today "interrupts off" is the lock in the scheduler, pipes, semaphores and the wait path. |
 | virtio-net, sockets | Defer or delete. |
 | Swap | Delete until a real block device and page reclaim exist. |

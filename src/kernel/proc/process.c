@@ -16,6 +16,7 @@
 #include "spinlock.h"
 #include "file.h"
 #include "fpu.h"
+#include "heap.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
@@ -109,14 +110,32 @@ static bool build_user_stack(uint64_t *pml4, const char *path, char *const argv[
 static bool load_user_image(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
     task_t *caller = sched_get_current_task();
     vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
-    if (!file || file->type != VFS_FILE || !file->data) return false;
+    if (!file || file->type != VFS_FILE || file->size == 0) return false;
+
+    // A file in memory (the initrd) can be loaded from where it is. One whose
+    // contents come from elsewhere (the disk) is read into a buffer first.
+    const void *contents = file->data;
+    void *loaded = NULL;
+    if (file->ops) {
+        if (file->size > PROCESS_MAX_IMAGE_BYTES) return false;
+        loaded = kmalloc(file->size);
+        if (!loaded) return false;
+        if (vfs_read(file, 0, file->size, loaded) != file->size) {
+            kfree(loaded);
+            return false;
+        }
+        contents = loaded;
+    }
+    if (!contents) return false;
 
     image->pml4 = vmm_create_address_space();
-    if (!image->pml4) return false;
+    bool ok = image->pml4 != NULL &&
+              elf_load(image->pml4, contents, file->size, &image->entry, &image->image_end) &&
+              build_user_stack(image->pml4, path, argv, envp, &image->rsp);
+    kfree(loaded);
 
-    if (!elf_load(image->pml4, file->data, file->size, &image->entry, &image->image_end) ||
-        !build_user_stack(image->pml4, path, argv, envp, &image->rsp)) {
-        vmm_destroy_address_space(image->pml4);
+    if (!ok) {
+        if (image->pml4) vmm_destroy_address_space(image->pml4);
         image->pml4 = NULL;
         return false;
     }

@@ -19,6 +19,7 @@
 #define USER_STACK_MAX   (8ULL * 1024 * 1024)   // The stack may grow down to TOP - MAX
 #define USER_STACK_LIMIT (USER_STACK_TOP - USER_STACK_MAX)
 #define PROCESS_MAX_ARGS 32
+#define PROCESS_MAX_IMAGE_BYTES (16 * 1024 * 1024) // Largest executable loaded from disk
 #define PROCESS_ARG_BYTES 4096                  // Total size of all argument and environment strings
 
 typedef int pid_t;
