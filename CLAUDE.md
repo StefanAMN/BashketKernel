@@ -356,11 +356,18 @@ code comments and commit messages; `git log` is the full history.
   build. Trust that report over reasoning: on its first run it found the
   serial receive path waking a task under a lock ranked as output. Fatal
   paths force-unlock `kprintf`, the log and the console before printing.
-- **The scheduler lock is held across the task switch** and released by the
-  task that comes in (a new task does it in `task_start_trampoline`). That is
-  what lets another CPU free a zombie's stack the moment it sees `ZOMBIE`.
+- **A lock is held across the task switch** and released by the task that
+  comes in (`finish_switch`; a new task does it in `task_start_trampoline`).
+  Always the switching CPU's run queue lock, so another CPU cannot take a
+  task from that queue before it has left its stack; and, when the task
+  sleeps, stops or exits, the scheduler lock too. That is what lets another
+  CPU wake a task, or free a zombie's stack, the moment it sees its state.
   It also means a task can never halt "in place" waiting to be woken: there
   is an idle task to switch to.
+- **Two CPUs that may each want the other's lock take it with a try-lock.**
+  An idle CPU takes work from another's run queue while holding its own;
+  waiting for the other outright would deadlock with that CPU doing the same.
+  The lock order (ranks) cannot help there: it is one kind of lock.
 - **Keep user pointers out of everything below the system call.** `read` and
   `write` copy through a page owned by the task; the file layer, pipes and
   drivers only see kernel memory and run with the SMAP window closed. A

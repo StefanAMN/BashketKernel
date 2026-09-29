@@ -48,8 +48,9 @@ enum {
     LOCK_RANK_PMM      = 80,
     LOCK_RANK_POLL     = 85, // "Something may be ready": taken by notifiers under any of the above
     LOCK_RANK_SCHED    = 90, // Task list and task states
-    LOCK_RANK_FD_SLOTS = 91, // Emptying a descriptor slot, against /proc reading another process's (under the task list)
-    LOCK_RANK_TIME     = 92,
+    LOCK_RANK_RUNQUEUE = 91, // A CPU's queue of runnable tasks (another CPU's only by spinlock_try_acquire)
+    LOCK_RANK_FD_SLOTS = 92, // Emptying a descriptor slot, against /proc reading another process's (under the task list)
+    LOCK_RANK_TIME     = 93,
     LOCK_RANK_KPRINTF  = 100, // Output: may be used while holding anything above
     LOCK_RANK_KLOG     = 101,
     LOCK_RANK_CONSOLE  = 102,
@@ -60,16 +61,18 @@ typedef struct spinlock {
     uint32_t rank;         // Place in the lock order (LOCK_RANK_*)
     const char *name;      // For reports
     void *owner;           // The cpu_t holding it, while locked
+    volatile uint64_t contended; // Acquires that found it held and had to wait (sched_lock_contention)
 } spinlock_t;
 
 #define SPINLOCK_INIT ((spinlock_t){0})
-#define SPINLOCK_RANKED(lock_name, lock_rank) ((spinlock_t){ 0, (lock_rank), (lock_name), 0 })
+#define SPINLOCK_RANKED(lock_name, lock_rank) ((spinlock_t){ 0, (lock_rank), (lock_name), 0, 0 })
 
 static inline void spinlock_init(spinlock_t *lock) {
     lock->locked = 0;
     lock->rank = LOCK_RANK_NONE;
     lock->name = 0;
     lock->owner = 0;
+    lock->contended = 0;
 }
 
 static inline void spinlock_init_ranked(spinlock_t *lock, const char *name, uint32_t rank) {
@@ -77,6 +80,7 @@ static inline void spinlock_init_ranked(spinlock_t *lock, const char *name, uint
     lock->rank = rank;
     lock->name = name;
     lock->owner = 0;
+    lock->contended = 0;
 }
 
 /**
@@ -84,6 +88,14 @@ static inline void spinlock_init_ranked(spinlock_t *lock, const char *name, uint
  *        Interrupts must already be off.
  */
 void spinlock_acquire(spinlock_t *lock);
+
+/**
+ * @brief Take the lock if nobody holds it, without waiting. Interrupts
+ *        must be off. The lock order is not checked: a try never waits,
+ *        so it cannot be half of a deadlock (two CPUs taking each other's
+ *        run queue lock rely on this). Returns whether it was taken.
+ */
+bool spinlock_try_acquire(spinlock_t *lock);
 
 /**
  * @brief Release a lock taken with spinlock_acquire (interrupts stay as

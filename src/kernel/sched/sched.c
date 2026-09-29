@@ -40,25 +40,46 @@ static bool scheduler_active = false;
 // them (see sched_set_init). NULL: there is none, and orphans are detached.
 static task_t *init_task = NULL;
 
-// One task list and one lock for all CPUs. Each CPU, when it schedules,
-// takes the next runnable task from the list that is allowed to run on it,
-// so work spreads over the CPUs by itself: an idle CPU takes whatever
-// becomes runnable. (Simple rather than fast: with many CPUs the one lock
-// would be fought over, and tasks do not stay on the CPU whose caches they
-// have warmed.)
+// One task list, and one queue of runnable tasks per CPU.
 //
 // The scheduler lock protects the task list and, in every task, the fields
-// that decide whether and when it runs: state, wait_channel, wake_tick,
-// slice_left, kill_pending, sig_pending, the signal handlers, detached,
-// parent_pid and exit_status.
+// that say whether it may run and why not: state (as far as BLOCKED,
+// STOPPED and ZOMBIE go), wait_channel, wake_tick, kill_pending,
+// sig_pending, the signal handlers, detached, parent_pid and exit_status.
+// Sleeping, waking, signals, parents and reaping all go through it.
 //
-// It is held across a task switch: the task that gives up the CPU takes it,
-// and the task that comes in releases it (in sched_yield or sched_sleep
-// where that task itself once switched away, or in sched_task_started for a
-// task running for the first time). That is what makes it safe for another
-// CPU to wake, or free, a task the moment it sees the task's state: while
-// the outgoing task is still on its stack, nobody else can look.
+// Who runs next is each CPU's own business: a run queue holds the READY
+// tasks waiting for that CPU, under a lock of its own (ranked just above the
+// scheduler lock: taken under it, never the other way round). The timer
+// tick, yield and the idle loop take only their CPU's queue lock. A CPU
+// whose queue is empty takes a task from the CPU with the most waiting
+// (steal), with a try-lock: it holds its own queue's lock meanwhile, and two
+// CPUs taking from each other must not wait for each other. A task woken
+// or created goes to the CPU it last ran on unless that one has more than
+// one task more than the least loaded (choose_cpu); a task bound to a CPU
+// (affinity) only ever goes to that CPU's queue.
+//
+// Held across a task switch: the outgoing task holds its CPU's queue lock
+// through ctx_switch, and the task that comes in releases it (finish_switch,
+// after ctx_switch or in sched_task_started for a task's first run). So a
+// task pushed to the back of a queue as it gives up the CPU cannot be
+// taken by another CPU before it has left its stack. A task that sleeps,
+// stops or exits holds the scheduler lock across the switch as well (the
+// queue's release_sched note tells the incoming task to release that too):
+// whoever sees it BLOCKED, STOPPED or ZOMBIE under the scheduler lock sees
+// a task that has left its stack. That is what lets another CPU wake it, or
+// free a zombie's stack, the moment it sees the state.
 static spinlock_t sched_lock = SPINLOCK_RANKED("sched", LOCK_RANK_SCHED);
+
+typedef struct {
+    spinlock_t lock;
+    task_t *head, *tail;       // READY tasks waiting for this CPU, oldest first (task->run_next)
+    volatile uint32_t count;   // How many (read without the lock to compare loads)
+    bool release_sched;        // The task switching away holds the scheduler lock too
+    task_t *moving;            // A task switched away from here that may no longer run here: placed after the switch
+} runqueue_t;
+
+static runqueue_t runqueues[MAX_CPUS];
 
 uint64_t sched_lock_irqsave(void) {
     return spinlock_acquire_irqsave(&sched_lock);
@@ -68,25 +89,115 @@ void sched_unlock_irqrestore(uint64_t flags) {
     spinlock_release_irqrestore(&sched_lock, flags);
 }
 
-// Tell a CPU that has nothing to do that there is now a task it could run.
-// Without this it would only notice at its next timer tick. One is enough:
-// if that CPU's next look finds more work than it can take, the others have
-// their ticks. Caller holds the scheduler lock.
-static void kick_idle_cpu(const task_t *t) {
-    cpu_t *self = this_cpu();
+uint64_t sched_lock_contention(void) {
+    return __atomic_load_n(&sched_lock.contended, __ATOMIC_RELAXED);
+}
+
+uint32_t sched_queue_length(uint32_t cpu_id) {
+    return cpu_id < MAX_CPUS ? runqueues[cpu_id].count : 0;
+}
+
+// Add `t` at the back of CPU `cpu`'s queue. Queue lock held.
+static void rq_push(uint32_t cpu, task_t *t) {
+    runqueue_t *rq = &runqueues[cpu];
+    t->run_next = NULL;
+    if (rq->tail) rq->tail->run_next = t; else rq->head = t;
+    rq->tail = t;
+    rq->count++;
+    t->queued_on = (int32_t)cpu;
+}
+
+// Take `t` out of `rq` (it is in it; `prev` is the task before it, or
+// NULL). Queue lock held.
+static void rq_unlink(runqueue_t *rq, task_t *prev, task_t *t) {
+    if (prev) prev->run_next = t->run_next; else rq->head = t->run_next;
+    if (rq->tail == t) rq->tail = prev;
+    rq->count--;
+    t->run_next = NULL;
+    t->queued_on = -1;
+}
+
+// The oldest task in `rq` (with `movable_only`, the oldest not bound to a
+// CPU), taken out of it; NULL if there is none. Queue lock held.
+static task_t *rq_take(runqueue_t *rq, bool movable_only) {
+    task_t *prev = NULL;
+    for (task_t *t = rq->head; t; prev = t, t = t->run_next) {
+        if (movable_only && t->affinity != TASK_ANY_CPU) continue;
+        rq_unlink(rq, prev, t);
+        return t;
+    }
+    return NULL;
+}
+
+// How busy CPU `i` is: the tasks waiting for it and the one it runs (read
+// without locks: a placement decision, which a stale value only makes a
+// little worse)
+static uint32_t load_of(uint32_t i) {
+    cpu_t *cpu = cpu_get(i);
+    return runqueues[i].count + (cpu->current != cpu->idle ? 1 : 0);
+}
+
+// Send the wake-up interrupt to CPU `i` if it is idle (and is not this
+// one): it will look at its queue, or take work from another's. One
+// interrupt per idle spell is enough (resched_kicked).
+static void kick_cpu(uint32_t i) {
+    cpu_t *cpu = cpu_get(i);
+    if (!cpu->online || cpu == this_cpu() || cpu->current != cpu->idle || cpu->resched_kicked) return;
+    cpu->resched_kicked = 1;
+    lapic_send_ipi(cpu->lapic_id, IPI_VECTOR_WAKE);
+}
+
+// Wake one idle CPU (not this one), if there is one, to take a task that
+// waits in a busy CPU's queue
+static void kick_an_idle_cpu(void) {
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         cpu_t *cpu = cpu_get(i);
-        if (!cpu->online || cpu == self || cpu->current != cpu->idle) continue;
-        if (t->affinity != TASK_ANY_CPU && t->affinity != (int32_t)i) continue;
-        if (!cpu->resched_kicked) {
-            cpu->resched_kicked = 1;
-            lapic_send_ipi(cpu->lapic_id, IPI_VECTOR_WAKE);
+        if (cpu->online && cpu != this_cpu() && cpu->current == cpu->idle) {
+            kick_cpu(i);
+            return;
         }
-        return;
     }
 }
 
-// Caller holds the scheduler lock
+// The CPU whose queue a runnable task should join: its own if it is bound;
+// otherwise, if it has run before (`was_running`), the one it last ran on,
+// unless that one has more than one task more than the least loaded,
+// which it then goes to (as does a task that has never run)
+static uint32_t choose_cpu(const task_t *t, bool was_running) {
+    if (t->affinity != TASK_ANY_CPU) return (uint32_t)t->affinity;
+    uint32_t least = 0, least_load = UINT32_MAX;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        if (!cpu_get(i)->online) continue;
+        uint32_t load = load_of(i);
+        if (load < least_load) {
+            least = i;
+            least_load = load;
+        }
+    }
+    uint32_t last = t->last_cpu;
+    if (!was_running || last >= MAX_CPUS || !cpu_get(last)->online) return least;
+    return load_of(last) > least_load + 1 ? least : last;
+}
+
+// Make `t` READY, put it in the queue of the CPU it should run on, and wake
+// that CPU if it is idle (or, if it is busy, an idle one that may take the
+// task). `t` is on no CPU and in no queue. The caller holds the scheduler
+// lock (or `t` is not yet known to anyone, or was just switched away from:
+// finish_switch), and no queue lock.
+static void place_task(task_t *t, bool was_running) {
+    uint32_t cpu = choose_cpu(t, was_running);
+    runqueue_t *rq = &runqueues[cpu];
+    spinlock_acquire(&rq->lock);
+    t->state = TASK_READY;
+    rq_push(cpu, t);
+    spinlock_release(&rq->lock);
+    cpu_t *target = cpu_get(cpu);
+    if (target->current == target->idle) kick_cpu(cpu);
+    else if (t->affinity == TASK_ANY_CPU) kick_an_idle_cpu();
+}
+
+// Put `t` on the list of all tasks and, if it is READY, in a run queue.
+// Caller holds the scheduler lock.
 static void enqueue_task(task_t *t) {
     t->next = NULL;
     if (task_queue_head == NULL) {
@@ -96,7 +207,7 @@ static void enqueue_task(task_t *t) {
         task_queue_tail->next = t;
         task_queue_tail = t;
     }
-    if (t->state == TASK_READY) kick_idle_cpu(t);
+    if (t->state == TASK_READY) place_task(t, false);
 }
 
 // What a CPU runs when no task is runnable: wait for an interrupt, then see
@@ -120,6 +231,7 @@ void sched_idle_loop(void) {
 }
 
 static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool assign_pid);
+static void finish_switch(void);
 
 void sched_init(void) {
     // Create PID 0 representation for the main running kernel execution context
@@ -134,6 +246,8 @@ void sched_init(void) {
     main_task->priority = PRIO_NORMAL;
     main_task->slice_left = priority_time_slice(PRIO_NORMAL);
     main_task->next = NULL;
+    main_task->queued_on = -1;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) spinlock_init_ranked(&runqueues[i].lock, "runqueue", LOCK_RANK_RUNQUEUE);
 
     // This task is the boot sequence and then the loop that frees dead
     // tasks. It stays on the boot CPU, which is also where every device
@@ -147,6 +261,7 @@ void sched_init(void) {
     idle->pid = IDLE_PID;
     idle->priority = PRIO_LOW;
     idle->affinity = 0;
+    idle->queued_on = -1;
 
     uint64_t flags = sched_lock_irqsave();
     main_task->pid = next_pid++;
@@ -184,6 +299,7 @@ task_t *sched_prepare_cpu(uint32_t cpu_id) {
     idle->priority = PRIO_LOW;
     idle->affinity = (int32_t)cpu_id;
     idle->last_cpu = cpu_id;
+    idle->queued_on = -1;
     cpu_get(cpu_id)->idle = idle;
     return idle;
 }
@@ -197,10 +313,10 @@ void sched_join_this_cpu(void) {
 }
 
 // First C code a new task runs (from task_start_trampoline): the switch that
-// brought it here was made with the scheduler lock held, and it is this
-// task's job to release it.
+// brought it here was made with this CPU's queue lock held (and perhaps the
+// scheduler lock), and it is this task's job to release them.
 void sched_task_started(void) {
-    spinlock_release(&sched_lock);
+    finish_switch();
     asm volatile("sti");
 }
 
@@ -237,6 +353,7 @@ static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool a
 
     t->state = TASK_READY;
     t->affinity = TASK_ANY_CPU;
+    t->queued_on = -1;
     t->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys(); // Kernel threads share the kernel address space
     t->detached = true;
     t->parent_pid = current_task ? current_task->pid : 0;
@@ -320,6 +437,27 @@ void task_set_affinity(task_t *task, int32_t cpu_id) {
     cpu_t *cpu = cpu_id >= 0 ? cpu_get((uint32_t)cpu_id) : NULL;
     // A task tied to a CPU that is not scheduling would never run again
     task->affinity = (cpu && cpu->online) ? cpu_id : TASK_ANY_CPU;
+
+    // Waiting in the queue of a CPU it may no longer run on: move it. (The
+    // queue may change under us until its lock is held: it may have been
+    // taken by its CPU, or stolen, meanwhile.) A running task moves when it
+    // next gives up its CPU (schedule).
+    for (;;) {
+        int32_t on = task->queued_on;
+        if (on < 0 || task->affinity == TASK_ANY_CPU || task->affinity == on) break;
+        runqueue_t *rq = &runqueues[on];
+        spinlock_acquire(&rq->lock);
+        bool moved = false;
+        if (task->queued_on == on) {
+            task_t *prev = NULL;
+            for (task_t *t = rq->head; t && t != task; t = t->run_next) prev = t;
+            rq_unlink(rq, prev, task);
+            moved = true;
+        }
+        spinlock_release(&rq->lock);
+        if (moved) place_task(task, true);
+        if (moved) break;
+    }
     sched_unlock_irqrestore(flags);
 }
 
@@ -370,52 +508,117 @@ task_t *sched_get_current_task(void) {
     return current_task;
 }
 
-// Give the CPU to another task. The caller holds the scheduler lock and has
-// already set the current task's state if it is not to stay runnable. Returns
-// when this task is next chosen to run, still (again) holding the lock.
-static void schedule(void) {
-    cpu_t *cpu = this_cpu();
-    task_t *old_task = cpu->current;
-    task_t *next_task = NULL;
+// A task for this CPU, whose queue is empty, from another CPU's queue: the
+// oldest one not bound to its CPU, from the queue with the most waiting
+// that has one. Queues are tried busiest first (ties from the CPU after
+// this one, so that CPUs with equally long queues are not always passed
+// over for the lowest numbered), and a queue holding only bound tasks is
+// passed over: it may look busiest and have nothing to give (the test
+// runner, bound to CPU 0, waits in its queue at every tick). Each other
+// queue's lock is taken with a try-lock, a few times, while we hold ours:
+// waiting for it outright could deadlock with that CPU taking from us.
+// NULL if there was nothing to take. Our queue lock held.
+static task_t *steal(uint32_t here) {
+    uint32_t order[MAX_CPUS], waiting[MAX_CPUS], n = 0;
+    for (uint32_t k = 1; k < MAX_CPUS; k++) {
+        uint32_t i = (here + k) % MAX_CPUS;
+        uint32_t count = runqueues[i].count;
+        if (count == 0 || !cpu_get(i)->online) continue;
+        uint32_t at = n++;                          // Busiest first; equal ones keep their order
+        while (at > 0 && waiting[at - 1] < count) {
+            order[at] = order[at - 1];
+            waiting[at] = waiting[at - 1];
+            at--;
+        }
+        order[at] = i;
+        waiting[at] = count;
+    }
+    for (uint32_t v = 0; v < n; v++) {
+        runqueue_t *other = &runqueues[order[v]];
+        for (int tries = 0; tries < 64; tries++) {
+            if (spinlock_try_acquire(&other->lock)) {
+                task_t *t = rq_take(other, true);
+                spinlock_release(&other->lock);
+                if (t) return t;
+                break;                              // Only bound tasks there: the next queue
+            }
+            smp_tlb_service();                      // (As any spin must: see spinlock_acquire)
+            asm volatile("pause");
+        }
+    }
+    return NULL;
+}
 
+// The first thing a task does once it is running again after a switch (or
+// for the first time): release the queue lock the outgoing task held across
+// the switch, and the scheduler lock if it held that too; then place a task
+// that had to leave this CPU (now that it is off its stack). Interrupts
+// stay off.
+static void finish_switch(void) {
+    runqueue_t *rq = &runqueues[this_cpu()->cpu_id];
+    bool sched_too = rq->release_sched;
+    task_t *moving = rq->moving;
+    rq->release_sched = false;
+    rq->moving = NULL;
+    spinlock_release(&rq->lock);
+    if (sched_too) spinlock_release(&sched_lock);
+    if (moving) place_task(moving, true);
+}
+
+// Give the CPU to another task. Interrupts are off; `holding_sched` says
+// whether the caller holds the scheduler lock (it has, then, set the
+// current task's state if it is not to stay runnable). Takes this CPU's
+// queue lock, and returns, with neither lock held and interrupts still
+// off, when this task is next chosen to run (possibly on another CPU) or
+// at once if it may carry on.
+static void schedule(bool holding_sched) {
+    cpu_t *cpu = this_cpu();
     // Rule 4 of spinlock.h: a task that switches away holding some other
     // lock would leave it locked for as long as it sleeps
-    if (lock_debug_held_count() > 1) {
+    if (lock_debug_held_count() > (holding_sched ? 1u : 0u)) {
         lock_debug_report("task switch while holding", cpu->held[0]->name, NULL);
     }
-
-    // Round robin: walk the list once, starting after the current task and
-    // wrapping at the end, and take the first runnable task. (The idle task
-    // is not on the list: from there, start at the head.)
-    // A task that is READY is on no CPU: whoever last ran it finished
-    // switching away before releasing this lock.
+    uint32_t here = cpu->cpu_id;
+    runqueue_t *rq = &runqueues[here];
+    spinlock_acquire(&rq->lock);
+    task_t *old_task = cpu->current;
     cpu->resched_kicked = 0;
-    int32_t here = (int32_t)cpu->cpu_id;
-    task_t *start = (old_task != cpu->idle && old_task->next) ? old_task->next : task_queue_head;
-    for (task_t *t = start; t && !next_task; t = t->next) {
-        if (t->state == TASK_READY && (t->affinity == TASK_ANY_CPU || t->affinity == here)) next_task = t;
-    }
-    for (task_t *t = task_queue_head; t != start && !next_task; t = t->next) {
-        if (t->state == TASK_READY && (t->affinity == TASK_ANY_CPU || t->affinity == here)) next_task = t;
-    }
+
+    // The next in our queue, or one from the busiest other queue. A task in
+    // a queue is READY and on no CPU: whoever pushed it there either was
+    // not running it, or finished switching away before releasing that
+    // queue's lock.
+    task_t *next_task = rq_take(rq, false);
+    if (!next_task) next_task = steal(here);
 
     // The current task may only carry on here if it is still allowed on
     // this CPU (its affinity may have been changed while it ran)
     bool may_stay = old_task->state == TASK_RUNNING &&
-                    (old_task->affinity == TASK_ANY_CPU || old_task->affinity == here);
+                    (old_task->affinity == TASK_ANY_CPU || old_task->affinity == (int32_t)here);
 
     if (!next_task) {
-        if (may_stay) return;       // Nobody else wants the CPU: carry on
+        if (may_stay) {             // Nobody else wants the CPU: carry on
+            spinlock_release(&rq->lock);
+            if (holding_sched) spinlock_release(&sched_lock);
+            return;
+        }
         next_task = cpu->idle;      // We can not carry on: idle until someone can
     }
 
     if (old_task->state == TASK_RUNNING) {
         old_task->state = TASK_READY;
-        if (!may_stay) kick_idle_cpu(old_task); // Its CPU may be asleep
+        if (old_task != cpu->idle) {                     // (The idle task is in no queue)
+            if (may_stay) {
+                rq_push(here, old_task);                 // To the back of the line
+                if (rq->count > 1) kick_an_idle_cpu();   // More waiting than this CPU will run soon
+            } else {
+                rq->moving = old_task;                   // Elsewhere, once it is off this stack
+            }
+        }
     }
     if (old_task == cpu->idle) timer_cpu_busy(); // (next_task is not the idle task: it was running already)
     next_task->state = TASK_RUNNING;
-    next_task->last_cpu = cpu->cpu_id;
+    next_task->last_cpu = here;
     next_task->slice_left = priority_time_slice(next_task->priority); // A fresh turn
     cpu->current = next_task;
 
@@ -433,19 +636,20 @@ static void schedule(void) {
     if (old_task->is_user) fpu_save(old_task->fpu_state);
     if (next_task->is_user) fpu_restore(next_task->fpu_state);
 
+    rq->release_sched = holding_sched;
     ctx_switch((uint64_t **)&old_task->rsp, (uint64_t *)next_task->rsp, next_task->pml4_phys);
 
     // Back in old_task, possibly much later and on a different CPU (`cpu`
-    // above is no longer ours), with the lock held by whoever switched to us
-    // and interrupts off.
+    // and `rq` above are no longer ours), with the locks held by whoever
+    // switched to us and interrupts off
+    finish_switch();
 }
 
 void sched_yield(void) {
     if (!scheduler_active || !current_task) return;
-
-    uint64_t flags = sched_lock_irqsave();
-    schedule();
-    sched_unlock_irqrestore(flags);
+    uint64_t flags = irq_save();
+    schedule(false);
+    irq_restore(flags);
 }
 
 // --- Blocking ----------------------------------------------------------------
@@ -480,8 +684,7 @@ static void wake_task(task_t *t) {
     t->wait_channel = NULL;
     t->wake_tick = 0;
     t->wake_ns = 0;
-    t->state = TASK_READY;
-    kick_idle_cpu(t);
+    place_task(t, true);
 }
 
 // `wake_tick` and `wake_ns` are two ways of naming the moment at which the
@@ -514,9 +717,10 @@ static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, uint64
         // not an interruption.
         if (self->stop_pending) {
             if (lock && !caller_has_sched_lock) spinlock_release(lock);
-            stop_current(self);
-            if (!caller_has_sched_lock) {
-                spinlock_release(&sched_lock);
+            stop_current(self);                  // (Returns holding no scheduler lock)
+            if (caller_has_sched_lock) {
+                spinlock_acquire(&sched_lock);
+            } else {
                 if (lock) spinlock_acquire(lock);
                 irq_restore(flags);
             }
@@ -544,10 +748,9 @@ static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, uint64
     }
 
     if (lock && !caller_has_sched_lock) spinlock_release(lock);
-    schedule(); // Returns once someone has woken us and we have been chosen to run
+    schedule(true); // Returns once someone has woken us and we have been chosen to run, holding no scheduler lock
 
     int die = (interruptible && self->kill_pending) ? self->kill_pending : 0; // Woken to die
-    spinlock_release(&sched_lock);
     if (die) task_exit_status(128 + die);
 
     // Take the caller's lock back, in the right order (it ranks below the
@@ -638,7 +841,8 @@ void sched_continue(task_t *task) {
 }
 
 // Suspend the current task. Caller holds the scheduler lock and nothing
-// else; returns, still holding it, when the task has been continued.
+// else, with interrupts off; returns when the task has been continued,
+// holding neither scheduler lock (see schedule).
 static void stop_current(task_t *self) {
     self->stop_signal = self->stop_pending;
     self->stop_pending = 0;
@@ -653,7 +857,7 @@ static void stop_current(task_t *self) {
             break;
         }
     }
-    schedule();
+    schedule(true);
 }
 
 void sched_check_kill(void) {
@@ -668,8 +872,12 @@ void sched_check_kill(void) {
     // The same safe point serves for being stopped: the task holds nothing
     if (self->stop_pending) {
         uint64_t flags = sched_lock_irqsave();
-        if (self->stop_pending && !self->kill_pending) stop_current(self);
-        sched_unlock_irqrestore(flags);
+        if (self->stop_pending && !self->kill_pending) {
+            stop_current(self);                  // (Returns holding no scheduler lock)
+            irq_restore(flags);
+        } else {
+            sched_unlock_irqrestore(flags);
+        }
         if (self->kill_pending) task_exit_status(128 + self->kill_pending); // Killed while stopped
     }
 }
@@ -765,7 +973,9 @@ void sched_tick(void) {
 
     if (!scheduler_active || !current_task) return;
 
-    uint64_t flags = sched_lock_irqsave();
+    // No scheduler lock: the counts and the turn belong to this CPU's task,
+    // which only this CPU touches (and interrupts are off)
+    uint64_t flags = irq_save();
     task_t *self = current_task;
     self->cpu_ticks++;
     // How busy this CPU is: an idle CPU is not ticked with one-shot timers,
@@ -778,9 +988,9 @@ void sched_tick(void) {
     if (self != this_cpu()->idle && self->state == TASK_RUNNING && self->slice_left > 1) {
         self->slice_left--;
     } else {
-        schedule();
+        schedule(false);
     }
-    sched_unlock_irqrestore(flags);
+    irq_restore(flags);
 }
 
 void task_exit(void) {
@@ -866,8 +1076,9 @@ void task_exit_status(int status) {
     }
 
     // A zombie is never chosen again. Whoever sees its state from now on
-    // may free it, stack included, as soon as this switch is complete.
-    schedule();
+    // may free it, stack included: the scheduler lock is held until this
+    // switch is complete.
+    schedule(true);
     panic("a zombie task was scheduled");
 }
 
