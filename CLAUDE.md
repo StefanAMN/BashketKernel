@@ -152,6 +152,14 @@ code comments and commit messages; `git log` is the full history.
 - **Do not redraw the screen per scrolled line.** Mark it stale and refresh
   from the timer; set the flag only after the RAM copy is consistent, and
   refresh explicitly on every path that halts with interrupts off.
+- **Filesystem changes are ordered data, then FAT, then directory entry**
+  (the reverse when freeing), so a crash loses the newest data or leaks
+  clusters but never leaves an entry pointing at someone else's clusters.
+  The volume lock is held only by code that cannot fault or be killed: user
+  data is copied into kernel memory before the lock is taken.
+- **A VFS that keeps the whole tree in memory needs hooks, not a rewrite, to
+  sit on a real filesystem**: `create`, `remove` and `truncate` on the
+  directory's owner, next to the per-file `read`/`write`.
 - **A wait during which the task owns a device must be uninterruptible**
   (`sched_block_uninterruptible`). A disk request in flight cannot be
   abandoned half way: a task killed there would leave the virtqueue mid-

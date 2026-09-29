@@ -1,14 +1,19 @@
 /**
  * @file fat32.h
- * @brief FAT32 filesystem, read-only
+ * @brief FAT32 filesystem
  *
- * Reads a FAT32 volume from the virtio disk and presents its directories and
- * files under a mount point in the VFS. File contents stay on the disk and
- * are read when asked for. Nothing can be created, changed or removed.
+ * Presents the FAT32 volume on the virtio disk under a mount point in the
+ * VFS. File contents stay on the disk: they are read when asked for and
+ * written straight through, so what is saved survives a reboot.
  *
- * Supported: short (8.3) names, subdirectories, any cluster size. Long file
- * name entries are skipped, so a file with a long name appears under its
- * short alias.
+ * Supported: reading and writing files, creating and removing files and
+ * directories, short (8.3) names, any cluster size. Names are stored in upper
+ * case with the "show in lower case" flags; a name with mixed case or longer
+ * than 8.3 cannot be created. Long file name entries are skipped when
+ * reading, so such a file appears under its short alias.
+ *
+ * Not supported: long names, renaming, timestamps (a fixed date is written),
+ * and recovery after a crash in the middle of a change (no journal).
  *
  * Everything read from the disk is treated as untrusted: sizes and cluster
  * numbers are range-checked and cluster chains are length-limited, so a
@@ -26,6 +31,8 @@
 // Where the pieces of the volume are, worked out from the boot sector
 typedef struct {
     uint32_t sectors_per_cluster;
+    uint32_t fat_count;        // Copies of the file allocation table (all kept identical)
+    uint32_t fsinfo_sector;    // Sector with the cached free-space counters
     uint32_t fat_start;        // First sector of the file allocation table
     uint32_t fat_sectors;      // Length of one copy of the table
     uint32_t data_start;       // First sector of cluster 2
@@ -48,5 +55,11 @@ bool fat32_parse_boot_sector(const uint8_t *sector, uint64_t disk_sectors, fat32
 int fat32_mount(const char *mount_point);
 
 bool fat32_mounted(void);
+
+/**
+ * @brief Count the free clusters by reading the whole FAT (slow: for tests
+ *        and diagnostics).
+ */
+uint32_t fat32_free_clusters(void);
 
 #endif // FAT32_H

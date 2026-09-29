@@ -54,9 +54,8 @@ int file_open_at(vnode_t *base, const char *path, int flags, file_t **out) {
         const char *leaf = NULL;
         vnode_t *parent = vfs_find_parent_at(base, path, &leaf);
         if (!parent) return -ENOENT;
-        if (parent->read_only) return -EROFS;
-        node = vfs_create_file(parent, leaf, NULL, 0);
-        if (!node) return -ENOMEM;
+        int err = vfs_create(parent, leaf, VFS_FILE, &node);
+        if (err != 0) return err;
     }
     if (!node) return -ENOENT;
     if (node->type == VFS_DIRECTORY && writable) return -EISDIR;
@@ -170,6 +169,7 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
         case FILE_VNODE: {
             if (file->node->ops) {
                 if (!file->node->ops->write) return -EINVAL; // Read-only device
+                if (file->append) file->offset = file->node->size;
                 int64_t n = file->node->ops->write(file->node, file->offset, buf, count);
                 if (n > 0) file->offset += (size_t)n;
                 return n;

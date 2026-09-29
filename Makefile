@@ -183,9 +183,11 @@ fuzz: iso
 
 # The disk keeps its contents across reboots: write a sector in one boot of
 # the kernel, read it in a second boot, and look for it in the image file
-# from the host as well. Uses its own scratch image. Then boot against
-# deliberately damaged copies of the FAT32 image (tools/corrupt_fat.py): the
-# kernel must neither fault nor hang, whatever the disk says.
+# from the host as well. Then the same for files: create, append, copy,
+# remove and overwrite in one boot, have fsck.fat check the volume, and read
+# everything back in a second boot. Finally boot against deliberately damaged
+# copies of the FAT32 image (tools/corrupt_fat.py) and read and write on
+# them: the kernel must neither fault nor hang, whatever the disk says.
 test-disk: iso
 	@rm -f $(BUILD)/persist.img && truncate -s 64M $(BUILD)/persist.img
 	@tools/qemu_shell.py --quiet --disk $(BUILD)/persist.img --keep-disk-writes $(SHELL_CPU) \
@@ -196,14 +198,33 @@ test-disk: iso
 		|| { echo "disk: FAILED, the second boot did not read the data back (see $(BUILD)/disk-boot2.log)"; exit 1; }
 	@dd if=$(BUILD)/persist.img bs=512 skip=1000 count=1 2>/dev/null | grep -aq 'written in boot one' \
 		|| { echo "disk: FAILED, the data is not in the image file"; exit 1; }
-	@echo "disk persistence: ok"
+	@echo "disk persistence (raw sectors): ok"
+	@cp $(DISK) $(BUILD)/fs-persist.img
+	@tools/qemu_shell.py --quiet --timeout 120 --disk $(BUILD)/fs-persist.img --keep-disk-writes $(SHELL_CPU) \
+		--forbid 'invalid|no such|error' \
+		'exec /bin/sh' 'cd /disk' 'echo saved in boot one > note.txt' 'echo first > log.txt' \
+		'echo second >> log.txt' 'cat pattern.bin > copy.bin' 'mkdir work' 'echo inside > work/a.txt' \
+		'echo gone > temp.txt' 'rm temp.txt' 'rm notes/empty.txt' 'echo replaced > readme.txt' 'exit' \
+		> $(BUILD)/fs-boot1.log 2>&1 \
+		|| { echo "filesystem: FAILED in the first boot (see $(BUILD)/fs-boot1.log)"; exit 1; }
+	@if command -v fsck.fat >/dev/null; then fsck.fat -n $(BUILD)/fs-persist.img > $(BUILD)/fs-fsck.log 2>&1 \
+		|| { echo "filesystem: FAILED, fsck.fat rejects the volume after writing (see $(BUILD)/fs-fsck.log)"; exit 1; }; fi
+	@tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/fs-persist.img $(SHELL_CPU) \
+		--expect 'saved in boot one\nfirst\nsecond\ninside\nreplaced\n' --expect '400 1201 102400' \
+		--expect 'temp.txt: no such file' --forbid 'empty.txt' \
+		'exec /bin/sh' 'cd /disk' 'cat note.txt log.txt work/a.txt readme.txt' 'wc copy.bin' \
+		'ls notes' 'cat temp.txt' 'exit' > $(BUILD)/fs-boot2.log 2>&1 \
+		|| { echo "filesystem: FAILED, the second boot does not see the files (see $(BUILD)/fs-boot2.log)"; exit 1; }
+	@echo "disk persistence (files, checked by fsck.fat): ok"
 	@for kind in file-loop dir-loop dir-cycle fat-garbage huge-size bad-cluster; do \
 		tools/corrupt_fat.py $(DISK) $$kind $(BUILD)/damaged.img && \
-		tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/damaged.img $(SHELL_CPU) \
+		tools/qemu_shell.py --quiet --timeout 90 --disk $(BUILD)/damaged.img $(SHELL_CPU) \
 			--expect 'Hello from ring 3' \
 			'exec /bin/ls /disk' 'exec /bin/sh -c "wc /disk/pattern.bin"' \
 			'exec /bin/sh -c "cat /disk/readme.txt | wc"' 'exec /bin/sh -c "ls /disk/notes | wc"' \
-			'exec /bin/hello' > $(BUILD)/damaged-$$kind.log 2>&1 \
+			'exec /bin/sh -c "echo written > /disk/w.txt"' 'exec /bin/sh -c "cat /disk/pattern.bin >> /disk/readme.txt"' \
+			'exec /bin/sh -c "echo y > /disk/notes/n.txt"' 'exec /bin/sh -c "rm /disk/pattern.bin /disk/readme.txt"' \
+			'exec /bin/sh -c "mkdir /disk/d1"' 'exec /bin/hello' > $(BUILD)/damaged-$$kind.log 2>&1 \
 			&& echo "damaged disk ($$kind): survived" \
 			|| { echo "damaged disk ($$kind): FAILED (see $(BUILD)/damaged-$$kind.log)"; exit 1; }; \
 	done

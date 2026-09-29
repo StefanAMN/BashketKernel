@@ -224,9 +224,7 @@ static int64_t sys_mkdir(uint64_t user_path) {
     while (leaf[len] != '\0' && leaf[len] != '/') { name[len] = leaf[len]; len++; }
     name[len] = '\0';
 
-    if (vfs_find_child(parent, name)) return -EEXIST;
-    if (parent->read_only) return -EROFS;
-    return vfs_create_dir(parent, name) ? 0 : -ENOMEM;
+    return vfs_create(parent, name, VFS_DIRECTORY, NULL);
 }
 
 static int64_t sys_unlink(uint64_t user_path) {
