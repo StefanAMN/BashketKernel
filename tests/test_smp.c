@@ -289,14 +289,18 @@ TEST(cpus_share_the_kernel_safely) {
 
 static volatile int burners_stop, burners_done;
 static volatile uint64_t burner_cpus_seen;      // Bit n: some burner ran on CPU n
+static task_t *volatile watched_burner;          // One burner whose CPUs are noted apart
+static volatile uint64_t watched_cpus_seen;      // Bit n: it ran on CPU n
 
 // Uses the CPU until told to stop, noting every CPU it found itself on
 static void burner_entry(void) {
     while (!burners_stop) {
         uint64_t flags = irq_save();
         uint32_t here = this_cpu()->cpu_id;
+        bool watched = cpu_current_task() == watched_burner;
         irq_restore(flags);
         __atomic_or_fetch(&burner_cpus_seen, 1ULL << here, __ATOMIC_SEQ_CST);
+        if (watched) __atomic_or_fetch(&watched_cpus_seen, 1ULL << here, __ATOMIC_SEQ_CST);
     }
     __atomic_add_fetch(&burners_done, 1, __ATOMIC_SEQ_CST);
 }
@@ -367,7 +371,11 @@ TEST(tasks_run_on_every_cpu_at_once) {
 
 // Work that can be split is done sooner on more CPUs. The amount of work is
 // fixed; the time for it is measured with one worker and with one per CPU.
-#define SUM_TO 30000000ULL
+// Enough of it to last a quarter of a second: without a timestamp counter
+// the clock moves in 10 ms ticks, and at a twentieth of that one tick was a
+// fifth of the measurement (a faster scheduler then failed the ratio while
+// taking exactly as long with four workers).
+#define SUM_TO 120000000ULL
 
 static volatile int workers_done;
 static volatile uint64_t worker_sums;
@@ -390,6 +398,92 @@ static uint64_t time_workers(int count) {
     while (sched_reap() == 0) sched_yield();
     while (sched_reap() != 0) { }
     return elapsed;
+}
+
+// Pinned to a CPU, a task runs there and nowhere else, and waits in that
+// CPU's run queue; unpinned, it is free to move, and does: with more busy
+// tasks than CPUs, it is soon seen on another one
+TEST(pinned_tasks_stay_and_unpinned_ones_move) {
+    uint32_t cpus = online_cpus();
+    if (cpus < 2) return;
+    burners_stop = 0; burners_done = 0; burner_cpus_seen = 0;
+    task_t *burners[MAX_CPUS + 1];
+    for (uint32_t i = 0; i <= cpus; i++) {
+        burners[i] = task_create("burner", burner_entry);
+        EXPECT_TRUE(burners[i] != NULL);
+    }
+    uint32_t pin = cpus - 1;
+    task_set_affinity(burners[0], (int32_t)pin);
+    TEST_WAIT(burners[0]->state == TASK_RUNNING && burners[0]->last_cpu == pin, 300);   // Moved there
+    watched_cpus_seen = 0;
+    watched_burner = burners[0];
+    for (int i = 0; i < 50; i++) {
+        sched_sleep_ticks(1);
+        uint64_t flags = sched_lock_irqsave();
+        task_state_t state = burners[0]->state;
+        uint32_t where = burners[0]->last_cpu;
+        int32_t queued = burners[0]->queued_on;
+        sched_unlock_irqrestore(flags);
+        if (state == TASK_RUNNING) EXPECT_TRUE(where == pin);
+        if (state == TASK_READY) EXPECT_TRUE(queued == -1 || queued == (int32_t)pin);
+    }
+    EXPECT_TRUE(watched_cpus_seen == (1ULL << pin));                  // Nowhere else
+    task_set_affinity(burners[0], -1);
+    EXPECT_TRUE(burners[0]->affinity == TASK_ANY_CPU);
+    TEST_WAIT((watched_cpus_seen & ~(1ULL << pin)) != 0, 600);         // And now elsewhere too
+    EXPECT_TRUE((watched_cpus_seen & ~(1ULL << pin)) != 0);
+    if ((watched_cpus_seen & ~(1ULL << pin)) == 0) {                   // What it looked like, if not
+        for (uint32_t i = 0; i < cpus; i++) {
+            task_t *on = cpu_get(i)->current;
+            kprintf("    CPU %u: %u waiting, running pid %u\n", i, sched_queue_length(i), on ? on->pid : 0);
+        }
+        kprintf("    unpinned task: pid %u state %d last CPU %u queued on %d\n", burners[0]->pid,
+                (int)burners[0]->state, burners[0]->last_cpu, burners[0]->queued_on);
+    }
+    watched_burner = NULL;
+
+    burners_stop = 1;
+    TEST_WAIT(burners_done == (int)cpus + 1, 300);
+    EXPECT_EQ(burners_done, (int)cpus + 1);
+    size_t reaped = 0;
+    TEST_WAIT((reaped += sched_reap()) >= cpus + 1, 300);   // Exited, not just done (CLAUDE.md)
+    EXPECT_TRUE(reaped == cpus + 1);
+}
+
+static volatile int yielders_stop, yielders_done;
+static volatile uint64_t yields;
+
+// Gives up the CPU as fast as it can until told to stop, counting
+static void yielder_entry(void) {
+    while (!yielders_stop) {
+        sched_yield();
+        __atomic_add_fetch(&yields, 1, __ATOMIC_RELAXED);
+    }
+    __atomic_add_fetch(&yielders_done, 1, __ATOMIC_SEQ_CST);
+}
+
+// Each CPU chooses its next task under its own run queue's lock: a task
+// switch made by yielding (as by the tick) takes no scheduler lock, so
+// tasks yielding on every CPU at once hardly ever wait for it. (With one
+// lock for all, as before track Q, four of them found it held on 62% of
+// their yields: PLAN.md Q2.)
+TEST(yields_spare_the_scheduler_lock) {
+    uint32_t cpus = online_cpus();
+    yielders_stop = 0; yielders_done = 0; yields = 0;
+    for (uint32_t i = 0; i < cpus; i++) EXPECT_TRUE(task_create("yielder", yielder_entry) != NULL);
+    sched_sleep_ticks(5);                                   // Under way
+    uint64_t waits_before = sched_lock_contention(), yields_before = yields;
+    sched_sleep_ticks(50);
+    uint64_t waits = sched_lock_contention() - waits_before, done = yields - yields_before;
+    kprintf("    %lu yields on %u CPUs in 50 ticks; the scheduler lock was found held %lu times\n", done, cpus, waits);
+    EXPECT_TRUE(done > 1000);
+    EXPECT_TRUE(waits * 100 < done);
+    yielders_stop = 1;
+    TEST_WAIT(yielders_done == (int)cpus, 300);
+    EXPECT_EQ(yielders_done, (int)cpus);
+    size_t reaped = 0;
+    TEST_WAIT((reaped += sched_reap()) >= cpus, 300);
+    EXPECT_TRUE(reaped == cpus);
 }
 
 TEST(more_cpus_do_more_work) {
@@ -471,5 +565,7 @@ void test_suite_smp(void) {
     RUN_TEST(cpus_share_the_kernel_safely);
     RUN_TEST(tasks_run_on_every_cpu_at_once);
     RUN_TEST(more_cpus_do_more_work);
+    RUN_TEST(pinned_tasks_stay_and_unpinned_ones_move);
+    RUN_TEST(yields_spare_the_scheduler_lock);
     RUN_TEST(other_cpus_forget_removed_kernel_mappings);
 }

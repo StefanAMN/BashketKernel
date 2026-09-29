@@ -52,11 +52,13 @@ typedef struct task {
     task_state_t state;      // Current execution state
     uint64_t *pml4_phys;     // Physical address of PML4, loaded into CR3 when this task runs
     void *kernel_stack;      // Virtual base pointer of 16 KiB kernel stack
-    struct task *next;       // Next task link in scheduler queue
+    struct task *next;       // Next task in the list of all tasks (under the scheduler lock)
+    struct task *run_next;   // Next in the run queue it waits in (under that queue's lock)
+    int32_t queued_on;       // The CPU whose run queue holds it, or -1 (under that queue's lock)
 
     // --- CPU time ---
     uint8_t priority;        // PRIO_HIGH, PRIO_NORMAL or PRIO_LOW: sets the time slice length
-    uint8_t slice_left;      // Timer ticks left before it is preempted
+    uint8_t slice_left;      // Timer ticks left before it is preempted (only its own CPU touches it)
     uint64_t cpu_ticks;      // Timer ticks that found this task running
     int32_t affinity;        // The only CPU it may run on, or TASK_ANY_CPU
     uint32_t last_cpu;       // The CPU it is running on, or last ran on
