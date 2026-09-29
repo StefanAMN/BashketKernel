@@ -472,7 +472,7 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_CHDIR:   return sys_chdir(regs->rdi);
 
         case SYS_CLEAR:
-            kprintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+            kprintf("\033[2J\033[H"); // Erase the screen, cursor to the top left
             return 0;
 
         case SYS_OPEN:    return sys_open(regs->rdi, (int)regs->rsi);

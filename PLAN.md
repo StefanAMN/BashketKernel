@@ -349,7 +349,8 @@ and its README entry. Suggested calls, in the order worth doing:
 | SMP | Defer. Needs per-CPU data, `swapgs` and real locks: today "interrupts off" is the lock in the scheduler, pipes, semaphores and the wait path. |
 | virtio-net, sockets | Defer or delete. |
 | Swap | Delete until a real block device and page reclaim exist. |
-| Window manager, auth, mouse, ANSI | Delete or leave clearly marked as stubs. |
+| ANSI | **Done.** Escape sequence parser, acted on by the console. |
+| Window manager, auth, mouse | Delete or leave clearly marked as stubs. |
 | `boot_loader.c` | Delete. It is a CPUID check, and Limine boots the kernel. |
 | hrtimer | `nanosleep` now blocks properly but has tick resolution. Rebuild on a calibrated LAPIC timer or fold into `sched_sleep_ticks`. |
 | Environment | **Done** as a per-process, user-memory environment passed through `execve`. `src/kernel/proc/env.c` (the kernel shell's global table) can now be deleted or reduced to that shell's private use. |

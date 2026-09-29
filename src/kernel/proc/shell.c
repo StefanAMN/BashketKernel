@@ -276,7 +276,7 @@ void shell_run_cmd(const char *cmdline) {
     } else if (strncmp(cmdline, "crash ", 6) == 0) {
         shell_crash(cmdline + 6);
     } else if (strcmp(cmdline, "clear") == 0) {
-        kprintf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+        kprintf("\033[2J\033[H"); // Erase the screen, cursor to the top left
     } else {
         kprintf("shell: command not found '%s'. Type 'help' for commands.\n", cmdline);
     }
