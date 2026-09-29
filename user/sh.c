@@ -71,6 +71,20 @@
  * rest); its status is 1 at the end of the input, so
  * "while read line; do ...; done < file" goes through a file.
  *
+ * "! pipeline" turns its status round. "set -e" ends the shell at a command
+ * that fails, except in a condition (if, elif, while, until), before the
+ * end of an && or || list, or after '!'; "set -u" makes an unset variable
+ * an error (the shell exits unless it is at the terminal); "set -x" writes
+ * each command to standard error, "+ " and its words, before running it;
+ * "+e", "+u", "+x" turn them off. "shift [N]" drops the first N arguments,
+ * "local NAME[=value]" gives a function a variable of its own (the old one
+ * is back when it returns), and $$ is the shell's process. "trap 'LIST'
+ * INT TERM ..." runs LIST when the signal comes (between commands, after
+ * the one in the foreground has finished); EXIT runs it as the shell ends;
+ * '' ignores the signal, here and in every program started; "trap - SIG"
+ * undoes it; "trap" alone lists them. "wait [N|%J]" waits for background
+ * jobs; Ctrl-C ends the wait (not the jobs).
+ *
  * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
  * empty prompt leaves the shell. At the terminal the line can be edited
  * (the arrow keys, Home, End, Delete, Ctrl-A, -E, -K, -U, -W) and Up and
@@ -120,6 +134,12 @@ typedef struct {
 static char word_storage[4096];
 static int last_status = 0;   /* Exit status of the previous command, for $? */
 static int script_fd = -1;    /* The script being run, or -1 when reading the terminal */
+static long shell_pid;        /* $$: this shell's process (a child running shell code keeps it, as POSIX has it) */
+
+/* set -e, -u, -x (see "Options and traps" below) */
+static int opt_errexit, opt_nounset, opt_xtrace;
+static int expand_failed;     /* An expansion failed and said why ($((...)), set -u): no "syntax error" on top */
+static void shell_exit(int status) __attribute__((noreturn));
 
 /* --- Jobs ------------------------------------------------------------------- */
 
@@ -379,20 +399,22 @@ static void number_text(int v, char text[12]) {
 
 /* Append the value of the variable at *p (*p just after the '$') to `word`
  * (length *len, in word_storage from `used`), and move *p past it: $NAME,
- * ${NAME}, $? (the last status), $1 .. $9 and ${N} (the arguments; $0 the
- * shell), $# (how many) and $@ (all of them). `quote` is the quote the
- * '$' is inside (0 if none). $@ gives one word per argument, quoted or
- * not, by putting FIELD_BREAKs between them and setting *split (in an
- * assignment or a pattern, a blank instead). An unset variable is
- * nothing. 0; -1 if it does not fit, or "${" has no proper name and '}'. */
+ * ${NAME}, $? (the last status), $$ (the shell's process), $1 .. $9 and
+ * ${N} (the arguments; $0 the shell), $# (how many) and $@ (all of them).
+ * `quote` is the quote the '$' is inside (0 if none). $@ gives one word
+ * per argument, quoted or not, by putting FIELD_BREAKs between them and
+ * setting *split (in an assignment or a pattern, a blank instead). An
+ * unset variable is nothing, or with set -u an error: a message, and a
+ * shell that is not interactive exits (status 2; POSIX). 0; -1 if it does
+ * not fit, "${" has no proper name and '}', or set -u refused it. */
 static int append_variable(const char **p, char *word, size_t *len, size_t used, char quote, int *split) {
-    char name[32], text[12];
+    char name[32], text[24];
     const char *value = NULL;
     size_t n = 0;
     int braced = (**p == '{');
     if (braced) (*p)++;
     char special = 0;
-    if (**p == '?' || **p == '#' || **p == '@') {
+    if (**p == '?' || **p == '#' || **p == '@' || **p == '$') {
         special = *(*p)++;
     } else if (**p >= '0' && **p <= '9') {
         special = '1';                     /* $1: one digit; ${12}: all of them */
@@ -408,6 +430,9 @@ static int append_variable(const char **p, char *word, size_t *len, size_t used,
 
     if (special == '?') {
         number_text(last_status, text);
+        value = text;
+    } else if (special == '$') {
+        number_text((int)shell_pid, text);
         value = text;
     } else if (special == '#') {
         number_text(argument_count, text);
@@ -429,6 +454,12 @@ static int append_variable(const char **p, char *word, size_t *len, size_t used,
     } else {
         value = get_variable(name);
     }
+    if (!value && opt_nounset) {
+        fprintf(2, "sh: %s: parameter not set\n", special == '1' ? name : n ? name : "$");
+        if (!interactive) shell_exit(2);
+        expand_failed = 1;
+        return -1;
+    }
     for (; value && *value; value++) {
         if (put_char(word, len, used, *value, quote != 0) < 0) return -1;
     }
@@ -439,6 +470,342 @@ static int run_line(const char *line, int *should_exit);
 static int is_function(const char *name);
 static int call_function(int argc, char **argv, int *should_exit);
 static int read_builtin(int argc, char **argv);
+static int local_builtin(int argc, char **argv);
+
+/* --- Options and traps -------------------------------------------------------
+ *
+ * set -e: a command that fails ends the shell, except where its status is
+ * being tested: in the condition of an if, elif, while or until, in an &&
+ * or || list before its last command, and after '!' (POSIX). Those run
+ * with errexit_ignored above 0, which a function called from there keeps.
+ * set -u: expanding an unset variable is an error (append_variable).
+ * set -x: each simple command is written to standard error as "+ " and
+ * its words after expansion, before it runs. "set +e" (+u, +x) turns one off.
+ *
+ * trap 'LIST' CONDITION...: when one of the signals arrives, LIST runs the
+ * next time the shell is between commands (after the foreground command
+ * has finished, as POSIX says), with $? kept as it was; EXIT (or 0) runs
+ * it as the shell exits. trap '' SIGNAL ignores the signal, in the shell
+ * and in everything it starts; trap - SIGNAL puts back what the shell
+ * started with. The handler only notes the signal: its list is run by
+ * run_traps, never inside the handler, where the shell could be in the
+ * middle of anything. A child that goes on running shell code (a compound
+ * command in a pipeline, $(...)) is a subshell: its caught signals go back
+ * to what the shell started with and it has no EXIT trap
+ * (traps_enter_subshell). Programs need nothing: execve resets a caught
+ * signal and keeps an ignored one ignored, as POSIX wants. */
+
+static int errexit_ignored;   /* Commands running where set -e does not apply */
+
+#define TRAP_MAX 32           /* Conditions: 0 is EXIT, the rest signal numbers */
+static char *trap_actions[TRAP_MAX];        /* malloc'd LIST; NULL: no trap; "": ignored */
+static volatile int trap_pending[TRAP_MAX]; /* Noted by the handler, not yet run */
+static volatile int traps_waiting;          /* Some trap_pending is set */
+static volatile int last_trapped;           /* The latest signal noted (wait's status) */
+static int running_trap;                    /* A list is running: the others wait for it to finish */
+
+static const struct { const char *name; int number; } trap_names[] = {
+    { "EXIT", 0 }, { "HUP", 1 }, { "INT", SIGINT }, { "QUIT", 3 },
+    { "USR1", SIGUSR1 }, { "USR2", SIGUSR2 }, { "TERM", SIGTERM },
+};
+#define TRAP_NAMES (int)(sizeof(trap_names) / sizeof(trap_names[0]))
+
+/* The condition `text` names ("INT", "SIGINT" or "2"; "EXIT" or "0"), as
+ * an index into trap_names; -1 if it is none of them. (SIGKILL and SIGSTOP
+ * cannot be caught; Ctrl-Z and SIGCHLD belong to job control.) */
+static int trap_index(const char *text) {
+    if (strncmp(text, "SIG", 3) == 0) text += 3;
+    int number = -1;
+    if (*text >= '0' && *text <= '9') {
+        number = 0;
+        for (const char *c = text; *c; c++) {
+            if (*c < '0' || *c > '9' || number > 99) return -1;
+            number = number * 10 + (*c - '0');
+        }
+    }
+    for (int i = 0; i < TRAP_NAMES; i++) {
+        if (number >= 0 ? trap_names[i].number == number : strcmp(trap_names[i].name, text) == 0) return i;
+    }
+    return -1;
+}
+
+/* The signal handler of every trap: note it, nothing more */
+static void trap_noted(int sig) {
+    if (sig <= 0 || sig >= TRAP_MAX) return;
+    trap_pending[sig] = 1;
+    traps_waiting = 1;
+    last_trapped = sig;
+}
+
+/* What signal `sig` did when the shell started: Ctrl-C is ignored (it is
+ * for the programs the shell runs), everything else does its default */
+static sighandler_t start_disposition(int sig) {
+    return sig == SIGINT ? SIG_IGN : SIG_DFL;
+}
+
+/* Make condition `number` run `action` (NULL: no trap, as the shell
+ * started; "": ignore the signal). 0, or 1 with a message. */
+static int set_trap(int number, const char *action) {
+    char *copy = NULL;
+    if (action) {
+        size_t n = strlen(action);
+        if (!(copy = malloc(n + 1))) {
+            fprintf(2, "sh: trap: out of memory\n");
+            return 1;
+        }
+        memcpy(copy, action, n + 1);
+    }
+    if (number != 0) {
+        struct sigaction sa = { start_disposition(number), 0, 0 };
+        if (action) sa.handler = *action ? trap_noted : SIG_IGN;
+        /* (No SA_RESTART: a trapped signal ends wait at once. Reading a
+         * line and waiting for the foreground command carry on by
+         * themselves after -EINTR.) */
+        if (sigaction(number, &sa, NULL) != 0) {
+            free(copy);
+            fprintf(2, "sh: trap: signal %d cannot be trapped\n", number);
+            return 1;
+        }
+        trap_pending[number] = 0;
+    }
+    free(trap_actions[number]);
+    trap_actions[number] = copy;
+    return 0;
+}
+
+/* Run the lists of the signals noted since the last time, lowest number
+ * first, each with $? as it was before it. Called between commands; a
+ * list that runs "exit" ends the shell there. */
+static void run_traps(void) {
+    if (!traps_waiting || running_trap) return;
+    traps_waiting = 0;
+    for (int sig = 1; sig < TRAP_MAX; sig++) {
+        if (!trap_pending[sig]) continue;
+        trap_pending[sig] = 0;
+        if (!trap_actions[sig] || !*trap_actions[sig]) continue;   /* Reset or ignored since */
+        running_trap = 1;
+        int saved = last_status, should_exit = 0;
+        int status = run_line(trap_actions[sig], &should_exit);
+        running_trap = 0;
+        if (should_exit) shell_exit(status);
+        last_status = saved;
+    }
+}
+
+/* In a child that goes on running shell code: caught signals back to how
+ * the shell started, ignored ones stay ignored, no EXIT trap */
+static void traps_enter_subshell(void) {
+    for (int i = 0; i < TRAP_MAX; i++) {
+        if (!trap_actions[i] || !*trap_actions[i]) continue;
+        if (i != 0) signal(i, start_disposition(i));
+        free(trap_actions[i]);
+        trap_actions[i] = NULL;
+        trap_pending[i] = 0;
+    }
+    traps_waiting = 0;
+}
+
+/* In a child about to run a program or a command the user may stop with
+ * Ctrl-C: let Ctrl-C end it, unless "trap '' INT" asked for it to be
+ * ignored by everything */
+static void child_interrupt_default(void) {
+    if (!(trap_actions[SIGINT] && !*trap_actions[SIGINT])) ignore_interrupt(0);
+}
+
+/* Leave the shell with `status`, running the EXIT trap first (once: a
+ * trap that exits does not run it again). "exit N" in the trap's list
+ * sets the status instead. */
+static void shell_exit(int status) {
+    char *action = trap_actions[0];
+    trap_actions[0] = NULL;
+    if (action && *action) {
+        int should_exit = 0;
+        last_status = status;
+        running_trap = 1;
+        int trap_status = run_line(action, &should_exit);
+        if (should_exit) status = trap_status;
+    }
+    exit(status);
+}
+
+/* trap [LIST CONDITION...], trap - CONDITION..., trap N... (a number first:
+ * reset them all, as POSIX has it): set or reset traps. With nothing
+ * after it, list those set, in a form that would set them again. 0, or 1
+ * (with a message) for a condition it does not know. */
+static int trap_builtin(int argc, char **argv) {
+    if (argc == 1) {
+        for (int i = 0; i < TRAP_NAMES; i++) {
+            const char *action = trap_actions[trap_names[i].number];
+            if (!action) continue;
+            printf("trap -- '");
+            for (const char *c = action; *c; c++) {
+                if (*c == '\'') printf("'\\''");             /* ' inside '...': close, escaped ', reopen */
+                else printf("%c", *c);
+            }
+            printf("' %s\n", trap_names[i].name);
+        }
+        return 0;
+    }
+    int first = 1;
+    const char *action = argv[1];
+    if (strcmp(action, "-") == 0) {
+        action = NULL;
+        first = 2;
+    } else if (*action >= '0' && *action <= '9' && trap_index(action) >= 0) {
+        action = NULL;                                       /* "trap 2 15": reset */
+    } else {
+        first = 2;
+    }
+    if (first >= argc) {
+        fprintf(2, "sh: trap: expected a condition after the list\n");
+        return 2;
+    }
+    int status = 0;
+    for (int i = first; i < argc; i++) {
+        int index = trap_index(argv[i]);
+        if (index < 0) {
+            fprintf(2, "sh: trap: %s: no such signal (EXIT HUP INT QUIT USR1 USR2 TERM)\n", argv[i]);
+            status = 1;
+            continue;
+        }
+        if (set_trap(trap_names[index].number, action) != 0) status = 1;
+    }
+    return status;
+}
+
+/* set [-eux] [+eux]: turn options on with '-' and off with '+', letters
+ * grouped or apart. With nothing after it, list the variables (the
+ * shell's own, then the environment), one "NAME=value" a line. 0; 2
+ * (with a message) for an option it does not know or an operand that is
+ * not one (setting $1 .. with "set -- a b" is not supported). */
+static int set_builtin(int argc, char **argv) {
+    if (argc == 1) {
+        for (int i = 0; i < MAX_VARIABLES; i++) if (variables[i]) printf("%s\n", variables[i]);
+        for (char **e = environ; e && *e; e++) printf("%s\n", *e);
+        return 0;
+    }
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if ((a[0] != '-' && a[0] != '+') || !a[1]) {
+            fprintf(2, "sh: set: '%s': only the options -e, -u and -x are supported\n", a);
+            return 2;
+        }
+        int on = a[0] == '-';
+        for (const char *c = a + 1; *c; c++) {
+            if (*c == 'e') opt_errexit = on;
+            else if (*c == 'u') opt_nounset = on;
+            else if (*c == 'x') opt_xtrace = on;
+            else {
+                fprintf(2, "sh: set: unknown option %c%c\n", a[0], *c);
+                return 2;
+            }
+        }
+    }
+    return 0;
+}
+
+/* shift [N]: drop the first N arguments ($1 .. $N; 1 if not given), the
+ * rest moving down. 0; 1 (with a message) if there are fewer than N or N
+ * is not a number. */
+static int shift_builtin(int argc, char **argv) {
+    int n = 1;
+    if (argc > 2 || (argc == 2 && (argv[1][0] < '0' || argv[1][0] > '9'))) {
+        fprintf(2, "sh: shift: expected a number\n");
+        return 1;
+    }
+    if (argc == 2) n = (int)atoi(argv[1]);
+    if (n > argument_count) {
+        fprintf(2, "sh: shift: only %d argument%s to shift\n", argument_count, argument_count == 1 ? "" : "s");
+        return 1;
+    }
+    arguments += n;
+    argument_count -= n;
+    return 0;
+}
+
+static volatile int wait_interrupted;       /* Ctrl-C during wait, with no trap for it */
+
+/* Ctrl-C while the shell waits in "wait" (and has no trap for it) */
+static void wait_interrupt(int sig) {
+    (void)sig;
+    wait_interrupted = 1;
+}
+
+/* Wait for the processes of `job` (only the one at index `only`, or all
+ * if -1), each until it has exited, and forget the job once none is left.
+ * *status: the one named, or the job's last process. 0, or 128 + the
+ * signal if Ctrl-C (wait_interrupted) or a trapped signal came first. */
+static int wait_job(job_t *job, int only, int *status) {
+    for (int i = 0; i < job->count; i++) {
+        if (!job->alive[i] || (only >= 0 && i != only)) continue;
+        int child = 0;
+        long r;
+        while ((r = waitpid(job->pids[i], &child, 0)) == -EINTR && !wait_interrupted && !traps_waiting) { }
+        if (r == -EINTR) return 128 + (wait_interrupted ? SIGINT : last_trapped);
+        job->alive[i] = 0;
+        if (only >= 0 || i == job->count - 1) *status = child;
+    }
+    int living = 0;
+    for (int i = 0; i < job->count; i++) living += job->alive[i];
+    if (!living) job->used = 0;
+    return 0;
+}
+
+/* wait [ID...]: wait for background jobs to finish, each ID a process
+ * (its number) or a job (%N); with none, all of them. Its status: that of
+ * the last one named (a job's: its last process's), 0 with none named,
+ * 127 for an ID that is no job of this shell's. Ctrl-C or a trapped
+ * signal ends it at once with 128 + the signal (the job runs on), and the
+ * trap's list then runs. A job waited for is forgotten without "Done". */
+static int wait_builtin(int argc, char **argv) {
+    struct sigaction old, catcher = { wait_interrupt, 0, 0 };
+    int catching = interactive && !trap_actions[SIGINT];    /* (A trap catches it already) */
+    if (catching) sigaction(SIGINT, &catcher, &old);
+    wait_interrupted = 0;
+
+    int status = 0, stopped = 0;
+    if (argc == 1) {
+        for (int n = 0; n < MAX_JOBS && !stopped; n++) {
+            if (jobs[n].used) stopped = wait_job(&jobs[n], -1, &status);
+        }
+        status = 0;
+    }
+    for (int a = 1; a < argc && !stopped; a++) {
+        job_t *job = NULL;
+        int only = -1;
+        if (argv[a][0] == '%') {
+            int n = (int)atoi(argv[a] + 1);
+            if (n >= 1 && n <= MAX_JOBS && jobs[n - 1].used) job = &jobs[n - 1];
+        } else {
+            for (int n = 0; n < MAX_JOBS && !job; n++) {
+                for (int i = 0; jobs[n].used && i < jobs[n].count; i++) {
+                    if (jobs[n].pids[i] == atoi(argv[a])) { job = &jobs[n]; only = i; }
+                }
+            }
+        }
+        if (!job) {
+            fprintf(2, "sh: wait: %s: no such job\n", argv[a]);
+            status = 127;
+            continue;
+        }
+        stopped = wait_job(job, only, &status);
+    }
+
+    if (catching) sigaction(SIGINT, &old, NULL);
+    if (stopped && wait_interrupted) printf("\n");          /* (The ^C the terminal echoed) */
+    return stopped ? stopped : status;
+}
+
+/* set -x: write each stage of the command about to run to standard error,
+ * "+ ", its assignments and its words */
+static void trace_stages(const stage_t *stages, int count) {
+    for (int s = 0; s < count; s++) {
+        fprintf(2, "+");
+        for (int i = 0; i < stages[s].assignment_count; i++) fprintf(2, " %s", stages[s].assignments[i]);
+        for (int i = 0; i < stages[s].argc; i++) fprintf(2, " %s", stages[s].argv[i]);
+        fprintf(2, "\n");
+    }
+}
 
 #define WORD_QUOTED 1         /* next_word: some part was in quotes */
 #define WORD_SPLIT  2         /* next_word: holds FIELD_BREAKs, to be split into words */
@@ -474,6 +841,7 @@ static long substitute(const char *command, char *out, size_t size) {
         close(p[0]);
         close(p[1]);
         interactive = 0;                      /* The child runs the command, not jobs */
+        traps_enter_subshell();
         reading_assignment = reading_pattern = 0;   /* (Its own words split as usual) */
         int should_exit = 0;
         exit(run_line(command, &should_exit));
@@ -737,10 +1105,9 @@ static long arith_or(arith_t *a, int live) {
     }
 }
 
-static int arith_failed;      /* A $((...)) failed and said why: no "syntax error" on top */
 
 /* Evaluate `expr` into *value. 0, or -1 with a message printed (and
- * arith_failed set). */
+ * expand_failed set). */
 static int arith_eval(const char *expr, long *value) {
     arith_t a = { expr, NULL };
     *value = arith_or(&a, 1);
@@ -748,7 +1115,7 @@ static int arith_eval(const char *expr, long *value) {
     if (!a.error && *a.p) a.error = "unexpected text";
     if (a.error) {
         fprintf(2, "sh: $((%s)): %s\n", expr, a.error);
-        arith_failed = 1;
+        expand_failed = 1;
         return -1;
     }
     return 0;
@@ -848,7 +1215,7 @@ static char *next_word(const char **cursor, size_t *used, int *flags) {
             }
             if (!whole) split = 1;
         } else if (c == '$' && quote != '\'' &&
-                   (is_name_char(p[1]) || p[1] == '?' || p[1] == '#' || p[1] == '@' || p[1] == '{')) {
+                   (is_name_char(p[1]) || p[1] == '?' || p[1] == '#' || p[1] == '@' || p[1] == '$' || p[1] == '{')) {
             p++;
             if (append_variable(&p, word, &len, *used, quote, &split) < 0) return NULL;
         } else {
@@ -1033,7 +1400,7 @@ static char *heredoc_text(const char *body) {
                 failed = n < 0 || text_add(&out, value, (size_t)n) < 0;
                 t = end + 1;
             }
-        } else if (t[0] == '$' && (is_name_char(t[1]) || t[1] == '?' || t[1] == '#' || t[1] == '@' || t[1] == '{')) {
+        } else if (t[0] == '$' && (is_name_char(t[1]) || t[1] == '?' || t[1] == '#' || t[1] == '@' || t[1] == '$' || t[1] == '{')) {
             /* As inside double quotes: append_variable writes into `value`
              * (bounded by word_storage's size, as for a word), $@ with
              * FIELD_BREAKs between the arguments, made blanks here */
@@ -1041,7 +1408,7 @@ static char *heredoc_text(const char *body) {
             size_t len = 0;
             int split = 0;
             if (append_variable(&q, value, &len, 0, '"', &split) < 0) {
-                fprintf(2, "sh: here-document: a ${ is malformed\n");
+                if (!expand_failed) fprintf(2, "sh: here-document: a ${ is malformed\n");
                 failed = 1;
             } else {
                 for (size_t i = 0; i < len; i++) if (value[i] == FIELD_BREAK) value[i] = ' ';
@@ -1275,7 +1642,8 @@ static void apply_redirects(stage_t *stage) {
 /* In a child: apply a stage's redirections and run its program. Never
  * returns (exits 127 if the program could not be run). */
 static void exec_stage(stage_t *stage) {
-    ignore_interrupt(0); /* Unlike the shell, the program should die on Ctrl-C */
+    traps_enter_subshell();      /* (A function may run here: a subshell) */
+    child_interrupt_default();   /* Unlike the shell, the program should die on Ctrl-C */
     if (script_fd >= 0) close(script_fd); /* The script is the shell's business, not the program's */
     apply_redirects(stage);
 
@@ -1544,13 +1912,14 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     line = text;
 
     unsigned substitutions_before = substitutions_run;
-    arith_failed = 0;
+    expand_failed = 0;
     int count = parse(line, stages, 1);
     if (count < 0) {
-        if (!arith_failed) fprintf(2, "sh: syntax error\n");   /* (A $((...)) said what was wrong) */
+        if (!expand_failed) fprintf(2, "sh: syntax error\n");   /* (A $((...)) said what was wrong) */
         return 2;
     }
     if (count == 0) return last_status;   /* Nothing to run: $? as it is (or as a $(...) left it) */
+    if (opt_xtrace) trace_stages(stages, count);
 
     /* NAME=value alone sets the shell's variables. Its status is that of
      * the last $(...) in it, as in other shells (X=$(false) fails), or 0. */
@@ -1575,6 +1944,13 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     }
     if (count == 1 && strcmp(stages[0].argv[0], "return") == 0) {
         return return_builtin(stages[0].argc, stages[0].argv);
+    }
+    if (count == 1 && strcmp(stages[0].argv[0], "trap") == 0) return trap_builtin(stages[0].argc, stages[0].argv);
+    if (count == 1 && strcmp(stages[0].argv[0], "set") == 0) return set_builtin(stages[0].argc, stages[0].argv);
+    if (count == 1 && strcmp(stages[0].argv[0], "shift") == 0) return shift_builtin(stages[0].argc, stages[0].argv);
+    if (count == 1 && strcmp(stages[0].argv[0], "local") == 0) return local_builtin(stages[0].argc, stages[0].argv);
+    if (count == 1 && !background && strcmp(stages[0].argv[0], "wait") == 0) {
+        return wait_builtin(stages[0].argc, stages[0].argv);
     }
     if (count == 1 && (strcmp(stages[0].argv[0], "test") == 0 || strcmp(stages[0].argv[0], "[") == 0)) {
         return test_builtin(stages[0].argc, stages[0].argv);
@@ -1683,6 +2059,11 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  NAME=value prog        set it for that one program only; unset NAME forgets it\n"
                "  prog args &            run in the background; Ctrl-Z stops the running command\n"
                "  jobs, fg [N], bg [N]   list jobs; bring one to the terminal; let a stopped one run on\n"
+               "  wait [N|%J]            wait for background jobs (Ctrl-C stops waiting)\n"
+               "  trap 'cmds' INT TERM EXIT   run cmds on a signal, or on leaving; trap - INT undoes it\n"
+               "  set -e -u -x           stop at a failing command; unset variables are errors; show commands\n"
+               "  shift [N], local x=1   drop $1 ..; a variable of the function being run, $$ the shell\n"
+               "  ! cmd                  turn the status round\n"
                "  exit [status]          leave the shell\n");
         return 0;
     }
@@ -1747,6 +2128,7 @@ struct node {
     char *docs[MAX_NODE_DOCS];  /* The here-documents its text or redirs name ("<\x02A" is docs[0]) */
     int doc_count;
     int background;           /* NODE_PIPELINE: ended with '&' */
+    int negate;               /* Written after '!': its status turned round (0 becomes 1, anything else 0) */
 };
 
 static segment_t *segs;       /* The segments being parsed, and where the parser is */
@@ -2426,7 +2808,7 @@ static void take_ampersand(node_t *pipeline) {
  * redirections of its own is returned as it is (it runs in the shell);
  * anything else becomes a NODE_PIPELINE whose body holds the commands,
  * each run in a child of the shell. The node, or NULL with parse_state set. */
-static node_t *parse_pipeline(void) {
+static node_t *parse_pipeline_body(void) {
     tail_waiting = pipe_waiting = 0;
     node_t *element = parse_command();
     if (!element) return NULL;
@@ -2458,6 +2840,24 @@ static node_t *parse_pipeline(void) {
     return NULL;
 }
 
+/* A pipeline, perhaps after '!' (which must have a command after it, on
+ * the same line), as parse_pipeline_body; the node, or NULL with
+ * parse_state set */
+static node_t *parse_pipeline(void) {
+    char word[32];
+    first_word(segs[seg_pos].text, word);
+    int negate = strcmp(word, "!") == 0;
+    if (negate) {
+        const char *rest = segs[seg_pos].text + 1;
+        while (is_blank(*rest)) rest++;
+        if (!*rest) { parse_state = PARSE_SYNTAX; return NULL; }
+        take_keyword("!", 0);
+    }
+    node_t *node = parse_pipeline_body();
+    if (node && negate) node->negate = 1;
+    return node;
+}
+
 /* Commands up to the end of the text or (if `nested`) up to a keyword that
  * closes or divides the compound command being parsed. A closing keyword
  * at the top level, or right after '&&' or '||', is a syntax error. */
@@ -2482,6 +2882,8 @@ static void parse_list(cmd_list_t *list, int nested) {
 }
 
 static int exec_list(cmd_list_t *list, int *should_exit);
+static int int_trapped(void);
+static void run_traps_between_commands(void);
 
 /* After a round of a loop: deal with a pending break or continue. Returns
  * 1 if the loop must end (a break for it, or anything for a loop further
@@ -2505,9 +2907,10 @@ static int leave_loop(void) {
  * Its status. */
 static int exec_for(node_t *node, int *should_exit) {
     static stage_t stages[MAX_STAGES];
+    expand_failed = 0;
     int count = parse(node->text, stages, 0);
     if (count < 0 || count > 1) {
-        fprintf(2, "sh: syntax error\n");
+        if (!expand_failed) fprintf(2, "sh: syntax error\n");
         return 2;
     }
     int words = count ? stages[0].argc : 0, status = 0;
@@ -2552,6 +2955,7 @@ static node_t *copy_node(const node_t *from) {
     memset(node, 0, sizeof(*node));
     node->kind = from->kind;
     node->background = from->background;
+    node->negate = from->negate;
     memcpy(node->name, from->name, sizeof(node->name));
     for (int i = 0; i < from->doc_count; i++) {
         if (from->docs[i] && !(node->docs[i] = copy_text(from->docs[i], strlen(from->docs[i])))) { free_node(node); return NULL; }
@@ -2633,6 +3037,69 @@ static int define_function(node_t *node) {
     return 0;
 }
 
+/* local NAME[=value]: what each variable was before a function made it
+ * its own, put back when that function returns (restore_locals). A
+ * stack, so that nested calls undo in the right order. */
+#define MAX_LOCALS 64
+
+typedef struct {
+    char name[32];
+    char *value;              /* malloc'd; NULL: it was not set */
+    int exported;             /* It was in the environment */
+} saved_variable_t;
+
+static saved_variable_t saved_variables[MAX_LOCALS];
+static int saved_count;
+
+/* Put back the variables saved since the stack held `mark` entries, the
+ * newest first */
+static void restore_locals(int mark) {
+    while (saved_count > mark) {
+        saved_variable_t *v = &saved_variables[--saved_count];
+        unset_variable(v->name);
+        if (v->value && v->exported) setenv(v->name, v->value);
+        else if (v->value) set_variable(v->name, v->value);
+        free(v->value);
+        v->value = NULL;
+    }
+}
+
+/* local NAME[=value]...: inside a function, make each NAME the function's
+ * own: it keeps its value (or takes the one given) until the function
+ * returns, and then has again the value it had before (or none). 0; 1
+ * (with a message) outside a function, for something that is not a name,
+ * or with no room left to remember the old values. */
+static int local_builtin(int argc, char **argv) {
+    if (call_depth == 0) {
+        fprintf(2, "sh: local: not in a function\n");
+        return 1;
+    }
+    for (int i = 1; i < argc; i++) {
+        char *equals = strchr(argv[i], '=');
+        if (!is_name(argv[i], equals) || (equals ? (size_t)(equals - argv[i]) : strlen(argv[i])) >= 32) {
+            fprintf(2, "sh: local: '%s' is not a name\n", argv[i]);
+            return 1;
+        }
+        if (equals) *equals = '\0';
+        if (saved_count >= MAX_LOCALS) {
+            fprintf(2, "sh: local: too many local variables\n");
+            return 1;
+        }
+        saved_variable_t *v = &saved_variables[saved_count];
+        memset(v, 0, sizeof(*v));
+        memcpy(v->name, argv[i], strlen(argv[i]) + 1);
+        const char *old = get_variable(argv[i]);
+        v->exported = getenv(argv[i]) != NULL;
+        if (old && !(v->value = copy_text(old, strlen(old)))) {
+            fprintf(2, "sh: local: out of memory\n");
+            return 1;
+        }
+        saved_count++;
+        if (equals && set_variable(argv[i], equals + 1) != 0) return 1;
+    }
+    return 0;
+}
+
 /* Run the function argv[0] (it must exist) with argv[1..] as its
  * arguments, in this process. Its status: that of its last command, or
  * what "return" gave. Calls nested more than MAX_CALL_DEPTH deep fail
@@ -2659,7 +3126,7 @@ static int call_function(int argc, char **argv, int *should_exit) {
     }
 
     char **saved_args = arguments;
-    int saved_count = argument_count, saved_loops = loop_depth;
+    int saved_arg_count = argument_count, saved_loops = loop_depth, locals_mark = saved_count;
     arguments = args;
     argument_count = count;
     loop_depth = 0;           /* break and continue do not reach the caller's loops */
@@ -2669,7 +3136,8 @@ static int call_function(int argc, char **argv, int *should_exit) {
     pending_return = 0;
     loop_depth = saved_loops;
     arguments = saved_args;
-    argument_count = saved_count;
+    argument_count = saved_arg_count;
+    restore_locals(locals_mark);
 
     for (int i = 0; i < count; i++) free(args[i]);
     free(args);
@@ -2700,11 +3168,12 @@ static int exec_case(node_t *node, int *should_exit) {
     size_t used = 0;
     const char *p = node->text;
     reading_assignment = 1;
+    expand_failed = 0;
     const char *expanded = next_word(&p, &used, NULL);
     reading_assignment = 0;
     char *word = expanded ? copy_text(expanded, strlen(expanded)) : NULL;
     if (!word) {
-        fprintf(2, "sh: syntax error\n");
+        if (!expand_failed) fprintf(2, "sh: syntax error\n");
         return 2;
     }
     for (int i = 0; i < node->item_count; i++) {
@@ -2716,7 +3185,7 @@ static int exec_case(node_t *node, int *should_exit) {
             reading_assignment = reading_pattern = 0;
             if (!pattern) {
                 free(word);
-                fprintf(2, "sh: syntax error\n");
+                if (!expand_failed) fprintf(2, "sh: syntax error\n");
                 return 2;
             }
             if (glob_match_text(pattern, word)) {
@@ -2744,7 +3213,7 @@ static void redirect_compound(const char *text) {
         while (is_blank(*p)) p++;
         if (*p == '\0') break;
         if (!is_redirect_start(p) || parse_redirect(&p, &used, &stage) < 0) {
-            fprintf(2, "sh: syntax error\n");
+            if (!expand_failed) fprintf(2, "sh: syntax error\n");
             exit(2);
         }
     }
@@ -2797,7 +3266,8 @@ static int exec_pipeline(node_t *node) {
                 signal(SIGTSTP, SIG_DFL);
             }
             interactive = 0;                          /* The child runs commands, not jobs */
-            ignore_interrupt(0);                      /* Ctrl-C ends it with what it runs */
+            traps_enter_subshell();
+            child_interrupt_default();                /* Ctrl-C ends it with what it runs */
             if (script_fd >= 0) { close(script_fd); script_fd = -1; }
             if (input != -1) { dup2(input, 0); close(input); }
             if (link[1] != -1) { dup2(link[1], 1); close(link[1]); close(link[0]); }
@@ -2840,6 +3310,14 @@ static int exec_pipeline(node_t *node) {
  * taken, a loop that never runs its body, a case that matches nothing and
  * a function definition give 0. */
 static int exec_node(node_t *node, int *should_exit) {
+    if (node->negate) {                                    /* "! command": set -e does not look at it either */
+        errexit_ignored++;
+        node->negate = 0;
+        int status = exec_node(node, should_exit);
+        node->negate = 1;
+        errexit_ignored--;
+        return status == 0 ? 1 : 0;
+    }
     if (node->kind == NODE_SIMPLE) {
         char *const *outer_docs = active_docs;          /* (A function it calls sets its own) */
         int outer_count = active_doc_count;
@@ -2848,7 +3326,7 @@ static int exec_node(node_t *node, int *should_exit) {
         int status = run_pipeline_text(node->text, should_exit);
         active_docs = outer_docs;
         active_doc_count = outer_count;
-        if (status == 128 + SIGINT) interrupted = 1;        /* Ctrl-C: no further loop rounds */
+        if (status == 128 + SIGINT && !int_trapped()) interrupted = 1;   /* Ctrl-C: no further loop rounds */
         return status;
     }
     if (node->kind == NODE_CASE) return exec_case(node, should_exit);
@@ -2856,11 +3334,13 @@ static int exec_node(node_t *node, int *should_exit) {
     if (node->kind == NODE_FUNCTION) return define_function(node);
     if (node->kind == NODE_PIPELINE) {
         int status = exec_pipeline(node);
-        if (status == 128 + SIGINT) interrupted = 1;        /* As for a simple command */
+        if (status == 128 + SIGINT && !int_trapped()) interrupted = 1;   /* As for a simple command */
         return status;
     }
     if (node->kind == NODE_IF) {
+        errexit_ignored++;                                 /* (A condition may fail: that is its job) */
         int cond = exec_list(&node->cond, should_exit);
+        errexit_ignored--;
         if (*should_exit || interrupted || pending_break || pending_continue || pending_return) return cond;
         if (cond == 0) return exec_list(&node->body, should_exit);
         return node->other.count ? exec_list(&node->other, should_exit) : 0;
@@ -2872,7 +3352,9 @@ static int exec_node(node_t *node, int *should_exit) {
         status = exec_for(node, should_exit);
     } else {
         for (;;) {                                         /* while: as long as the condition succeeds; until: fails */
+            errexit_ignored++;
             int cond = exec_list(&node->cond, should_exit);
+            errexit_ignored--;
             int stop = node->kind == NODE_WHILE ? cond != 0 : cond == 0;
             if (*should_exit || interrupted || leave_loop() || stop) break;
             status = exec_list(&node->body, should_exit);
@@ -2891,12 +3373,40 @@ static int exec_list(cmd_list_t *list, int *should_exit) {
     int status = last_status;
     for (int i = 0; i < list->count; i++) {
         int join = list->joins[i];
+        /* Before the last command of an && or || list: tested, not fatal */
+        int tested = i + 1 < list->count && list->joins[i + 1] != JOIN_ALWAYS;
         if (join == JOIN_ALWAYS || (join == JOIN_IF_OK && status == 0) || (join == JOIN_IF_FAILED && status != 0)) {
+            errexit_ignored += tested;
             status = last_status = exec_node(list->items[i], should_exit);
+            errexit_ignored -= tested;
+            run_traps_between_commands();
+            if (opt_errexit && status != 0 && !tested && !errexit_ignored && !list->items[i]->negate) {
+                *should_exit = 1;                          /* set -e */
+            }
         }
         if (*should_exit || interrupted || pending_break || pending_continue || pending_return) break;
     }
     return status;
+}
+
+/* Whether Ctrl-C has a trap: a command it ends is then not the end of the
+ * loop or list it is in, the trap says what happens */
+static int int_trapped(void) {
+    return trap_actions[SIGINT] && *trap_actions[SIGINT];
+}
+
+/* run_traps, between two commands of a list: a trap's list is a command
+ * text of its own, run while this one is part way through, so what says
+ * where this one is (a pending break, Ctrl-C) is kept around it */
+static void run_traps_between_commands(void) {
+    if (!traps_waiting) return;
+    int saved_interrupted = interrupted, saved_break = pending_break;
+    int saved_continue = pending_continue, saved_return = pending_return;
+    run_traps();
+    interrupted = saved_interrupted;
+    pending_break = saved_break;
+    pending_continue = saved_continue;
+    pending_return = saved_return;
 }
 
 /* Parse and run a command text. Returns its status (2 for a syntax error,
@@ -3058,7 +3568,8 @@ static void complete_names(lineedit_t *e, const char *word, int command) {
     for (const char *c = word; *c; c++) if (*c == '/') slash = c;
 
     if (command && !slash) {
-        static const char *const builtins[] = { "bg", "cd", "exit", "export", "fg", "help", "jobs", "pwd", "unset" };
+        static const char *const builtins[] = { "bg", "cd", "exit", "export", "fg", "help", "jobs", "local", "pwd", "set",
+                                                "shift", "trap", "unset", "wait" };
         size_t n = strlen(word);
         for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
             if (strncmp(builtins[i], word, n) == 0) lineedit_add_match(e, builtins[i]);
@@ -3096,9 +3607,10 @@ int main(int argc, char **argv) {
 
     /* Ctrl-C should stop the programs the shell runs, not the shell */
     ignore_interrupt(1);
+    shell_pid = getpid();
 
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
-        return run_line(argv[2], &should_exit);
+        shell_exit(run_line(argv[2], &should_exit));
     }
 
     /* "sh FILE": read commands from the file instead of the terminal. The
@@ -3140,6 +3652,7 @@ int main(int argc, char **argv) {
     static char pending[4096];
     size_t pending_len = 0;
     while (!should_exit) {
+        run_traps();                                         /* Signals that came while nothing ran */
         if (interactive && pending_len == 0) check_jobs();
         long got;
         if (editing) {
@@ -3171,5 +3684,5 @@ int main(int argc, char **argv) {
         last_status = status;
         pending_len = 0;
     }
-    return last_status;
+    shell_exit(last_status);
 }
