@@ -49,6 +49,7 @@
 #define SIGFPE   8   // Division by zero, or a floating point error (from an exception only)
 #define SIGKILL  9   // Cannot be caught or ignored
 #define SIGUSR1 10
+#define SIGBUS   7  // A shared mapping's page past the end of its file
 #define SIGSEGV 11
 #define SIGUSR2 12
 #define SIGTERM 15

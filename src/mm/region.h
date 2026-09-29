@@ -26,7 +26,16 @@
  * mapping one maps the same frame, read-only, or copy-on-write in a
  * writable mapping, so the first write gives the process its own copy.
  *
- * Not done: shared file mappings and writing changes back to a file.
+ * A shared mapping of a file (MAP_SHARED) maps the cached frame itself,
+ * writable if the mapping is, in every process that maps the page: they
+ * see each other's writes at once, and read() and write() on the file see
+ * them too (pcache.h). What was written reaches the file at msync
+ * (region_sync), when the range is unmapped, and when the process exits or
+ * runs another program (so also at shutdown, which ends every process).
+ * Such a page is never swapped (its frame is shared with the cache). A
+ * page wholly past the file's end is SIGBUS: at the touch if it was never
+ * mapped, and once a truncation has cut it off, from the process's next
+ * safe point on (region_revalidate).
  */
 
 #ifndef REGION_H
@@ -48,20 +57,28 @@ typedef struct {
     uint64_t file_offset;       // Where in the file `start` is
     bool program;               // Part of the program itself (execve), not of mmap: while it
                                 // exists the file may not be written (vnode exec_count)
+    bool shared;                // MAP_SHARED: writes reach the file; while writable, the file
+                                // counts as open for writing (vnode write_count: not runnable)
 } mem_region_t;
+
+#define REGION_NO_MEMORY    (-1)  // region_fault: promised, but there is no frame for it
+#define REGION_PAST_THE_END (-2)  // region_fault: a shared mapping's page past its file's end (SIGBUS)
 
 /**
  * @brief Promise `length` bytes at an address of the kernel's choosing.
  * @param node   A file to take the contents from (NULL: zeros).
  * @param offset Page-aligned position in that file.
+ * @param shared A shared mapping of `node` (which must be cacheable).
  * @param error  Receives a negative errno on failure.
  * @return The address, or 0.
  */
-uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *node, uint64_t offset, int *error);
+uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *node, uint64_t offset, bool shared,
+                    int *error);
 
 /**
  * @brief Take back [addr, addr + length): the promise, and whatever frames
- *        were given. Parts of regions may be removed.
+ *        were given. Parts of regions may be removed. What a shared mapping
+ *        wrote in the range is written to its file. May sleep.
  * @return 0, or a negative errno.
  */
 int region_unmap(struct task *task, uint64_t addr, size_t length);
@@ -76,9 +93,27 @@ uint64_t region_set_brk(struct task *task, uint64_t new_brk);
  * @brief Keep the promise for the page containing `addr`: give it a frame
  *        (and its file contents). May sleep (reading a file from disk).
  * @return 1 if the page is now present, 0 if `addr` is not in any promised
- *         region, -1 if it is but there is no memory left.
+ *         region, REGION_NO_MEMORY if it is but there is no memory left,
+ *         REGION_PAST_THE_END for a shared mapping's page past the end of
+ *         its file.
  */
 int region_fault(struct task *task, uint64_t addr);
+
+/**
+ * @brief msync: write to their files what the task's shared mappings in
+ *        [addr, addr + length) have written. May sleep.
+ * @return 0; -ENOMEM if part of the range is mapped by nothing; -EIO if a
+ *         page could not be written.
+ */
+int region_sync(struct task *task, uint64_t addr, size_t length);
+
+/**
+ * @brief If a truncation has happened since the task last looked
+ *        (pcache_truncations), give up the pages of its shared mappings
+ *        that now lie past the end of their files: touching one again is
+ *        SIGBUS. Called by the task itself at a safe point.
+ */
+void region_revalidate(struct task *task);
 
 /**
  * @brief fork: the child gets the same regions (and the same promises).
@@ -86,10 +121,27 @@ int region_fault(struct task *task, uint64_t addr);
 void region_fork(struct task *child, const struct task *parent);
 
 /**
- * @brief exit and exec: forget every region. The frames themselves go with
- *        the address space.
+ * @brief exit and exec: forget every region, writing what shared mappings
+ *        wrote to their files. Call once the address space is gone (or no
+ *        longer the task's), so that pages no mapping holds any more are
+ *        left clean. May sleep.
  */
 void region_release_all(struct task *task);
+
+/**
+ * @brief exec: take every region off the task (its table is empty and its
+ *        promise given back), the files staying held, so that what shared
+ *        mappings wrote can be written once the old address space is gone
+ *        (region_put_all). NULL if memory ran out: then they were released
+ *        at once, as region_release_all.
+ */
+mem_region_t *region_take_all(struct task *task);
+
+/**
+ * @brief Finish what region_take_all began: write back, unpin, free.
+ *        NULL does nothing. May sleep.
+ */
+void region_put_all(mem_region_t *taken);
 
 /**
  * @brief Pages promised to all processes and not yet touched.

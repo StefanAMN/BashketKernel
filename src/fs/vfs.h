@@ -126,6 +126,7 @@ typedef struct vnode {
     uint32_t exec_count;        // Program regions reading it page by page: it may not be written (ETXTBSY)
     uint32_t write_count;       // Open file descriptions that may write it: it may not be run (ETXTBSY)
     uint32_t cached_pages;      // Its pages in the page cache (pcache.h; under the cache's lock)
+    uint32_t shared_cached;     // ... of them, pages a shared mapping has mapped (read and write go through them)
     uint32_t cache_generation;  // Raised whenever its contents change (pcache_drop_file)
     const vnode_ops_t *ops;     // Non-NULL for a node whose contents come from functions (/dev, /proc, files on disk)
     uint64_t private_data;      // For whoever provides ops (the FAT driver keeps the first cluster here)

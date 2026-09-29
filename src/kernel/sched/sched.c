@@ -4,6 +4,8 @@
  */
 
 #include "sched.h"
+#include "region.h"
+#include "pcache.h"
 #include "heap.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -659,6 +661,10 @@ void sched_check_kill(void) {
     if (!self) return;
     if (self->kill_pending) task_exit_status(128 + self->kill_pending);
 
+    // The same safe point serves for giving up pages a truncation has cut
+    // off from shared mappings' files (cheap when nothing was truncated)
+    if (self->is_user && self->seen_truncations != pcache_truncations()) region_revalidate(self);
+
     // The same safe point serves for being stopped: the task holds nothing
     if (self->stop_pending) {
         uint64_t flags = sched_lock_irqsave();
@@ -800,7 +806,6 @@ void task_exit_status(int status) {
     // and may sleep.)
     file_close_all(self->fds);
     task_set_cwd(self, NULL);
-    region_release_all(self); // Mapped files are free to be removed again
 
     // Its memory goes now too, not when someone collects its exit status: a
     // parent may take its time over that (or be asleep), and until then a
@@ -818,6 +823,10 @@ void task_exit_status(int status) {
         irq_restore(irq);
         vmm_destroy_address_space(space);
     }
+    // Its regions go once its pages have (what shared mappings wrote is
+    // written to their files, and a page nobody maps any more is left
+    // clean), and its mapped files are free to be removed again
+    region_release_all(self);
     tty_process_exited(self->pid);
     process_foreground_owner_exited(self->pid);
 
