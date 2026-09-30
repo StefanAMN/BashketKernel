@@ -28,7 +28,12 @@
 #define ESPIPE  29
 #define EROFS   30   // Read-only filesystem   // Illegal seek
 #define EPIPE   32   // Broken pipe
-#define ENOSYS  38   // Not implemented
+#define ENOSYS  38
+#define EMSGSIZE     90  // Message too long
+#define EADDRINUSE   98  // Port already in use
+#define ENETDOWN    100  // No network
+#define ETIMEDOUT   110  // Timed out
+#define EHOSTUNREACH 113 // No route to host   // Not implemented
 #define ENOTEMPTY 39 // Directory not empty
 
 #endif // KERRNO_H

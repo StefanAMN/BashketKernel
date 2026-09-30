@@ -18,7 +18,11 @@
 
 typedef void (*irq_handler_t)(struct registers *regs);
 
-static irq_handler_t irq_handlers[16] = {0};
+// PCI devices share interrupt lines (QEMU puts the virtio disk and network
+// card on the same one), so each IRQ can have several handlers. All of them
+// are called; each asks its own device whether it was the one.
+#define HANDLERS_PER_IRQ 4
+static irq_handler_t irq_handlers[16][HANDLERS_PER_IRQ] = {0};
 
 const char *exception_messages[] = {
     "Division By Zero",
@@ -49,9 +53,15 @@ const char *exception_messages[] = {
 };
 
 void register_irq_handler(uint8_t irq, irq_handler_t handler) {
-    if (irq < 16) {
-        irq_handlers[irq] = handler;
+    if (irq >= 16 || !handler) return;
+    for (int i = 0; i < HANDLERS_PER_IRQ; i++) {
+        if (irq_handlers[irq][i] == handler) return;       // Already registered
+        if (irq_handlers[irq][i] == NULL) {
+            irq_handlers[irq][i] = handler;
+            return;
+        }
     }
+    kprintf("IRQ %u: too many handlers, one was not registered\n", irq);
 }
 
 // An exception raised by ring 3 code is that program's problem, not the
@@ -177,8 +187,8 @@ void isr_handler(struct registers *regs) {
 
         // Hardware IRQ (32..47)
         uint8_t irq = regs->int_no - 32;
-        if (irq_handlers[irq] != NULL) {
-            irq_handlers[irq](regs);
+        for (int i = 0; i < HANDLERS_PER_IRQ && irq_handlers[irq][i] != NULL; i++) {
+            irq_handlers[irq][i](regs);
         }
 
         // This interrupt arrived while user code was running and is about to

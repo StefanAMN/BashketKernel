@@ -73,7 +73,12 @@ QEMU = qemu-system-x86_64
 DISK = $(BUILD)/disk.img
 DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw
 
-QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS)
+# A network card on QEMU's built-in user-mode network: the guest is
+# 10.0.2.15 and a simulated gateway answers at 10.0.2.2. Needs nothing
+# configured on the host.
+NET_FLAGS = -netdev user,id=n0 -device virtio-net-pci,netdev=n0
+
+QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 .PHONY: all clean iso run run-gdb test test-lowmem test-disk test-edit fuzz check
 
@@ -145,7 +150,7 @@ SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU))
 test:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso build-test/disk.img
 	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
-		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
 	status=$$?; \
@@ -171,15 +176,15 @@ test-lowmem: iso
 # survive every seed and still pass the system call checks afterwards.
 # Success is judged by exit statuses, not by text the fuzzer prints: a fuzzed
 # write() can dump the fuzzer's own memory, string constants included, to the
-# console. The fuzzer is the first process (pid 2); the shell reports any
-# process that exits with a non-zero status.
+# console. The kernel shell reports a program it ran that exits with a
+# non-zero status, in words no user program contains.
 # Seeds are fixed so that a failure can be reproduced: make fuzz FUZZ_SEEDS="7"
 FUZZ_SEEDS ?= 1 2 3 4 5 6 7 8
 FUZZ_ROUNDS ?= 40
 fuzz: iso
 	@for seed in $(FUZZ_SEEDS); do \
 		tools/qemu_shell.py --quiet --timeout 300 $(SHELL_CPU) \
-			--expect 'syscheck: all checks passed' --forbid '\[pid 2 exited with status' \
+			--expect 'syscheck: all checks passed' --forbid '\[pid [0-9]+ exited with status' \
 			"exec /bin/fuzz $$seed $(FUZZ_ROUNDS)" 'exec /bin/syscheck' > $(BUILD)/fuzz-$$seed.log 2>&1 \
 			&& echo "fuzz seed $$seed: ok ($$(grep -a -o '[0-9]* ended normally.*' $(BUILD)/fuzz-$$seed.log))" \
 			|| { echo "fuzz seed $$seed: FAILED (see $(BUILD)/fuzz-$$seed.log)"; exit 1; }; \

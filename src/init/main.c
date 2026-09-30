@@ -46,7 +46,7 @@
 #include "fpu.h"
 #include "swap.h"
 #include "elf_dyn.h"
-#include "socket.h"
+#include "net.h"
 #include "window.h"
 #include "auth.h"
 #include "klog.h"
@@ -232,7 +232,7 @@ void _start(void) {
     if (virtio_blk_init() == 0) fat32_mount("/disk");
 
     // Phase 13: PCI Bus & VirtIO Network Stack
-    virtio_net_init();
+    if (virtio_net_init() == 0) net_init();
 
     // Phase 14: Custom x86_64 Bare-Metal Bootloader Transition
     boot_loader_init();
