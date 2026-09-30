@@ -20,7 +20,8 @@ that file.
 - **Milestone 4:** done. Blocking, copy-on-write fork, exec, wait, kill, file
   descriptors, pipes and a user-space shell all work.
 - **Milestone 5:** pipes, priority scheduling, FPU/SSE, `/dev` and `/proc`, the
-  terminal, the virtio disk and FAT32 are implemented. The rest of the table below is open, and deleting code is a
+  terminal, the virtio disk, FAT32, the network card and a UDP/IP stack are
+  implemented. The rest of the table below is open, and deleting code is a
   decision left to the project owners.
 - **Added beyond the original plan:** safe-point kill and Ctrl-C, CPU
   protections (SMEP, SMAP, UMIP), on-demand stack growth, a terminal line
@@ -347,7 +348,7 @@ and its README entry. Suggested calls, in the order worth doing:
 | virtio-blk | **Done.** Legacy PCI transport, interrupt-driven, `/dev/vda`. One request in flight at a time; no modern (MMIO capability) transport. |
 | FAT32 | **Done**, read and write, mounted at `/disk`, checked against `fsck.fat` and damaged images. Open: long file names, rename, timestamps, reading directories on demand instead of all at mount time, and any crash consistency beyond write ordering. |
 | SMP | Defer. Needs per-CPU data, `swapgs` and real locks: today "interrupts off" is the lock in the scheduler, pipes, semaphores and the wait path. |
-| virtio-net, sockets | Defer or delete. |
+| virtio-net, sockets | **Done** for UDP: driver, ARP, IPv4, ICMP echo, UDP sockets. Open: TCP, DHCP, DNS, fragmentation, and anything but one fixed address. |
 | Swap | Delete until a real block device and page reclaim exist. |
 | ANSI | **Done.** Escape sequence parser, acted on by the console. |
 | Window manager, auth, mouse | Delete or leave clearly marked as stubs. |

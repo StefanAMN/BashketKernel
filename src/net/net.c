@@ -131,31 +131,41 @@ static uint16_t next_ephemeral = EPHEMERAL_PORT_FIRST;
 bool net_up(void) { return up; }
 const net_stats_t *net_stats(void) { return &stats; }
 
-uint16_t net_checksum(const void *data, size_t len) {
-    // Add the data up as 16-bit big-endian numbers, fold the carries back
-    // in, and invert. A block that includes its own correct checksum sums to
-    // 0xFFFF, so checking is: checksum of the whole block == 0.
+// The Internet checksum (RFC 1071): add the data up as 16-bit big-endian
+// numbers, fold the carries back in, and invert. A block that includes its
+// own correct checksum sums to 0xFFFF, so checking is: checksum of the whole
+// block == 0.
+//
+// checksum_add accumulates; several blocks can be summed one after another
+// as long as all but the last have an even length.
+static uint32_t checksum_add(uint32_t sum, const void *data, size_t len) {
     const uint8_t *bytes = data;
-    uint32_t sum = 0;
     for (size_t i = 0; i + 1 < len; i += 2) sum += ((uint32_t)bytes[i] << 8) | bytes[i + 1];
     if (len & 1) sum += (uint32_t)bytes[len - 1] << 8;
+    return sum;
+}
+
+static uint16_t checksum_finish(uint32_t sum) {
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return (uint16_t)~sum;
 }
 
-// UDP's checksum also covers a "pseudo header" of fields from the IP header
+uint16_t net_checksum(const void *data, size_t len) {
+    return checksum_finish(checksum_add(0, data, len));
+}
+
+// UDP's checksum also covers a "pseudo header" of fields from the IP header:
+// both addresses, the protocol number and the UDP length
 static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void *udp, size_t len) {
-    uint8_t block[12 + sizeof(struct udp_header) + UDP_PAYLOAD_MAX];
-    if (len > sizeof(block) - 12) return 0;
+    uint8_t pseudo[12];
     uint32_t src = htonl(src_ip), dst = htonl(dst_ip);
     uint16_t length = htons((uint16_t)len);
-    memcpy(block + 0, &src, 4);
-    memcpy(block + 4, &dst, 4);
-    block[8] = 0;
-    block[9] = IP_PROTO_UDP;
-    memcpy(block + 10, &length, 2);
-    memcpy(block + 12, udp, len);
-    return net_checksum(block, 12 + len);
+    memcpy(pseudo + 0, &src, 4);
+    memcpy(pseudo + 4, &dst, 4);
+    pseudo[8] = 0;
+    pseudo[9] = IP_PROTO_UDP;
+    memcpy(pseudo + 10, &length, 2);
+    return checksum_finish(checksum_add(checksum_add(0, pseudo, sizeof(pseudo)), udp, len));
 }
 
 // --- ARP -----------------------------------------------------------------------

@@ -11,7 +11,8 @@ fixed sleeps and the run takes as long as the kernel actually needs.
 
 A command starting with '!' is sent without waiting for a prompt afterwards
 (for programs that do not finish by themselves). '^C' and '^D' send Ctrl-C
-and Ctrl-D. A command starting with '~' is typed as raw keys into a
+and Ctrl-D. '@wait:3' lets the
+guest run for 3 seconds. A command starting with '~' is typed as raw keys into a
 full-screen program: '~hello\\r^S^Q' types hello, Enter, Ctrl-S, Ctrl-Q
 ('\\e' is Escape, so '\\e[A' is the up arrow).
     tools/qemu_shell.py --mem 512M --qemu-arg=-smp --qemu-arg=2 'uptime'
@@ -115,6 +116,12 @@ def main():
                     proc.stdin.write(command[1:].encode() + b"\n")
                     proc.stdin.flush()
                     read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.5)
+                    continue
+                if command.startswith("@wait:"):
+                    # Let the guest run for a while (something outside is
+                    # talking to it), still watching for a crash
+                    read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"],
+                               time.monotonic() + float(command.split(":", 1)[1]))
                     continue
                 if command.startswith("~"):
                     # Raw keystrokes for a full-screen program: no newline is

@@ -49,7 +49,21 @@
 #define SYS_SIGNAL      300  // (sig, handler, restorer): returns the previous handler
 #define SYS_SIGRETURN   302  // Only for the C library's handler-return stub
 #define SYS_TTY_RAW     303  // (flag): 1 delivers every key at once without echo; 0 goes back to lines
+#define SYS_PING        305  // (ip, timeout_ms): round-trip time in ms, or a negative error
+#define SYS_SOCKET      41   // (): a new UDP socket, as a file descriptor
+#define SYS_SENDTO      44   // (fd, buf, len, ip, port)
+#define SYS_RECVFROM    45   // (fd, buf, len, struct net_address *from, timeout_ms); 0 ms waits for ever
+#define SYS_BIND        49   // (fd, port)
 #define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen
+
+// Where a datagram came from, as recvfrom reports it. Addresses are numbers
+// with the first byte of the dotted form most significant: 10.0.2.2 is
+// 0x0A000202.
+struct net_address {
+    uint32_t ip;
+    uint16_t port;
+    uint16_t reserved;
+};
 
 struct utsname {
     char sysname[65];

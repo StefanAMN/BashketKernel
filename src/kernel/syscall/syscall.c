@@ -28,6 +28,7 @@
 #include "priority.h"
 #include "cpu.h"
 #include "tty.h"
+#include "net.h"
 
 extern void syscall_entry(void);
 
@@ -385,6 +386,70 @@ static int64_t sys_chdir(uint64_t user_path) {
     return 0;
 }
 
+// --- Network -----------------------------------------------------------------
+
+static uint64_t ms_to_ticks(uint64_t ms) {
+    if (ms > 3600 * 1000) ms = 3600 * 1000; // An hour is plenty, and keeps the arithmetic small
+    return (ms * TIMER_HZ + 999) / 1000;
+}
+
+static udp_socket_t *fd_to_socket(int fd) {
+    file_t *file = fd_to_file(fd);
+    return (file && file->kind == FILE_SOCKET) ? file->socket : NULL;
+}
+
+static int64_t sys_socket(void) {
+    if (!net_up()) return -ENETDOWN;
+    file_t *file = file_open_socket();
+    if (!file) return -ENOMEM;
+
+    int fd = fd_install(sched_get_current_task()->fds, file);
+    if (fd < 0) file_close(file);
+    return fd;
+}
+
+static int64_t sys_sendto(int fd, uint64_t user_buf, size_t len, uint32_t ip, uint64_t port) {
+    udp_socket_t *socket = fd_to_socket(fd);
+    if (!socket) return -EBADF;
+    if (len > UDP_PAYLOAD_MAX) return -EMSGSIZE;
+    if (port == 0 || port > 0xFFFF) return -EINVAL;
+    if (len > 0 && !user_range_ok(user_buf, len, false)) return -EFAULT;
+
+    // Sending can sleep (waiting for an ARP answer), so the datagram is
+    // copied into kernel memory first and the user's buffer is left alone
+    uint8_t data[UDP_PAYLOAD_MAX];
+    user_access_begin();
+    memcpy(data, (const void *)user_buf, len);
+    user_access_end();
+
+    return udp_sendto(socket, ip, (uint16_t)port, data, len);
+}
+
+static int64_t sys_recvfrom(int fd, uint64_t user_buf, size_t len, uint64_t user_from, uint64_t timeout_ms) {
+    udp_socket_t *socket = fd_to_socket(fd);
+    if (!socket) return -EBADF;
+    if (len > UDP_PAYLOAD_MAX) len = UDP_PAYLOAD_MAX; // No datagram is longer
+    if (len > 0 && !user_range_ok(user_buf, len, true)) return -EFAULT;
+    if (user_from != 0 && !user_range_ok(user_from, sizeof(struct net_address), true)) return -EFAULT;
+
+    uint8_t data[UDP_PAYLOAD_MAX];
+    struct net_address from = {0};
+    int64_t n = udp_recvfrom(socket, data, len, &from.ip, &from.port, ms_to_ticks(timeout_ms));
+    if (n < 0) return n;
+
+    user_access_begin();
+    memcpy((void *)user_buf, data, (size_t)n);
+    if (user_from != 0) memcpy((void *)user_from, &from, sizeof(from));
+    user_access_end();
+    return n;
+}
+
+static int64_t sys_ping(uint32_t ip, uint64_t timeout_ms) {
+    uint64_t rtt_ticks = 0;
+    int err = net_ping(ip, ms_to_ticks(timeout_ms), &rtt_ticks);
+    return err != 0 ? err : (int64_t)(rtt_ticks * 1000 / TIMER_HZ);
+}
+
 // --- Dispatcher --------------------------------------------------------------
 
 static int64_t dispatch(struct registers *regs);
@@ -461,6 +526,16 @@ static int64_t dispatch(struct registers *regs) {
             if (regs->rdi > PRIO_LOW) return -EINVAL;
             task_set_priority(task, (uint8_t)regs->rdi);
             return 0;
+
+        case SYS_SOCKET:   return sys_socket();
+        case SYS_BIND: {
+            udp_socket_t *socket = fd_to_socket((int)regs->rdi);
+            if (!socket) return -EBADF;
+            return regs->rsi > 0xFFFF ? -EINVAL : udp_bind(socket, (uint16_t)regs->rsi);
+        }
+        case SYS_SENDTO:   return sys_sendto((int)regs->rdi, regs->rsi, (size_t)regs->rdx, (uint32_t)regs->r10, regs->r8);
+        case SYS_RECVFROM: return sys_recvfrom((int)regs->rdi, regs->rsi, (size_t)regs->rdx, regs->r10, regs->r8);
+        case SYS_PING:     return sys_ping((uint32_t)regs->rdi, regs->rsi);
 
         case SYS_TTY_RAW:
             tty_set_raw(regs->rdi != 0, task->pid);

@@ -65,6 +65,16 @@ long chdir(const char *path);
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
 long unlink(const char *path);
 
+/* Network: UDP datagrams and ping. The machine is 10.0.2.15; QEMU's gateway
+ * (which also reaches the host computer) is 10.0.2.2. */
+long socket(void);                                /* A new UDP socket, as a file descriptor */
+long bind(int fd, unsigned port);                 /* Receive datagrams sent to this port */
+long sendto(int fd, const void *buf, size_t len, uint32_t ip, unsigned port);
+long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned long timeout_ms); /* 0: wait for ever */
+long ping(uint32_t ip, unsigned long timeout_ms); /* Round-trip time in ms, or a negative error */
+uint32_t parse_ip(const char *text);              /* "10.0.2.2" -> number; 0 if it is not an address */
+void format_ip(uint32_t ip, char out[16]);
+
 /* Terminal */
 void tty_raw(int raw);                           /* 1: every key at once, no echo; 0: whole lines (the default) */
 void tty_size(unsigned *columns, unsigned *rows);
