@@ -5,7 +5,7 @@ LD = ld
 # and the normal kernel never share object files.
 BUILD ?= build
 
-INCLUDES = -Ilib -Isrc -Isrc/include -Isrc/init -Isrc/arch/x86_64 -Isrc/boot \
+INCLUDES = -Ilib -Isrc -Isrc/include -Isrc/drivers/virtio -Isrc/init -Isrc/arch/x86_64 -Isrc/boot \
            -Isrc/drivers/block -Isrc/drivers/bus -Isrc/drivers/char -Isrc/drivers/console -Isrc/drivers/input -Isrc/drivers/net -Isrc/drivers/tty \
            -Isrc/fs -Isrc/gui/compositor -Isrc/kernel -Isrc/kernel/ipc -Isrc/kernel/log -Isrc/kernel/proc -Isrc/kernel/sched -Isrc/kernel/sync -Isrc/kernel/syscall -Isrc/kernel/time \
            -Isrc/lib -Isrc/mm -Isrc/net
