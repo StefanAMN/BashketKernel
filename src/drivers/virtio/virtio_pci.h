@@ -172,12 +172,6 @@ bool virtio_msix_assign(virtio_device_t *dev, uint16_t queue, uint16_t entry, ui
  */
 bool virtio_msix_finish(virtio_device_t *dev);
 
-/**
- * @brief The CPU the next device's interrupts should go to: the CPUs that
- *        are running, in turn, starting after the boot CPU, so that
- *        devices are spread over them.
- */
-uint32_t virtio_msix_next_cpu(void);
 
 /**
  * @brief Tell the device the driver is ready (after its queues are set up):
