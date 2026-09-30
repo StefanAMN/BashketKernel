@@ -44,6 +44,13 @@ size_t smp_get_cpu_count(void);
  */
 size_t smp_get_cpu_total(void);
 
+/**
+ * @brief The CPU the next device's interrupts should go to (an MSI-X vector
+ *        or an I/O APIC line): the CPUs that are running, in turn, starting
+ *        after the boot CPU, so that devices are spread over them. Boot only.
+ */
+uint32_t smp_next_interrupt_cpu(void);
+
 // Interrupt vectors used between and within CPUs. WAKE is sent by another
 // CPU: there is a function to run, a TLB to flush or a task to pick up.
 // TIMER is each CPU's own local APIC timer (see timer.h).

@@ -1857,7 +1857,7 @@ bound to one CPU, unbinds them, and sees them spread over four; the
 yield measurement of Q2 stays at no waits; `/proc/timers` shows sleepers
 per CPU.
 
-### R4. Interrupt lines spread over the CPUs (S)
+### R4. Interrupt lines spread over the CPUs (S) — done
 
 Interrupts that come through the I/O APIC (keyboard, serial line, mouse,
 legacy virtio) all go to the boot CPU; MSI-X vectors are already spread
@@ -1866,6 +1866,16 @@ legacy virtio) all go to the boot CPU; MSI-X vectors are already spread
 targets with the legacy interface; a check that some line's interrupts
 arrive on a CPU other than 0; the keyboard and serial line still work
 (`make test-kshell`, the scripted shell tests).
+
+Done (`ioapic_spread_lines`, `ioapic_route_isa_irq_to`; the round robin
+the virtio drivers used is now `smp_next_interrupt_cpu`, for lines and
+vectors alike). The serial line goes first, so on two or more CPUs it is
+always CPU 1's: every program run of `make test-smp` reads
+`/proc/interrupts` and expects none of its interrupts on CPU 0 (never
+spreading the lines failed it); `make check` runs `test-smp` with the
+legacy interface too. Seen there: the legacy disk's line can land on the
+boot CPU when the turn comes round to it (it took 33,000 interrupts in one
+run); the boot CPU is last in the turn, not left out.
 
 ---
 
@@ -1954,7 +1964,8 @@ P1, P2, P3, P4                   done (in parallel)
         |
 Q1, Q2, Q3, Q4                   done
         |
-R4, R1, R2, R3                   next (planned, not started)
+R4                               done
+R1, R2, R3                       next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on

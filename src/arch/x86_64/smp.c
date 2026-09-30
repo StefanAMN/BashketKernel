@@ -258,3 +258,17 @@ size_t smp_get_cpu_count(void) {
 size_t smp_get_cpu_total(void) {
     return cpu_total;
 }
+
+uint32_t smp_next_interrupt_cpu(void) {
+    static uint32_t turn;
+    uint32_t total = (uint32_t)smp_get_cpu_total();
+    if (total <= 1) return 0;
+    // CPUs 1, 2, ..., total-1, 0, 1, ...: the boot CPU last, since it also
+    // has the PIT's line and runs PID 0
+    for (uint32_t tried = 0; tried < total; tried++) {
+        uint32_t cpu = (1 + turn++) % total;
+        cpu_t *c = cpu_get(cpu);
+        if (c && c->active) return cpu;
+    }
+    return 0;
+}

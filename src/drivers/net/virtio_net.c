@@ -14,6 +14,7 @@
 #include "sched.h"
 #include "spinlock.h"
 #include "ioapic.h"
+#include "smp.h"
 #include "interrupts.h"
 
 
@@ -123,7 +124,7 @@ int virtio_net_init(void) {
     // next send, so the transmit queue raises no interrupt at all.
     if (virtio_msix_start(&card)) {
         uint8_t vector = register_msi_handler("virtio-net rx", virtio_net_msi, NULL);
-        if (!vector || !virtio_msix_assign(&card, QUEUE_RX, 0, vector, virtio_msix_next_cpu())) {
+        if (!vector || !virtio_msix_assign(&card, QUEUE_RX, 0, vector, smp_next_interrupt_cpu())) {
             card.queue_vector[QUEUE_RX] = VIRTIO_MSI_NO_VECTOR;
         }
     }
@@ -156,7 +157,7 @@ int virtio_net_init(void) {
     uint8_t irq = card.irq;
     if (!virtio_msix_finish(&card) && irq > 0 && irq < 16) {
         register_irq_handler(irq, virtio_net_irq);
-        ioapic_route_isa_irq(irq);
+        ioapic_route_isa_irq_to(irq, smp_next_interrupt_cpu());
     }
 
     virtio_driver_ok(&card);

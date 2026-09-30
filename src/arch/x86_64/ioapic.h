@@ -27,6 +27,21 @@ void ioapic_init(void);
 void ioapic_route_isa_irq(uint8_t irq);
 
 /**
+ * @brief ioapic_route_isa_irq, to CPU `cpu_id` (our numbering, cpu_get)
+ *        instead of the boot CPU. Its handler then runs there.
+ */
+void ioapic_route_isa_irq_to(uint8_t irq, uint32_t cpu_id);
+
+/**
+ * @brief Once the other CPUs run: send the serial line's and the keyboard's
+ *        interrupts to CPUs of their own (smp_next_interrupt_cpu, the serial
+ *        line first: on two or more CPUs it gets CPU 1), as the lines routed
+ *        later are. The PIT stays with the boot CPU, whose
+ *        periodic tick it is when there is no timestamp counter.
+ */
+void ioapic_spread_lines(void);
+
+/**
  * @brief Program one I/O APIC redirection entry and unmask it. Refused, with
  *        a message, for a GSI this I/O APIC does not handle.
  * @param gsi Global System Interrupt (the I/O APIC's GSI base + its pin).
