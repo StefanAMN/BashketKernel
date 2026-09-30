@@ -254,8 +254,9 @@ static int64_t serve_slice(const char *text, size_t len, size_t offset, void *bu
 
 // /proc/<pid>/status: who the task is and what it is doing, "Key:\tvalue"
 // a line. Memory as the task records it: the heap (brk), mmap'd regions,
-// how much of those has not been touched yet (no frames behind it), and
-// "Size", all of that plus the program. "Syscall" is the number of the system call the task is in, or "-".
+// how much of those has not been touched yet (no frames behind it),
+// "Size", all of that plus the program, and "Resident", the pages it holds
+// in memory now, "Shared" of them with another owner too. "Syscall" is the number of the system call the task is in, or "-".
 // -ENOENT once the task is gone.
 static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count) {
     char *text = kmalloc(PROC_TEXT_MAX);
@@ -277,6 +278,14 @@ static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count
         // as /proc/<pid>/maps lists them, without the stack's reservation.
         // (Not what is resident: that would mean walking another process's
         // page tables, which its exit frees without this lock.)
+        // Resident: the pages its page tables have present now, walked
+        // here under the scheduler lock, which exit and exec hold to swap
+        // the tables out before freeing them (so these are never freed
+        // under the walk)
+        size_t resident = 0, shared = 0;
+        if (t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
+            resident = vmm_count_user_pages(vmm_space_from_phys((uint64_t)t->pml4_phys), &shared);
+        }
         uint64_t program = 0;
         if (t->is_user && t->state != TASK_ZOMBIE) {
             for (uint32_t i = 0; i < t->image_segment_count && i < ELF_REPORTED_SEGMENTS; i++) {
@@ -288,11 +297,12 @@ static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count
         len = ksnprintf(text, PROC_TEXT_MAX,
                         "Name:\t%s\nState:\t%s\nPid:\t%u\nPPid:\t%u\nPgid:\t%u\n"
                         "Uid:\t%u\nRuid:\t%u\nGid:\t%u\nRgid:\t%u\nKind:\t%s\nPriority:\t%u\n"
-                        "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\nSize:\t%lu kB\nSyscall:\t%s\n",
+                        "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\nSize:\t%lu kB\n"
+                        "Resident:\t%lu kB\nShared:\t%lu kB\nSyscall:\t%s\n",
                         t->name, (unsigned)t->state < 5 ? state_words[t->state] : "?", t->pid, t->parent_pid, t->pgid,
                         t->uid, t->ruid, t->gid, t->rgid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
                         t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->promised_pages * 4,
-                        (program + heap + mapped) / 1024, syscall_text);
+                        (program + heap + mapped) / 1024, (uint64_t)resident * 4, (uint64_t)shared * 4, syscall_text);
     }
     sched_unlock_irqrestore(flags);
 

@@ -1821,7 +1821,7 @@ not visible from outside.
 Planned 2026-10-25, after track Q. Each item comes from a limit that Q or
 an earlier track wrote down.
 
-### R1. Resident memory per process (M)
+### R1. Resident memory per process (M) — done
 
 `/proc/<pid>/status` and `top` show a process's size, not what it holds
 (Q4): counting present pages means walking another process's page tables,
@@ -1833,6 +1833,30 @@ teardown waits for, so `/proc` can walk it safely; report "Resident"
 N more; a test reading the status of processes that are exiting and
 exec'ing in a loop on four CPUs (no fault, no stale count); `make
 test-top`; sabotage the teardown's wait and see the race test fail.
+
+Done. No new lock: page tables are freed only when a whole address space
+is destroyed (never by unmapping), so `/proc` walks a task's tables under
+the scheduler lock it already holds, and `exit` and `execve` swap the
+task's tables out under that lock before destroying them. A walk under
+way finishes first; none starts on tables being freed. The walk visits
+only the tables that exist (`vmm_count_user_pages`); "shared" reads each
+frame's owner count without its lock (ranked below the scheduler's), a
+snapshot. `/proc/<pid>/status` gains `Resident` and `Shared`, `top` a RES
+column. Checks: syscheck (64 pages touched add exactly 256 kB, after a
+warm-up round, since programs are read in page by page; `munmap` takes
+them back; after `fork` `Shared` grows); `make test-top` wants a resident
+`spin`; `status_of_exiting_and_execing_processes` reads the status of
+shells and their exec'ing children as they come and go on four CPUs.
+The sabotage the plan asked for (tables freed while still published)
+passed that test twice, 8,600 reads over freed tables: a freed frame
+keeps its contents and stays mapped in the direct map, so the walk found
+what it expected. The test kernel now fills freed frames with 0xFF before
+they can be handed out again (`pmm_free_frames`): a freed table then
+points far past memory, and the same sabotage faulted in the walk, two
+runs in two; everything else passes with it. The test also first failed
+by itself: its reader read the file in 7-byte pieces, and each read makes
+the text afresh, so a process changing between pieces gave a torn line;
+it now reads in one call, as `cat` does.
 
 ### R2. Sessions and background jobs at the terminal (M)
 
@@ -1965,7 +1989,8 @@ P1, P2, P3, P4                   done (in parallel)
 Q1, Q2, Q3, Q4                   done
         |
 R4                               done
-R1, R2, R3                       next (planned, not started)
+R1                               done
+R2, R3                           next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on

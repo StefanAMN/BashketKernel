@@ -4,6 +4,7 @@
  */
 
 #include "pmm.h"
+#include "kstring.h"
 #include "kprintf.h"
 #include "spinlock.h"
 
@@ -222,6 +223,15 @@ void pmm_free_frames(void *phys_addr, size_t count) {
             continue;
         }
 
+#ifdef KERNEL_TESTS
+        // In the test kernel a freed frame is filled with 0xFF before anyone
+        // can have it again: read as a page-table entry, that is present and
+        // points far past the end of memory, so walking a freed page table
+        // faults at once instead of finding what it held before; data read
+        // after free is plainly wrong. (Before it is marked free: after, it
+        // could already be someone else's.)
+        memset((void *)(frame * PAGE_SIZE + hhdm_off), 0xFF, PAGE_SIZE);
+#endif
         bitmap_clear(frame);
         used_frames--;
         free_frames++;
