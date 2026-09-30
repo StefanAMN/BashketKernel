@@ -14,6 +14,7 @@
 #include "spinlock.h"
 #include "virtio_blk.h"
 #include "kerrno.h"
+#include "mount.h"
 
 static inline uint64_t rdtsc(void) {
     uint32_t low, high;
@@ -139,6 +140,7 @@ void dev_init(void) {
     if (!dev_dir) return;
 
     rng_state ^= rdtsc();
+    mount_register("/dev", "dev", "kernel");
 
     // Each call is a no-op if the node already exists
     vfs_create_device(dev_dir, "null", &null_ops);

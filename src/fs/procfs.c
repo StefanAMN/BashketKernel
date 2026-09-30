@@ -19,6 +19,7 @@
 #include "kerrno.h"
 #include "cpu.h"
 #include "klog.h"
+#include "mount.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -122,6 +123,10 @@ static size_t gen_cpuinfo(char *buf, size_t size) {
                      vendor, brand, family, model, cpu_protection_summary());
 }
 
+static size_t gen_mounts(char *buf, size_t size) {
+    return mount_describe(buf, size);
+}
+
 // One read function and one ops table per file
 #define PROC_FILE(name) \
     static int64_t read_##name(vnode_t *node, size_t offset, void *buf, size_t count) { \
@@ -135,6 +140,7 @@ PROC_FILE(uptime);
 PROC_FILE(meminfo);
 PROC_FILE(tasks);
 PROC_FILE(cpuinfo);
+PROC_FILE(mounts);
 
 // /proc/kmsg: the kernel message log. Too large for serve_text's buffer, and
 // already stored as text, so it is read straight from the log.
@@ -156,5 +162,7 @@ void procfs_init(void) {
     vfs_create_device(proc_dir, "tasks", &ops_tasks);
     vfs_create_device(proc_dir, "cpuinfo", &ops_cpuinfo);
     vfs_create_device(proc_dir, "kmsg", &ops_kmsg);
-    kprintf("ProcFS Init: /proc/version, uptime, meminfo, tasks, cpuinfo, kmsg\n");
+    vfs_create_device(proc_dir, "mounts", &ops_mounts);
+    mount_register("/proc", "proc", "kernel");
+    kprintf("ProcFS Init: /proc/version, uptime, meminfo, tasks, cpuinfo, kmsg, mounts\n");
 }
