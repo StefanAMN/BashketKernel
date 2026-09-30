@@ -203,6 +203,15 @@ long chdir(const char *path)                       { return syscall1(SYS_CHDIR, 
 long getcwd(char *buf, size_t size)                { return syscall2(SYS_GETCWD, buf, size); }
 long unlink(const char *path)                      { return syscall1(SYS_UNLINK, path); }
 
+void tty_raw(int raw) { syscall1(SYS_TTY_RAW, raw); }
+
+void tty_size(unsigned *columns, unsigned *rows) {
+    unsigned size[2] = { 80, 25 };
+    syscall1(SYS_TTY_SIZE, size);
+    if (columns) *columns = size[0];
+    if (rows) *rows = size[1];
+}
+
 const char *strerror(long err) {
     switch (err < 0 ? -err : err) {
         case 0:         return "success";

@@ -32,6 +32,14 @@ static uint32_t FG_COLOR = 0x00FFFFFF;
 static uint32_t BG_COLOR = 0x00000000;
 static ansi_parser_t parser;
 
+// The cursor is an underline in the cell where the next character will go.
+// It is drawn by inverting pixels, so drawing it twice removes it. To keep
+// output fast it is removed before any character is drawn and only put back
+// by console_refresh, which the timer calls: during a burst of output it is
+// simply absent.
+static bool cursor_drawn = false;
+static uint32_t cursor_drawn_x, cursor_drawn_y;
+
 void console_init(struct limine_framebuffer *fb) {
     g_fb = fb;
     cursor_x = 0;
@@ -61,6 +69,34 @@ void console_enable_backbuffer(void) {
     }
 }
 
+static void putpixel(uint32_t x, uint32_t y, uint32_t color);
+
+static void invert_cursor_cell(uint32_t cell_x, uint32_t cell_y) {
+    if (!backbuffer) return;
+    for (uint32_t y = CELL - 2; y < CELL; y++) {         // The bottom two rows of the cell
+        for (uint32_t x = 0; x < CELL; x++) {
+            uint32_t px = cell_x + x, py = cell_y + y;
+            if (px >= g_fb->width || py >= g_fb->height) continue;
+            uint32_t current = backbuffer[py * (g_fb->pitch / 4) + px];
+            putpixel(px, py, current ^ 0x00FFFFFF);
+        }
+    }
+}
+
+static void hide_cursor(void) {
+    if (!cursor_drawn) return;
+    invert_cursor_cell(cursor_drawn_x, cursor_drawn_y);
+    cursor_drawn = false;
+}
+
+static void show_cursor(void) {
+    if (cursor_drawn || !backbuffer) return;
+    cursor_drawn_x = cursor_x;
+    cursor_drawn_y = cursor_y;
+    invert_cursor_cell(cursor_drawn_x, cursor_drawn_y);
+    cursor_drawn = true;
+}
+
 void console_set_deferred_refresh(bool enabled) {
     deferred_refresh = enabled && backbuffer != NULL;
     if (!deferred_refresh) console_refresh();
@@ -75,6 +111,7 @@ void console_refresh(void) {
         screen_stale = false; // Cleared first: anything drawn from here on goes to the screen too
         memcpy(g_fb->address, backbuffer, total_pixels * sizeof(uint32_t));
     }
+    if (deferred_refresh) show_cursor(); // Output has paused for at least a tick: show where we are
     irq_restore(flags);
 }
 
@@ -265,8 +302,14 @@ static void draw_char(char c) {
 void console_putchar(char c) {
     if (!g_fb) return;
     uint64_t flags = irq_save();
+    hide_cursor(); // It must not be scrolled, overwritten or left behind
     putchar_unlocked(c);
     irq_restore(flags);
+}
+
+void console_get_size(uint32_t *columns, uint32_t *rows) {
+    if (columns) *columns = g_fb ? g_fb->width / CELL : 80;
+    if (rows) *rows = g_fb ? g_fb->height / CELL : 25;
 }
 
 void console_get_cursor(uint32_t *column, uint32_t *row) {
@@ -276,7 +319,12 @@ void console_get_cursor(uint32_t *column, uint32_t *row) {
 
 uint32_t console_get_pixel(uint32_t x, uint32_t y) {
     if (!g_fb || !backbuffer || x >= g_fb->width || y >= g_fb->height) return 0;
-    return backbuffer[y * (g_fb->pitch / 4) + x] & 0x00FFFFFF;
+
+    uint64_t flags = irq_save();
+    hide_cursor(); // Report the text as drawn, without the cursor on top
+    uint32_t color = backbuffer[y * (g_fb->pitch / 4) + x] & 0x00FFFFFF;
+    irq_restore(flags);
+    return color;
 }
 
 void console_write(const char *str) {

@@ -27,6 +27,7 @@
 #include "file.h"
 #include "priority.h"
 #include "cpu.h"
+#include "tty.h"
 
 extern void syscall_entry(void);
 
@@ -460,6 +461,19 @@ static int64_t dispatch(struct registers *regs) {
             if (regs->rdi > PRIO_LOW) return -EINVAL;
             task_set_priority(task, (uint8_t)regs->rdi);
             return 0;
+
+        case SYS_TTY_RAW:
+            tty_set_raw(regs->rdi != 0, task->pid);
+            return 0;
+        case SYS_TTY_SIZE: {
+            if (!user_range_ok(regs->rdi, 2 * sizeof(uint32_t), true)) return -EFAULT;
+            uint32_t size[2];
+            console_get_size(&size[0], &size[1]);
+            user_access_begin();
+            memcpy((void *)regs->rdi, size, sizeof(size));
+            user_access_end();
+            return 0;
+        }
 
         case SYS_SIGNAL:
             return signal_set_handler(task, (int)regs->rdi, regs->rsi, regs->rdx);

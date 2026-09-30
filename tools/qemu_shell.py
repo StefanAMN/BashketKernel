@@ -11,7 +11,9 @@ fixed sleeps and the run takes as long as the kernel actually needs.
 
 A command starting with '!' is sent without waiting for a prompt afterwards
 (for programs that do not finish by themselves). '^C' and '^D' send Ctrl-C
-and Ctrl-D.
+and Ctrl-D. A command starting with '~' is typed as raw keys into a
+full-screen program: '~hello\\r^S^Q' types hello, Enter, Ctrl-S, Ctrl-Q
+('\\e' is Escape, so '\\e[A' is the up arrow).
     tools/qemu_shell.py --mem 512M --qemu-arg=-smp --qemu-arg=2 'uptime'
     tools/qemu_shell.py --trace-irq 'uptime'      # also write irq-trace.log
 
@@ -30,7 +32,7 @@ import sys
 import time
 
 PROMPT = b"BashketOS> "
-CONTROL_KEYS = {"^C": b"\x03", "^D": b"\x04"}
+CONTROL_KEYS = {"^C": b"\x03", "^D": b"\x04", "^S": b"\x13", "^Q": b"\x11"}
 USER_PROMPT = b"\n$ "  # /bin/sh, when a command starts it (e.g. 'exec /bin/sh')
 CRASH_END = b"=================================================\n"
 
@@ -105,6 +107,17 @@ def main():
                     proc.stdin.write(command[1:].encode() + b"\n")
                     proc.stdin.flush()
                     read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.5)
+                    continue
+                if command.startswith("~"):
+                    # Raw keystrokes for a full-screen program: no newline is
+                    # added and no prompt is awaited. "\\r" and "\\e" stand for
+                    # Enter and Escape; ^S, ^Q, ^C, ^D inside are control keys.
+                    keys = command[1:].replace("\\r", "\r").replace("\\e", "\x1b")
+                    for name, byte in CONTROL_KEYS.items():
+                        keys = keys.replace(name, byte.decode())
+                    proc.stdin.write(keys.encode())
+                    proc.stdin.flush()
+                    read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.4)
                     continue
                 data = CONTROL_KEYS.get(command, command.encode() + b"\n")
                 proc.stdin.write(data)

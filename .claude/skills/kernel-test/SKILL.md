@@ -136,6 +136,18 @@ Run after changing anything a system call can reach. Logs are in
 "killed" and "stopped by watchdog" rounds are normal; a failure is a kernel
 exception, a hang, or `/bin/syscheck` failing afterwards.
 
+### Full-screen programs and the screen itself
+
+A command starting with `~` types raw keys (no newline, no waiting):
+`'!exec /bin/edit /tmp/f' '~hello\r^S^Q' 'cat tmp/f'`. `\r` is Enter, `\e`
+Escape (`\e[A` is the up arrow), `^S ^Q ^C ^D` control keys. `make test-edit`
+is the scripted editor test.
+
+The serial log cannot show colour, the cursor, or whether the screen was
+really redrawn. After changing the console, look at it: start QEMU with
+`-monitor unix:m.sock,server,nowait` (a short relative path: unix socket
+paths are limited to 108 bytes), send `screendump out.ppm`, convert and view.
+
 ### The disk
 
 Every run attaches `disk.img` from the ISO's directory as a virtio disk

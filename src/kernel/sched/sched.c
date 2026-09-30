@@ -15,6 +15,7 @@
 #include "file.h"
 #include "fpu.h"
 #include "priority.h"
+#include "tty.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 
@@ -359,6 +360,7 @@ void sched_make_zombie(task_t *task, int status) {
     // other end of a pipe must see end-of-file as soon as the writer dies.
     file_close_all(task->fds);
     task_set_cwd(task, NULL);
+    tty_process_exited(task->pid);
 
     // Children of a dead task have nobody left to wait for them
     task_t *parent = NULL;

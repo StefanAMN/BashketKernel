@@ -19,6 +19,7 @@ static size_t kbd_head = 0;
 static size_t kbd_tail = 0;
 static bool shift_pressed = false;
 static bool ctrl_pressed = false;
+static bool extended = false;   // The previous scancode was the 0xE0 prefix
 
 #define CTRL_C 0x03
 
@@ -90,6 +91,32 @@ static void keyboard_handle_port(void) {
     }
     if (scancode == 0xAA || scancode == 0xB6) {
         shift_pressed = false;
+        return;
+    }
+
+    // 0xE0 announces an "extended" key: the arrows, Home, End, Delete and the
+    // right-hand Ctrl. They are passed on the way a serial terminal sends
+    // them, as ESC [ and a letter, so programs handle both the same way.
+    if (scancode == 0xE0) {
+        extended = true;
+        return;
+    }
+    if (extended) {
+        extended = false;
+        const char *sequence = NULL;
+        switch (scancode) {
+            case 0x48: sequence = "\033[A"; break;  // Up
+            case 0x50: sequence = "\033[B"; break;  // Down
+            case 0x4D: sequence = "\033[C"; break;  // Right
+            case 0x4B: sequence = "\033[D"; break;  // Left
+            case 0x47: sequence = "\033[H"; break;  // Home
+            case 0x4F: sequence = "\033[F"; break;  // End
+            case 0x53: sequence = "\033[3~"; break; // Delete
+            case 0x1D: ctrl_pressed = true; break;  // Right Ctrl down
+            case 0x9D: ctrl_pressed = false; break; // Right Ctrl up
+            default: break;                         // Other extended keys and all releases
+        }
+        for (; sequence && *sequence; sequence++) kbd_buffer_push(*sequence);
         return;
     }
 

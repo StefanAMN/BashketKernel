@@ -34,6 +34,8 @@
 #define SYS_TIME     201
 #define SYS_SIGNAL   300
 #define SYS_SIGRETURN 302
+#define SYS_TTY_RAW  303
+#define SYS_TTY_SIZE 304
 #define SYS_SETPRIORITY 301
 
 #define ENOENT   2

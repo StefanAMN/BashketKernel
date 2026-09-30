@@ -65,6 +65,10 @@ long chdir(const char *path);
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
 long unlink(const char *path);
 
+/* Terminal */
+void tty_raw(int raw);                           /* 1: every key at once, no echo; 0: whole lines (the default) */
+void tty_size(unsigned *columns, unsigned *rows);
+
 /* Formatted output */
 void puts(const char *s);
 void printf(const char *fmt, ...);               /* To standard output */
