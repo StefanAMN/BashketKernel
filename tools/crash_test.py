@@ -31,6 +31,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(HERE, "..", "build")
 
 
+def group_gone(pgid, timeout):
+    """Wait until no process is left in process group `pgid` (gone, or
+    reaped: its files, and so its locks, are closed by then); whether that
+    happened within `timeout` seconds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rounds", type=int, default=6)
@@ -59,6 +73,12 @@ def main():
         time.sleep(delay)
         os.killpg(victim.pid, signal.SIGKILL)
         victim.wait()
+        # QEMU is a grandchild in that group: nothing waits for it, and it
+        # may still be exiting, holding its disk images' locks, when the next
+        # boot wants them ("Failed to get write lock", once on GitHub)
+        if not group_gone(victim.pid, 20.0):
+            print(f"crash: FAILED in round {round_number}: QEMU did not exit after being killed")
+            return 1
 
         # 2. Boot again: the kernel repairs at mount, and must still work
         result = subprocess.run(shell + ["--timeout", "60",
