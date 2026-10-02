@@ -190,6 +190,9 @@ code comments and commit messages; `git log` is the full history.
   the two must accept one measurement in the expected window out of several.
   (An interval timed and measured by the same clock can still be given a
   strict lower bound.) Found only because the fuzzer loads the host.
+  Ticks are also simply lost: without a timestamp counter the clock fell
+  18 s behind in a minute on a busy runner. What must stay right (the time
+  of day) is checked against a clock the host keeps (CMOS), not widened.
 - **Distrust a surprising benchmark number.** `memcpy` measured 15x slower
   than `memset` because its two buffers were exactly 1 MiB apart and collided
   in QEMU's software TLB. Change the benchmark's layout before changing code.
