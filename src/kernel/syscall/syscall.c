@@ -29,6 +29,7 @@
 #include "cpu.h"
 #include "tty.h"
 #include "net.h"
+#include "shm.h"
 
 extern void syscall_entry(void);
 
@@ -251,7 +252,9 @@ static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags) {
     if (length == 0) return -EINVAL;
 
     task_t *task = sched_get_current_task();
-    uint64_t mapped = user_mmap_anon(current_space(), &task->mmap_next, length, prot);
+    bool shared = (flags & MAP_SHARED) != 0;
+    if (shared && (flags & MAP_PRIVATE)) return -EINVAL; // One or the other
+    uint64_t mapped = user_mmap_anon_flags(current_space(), &task->mmap_next, length, prot, shared);
     return mapped ? (int64_t)mapped : -ENOMEM;
 }
 
@@ -384,6 +387,14 @@ static int64_t sys_chdir(uint64_t user_path) {
 
     task_set_cwd(task, dir == vfs_get_root() ? NULL : dir);
     return 0;
+}
+
+// --- Shared memory segments ---------------------------------------------------
+
+static int64_t sys_shmat(int id) {
+    task_t *task = sched_get_current_task();
+    uint64_t addr = shm_attach(id, current_space(), &task->mmap_next);
+    return addr ? (int64_t)addr : -EINVAL;
 }
 
 // --- Network -----------------------------------------------------------------
@@ -526,6 +537,10 @@ static int64_t dispatch(struct registers *regs) {
             if (regs->rdi > PRIO_LOW) return -EINVAL;
             task_set_priority(task, (uint8_t)regs->rdi);
             return 0;
+
+        case SYS_SHMGET:   return shm_get((uint32_t)regs->rdi, (size_t)regs->rsi);
+        case SYS_SHMAT:    return sys_shmat((int)regs->rdi);
+        case SYS_SHMRM:    return shm_remove((int)regs->rdi);
 
         case SYS_SOCKET:   return sys_socket();
         case SYS_BIND: {

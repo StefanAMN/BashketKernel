@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define PROT_NONE  0x0
 #define PROT_READ  0x1
@@ -48,6 +49,13 @@ int user_unmap_range(uint64_t *pml4, uint64_t addr, size_t length);
  * @return The address of the new mapping, or 0 on failure.
  */
 uint64_t user_mmap_anon(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot);
+
+/**
+ * @brief As user_mmap_anon; with `shared`, the memory stays shared with
+ *        children created by fork (they see each other's writes) instead of
+ *        becoming copy-on-write.
+ */
+uint64_t user_mmap_anon_flags(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot, bool shared);
 
 /**
  * @brief Move the program break, mapping or unmapping pages as needed.

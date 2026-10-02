@@ -37,6 +37,9 @@
 #define SYS_TTY_RAW  303
 #define SYS_TTY_SIZE 304
 #define SYS_PING     305
+#define SYS_SHMGET   29
+#define SYS_SHMAT    30
+#define SYS_SHMRM    31
 #define SYS_SOCKET   41
 #define SYS_SENDTO   44
 #define SYS_RECVFROM 45
@@ -103,6 +106,7 @@ struct dirent {
 #define PROT_READ  1
 #define PROT_WRITE 2
 #define PROT_EXEC  4
+#define MAP_SHARED    0x01
 #define MAP_PRIVATE   0x02
 #define MAP_ANONYMOUS 0x20
 

@@ -23,6 +23,7 @@
 #define VMM_HUGE        (1ULL << 7)  // Huge Page (2MB or 1GB)
 #define VMM_GLOBAL      (1ULL << 8)  // Global translation (not invalidated on CR3 write)
 #define VMM_COW         (1ULL << 9)  // Ours (CPU ignores bits 9-11): copy this page on first write
+#define VMM_SHARED      (1ULL << 10) // Ours: shared memory; fork gives the child the same frame, writable
 #define VMM_NO_EXECUTE  (1ULL << 63) // NX bit (No Instruction Execution)
 
 #define PTE_ADDR_MASK   0x000FFFFFFFFFF000ULL

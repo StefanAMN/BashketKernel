@@ -104,7 +104,7 @@ static void one_call(void) {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
-        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_BIND, SYS_SENDTO, SYS_RECVFROM, SYS_PING,
+        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_BIND, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -177,6 +177,13 @@ static void one_call(void) {
 
         case SYS_SLEEP:
             a = rnd() % 3; /* Milliseconds */
+            break;
+        case SYS_SHMGET:
+            if (shaped) { a = 0xF000 + rnd() % 4; b = 4096 * (1 + rnd() % 8); }
+            break;
+        case SYS_SHMAT:
+        case SYS_SHMRM:
+            if (shaped) a = rnd() % 18;
             break;
         case SYS_RECVFROM:
             e = rnd() % 20 + 1;   /* A timeout in ms: never wait for ever on a socket nobody writes to */

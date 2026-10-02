@@ -486,7 +486,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 35. POSIX Shared Memory (SHM) (Phase 35)
-**Status: partial.** Keyed kernel heap buffers. Not mapped into processes.
+**Status: real.** Two kinds, both real: `mmap(MAP_SHARED)` memory stays shared between a process and the children it forks, and keyed segments (`shmget`, `shmat`, `shmrm`) are shared between any processes. Frames are reference counted and freed with the last mapping. No permissions.
 
 **Goal:** Inter-process shared physical frame regions (`shm_create`, `shm_get`, `shm_destroy`).
 

@@ -49,6 +49,9 @@
 #define SYS_SIGNAL      300  // (sig, handler, restorer): returns the previous handler
 #define SYS_SIGRETURN   302  // Only for the C library's handler-return stub
 #define SYS_TTY_RAW     303  // (flag): 1 delivers every key at once without echo; 0 goes back to lines
+#define SYS_SHMGET      29   // (key, size): id of the segment with that key, created if new
+#define SYS_SHMAT       30   // (id): map the segment into the caller; returns its address
+#define SYS_SHMRM       31   // (id): the key is released; memory goes when the last mapping does
 #define SYS_PING        305  // (ip, timeout_ms): round-trip time in ms, or a negative error
 #define SYS_SOCKET      41   // (): a new UDP socket, as a file descriptor
 #define SYS_SENDTO      44   // (fd, buf, len, ip, port)
