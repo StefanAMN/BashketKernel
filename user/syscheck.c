@@ -3680,6 +3680,42 @@ static void check_proc(void) {
     CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
     CHECK(status_number(text, "Size") == size_before);
 
+    /* Resident: what is present. 64 pages touched add exactly 256 kB and go
+     * again with munmap (the second round counts: in the first, code pages
+     * of the calls themselves are read in too, page by page) */
+    for (int round = 0; round < 2; round++) {
+        CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
+        long resident_before = status_number(text, "Resident");
+        char *pages = mmap_anon(64 * 4096);
+        CHECK(pages != NULL);
+        if (!pages) break;
+        for (int i = 0; i < 64; i++) pages[i * 4096] = 1;
+        CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
+        long resident_touched = status_number(text, "Resident");
+        CHECK(munmap(pages, 64 * 4096) == 0);
+        CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
+        long resident_after = status_number(text, "Resident");
+        if (round == 1) CHECK(resident_touched == resident_before + 256 && resident_after == resident_before);
+    }
+    /* Shared: after fork, this process's pages are the child's too */
+    CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
+    long shared_before = status_number(text, "Shared");
+    int hold[2];
+    CHECK(pipe(hold) == 0);
+    long child = fork();
+    if (child == 0) {
+        char byte;
+        close(hold[1]);
+        read(hold[0], &byte, 1);
+        exit(0);
+    }
+    close(hold[0]);
+    CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
+    CHECK(status_number(text, "Shared") > shared_before + 64);
+    close(hold[1]);
+    int child_status = -1;
+    CHECK(waitpid(child, &child_status, 0) == child && child_status == 0);
+
     char target[16];
     long n = readlink("/proc/self", target, sizeof(target) - 1);
     CHECK(n > 0 && n < (long)sizeof(target));

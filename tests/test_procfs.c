@@ -263,6 +263,71 @@ TEST(proc_cpuinfo_counts_busy_ticks_per_cpu) {
     EXPECT_TRUE(slept - computed < 15);
 }
 
+// A reader of /proc/<pid>/status walks the process's page tables (its
+// Resident line). Processes that exit or exec under it, on other CPUs,
+// free tables: the reader must never walk one being freed (the swap of
+// the tables happens under the scheduler lock it holds) and never report
+// more than there is. Each round is a shell that forks a child, which
+// execs /bin/false; both exit. The reader reads the shell's pid and the
+// next few (the child's among them).
+static volatile pid_t watched_pid;
+static volatile int reader_stop, reader_done;
+static volatile uint64_t reader_reads, reader_absurd;
+
+// Reads the status of the watched pid and the three after it until told
+// to stop, counting the reads that found a process and those whose
+// Resident was more than memory holds
+static void status_reader_entry(void) {
+    static char text[1024];
+    char path[48];
+    while (!reader_stop) {
+        pid_t base = watched_pid;
+        if (base <= 0) { sched_yield(); continue; }
+        for (pid_t pid = base; pid < base + 4; pid++) {
+            // In one read, as cat does: each read makes the text afresh, so
+            // slurp's small pieces could come from two moments of a process
+            // that is changing (and tear the line apart)
+            proc_path(path, pid, "status");
+            file_t *file = NULL;
+            if (file_open(path, O_RDONLY, &file) != 0) continue;     // Not there (yet, or any more)
+            int64_t n = file_read(file, text, sizeof(text) - 1);
+            file_close(file);
+            if (n <= 0) continue;
+            text[n] = '\0';
+            int64_t resident = number_after(text, "Resident:\t");
+            if (resident < 0 || (uint64_t)resident > pmm_get_total_frames() * 4) {
+                if (reader_absurd++ == 0) kprintf("    pid %d read as: %s\n", (int)pid, text);
+            }
+            reader_reads++;
+        }
+    }
+    reader_done = 1;
+}
+
+TEST(status_of_exiting_and_execing_processes) {
+    reader_stop = 0; reader_done = 0; reader_reads = 0; reader_absurd = 0; watched_pid = 0;
+    EXPECT_TRUE(task_create("status-reader", status_reader_entry) != NULL);
+    char *argv[] = { "/bin/sh", "-c", "/bin/false", NULL };
+    for (int round = 0; round < 40; round++) {
+        pid_t pid = process_spawn("/bin/sh", argv);
+        EXPECT_TRUE(pid > 0);
+        if (pid <= 0) break;
+        watched_pid = pid;
+        int status = 0;
+        EXPECT_EQ(process_wait(pid, &status), pid);
+        EXPECT_EQ(status, 1);
+    }
+    watched_pid = 0;
+    reader_stop = 1;
+    TEST_WAIT(reader_done, 300);
+    EXPECT_TRUE(reader_done);
+    kprintf("    %lu status reads of processes exiting and exec'ing\n", reader_reads);
+    EXPECT_TRUE(reader_reads > 40);
+    EXPECT_TRUE(reader_absurd == 0);
+    size_t reaped = 0;
+    TEST_WAIT((reaped += sched_reap()) >= 1, 300);
+}
+
 void test_suite_procfs(void) {
     kprintf("Suite: /proc\n");
     RUN_TEST(procfs_files_report_live_state);
@@ -271,4 +336,5 @@ void test_suite_procfs(void) {
     RUN_TEST(fd_slot_reference_outlives_close);
     RUN_TEST(proc_pid_status_names_the_system_call);
     RUN_TEST(proc_cpuinfo_counts_busy_ticks_per_cpu);
+    RUN_TEST(status_of_exiting_and_execing_processes);
 }
