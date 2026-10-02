@@ -10,6 +10,14 @@
  * Setting the time changes only that starting point: the CMOS clock itself
  * is not written (as with Linux's settimeofday; `hwclock` is another story).
  *
+ * The nanosecond clock can fall behind (a CPU without a timestamp counter
+ * counts ticks, and a host that is short of time loses some: a third of
+ * them once on GitHub's runners) or run at a slightly wrong rate (the
+ * counter's calibration). So the time of day is checked against the CMOS
+ * clock, at most once a second when it is read (walltime_check), and put
+ * right when it is more than WALLTIME_CHECK_LIMIT_NS out; a time someone
+ * set is kept as its difference from the CMOS clock.
+ *
  * Times are UTC, as nanoseconds or seconds since 1970-01-01 (Unix time). No
  * time zones, no leap seconds.
  */
@@ -20,6 +28,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "rtc.h"
+
+// How far the time of day may drift from the CMOS clock (plus what was set)
+// before it is put right: more than the second the CMOS clock rounds to
+#define WALLTIME_CHECK_LIMIT_NS 1500000000ULL
 
 // The range the kernel accepts for the time: FAT dates start in 1980, and
 // ext2 keeps seconds in 32 bits, which run out in 2106
@@ -35,10 +47,27 @@ void walltime_init(void);
 
 /**
  * @brief The time of day: nanoseconds since 1970-01-01 00:00 UTC. Never
- *        sleeps; safe from any CPU. Goes backwards only when someone sets
- *        the time back.
+ *        sleeps; safe from any CPU. Checks it against the CMOS clock if a
+ *        second has passed since the last check and this CPU holds no
+ *        spinlock (the clock's lock ranks below many). Goes backwards when
+ *        someone sets the time back, or by up to WALLTIME_CHECK_LIMIT_NS
+ *        when a check finds it ahead.
  */
 uint64_t walltime_ns(void);
+
+/**
+ * @brief Compare the time of day with the CMOS clock now (whenever the last
+ *        check was), and put it right if it is more than
+ *        WALLTIME_CHECK_LIMIT_NS out. Returns how far it was out, in
+ *        nanoseconds (positive: ahead). Call holding no spinlock.
+ */
+int64_t walltime_check(void);
+
+/**
+ * @brief For tests: move the time of day by `delta_ns` without telling the
+ *        CMOS comparison, as a clock that lost or gained time would have.
+ */
+void walltime_test_skew(int64_t delta_ns);
 
 /**
  * @brief walltime_ns in whole seconds (what file times are kept in).
