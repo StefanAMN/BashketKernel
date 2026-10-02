@@ -37,6 +37,8 @@
 #define SYS_TTY_RAW  303
 #define SYS_TTY_SIZE 304
 #define SYS_PING     305
+#define SYS_CLOCK_NS 228
+#define SYS_NANOSLEEP 230
 #define SYS_SHMGET   29
 #define SYS_SHMAT    30
 #define SYS_SHMRM    31

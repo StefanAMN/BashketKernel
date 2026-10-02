@@ -51,7 +51,7 @@ known gaps in the parts that are real.
 | 30 | Window manager | stub | Allocates a pixel buffer. Nothing is composited. |
 | 31 | User authentication | stub | Accepts `root` with any password. |
 | 32 | Kernel log, `dmesg` | real | Everything `kprintf` prints is kept in a 64 KiB ring buffer from the first boot message; `dmesg` (both shells) and `/proc/kmsg` read it. |
-| 33 | High-resolution timers | partial | `nanosleep` blocks without using CPU, but its resolution is the 10 ms tick. |
+| 33 | High-resolution timers | real | The timestamp counter is calibrated against the timer at boot, giving a nanosecond clock (`clock_ns`) and sleeps accurate to microseconds (`nanosleep` sleeps whole ticks and watches the clock for the remainder). No one-shot hardware timer: wake-ups from sleep are still on tick boundaries. |
 | 34 | Mount table | real | A record of which source provides which part of the tree (`/` memory, `/bin` initrd, `/proc`, `/dev`, `/disk` FAT32), shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Nothing can be unmounted. |
 | 35 | Shared memory | real | Two kinds, both real: `mmap(MAP_SHARED)` memory stays shared between a process and the children it forks, and keyed segments (`shmget`, `shmat`, `shmrm`) are shared between any processes. Frames are reference counted and freed with the last mapping. No permissions. |
 | 36 | Crypto library | real | Many primitives, spot-checked against a few bytes of known answers. Not audited, and nothing in the kernel uses it. |

@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
     for (long i = 0; i < count; i++) {
         long rtt = ping(ip, 1000);
         if (rtt >= 0) {
-            printf("reply from %s: time %ld ms\n", argv[1], rtt);
+            printf("reply from %s: time %ld.%03ld ms\n", argv[1], rtt / 1000, rtt % 1000);
             answered++;
         } else {
             printf("no reply from %s: %s\n", argv[1], strerror(rtt));

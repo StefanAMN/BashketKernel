@@ -82,6 +82,13 @@ code comments and commit messages; `git log` is the full history.
   tests on a 2 GB default machine cannot.
 - **Check `make`'s exit status.** A linker error has no `error:` in it and
   leaves the previous ISO in place, so the next run tests the old kernel.
+- **In a VM, ticks and real time disagree in both directions.** The
+  calibrated clock follows the host's real time. When the host stalls QEMU,
+  an interval measures long; afterwards the emulated timer delivers its
+  missed ticks in a burst, so "ten ticks" measures short. A test comparing
+  the two must accept one measurement in the expected window out of several.
+  (An interval timed and measured by the same clock can still be given a
+  strict lower bound.) Found only because the fuzzer loads the host.
 - **Distrust a surprising benchmark number.** `memcpy` measured 15x slower
   than `memset` because its two buffers were exactly 1 MiB apart and collided
   in QEMU's software TLB. Change the benchmark's layout before changing code.

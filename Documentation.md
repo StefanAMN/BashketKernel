@@ -462,7 +462,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 33. High-Resolution Timers & Nanosleep (Phase 33)
-**Status: partial.** `nanosleep` blocks without using CPU, but its resolution is the 10 ms tick.
+**Status: real.** The timestamp counter is calibrated against the timer at boot, giving a nanosecond clock (`clock_ns`) and sleeps accurate to microseconds (`nanosleep` sleeps whole ticks and watches the clock for the remainder). No one-shot hardware timer: wake-ups from sleep are still on tick boundaries.
 
 **Goal:** Nanosecond precision sleep (`nanosleep`), HRT timer queue.
 
