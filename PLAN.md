@@ -418,4 +418,14 @@ Known gaps in the parts that are otherwise real, most important first.
 11. **PID 0 runs on the boot stack**, which has no guard page.
 12. **`kmalloc` and `kfree` are O(number of blocks)**; fine for now, slow with
     thousands of live allocations.
-13. **The GitHub Actions workflow has never been run.**
+13. **The random numbers behind ASLR, ping ids and `/dev/random` are not
+    cryptographic**: a xorshift generator stirred with the timestamp counter.
+    Good enough to make layouts differ; not a defence against a determined
+    attacker who can observe outputs.
+14. **Networking is UDP on one fixed address.** No TCP, DHCP, DNS, IPv6 or
+    fragmentation; the ARP cache never expires entries; a socket's receive
+    queue holds eight datagrams.
+15. **The disk driver handles one request at a time**, one page of data per
+    request, through the legacy virtio interface only. FAT32 is limited to
+    8.3 names and reads the whole directory tree at boot.
+16. **The GitHub Actions workflow has never been run.**
