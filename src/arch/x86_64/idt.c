@@ -41,3 +41,7 @@ void idt_init(void) {
     // Load IDTR via LIDT instruction
     asm volatile ("lidt [%0]" : : "r"(&idt_pointer));
 }
+
+void idt_load_on_this_cpu(void) {
+    asm volatile ("lidt [%0]" : : "r"(&idt_pointer));
+}

@@ -88,6 +88,14 @@ void gdt_init(void) {
     tss_flush();
 }
 
+void gdt_load_on_this_cpu(void) {
+    // Segments only. The task state segment is not loaded: its descriptor is
+    // marked busy by the first CPU that loads it, and a second `ltr` of the
+    // same one faults. A CPU that will run ring 3 code or take interrupts
+    // needs a TSS of its own.
+    gdt_flush((uint64_t)&gdt_pointer);
+}
+
 void tss_set_rsp0(uint64_t rsp) {
     sys_tss.rsp0 = rsp;
 }

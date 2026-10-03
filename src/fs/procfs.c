@@ -20,6 +20,7 @@
 #include "cpu.h"
 #include "klog.h"
 #include "mount.h"
+#include "smp.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -118,9 +119,9 @@ static size_t gen_cpuinfo(char *buf, size_t size) {
                      "model name: %s\n"
                      "family:     %u\n"
                      "model:      %u\n"
-                     "cpus used:  1\n"
+                     "cpus:       %lu started, 1 running tasks\n"
                      "protection: %s\n",
-                     vendor, brand, family, model, cpu_protection_summary());
+                     vendor, brand, family, model, (uint64_t)smp_get_cpu_count(), cpu_protection_summary());
 }
 
 static size_t gen_mounts(char *buf, size_t size) {

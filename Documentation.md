@@ -171,7 +171,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 10. SMP Multiprocessing & Spinlocks (Phase 10)
-**Status: stub.** Spinlocks are real. Only the boot CPU is ever started.
+**Status: partial.** Every CPU the bootloader reports is started, loads the kernel's tables, enables its local APIC and reports in. They are then parked: only the boot CPU runs tasks, because the scheduler and many locks assume one CPU. Spinlocks are real. See the header of `src/arch/x86_64/smp.h` for what running tasks on them would need.
 
 **Goal:** Multi-core CPU initialization via Limine SMP, kernel spinlocks.
 

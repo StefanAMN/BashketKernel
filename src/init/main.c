@@ -95,6 +95,17 @@ static volatile struct limine_module_request module_request = {
     .revision = 0
 };
 
+// The other CPUs, if the machine has any
+__attribute__((used, section(".requests")))
+static volatile struct LIMINE_MP(request) mp_request = {
+#ifdef LIMINE_MP_REQUEST
+    .id = LIMINE_MP_REQUEST,
+#else
+    .id = LIMINE_SMP_REQUEST,
+#endif
+    .revision = 0
+};
+
 // Ask Limine for a 128 KiB boot stack. kmain keeps running on it as PID 0.
 __attribute__((used, section(".requests")))
 static volatile struct limine_stack_size_request stack_size_request = {
@@ -226,7 +237,7 @@ void _start(void) {
     ioapic_init();
 
     // Phase 10: Symmetric Multiprocessing (SMP & Spinlocks)
-    smp_init();
+    smp_init(mp_request.response);
 
     // Phase 11: Real Block Storage & Persistent Filesystem (VirtIO-Blk & FAT32)
     if (virtio_blk_init() == 0) fat32_mount("/disk");

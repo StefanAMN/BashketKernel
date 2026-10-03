@@ -347,7 +347,7 @@ and its README entry. Suggested calls, in the order worth doing:
 | TTY | **Done.** Line discipline, raw mode owned by a process, arrow keys. `/bin/edit` is a full-screen editor built on it. One terminal; no job control. |
 | virtio-blk | **Done.** Legacy PCI transport, interrupt-driven, `/dev/vda`. One request in flight at a time; no modern (MMIO capability) transport. |
 | FAT32 | **Done**, read and write, mounted at `/disk`, checked against `fsck.fat` and damaged images. Open: long file names, rename, timestamps, reading directories on demand instead of all at mount time, and any crash consistency beyond write ordering. |
-| SMP | Defer. Needs per-CPU data, `swapgs` and real locks: today "interrupts off" is the lock in the scheduler, pipes, semaphores and the wait path. |
+| SMP | **Started, not used.** All CPUs are brought up and parked. Running tasks on them needs per-CPU data (`swapgs`), a TSS per CPU, real locks where "interrupts off" is the lock today (scheduler, pipes, semaphores, wait paths, the terminal, the network stack), and TLB shootdown. |
 | virtio-net, sockets | **Done** for UDP: driver, ARP, IPv4, ICMP echo, UDP sockets. Open: TCP, DHCP, DNS, fragmentation, and anything but one fixed address. |
 | Swap | Delete until a real block device and page reclaim exist. |
 | ANSI | **Done.** Escape sequence parser, acted on by the console. |
@@ -380,8 +380,9 @@ success.
 
 Known gaps in the parts that are otherwise real, most important first.
 
-1. **One CPU only, by construction.** Disabling interrupts is used as the
-   lock in many places. Starting a second CPU would break them all.
+1. **One CPU runs tasks, by construction.** The others are started and
+   parked. Disabling interrupts is used as the lock in many places; letting
+   a second CPU run kernel code would break them all.
 2. **SMAP windows are coarse for `read` and `write`.** The user access
    window is open for the whole of `file_read`/`file_write`, including while
    the task sleeps in a pipe or the terminal, rather than only around the
