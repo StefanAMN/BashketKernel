@@ -123,7 +123,9 @@ static void hcf(void) {
 
 static void shell_task_entry(void) {
     kprintf("\n=== Interactive Shell Started ===\n");
-    kprintf("Type 'help' for available commands.\n\n");
+    kprintf("This is the kernel's own shell. Type 'help' for its commands, or\n");
+    kprintf("  exec /bin/sh              for the user-space shell (pipes, files, programs in /bin)\n");
+    kprintf("  exec /bin/sh /etc/demo.sh for a short tour\n\n");
 
     char line_buf[128];
     size_t line_pos = 0;
