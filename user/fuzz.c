@@ -153,14 +153,24 @@ static void one_call(void) {
             break;
 
         case SYS_OPEN:
-            a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
             b = random_flags();
+            /* Opening to create, write or cut a file changes it: then only
+             * the absolute names under /tmp (a relative one goes wherever
+             * the fuzzer's chdir has taken it: "./fuzz-b" was created in /),
+             * or no path at all. A random pointer is any string in memory:
+             * "t" and "BashketOS" were made at the root of the system disk. */
+            if (b & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) {
+                a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
+            } else {
+                a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
+            }
             break;
         case SYS_CHDIR:
             a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
             break;
         case SYS_SYMLINK:
         case SYS_LINK:
+        case SYS_RENAME:   /* (It had no case: two random strings, "/bin/echo" among those in reach) */
             /* Both names only under /tmp, or not a path at all. Not just the
              * new one: the other calls trust the names under /tmp, and a
              * link from /tmp/fuzz-dir to /tmp (or /) would hand them the real
@@ -182,8 +192,10 @@ static void one_call(void) {
             break;
         case SYS_MKDIR:
         case SYS_UNLINK:
-            /* Only ever names under /tmp, or the rest of the system would not survive the test */
-            a = shaped ? (unsigned long)safe_paths[rnd() % 4] : random_pointer();
+            /* Only ever names under /tmp, or the rest of the system would not
+             * survive the test; not a random pointer either, which names
+             * whatever string it lands on */
+            a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
             break;
         case SYS_EXECVE:
             a = shaped ? (unsigned long)programs[rnd() % COUNT(programs)] : random_pointer();
