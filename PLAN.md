@@ -23,9 +23,10 @@ that file.
   terminal, the virtio disk, FAT32, the network card and a UDP/IP stack are
   implemented. The rest of the table below is open, and deleting code is a
   decision left to the project owners.
-- **Added beyond the original plan:** safe-point kill and Ctrl-C, CPU
-  protections (SMEP, SMAP, UMIP), on-demand stack growth, a terminal line
-  discipline, low-memory and fuzz test targets. See "What is
+- **Added beyond the original plan:** safe-point kill and Ctrl-C, signal
+  handlers, CPU protections (SMEP, SMAP, UMIP), position-independent programs
+  with address-space layout randomisation, on-demand stack growth, a text
+  editor, low-memory, disk, network and fuzz test targets. See "What is
   still wrong" at the end for the known gaps.
 
 ## Where things stand

@@ -126,6 +126,10 @@ code comments and commit messages; `git log` is the full history.
   the build.** A static variable called `fs` produced "invalid use of
   register" from the assembler, with no hint at the C source. Avoid `fs`,
   `gs`, `cs`, `ax`, `sp`, `cr3` and friends as global or static names.
+- **Objects do not depend on the compiler flags unless told to.** After
+  switching user programs to `-fpie`, the other build tree still held non-PIE
+  objects and failed at link time with a confusing relocation error. User
+  objects now depend on the Makefile.
 - **`1 / zero` does not divide** (GCC emits a compare for a constant
   dividend); make both operands volatile to raise `#DE`.
 - **Assertion macros must evaluate their arguments once.**
@@ -160,6 +164,10 @@ code comments and commit messages; `git log` is the full history.
   (ELF loading, argv, COW copies), which needs neither.
 - **Create all 256 kernel PML4 entries at boot** so every address space
   shares the kernel half with no synchronisation.
+- **A loader that applies relocations is a write primitive unless it checks
+  them.** Each one says "store this value at that offset"; an offset outside
+  the image the loader just mapped must be refused, or a crafted executable
+  gets the kernel to patch memory of its choosing.
 - **Before adding a kernel table, ask whether it is per-process data the
   kernel only carries.** The environment needed one more vector copied by
   `execve`; everything else is user-space code.

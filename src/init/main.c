@@ -45,7 +45,6 @@
 #include "tty.h"
 #include "fpu.h"
 #include "swap.h"
-#include "elf_dyn.h"
 #include "net.h"
 #include "window.h"
 #include "auth.h"

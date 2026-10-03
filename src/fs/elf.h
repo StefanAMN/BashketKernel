@@ -15,7 +15,8 @@
 // e_ident[4] (class), e_ident[5] (data encoding), e_type, e_machine
 #define ELFCLASS64  2
 #define ELFDATA2LSB 1
-#define ET_EXEC     2
+#define ET_EXEC     2   // Linked for a fixed address
+#define ET_DYN      3   // Position-independent: can be loaded anywhere
 #define EM_X86_64   62
 
 #define PT_NULL    0
@@ -68,5 +69,21 @@ typedef struct {
  *         populated; the caller destroys it.
  */
 bool elf_load(uint64_t *pml4, const void *elf_data, size_t size, uint64_t *out_entry, uint64_t *out_image_end);
+
+// Position-independent executables are placed at a random page-aligned
+// address in [ELF_PIE_BASE_MIN, ELF_PIE_BASE_MIN + (ELF_PIE_RANDOM_MASK + 1) pages)
+#define ELF_PIE_BASE_MIN    0x100000000ULL   // 4 GiB
+#define ELF_PIE_RANDOM_MASK 0x3FFFFFFu       // 26 bits of pages: a 256 GiB range
+
+/**
+ * @brief As elf_load, with control over and a report of where a
+ *        position-independent executable is placed.
+ * @param requested_base Page-aligned load address, or 0 to choose a random
+ *        one. Ignored for a fixed-address executable.
+ * @param out_base If non-NULL, receives the address the image was loaded at
+ *        (0 for a fixed-address executable).
+ */
+bool elf_load_at(uint64_t *pml4, const void *elf_data, size_t size, uint64_t requested_base,
+                 uint64_t *out_entry, uint64_t *out_image_end, uint64_t *out_base);
 
 #endif // ELF_H

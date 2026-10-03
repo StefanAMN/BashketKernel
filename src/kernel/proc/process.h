@@ -14,10 +14,9 @@
 
 
 // User address space layout (see also mmap.h)
-#define USER_STACK_TOP   0x00007FFFFFFFF000ULL
+#define USER_STACK_TOP   0x00007FFFFFFFF000ULL  // Highest possible stack top; the real one is up to 16 MiB lower
 #define USER_STACK_PAGES 4                      // Mapped at start (16 KiB); the rest on demand
 #define USER_STACK_MAX   (8ULL * 1024 * 1024)   // The stack may grow down to TOP - MAX
-#define USER_STACK_LIMIT (USER_STACK_TOP - USER_STACK_MAX)
 #define PROCESS_MAX_ARGS 32
 #define PROCESS_MAX_IMAGE_BYTES (16 * 1024 * 1024) // Largest executable loaded from disk
 #define PROCESS_ARG_BYTES 4096                  // Total size of all argument and environment strings

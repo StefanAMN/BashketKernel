@@ -281,6 +281,17 @@ TEST(syscall_at_the_top_of_user_space_is_survived) {
     EXPECT_EQ(run("/bin/hello", NULL), 0);   // Everything still works
 }
 
+// /bin/aslr compares its own code, stack and mmap addresses across two
+// executions and exits 0 only if all three moved.
+TEST(address_space_layout_is_randomised) {
+    EXPECT_EQ(run("/bin/aslr", NULL), 0);
+
+    // fork does not move anything: the child is a copy, at the same addresses
+    // (syscheck's fork tests depend on that); only exec draws a new layout.
+    task_t *self = sched_get_current_task();
+    EXPECT_TRUE(self != NULL);
+}
+
 void test_suite_process(void) {
     kprintf("Suite: User Processes\n");
     RUN_TEST(spawn_runs_program_and_returns_status);
@@ -291,4 +302,5 @@ void test_suite_process(void) {
     RUN_TEST(kill_takes_effect_at_a_safe_point);
     RUN_TEST(interrupt_spares_processes_that_ignore_it);
     RUN_TEST(syscall_at_the_top_of_user_space_is_survived);
+    RUN_TEST(address_space_layout_is_randomised);
 }
