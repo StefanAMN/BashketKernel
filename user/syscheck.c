@@ -1337,6 +1337,140 @@ static void check_lazy_memory(void) {
     CHECK(meminfo("Promised:") == promised_before);
 }
 
+static long read_small(const char *path, char *buf, size_t size);
+static int has_text(const char *text, const char *part);
+
+/* In a child put in a background group (job control on, this process's
+ * group in the foreground): read the terminal in the way `how` says, and
+ * exit with what the read returned (as a positive number: -EIO is 5,
+ * a byte written 100 + 1). how: 0 plain, 1 SIGTTIN ignored, 2 SIGTTIN
+ * blocked, 3 a write instead of a read */
+static void background_terminal_child(int how) {
+    setpgid(0, 0);
+    if (how == 1) signal(SIGTTIN, SIG_IGN);
+    if (how == 2) {
+        uint32_t set = sigbit(SIGTTIN);
+        sigprocmask(SIG_BLOCK, &set, NULL);
+    }
+    char byte = '\n';
+    long n = how == 3 ? write(1, &byte, 1) : read(0, &byte, 1);
+    exit((int)(n < 0 ? -n : 100 + n));
+}
+
+/* Start background_terminal_child(how) and wait for it to stop or exit:
+ * its waitpid status (it is killed if it stopped). A child that does
+ * neither within 5 s (it sits reading the keyboard: the terminal let a
+ * background job through) is killed too, and -1 returned: a failure, not
+ * a hang. */
+static int background_terminal_status(int how) {
+    long pid = fork();
+    if (pid == 0) background_terminal_child(how);
+    setpgid(pid, pid);                                     /* (Both sides, as a shell does) */
+    int status = -1;
+    long r = 0;
+    for (int tries = 0; tries < 500 && r == 0; tries++) {
+        r = waitpid(pid, &status, WNOHANG | WUNTRACED);
+        if (r == 0) sleep_ms(10);
+    }
+    if (r == 0 || WIFSTOPPED(status)) {
+        kill(pid, SIGKILL);
+        int ignored;
+        waitpid(pid, &ignored, 0);
+    }
+    return r == 0 ? -1 : status;
+}
+
+/* Whether process `pid` has ended: gone from /proc, or a zombie there */
+static int process_ended(long pid) {
+    static char text[512];
+    char path[40] = "/proc/";
+    char digits[16];
+    int d = 0;
+    do { digits[d++] = (char)('0' + pid % 10); pid /= 10; } while (pid > 0);
+    size_t at = 6;
+    while (d > 0) path[at++] = digits[--d];
+    memcpy(path + at, "/status", 8);
+    long n = read_small(path, text, sizeof(text));
+    return n == -ENOENT || (n > 0 && has_text(text, "State:\tzombie"));
+}
+
+/* Sessions and the terminal: setsid, getsid, tcsetpgrp's rules; a
+ * background job that reads the terminal stops (SIGTTIN), or gets EIO if
+ * SIGTTIN is ignored or blocked or its group is orphaned; one that writes
+ * stops only with tostop (SIGTTOU) */
+static void check_sessions_and_terminal(void) {
+    CHECK(getsid(0) == 0);                                  /* The console's session */
+    CHECK(setsid() == -EPERM);                              /* This process leads its group */
+    CHECK(getsid(999999) == -ESRCH);
+    int go[2];
+    CHECK(pipe(go) == 0);
+    long pid = fork();
+    if (pid == 0) {
+        close(go[1]);
+        long sid = setsid();
+        int ok = sid == getpid() && getsid(0) == sid && getpgid(0) == sid;
+        ok = ok && tcsetpgrp(getpgid(0)) == -ENOTTY;       /* No terminal in a new session */
+        ok = ok && setsid() == -EPERM;                     /* Now a group leader */
+        char byte;
+        read(go[0], &byte, 1);                             /* Until the parent has tried setpgid */
+        exit(ok ? 0 : 1);
+    }
+    close(go[0]);
+    CHECK(wait_in_syscall(pid, SYS_READ));
+    CHECK(getsid(pid) == pid);
+    CHECK(setpgid(pid, getpgid(0)) != 0);                  /* Not across sessions */
+    CHECK(tcsetpgrp(pid) == -EPERM);                       /* Nor give the terminal to another session's group */
+    CHECK(write(go[1], "x", 1) == 1);
+    close(go[1]);
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+
+    /* Job control on: this process's group has the terminal */
+    long tostop_before = tty_tostop(-1);
+    CHECK(tcsetpgrp(getpgid(0)) == 0 && tcgetpgrp() == getpgid(0));
+    status = background_terminal_status(0);
+    CHECK(WIFSTOPPED(status) && WSTOPSIG(status) == SIGTTIN);
+    CHECK(background_terminal_status(1) == EIO);           /* SIGTTIN ignored: the read fails */
+    CHECK(background_terminal_status(2) == EIO);           /* ...or blocked */
+    CHECK(tty_tostop(0) == 0 && background_terminal_status(3) == 101);   /* Writes go through... */
+    CHECK(tty_tostop(1) == 0 && tty_tostop(-1) == 1);
+    status = background_terminal_status(3);
+    CHECK(WIFSTOPPED(status) && WSTOPSIG(status) == SIGTTOU);              /* ...unless tostop is set */
+    CHECK(tty_tostop(0) == 0);
+    /* An orphaned group (its parent ended) is not stopped: the read fails */
+    CHECK(pipe(go) == 0);
+    pid = fork();
+    if (pid == 0) {
+        long parent = getpid();
+        long grandchild = fork();
+        if (grandchild == 0) {
+            close(go[0]);
+            setpgid(0, 0);
+            long self = getpid();
+            write(go[1], &self, sizeof(self));             /* So that it can be killed if it is stopped */
+            for (int tries = 0; tries < 500 && !process_ended(parent); tries++) sleep_ms(10);   /* Until it has */
+            char byte, result = 'x';
+            if (read(0, &byte, 1) == -EIO) result = 'E';
+            write(go[1], &result, 1);
+            exit(0);
+        }
+        exit(0);                                           /* The grandchild's group is orphaned from here on */
+    }
+    close(go[1]);
+    long grandchild = 0;
+    CHECK(read(go[0], &grandchild, sizeof(grandchild)) == (long)sizeof(grandchild));
+    char result = 0;
+    struct pollfd answer = { go[0], POLLIN, 0 };
+    /* (A bounded wait: if the read stopped the grandchild, as it must not,
+     * this fails rather than hangs) */
+    CHECK(poll(&answer, 1, 5000) == 1 && read(go[0], &result, 1) == 1 && result == 'E');
+    if (result != 'E' && grandchild > 0) kill(grandchild, SIGKILL);
+    close(go[0]);
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(tty_tostop(tostop_before) == 0);
+    CHECK(tcsetpgrp(0) == 0);                              /* Job control off again, as the kernel shell has it */
+}
+
 /* Shared mappings of the file at `path` (MAP_SHARED): one copy of each
  * page for every mapping, read() and write(); what is written reaches the
  * file; a truncation cuts pages off (SIGBUS) */
@@ -4178,6 +4312,7 @@ int main(void) {
     check_running_program_file();
     check_shell_words();
     check_shared_mappings();
+    check_sessions_and_terminal();
     check_shell_control();
     check_shell_options();
     check_shell_redirects();

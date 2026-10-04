@@ -120,7 +120,7 @@ static void one_call(void) {
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
         SYS_SIGNAL, SYS_SIGACTION, SYS_SIGPROCMASK, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_NETCONFIG, SYS_DUP, SYS_PIPE2, SYS_FCNTL, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_GETEUID, SYS_GETGID, SYS_SETGID, SYS_UMASK, SYS_SETUID, SYS_CHMOD, SYS_CHOWN, SYS_RENAME, SYS_POLL, SYS_LINK, SYS_SYMLINK, SYS_READLINK,
         SYS_ISATTY, SYS_STAT, SYS_LSTAT, SYS_FSTAT, SYS_TRUNCATE, SYS_FTRUNCATE, SYS_UTIME,
-        SYS_SETGROUPS, SYS_GETGROUPS, SYS_MSYNC,
+        SYS_SETGROUPS, SYS_GETGROUPS, SYS_MSYNC, SYS_SETSID, SYS_GETSID, SYS_TTY_TOSTOP,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -215,6 +215,9 @@ static void one_call(void) {
             break;
         case SYS_MUNMAP:
             if (shaped) { a = (unsigned long)mapped + 4096 * (rnd() % 4); b = random_length(); }
+            break;
+        case SYS_TTY_TOSTOP:  /* The terminal is everyone's: only ever off, as it is (or a refused value) */
+            a = rnd() % 2 ? 0 : 2 + rnd() % 8;
             break;
         case SYS_MSYNC:     /* Writes only the fuzzer's own shared mappings: of its own files (see the top) */
             if (shaped) { a = (unsigned long)mapped + 4096 * (rnd() % 4); b = random_length(); c = rnd() % 8; }

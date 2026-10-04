@@ -1235,10 +1235,21 @@ static int64_t dispatch(struct registers *regs) {
             sched_unlock_irqrestore(irq);
             return pgid;
         }
-        case SYS_TCSETPGRP:
-            // Whoever reads the terminal may say which of its jobs has it
+        case SYS_TCSETPGRP: {
+            // A process of the terminal's session may say which of its jobs has it
             if (regs->rdi > 0x7FFFFFFF) return -EINVAL;
-            return process_set_foreground((uint32_t)regs->rdi) == 0 ? 0 : -EINVAL;
+            int result = process_set_foreground((uint32_t)regs->rdi);
+            return result < 0 ? result : 0;
+        }
+        case SYS_SETSID:  return process_setsid();
+        case SYS_GETSID:
+            if (regs->rdi > 0x7FFFFFFF) return -ESRCH;
+            return process_getsid((pid_t)regs->rdi);
+        case SYS_TTY_TOSTOP:
+            if ((int64_t)regs->rdi == -1) return process_get_tostop() ? 1 : 0;
+            if (regs->rdi > 1) return -EINVAL;
+            process_set_tostop(regs->rdi == 1);
+            return 0;
         case SYS_TCGETPGRP:
             return (int64_t)process_get_foreground();
 
