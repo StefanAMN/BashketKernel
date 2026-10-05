@@ -438,7 +438,7 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 31. User Account Authentication (Phase 31)
-**Status: stub.** Accepts `root` with any password.
+**Status: real.** Processes run as a numeric user (0 is root). Files and directories have an owner and read/write bits for the owner and for everyone else, checked on open, create, remove, `exec`, `chmod`/`chown`, `kill` and binding low ports. `/bin/login` checks a SHA-256 password hash from a root-only `/etc/passwd` and drops to the user. No groups, no execute bit, no set-uid programs (so no way back up to root), unsalted hashes. See `src/kernel/proc/auth.h` and `user/login.c`.
 
 **Goal:** User account authentication (`auth_login`), UID/GID context management.
 

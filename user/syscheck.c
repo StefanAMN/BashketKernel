@@ -741,6 +741,116 @@ static void check_shared_memory(void) {
     CHECK(shmat(-1) == NULL && shmat(9999) == NULL);
 }
 
+/* Run `checks` in a child process that has given up root for `uid`; returns
+ * the number of checks that failed there. */
+static int as_user(unsigned uid, void (*checks)(void)) {
+    long pid = fork();
+    if (pid == 0) {
+        failures = 0;
+        if (setuid(uid) != 0) exit(100);
+        checks();
+        exit(failures);
+    }
+    int status = -1;
+    waitpid(pid, &status);
+    return status;
+}
+
+static long root_pid;   /* The process running the checks as root */
+
+static void checks_as_alice(void) {
+    char buf[16];
+
+    CHECK(getuid() == 1000);
+    CHECK(setuid(0) == -EPERM);                         /* No way back to root */
+    CHECK(setuid(1001) == -EPERM);                      /* Nor sideways */
+    CHECK(setuid(1000) == 0);                           /* "Becoming" yourself is allowed */
+
+    /* The system's files are not ours to change, and some not to read */
+    CHECK(open("/etc/motd", O_RDONLY) >= 0);
+    CHECK(open("/etc/motd", O_WRONLY) == -EACCES);
+    CHECK(open("/etc/motd", O_RDONLY | O_TRUNC) >= 0);  /* Truncation needs write access: ignored on a read-only open */
+    CHECK(open("/etc/passwd", O_RDONLY) == -EACCES);
+    CHECK(open("/dev/vda", O_RDWR) == -EACCES);
+    CHECK(open("/bin/evil", O_WRONLY | O_CREAT) == -EACCES);
+    CHECK(open("/disk/evil.txt", O_WRONLY | O_CREAT) == -EACCES);
+    CHECK(unlink("/bin/hello") == -EACCES);
+    CHECK(unlink("/etc/motd") == -EACCES);
+    CHECK(mkdir("/evil") == -EACCES);
+    CHECK(chmod("/etc/passwd", 0666) == -EPERM);
+    CHECK(chown("/etc/motd", 1000) == -EPERM);
+
+    /* Programs can still be run, and devices meant for everyone used */
+    long pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/bin/hello", NULL };
+        dup2((int)open("/dev/null", O_WRONLY), 1);
+        execv("/bin/hello", args);
+        exit(1);
+    }
+    int status = -1;
+    CHECK(waitpid(pid, &status) == pid && status == 0);
+
+    /* Our own file in the shared directory */
+    long fd = open("/tmp/alice.txt", O_WRONLY | O_CREAT);
+    CHECK(fd >= 0);
+    CHECK(write((int)fd, "hers", 4) == 4);
+    close((int)fd);
+    CHECK(chmod("/tmp/alice.txt", 0600) == 0);          /* The owner may */
+    CHECK(chown("/tmp/alice.txt", 1001) == -EPERM);     /* ... but may not give it away */
+    fd = open("/tmp/alice.txt", O_RDONLY);
+    CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 4);
+    close((int)fd);
+
+    /* Root's processes are out of reach; our own are not */
+    CHECK(kill(root_pid, SIGKILL) == -EPERM);
+    pid = fork();
+    if (pid == 0) { for (;;) sleep_ms(1000); }
+    CHECK(kill(pid, SIGKILL) == 0);
+    waitpid(pid, &status);
+
+    /* Low port numbers are reserved for root */
+    long sock = socket();
+    CHECK(bind((int)sock, 80) == -EACCES);
+    CHECK(bind((int)sock, 8080) == 0);
+    close((int)sock);
+}
+
+static void checks_as_bob(void) {
+    /* Alice made her file private: Bob can neither read, write nor remove it */
+    CHECK(getuid() == 1001);
+    CHECK(open("/tmp/alice.txt", O_RDONLY) == -EACCES);
+    CHECK(open("/tmp/alice.txt", O_WRONLY) == -EACCES);
+    CHECK(unlink("/tmp/alice.txt") == -EACCES);
+    CHECK(chmod("/tmp/alice.txt", 0666) == -EPERM);
+
+    /* But he can have files of his own next to it */
+    long fd = open("/tmp/bob.txt", O_WRONLY | O_CREAT);
+    CHECK(fd >= 0);
+    close((int)fd);
+    CHECK(unlink("/tmp/bob.txt") == 0);
+}
+
+static void check_users(void) {
+    CHECK(getuid() == 0);                               /* The checks themselves run as root */
+    root_pid = getpid();
+
+    CHECK(as_user(1000, checks_as_alice) == 0);
+    CHECK(as_user(1001, checks_as_bob) == 0);
+
+    /* Still root here: the children's change of user did not touch us */
+    CHECK(getuid() == 0);
+
+    /* Root is not bound by the bits, and may reassign files */
+    long fd = open("/tmp/alice.txt", O_RDONLY);
+    CHECK(fd >= 0);
+    close((int)fd);
+    CHECK(chown("/tmp/alice.txt", 1001) == 0);
+    CHECK(chown("/tmp/no-such-file", 1001) == -ENOENT);
+    CHECK(chmod((const char *)0xffffffff80000000, 0600) == -EFAULT);
+    CHECK(unlink("/tmp/alice.txt") == 0);
+}
+
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -920,6 +1030,7 @@ int main(void) {
     check_interrupted_calls();
     check_network();
     check_shared_memory();
+    check_users();
     check_pipes();
 
     if (failures == 0) {

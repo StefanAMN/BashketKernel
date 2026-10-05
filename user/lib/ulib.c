@@ -32,6 +32,13 @@ sighandler_t signal(int sig, sighandler_t handler) {
     return previous < 0 ? SIG_ERR : (sighandler_t)previous;
 }
 
+/* --- Users and permissions ------------------------------------------------- */
+
+long getuid(void)                                  { return syscall0(SYS_GETUID); }
+long setuid(unsigned uid)                          { return syscall1(SYS_SETUID, uid); }
+long chmod(const char *path, unsigned mode)        { return syscall2(SYS_CHMOD, path, mode); }
+long chown(const char *path, unsigned uid)         { return syscall2(SYS_CHOWN, path, uid); }
+
 /* --- Environment ---------------------------------------------------------- */
 
 /* Set by crt0 to the vector the kernel put on our stack. The environment is
@@ -275,6 +282,8 @@ void tty_size(unsigned *columns, unsigned *rows) {
 const char *strerror(long err) {
     switch (err < 0 ? -err : err) {
         case 0:         return "success";
+        case EPERM:     return "operation not permitted";
+        case EACCES:    return "permission denied";
         case ENOENT:    return "no such file or directory";
         case ESRCH:     return "no such process";
         case EINTR:     return "interrupted by a signal";

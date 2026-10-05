@@ -38,14 +38,16 @@ ISO_ROOT = $(BUILD)/iso_root
 # Every user/*.c becomes /bin/<name> in the initrd, linked against the small
 # library in user/lib. User code may use floating point and SSE: the kernel
 # saves that state per task.
-USER_CFLAGS = -Wall -Wextra -O2 -g -pipe -Iuser/lib \
+USER_CFLAGS = -Wall -Wextra -O2 -g -pipe -Iuser/lib -Ilib/crypto \
               -ffreestanding -fno-stack-protector -fpie \
               -masm=intel -MMD -MP
 # Static position-independent executables: no dynamic linker, and no
 # relocations in the code itself (-z text makes that an error)
 USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker.ld -z max-page-size=0x1000
 
-USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o
+# sha256.o is the kernel tree's own lib/crypto/sha256.c, compiled again for
+# user programs (login hashes passwords with it)
+USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
@@ -60,9 +62,13 @@ $(BUILD)/user/%.o: user/%.S Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
+$(BUILD)/user/lib/sha256.o: lib/crypto/sha256.c Makefile
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
 $(BUILD)/initrd/bin/%: $(BUILD)/user/%.o $(USER_LIB_OBJS) user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o -o $@
+	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o -o $@
 
 # USTAR archive of bin/ plus the static files under user/rootfs
 $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
@@ -84,7 +90,7 @@ NET_FLAGS = -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 
 QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
-.PHONY: all clean iso run run-gdb test test-smp test-lowmem test-disk test-edit test-net fuzz check
+.PHONY: all clean iso run run-gdb test test-smp test-lowmem test-disk test-edit test-login test-net fuzz check
 
 all: $(KERNEL)
 
@@ -274,6 +280,20 @@ test-smp:
 	else echo "four CPUs: FAILED (qemu exit $$status, see build-test/test-smp.log)"; \
 		grep -aE '^\s+\[FAIL\]|CPU EXCEPTION|SMP:' build-test/test-smp.log | head -5; exit 1; fi
 
+# A scripted login: wrong password refused, then a shell as an ordinary user
+# who can use the system but not change it, then back to root.
+test-login: iso
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'incorrect name or password' --expect 'uid 1000\n' \
+		--expect 'passwd: permission denied' --expect 'hello: permission denied' \
+		--expect 'motd: permission denied' --expect 'vda: permission denied' \
+		--expect 'Hello from ring 3' --expect 'uid 0 \(root\)' --forbid 'alice:1000' \
+		'!exec /bin/login alice' '~wrong\r' '@wait:1' '!exec /bin/login alice' '~alice\r' \
+		'id' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
+		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' 'exit' 'exec /bin/id' \
+		> $(BUILD)/login.log 2>&1 \
+		&& echo "login and permissions: ok" || { echo "login: FAILED (see $(BUILD)/login.log)"; exit 1; }
+
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
 check:
@@ -284,6 +304,7 @@ check:
 	@$(MAKE) --no-print-directory test-lowmem CPU=max
 	@$(MAKE) --no-print-directory test-disk
 	@$(MAKE) --no-print-directory test-edit
+	@$(MAKE) --no-print-directory test-login
 	@$(MAKE) --no-print-directory test-net
 	@$(MAKE) --no-print-directory test-net CPU=max
 	@$(MAKE) --no-print-directory fuzz FUZZ_SEEDS="1 2 3"

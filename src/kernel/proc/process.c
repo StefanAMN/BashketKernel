@@ -17,6 +17,7 @@
 #include "file.h"
 #include "fpu.h"
 #include "dev.h"
+#include "auth.h"
 #include "heap.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
@@ -113,6 +114,7 @@ static bool load_user_image(const char *path, char *const argv[], char *const en
     task_t *caller = sched_get_current_task();
     vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
     if (!file || file->type != VFS_FILE || file->size == 0) return false;
+    if (!auth_may_access(auth_current_uid(), file, false)) return false; // Running a program means reading it
 
     // A file in memory (the initrd) can be loaded from where it is. One whose
     // contents come from elsewhere (the disk) is read into a buffer first.
@@ -281,6 +283,7 @@ pid_t process_fork(struct registers *regs) {
     child->pml4_phys = (uint64_t *)((uint64_t)child_pml4 - pmm_get_hhdm_offset());
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
+    child->uid = parent->uid;
     child->mmap_next = parent->mmap_next;
     child->stack_top = parent->stack_top;
     memcpy(child->sig_handlers, parent->sig_handlers, sizeof(child->sig_handlers));

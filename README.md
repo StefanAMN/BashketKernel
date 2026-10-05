@@ -34,7 +34,7 @@ known gaps in the parts that are real.
 | 13 | PCI and virtio-net | real | PCI scan (function 0 of each device), configuration space access, shared interrupt lines. virtio-net is a real driver: receive and transmit virtqueues, interrupt-driven, MAC address from the device. |
 | 14 | Custom bootloader | stub | A CPUID check. Limine boots the kernel. |
 | 15 | PS/2 mouse and cursor | stub | The IRQ handler discards mouse bytes. Nothing is drawn. |
-| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`, `ping`, `udpecho`, `udpsend`, `aslr`, and `edit`, a full-screen text editor. |
+| 16 | User programs | real | `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`, `fptest`, `spin`, `stress`, `fuzz`, `ps`, `kill`, `rm`, `mkdir`, `sleep`, `dmesg`, `env`, `diskio`, `clear`, `colors`, `ping`, `udpecho`, `udpsend`, `aslr`, `id`, `chmod`, `login`, and `edit`, a full-screen text editor. |
 | 17 | RTC | real | Reads date and time from CMOS. |
 | 18 | Environment variables | real | Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.) |
 | 19 | Pipes | real | Blocking pipes behind file descriptors, with end-of-file and broken-pipe handling. Used by `/bin/sh` for `a \| b`. |
@@ -49,7 +49,7 @@ known gaps in the parts that are real.
 | 28 | ELF dynamic relocation | real | Static position-independent executables: the loader places them at a chosen or random address and applies their relative relocations, refusing any that would write outside the image. No shared libraries, no symbol resolution, no dynamic linker. |
 | 29 | UDP/IP sockets | real | Ethernet, ARP, IPv4, ICMP echo and UDP, with sockets as file descriptors (`socket`, `bind`, `sendto`, `recvfrom`) and a `ping` call. Static configuration for QEMU's user-mode network (10.0.2.15, gateway 10.0.2.2). No TCP, no DHCP, no DNS, no IPv6, no fragmentation. |
 | 30 | Window manager | stub | Allocates a pixel buffer. Nothing is composited. |
-| 31 | User authentication | stub | Accepts `root` with any password. |
+| 31 | User authentication | real | Processes run as a numeric user (0 is root). Files and directories have an owner and read/write bits for the owner and for everyone else, checked on open, create, remove, `exec`, `chmod`/`chown`, `kill` and binding low ports. `/bin/login` checks a SHA-256 password hash from a root-only `/etc/passwd` and drops to the user. No groups, no execute bit, no set-uid programs (so no way back up to root), unsalted hashes. |
 | 32 | Kernel log, `dmesg` | real | Everything `kprintf` prints is kept in a 64 KiB ring buffer from the first boot message; `dmesg` (both shells) and `/proc/kmsg` read it. |
 | 33 | High-resolution timers | real | The timestamp counter is calibrated against the timer at boot, giving a nanosecond clock (`clock_ns`) and sleeps accurate to microseconds (`nanosleep` sleeps whole ticks and watches the clock for the remainder). No one-shot hardware timer: wake-ups from sleep are still on tick boundaries. |
 | 34 | Mount table | real | A record of which source provides which part of the tree (`/` memory, `/bin` initrd, `/proc`, `/dev`, `/disk` FAT32), shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Nothing can be unmounted. |
@@ -119,6 +119,8 @@ BashketKernel has a built-in unit test framework (`tests/`). `make test` builds 
 
 `make test-net` exchanges real UDP datagrams between the host and the kernel, in both directions, over the host's loopback interface.
 
+`make test-login` scripts a login as an ordinary user and checks what that user can and cannot do.
+
 `make test-edit` drives the full-screen editor with scripted keystrokes and checks the saved file.
 
 `make check` runs all of these on both CPU models.
@@ -181,9 +183,11 @@ BashketOS> exec /bin/fault kread       # tries to read kernel memory; gets kille
 BashketOS> exec /bin/sh /etc/demo.sh   # a scripted tour of the system
 BashketOS> cat disk/readme.txt         # a file on the FAT32 disk; under `make run`, files written to /disk survive a reboot
 BashketOS> exec /disk/bin/hello        # a program loaded from the disk
-BashketOS> exec /bin/sh                # user-space shell
+BashketOS> exec /bin/login alice       # password "alice": a shell as an ordinary user
+BashketOS> exec /bin/sh                # user-space shell (as root)
 $ ls /bin | wc > /tmp/count
 $ cat /tmp/count
+$ ls -l /                              # permissions and owners
 $ ping 10.0.2.2                        # QEMU's gateway answers
 $ edit /disk/todo.txt                  # full-screen editor: arrows, Ctrl-S save, Ctrl-Q quit
 $ spin                                 # loops forever; Ctrl-C stops it

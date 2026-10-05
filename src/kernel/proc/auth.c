@@ -1,31 +1,31 @@
 /**
  * @file auth.c
- * @brief Implementation of User Account Authentication
+ * @brief User ids and file permissions (see auth.h)
  */
 
 #include "auth.h"
-#include "kprintf.h"
-#include "string_util.h"
+#include "sched.h"
 
-static user_t root_user = { .uid = 0, .gid = 0, .username = "root", .shell = "/bin/sh" };
-static user_t current_user;
+bool auth_may_access(uint32_t uid, const vnode_t *node, bool write) {
+    if (!node) return false;
+    if (uid == UID_ROOT) return true;
 
-void auth_init(void) {
-    current_user = root_user;
-    kprintf("auth: STUB, accepts root with any password\n");
+    if (uid == node->uid) return (node->mode & (write ? PERM_OWNER_WRITE : PERM_OWNER_READ)) != 0;
+    return (node->mode & (write ? PERM_OTHER_WRITE : PERM_OTHER_READ)) != 0;
 }
 
-const user_t *auth_login(const char *user, const char *pass) {
-    (void)pass;
-    if (!user) return NULL;
-
-    if (strcmp(user, "root") == 0) {
-        current_user = root_user;
-        return &current_user;
-    }
-    return NULL;
+bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child) {
+    if (!dir || !child) return false;
+    if (uid == UID_ROOT) return true;
+    if (!auth_may_access(uid, dir, true)) return false;
+    return child->uid == uid || dir->uid == uid;
 }
 
-const user_t *auth_get_current_user(void) {
-    return &current_user;
+bool auth_may_signal(uint32_t uid, uint32_t target_uid) {
+    return uid == UID_ROOT || uid == target_uid;
+}
+
+uint32_t auth_current_uid(void) {
+    task_t *task = sched_get_current_task();
+    return (task && task->is_user) ? task->uid : UID_ROOT;
 }

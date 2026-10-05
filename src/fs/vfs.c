@@ -20,6 +20,7 @@ void vfs_init(void) {
     vfs_root->name[0] = '/';
     vfs_root->name[1] = '\0';
     vfs_root->type = VFS_DIRECTORY;
+    vfs_root->mode = 0644;
     vfs_root->parent = NULL;
     vfs_root->children = NULL;
     vfs_root->next = NULL;
@@ -115,6 +116,10 @@ vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type) {
 
     node->type = type;
     node->parent = parent;
+    // Owned by root; readable by everyone, writable by the owner. Whoever
+    // creates the node on behalf of a user changes the owner afterwards.
+    node->uid = 0;
+    node->mode = 0644;
     node->next = parent->children;
     parent->children = node;
     return node;

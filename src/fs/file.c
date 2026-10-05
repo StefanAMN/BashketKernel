@@ -10,6 +10,7 @@
 #include "tty.h"
 #include "slab.h"
 #include "net.h"
+#include "auth.h"
 
 // Open files are small, all the same size, and created and destroyed
 // constantly (every open, pipe and exit), which is what a slab cache is for.
@@ -44,6 +45,10 @@ int file_open(const char *path, int flags, file_t **out) {
 }
 
 int file_open_at(vnode_t *base, const char *path, int flags, file_t **out) {
+    return file_open_as(UID_ROOT, base, path, flags, out); // The kernel itself is not restricted
+}
+
+int file_open_as(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out) {
     if (!path || !out) return -EINVAL;
 
     int access = flags & O_ACCMODE;
@@ -55,12 +60,16 @@ int file_open_at(vnode_t *base, const char *path, int flags, file_t **out) {
         const char *leaf = NULL;
         vnode_t *parent = vfs_find_parent_at(base, path, &leaf);
         if (!parent) return -ENOENT;
+        if (!auth_may_access(uid, parent, true)) return -EACCES; // Creating changes the directory
         int err = vfs_create(parent, leaf, VFS_FILE, &node);
         if (err != 0) return err;
+        node->uid = uid; // The new file belongs to whoever made it
     }
     if (!node) return -ENOENT;
     if (node->type == VFS_DIRECTORY && writable) return -EISDIR;
     if (node->read_only && writable) return -EROFS;
+    if (access != O_WRONLY && !auth_may_access(uid, node, false)) return -EACCES;
+    if (writable && !auth_may_access(uid, node, true)) return -EACCES;
 
     file_t *file = file_alloc(FILE_VNODE, access != O_WRONLY, writable);
     if (!file) return -ENOMEM;
@@ -235,6 +244,8 @@ int file_readdir(file_t *file, struct dirent_info *out) {
 
     memset(out, 0, sizeof(*out));
     out->type = child->type;
+    out->mode = child->mode;
+    out->uid = child->uid;
     out->size = child->size;
     strncpy(out->name, child->name, sizeof(out->name) - 1);
     file->offset++;

@@ -352,7 +352,8 @@ and its README entry. Suggested calls, in the order worth doing:
 | virtio-net, sockets | **Done** for UDP: driver, ARP, IPv4, ICMP echo, UDP sockets. Open: TCP, DHCP, DNS, fragmentation, and anything but one fixed address. |
 | Swap | Delete until a real block device and page reclaim exist. |
 | ANSI | **Done.** Escape sequence parser, acted on by the console. |
-| Window manager, auth, mouse | Delete or leave clearly marked as stubs. |
+| Users and permissions | **Done**: uids, owners, read/write bits, `login`. Open: groups, set-uid, salted and slow password hashing, permissions on shared memory. |
+| Window manager, mouse | Delete or leave clearly marked as stubs. |
 | `boot_loader.c` | Delete. It is a CPUID check, and Limine boots the kernel. |
 | hrtimer | **Done** as a calibrated TSC clock and sub-tick sleeps. A one-shot timer (LAPIC or HPET) for tickless wake-ups is open. |
 | Environment | **Done** as a per-process, user-memory environment passed through `execve`. `src/kernel/proc/env.c` (the kernel shell's global table) can now be deleted or reduced to that shell's private use. |
@@ -392,8 +393,11 @@ Known gaps in the parts that are otherwise real, most important first.
 3. **A fault between `pop rsp` and `sysretq` would run on the user stack.**
    Nothing can fault there today (interrupts are off and NMIs are not used),
    but an NMI handler would need its own IST stack before one is enabled.
-4. **No permissions.** Any program can delete or overwrite any file, and kill
-   any user process.
+4. **Permissions are minimal.** Owner and "everyone else" read/write bits
+   only: no groups, no execute bit, no set-uid programs, so an ordinary
+   user can never gain rights (no `su`, no `passwd`). Password hashes are
+   unsalted SHA-256. Shared memory segments have no owner. Files on `/disk`
+   all belong to root, since FAT has nowhere to record an owner.
 5. **Signal handling is basic.** There is no signal mask (a handler can be
    interrupted by another signal, including the same one), no `sigaction`
    flags, no automatic restart of an interrupted call, no `SIGCHLD`, and no

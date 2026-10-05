@@ -102,6 +102,11 @@ code comments and commit messages; `git log` is the full history.
   including the string constant my check treated as the failure marker (and
   the one it treated as success). Text a hostile program can print proves
   nothing either way.
+- **A root fuzzer finds its own test bench first.** Twice now a "kernel
+  failure" after fuzzing was the fuzzer legitimately using root's powers:
+  deleting files, then `chmod` on `/` through a random pointer that happened
+  to point at the string "/". Calls that change shared state get safe
+  arguments or definitely-invalid ones, never arbitrary valid memory.
 - **Some defences cannot be demonstrated here.** QEMU, like AMD CPUs, faults
   in ring 3 on `sysretq` to a non-canonical address; Intel faults in ring 0.
   The check for it rests on the manual, and its test passes either way. Say
@@ -168,6 +173,13 @@ code comments and commit messages; `git log` is the full history.
   them.** Each one says "store this value at that offset"; an offset outside
   the image the loader just mapped must be refused, or a crafted executable
   gets the kernel to patch memory of its choosing.
+- **Authentication is a program; the kernel only enforces numbers.** The
+  stub had the kernel "logging in" users. The real design: the kernel knows
+  uids and permission bits; `/bin/login` runs as root, checks the password,
+  and calls `setuid`, which is one-way for anyone but root.
+- **Permission checks belong where the object is reached, with the caller's
+  uid passed in** (`file_open_as`), not sprinkled through system calls: the
+  kernel's own callers pass root and stay unrestricted.
 - **Before adding a kernel table, ask whether it is per-process data the
   kernel only carries.** The environment needed one more vector copied by
   `execve`; everything else is user-space code.

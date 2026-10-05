@@ -55,8 +55,10 @@ typedef struct file {
 // One directory entry, as returned to user programs by readdir
 struct dirent_info {
     uint32_t type;     // VFS_FILE or VFS_DIRECTORY
-    uint32_t reserved;
+    uint32_t mode;     // Permission bits (see auth.h)
     uint64_t size;
+    uint32_t uid;      // Owner
+    uint32_t reserved;
     char name[128];
 };
 
@@ -75,6 +77,13 @@ int file_open(const char *path, int flags, file_t **out);
  * @brief As file_open, with relative paths starting at `base` (NULL: the root).
  */
 int file_open_at(vnode_t *base, const char *path, int flags, file_t **out);
+
+/**
+ * @brief As file_open_at, on behalf of user `uid`: the file's (and, when
+ *        creating, the directory's) permissions must allow it, and a file
+ *        created belongs to that user.
+ */
+int file_open_as(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out);
 
 /**
  * @brief A new open file for the console (readable and writable).

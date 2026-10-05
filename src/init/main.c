@@ -222,6 +222,9 @@ void _start(void) {
     } else {
         kprintf("WARNING: no initrd module; /bin will be empty\n");
     }
+    // Password hashes are for /bin/login (which runs as root) only
+    vnode_t *passwd = vfs_find(NULL, "/etc/passwd");
+    if (passwd) passwd->mode = 0600;
 
     // Phase 7: Keyboard & Shell
     keyboard_init();
@@ -273,9 +276,6 @@ void _start(void) {
 
     // Phase 27: Virtual Memory Swap Manager
     swap_init(1024);
-
-    // Phase 31: User Accounts & Authentication
-    auth_init();
 
     // Phase 32: Kernel Logging Ring Buffer
     klog_init();

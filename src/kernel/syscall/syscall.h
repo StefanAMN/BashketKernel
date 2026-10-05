@@ -42,6 +42,10 @@
 #define SYS_CHDIR       80
 #define SYS_MKDIR       83
 #define SYS_UNLINK      87
+#define SYS_CHMOD       90   // (path, mode): owner or root
+#define SYS_CHOWN       92   // (path, uid): root only
+#define SYS_GETUID      102
+#define SYS_SETUID      105  // (uid): root may become anyone; nobody else may change
 #define SYS_GETPPID     110
 #define SYS_CLEAR       100
 #define SYS_TIME        201  // Timer ticks since boot

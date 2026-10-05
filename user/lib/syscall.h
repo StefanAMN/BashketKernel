@@ -30,6 +30,10 @@
 #define SYS_CHDIR    80
 #define SYS_MKDIR    83
 #define SYS_UNLINK   87
+#define SYS_CHMOD    90
+#define SYS_CHOWN    92
+#define SYS_GETUID   102
+#define SYS_SETUID   105
 #define SYS_GETPPID  110
 #define SYS_TIME     201
 #define SYS_SIGNAL   300
@@ -48,6 +52,7 @@
 #define SYS_BIND     49
 #define SYS_SETPRIORITY 301
 
+#define EPERM    1
 #define ENOENT   2
 #define ESRCH    3
 #define EINTR    4
@@ -56,6 +61,7 @@
 #define EBADF    9
 #define ECHILD  10
 #define ENOMEM  12
+#define EACCES  13
 #define EFAULT  14
 #define EBUSY   16
 #define EEXIST  17
@@ -100,8 +106,10 @@ struct net_address {
 /* One directory entry, filled in by readdir() */
 struct dirent {
     uint32_t type;      /* DT_FILE or DT_DIR */
-    uint32_t reserved;
+    uint32_t mode;      /* Permission bits: 0400 owner reads, 0200 owner writes, 0004 and 0002 for everyone else */
     uint64_t size;
+    uint32_t uid;       /* Owner */
+    uint32_t reserved;
     char name[128];
 };
 

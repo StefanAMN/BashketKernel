@@ -142,14 +142,23 @@ void dev_init(void) {
     rng_state ^= rdtsc();
     mount_register("/dev", "dev", "kernel");
 
-    // Each call is a no-op if the node already exists
-    vfs_create_device(dev_dir, "null", &null_ops);
-    vfs_create_device(dev_dir, "zero", &zero_ops);
-    vfs_create_device(dev_dir, "random", &random_ops);
-    vfs_create_device(dev_dir, "console", &console_ops);
+    // Each call is a no-op if the node already exists. The harmless devices
+    // are open to everyone; the raw disk is root's alone, since writing to it
+    // bypasses every permission of the filesystem on it.
+    static const struct { const char *name; const vnode_ops_t *ops; uint16_t mode; } devices[] = {
+        { "null", &null_ops, 0666 }, { "zero", &zero_ops, 0666 },
+        { "random", &random_ops, 0666 }, { "console", &console_ops, 0666 },
+    };
+    for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
+        vnode_t *node = vfs_create_device(dev_dir, devices[i].name, devices[i].ops);
+        if (node) node->mode = devices[i].mode;
+    }
     if (virtio_blk_present()) {
         vnode_t *disk = vfs_create_device(dev_dir, "vda", &disk_ops);
-        if (disk) disk->size = virtio_blk_capacity() * VIRTIO_BLK_SECTOR_SIZE; // So lseek(SEEK_END) works
+        if (disk) {
+            disk->size = virtio_blk_capacity() * VIRTIO_BLK_SECTOR_SIZE; // So lseek(SEEK_END) works
+            disk->mode = 0600;
+        }
     }
     kprintf("Dev Init: /dev/null, /dev/zero, /dev/random, /dev/console%s\n",
             virtio_blk_present() ? ", /dev/vda" : "");

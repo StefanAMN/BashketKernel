@@ -46,6 +46,12 @@ typedef void (*sighandler_t)(int);
  * work still needs doing. */
 sighandler_t signal(int sig, sighandler_t handler);
 
+/* Users and permissions. uid 0 is root and may do anything. */
+long getuid(void);
+long setuid(unsigned uid);                   /* Root may become anyone; nobody else may change */
+long chmod(const char *path, unsigned mode); /* For example 0644: owner reads and writes, others read */
+long chown(const char *path, unsigned uid);  /* Root only */
+
 /* Memory */
 void *sbrk(long increment);
 void *mmap_anon(size_t length);

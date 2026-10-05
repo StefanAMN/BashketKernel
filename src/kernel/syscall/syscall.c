@@ -31,6 +31,7 @@
 #include "net.h"
 #include "shm.h"
 #include "hrtimer.h"
+#include "auth.h"
 
 extern void syscall_entry(void);
 
@@ -149,7 +150,8 @@ static int64_t sys_open(uint64_t user_path, int flags) {
     if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
 
     file_t *file = NULL;
-    int err = file_open_at(sched_get_current_task()->cwd, path, flags, &file);
+    task_t *task = sched_get_current_task();
+    int err = file_open_as(task->uid, task->cwd, path, flags, &file);
     if (err != 0) return err;
 
     int fd = fd_install(sched_get_current_task()->fds, file);
@@ -228,7 +230,13 @@ static int64_t sys_mkdir(uint64_t user_path) {
     while (leaf[len] != '\0' && leaf[len] != '/') { name[len] = leaf[len]; len++; }
     name[len] = '\0';
 
-    return vfs_create(parent, name, VFS_DIRECTORY, NULL);
+    task_t *task = sched_get_current_task();
+    if (!auth_may_access(task->uid, parent, true)) return -EACCES;
+
+    vnode_t *dir = NULL;
+    int err = vfs_create(parent, name, VFS_DIRECTORY, &dir);
+    if (err == 0) dir->uid = task->uid;
+    return err;
 }
 
 static int64_t sys_unlink(uint64_t user_path) {
@@ -238,7 +246,50 @@ static int64_t sys_unlink(uint64_t user_path) {
     const char *leaf = NULL;
     vnode_t *parent = vfs_find_parent_at(sched_get_current_task()->cwd, path, &leaf);
     if (!parent) return -ENOENT;
+
+    vnode_t *child = vfs_find_child(parent, leaf);
+    if (child && !auth_may_remove(sched_get_current_task()->uid, parent, child)) return -EACCES;
     return vfs_unlink(parent, leaf);
+}
+
+// Find the node a path names, for the calls that change its owner or mode
+static int64_t lookup_for_change(uint64_t user_path, vnode_t **out) {
+    char path[PATH_MAX];
+    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+    *out = vfs_find(sched_get_current_task()->cwd, path);
+    return *out ? 0 : -ENOENT;
+}
+
+static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
+    vnode_t *node = NULL;
+    int64_t err = lookup_for_change(user_path, &node);
+    if (err != 0) return err;
+
+    // Only the owner (or root) decides who may use a file
+    uint32_t uid = sched_get_current_task()->uid;
+    if (uid != UID_ROOT && uid != node->uid) return -EPERM;
+    if (node->read_only) return -EROFS;
+    node->mode = (uint16_t)(mode & PERM_ALL);
+    return 0;
+}
+
+static int64_t sys_chown(uint64_t user_path, uint64_t new_uid) {
+    vnode_t *node = NULL;
+    int64_t err = lookup_for_change(user_path, &node);
+    if (err != 0) return err;
+
+    // Giving files away (or taking them) is root's privilege
+    if (sched_get_current_task()->uid != UID_ROOT) return -EPERM;
+    if (new_uid > 0xFFFFFFFFULL) return -EINVAL;
+    node->uid = (uint32_t)new_uid;
+    return 0;
+}
+
+static int64_t sys_kill(int pid, int sig) {
+    task_t *target = sched_find_task((uint32_t)pid);
+    if (!target || !target->is_user || target->state == TASK_ZOMBIE) return -ESRCH;
+    if (!auth_may_signal(sched_get_current_task()->uid, target->uid)) return -EPERM;
+    return process_kill((pid_t)pid, sig) == 0 ? 0 : -ESRCH;
 }
 
 static int64_t sys_brk(uint64_t new_brk) {
@@ -536,8 +587,18 @@ static int64_t dispatch(struct registers *regs) {
         }
         case SYS_EXECVE:  return sys_execve(regs, regs->rdi, regs->rsi, regs->rdx);
         case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi);
-        case SYS_KILL:
-            return process_kill((pid_t)regs->rdi, (int)regs->rsi) == 0 ? 0 : -ESRCH;
+        case SYS_KILL:    return sys_kill((int)regs->rdi, (int)regs->rsi);
+
+        case SYS_GETUID:  return (int64_t)task->uid;
+        case SYS_SETUID:
+            // Root may become anyone. Nobody else may become anyone else:
+            // giving up root is permanent.
+            if (regs->rdi > 0xFFFFFFFFULL) return -EINVAL;
+            if (task->uid != UID_ROOT && (uint32_t)regs->rdi != task->uid) return -EPERM;
+            task->uid = (uint32_t)regs->rdi;
+            return 0;
+        case SYS_CHMOD:   return sys_chmod(regs->rdi, regs->rsi);
+        case SYS_CHOWN:   return sys_chown(regs->rdi, regs->rsi);
 
         case SYS_SETPRIORITY:
             if (regs->rdi > PRIO_LOW) return -EINVAL;
@@ -552,7 +613,10 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_BIND: {
             udp_socket_t *socket = fd_to_socket((int)regs->rdi);
             if (!socket) return -EBADF;
-            return regs->rsi > 0xFFFF ? -EINVAL : udp_bind(socket, (uint16_t)regs->rsi);
+            if (regs->rsi > 0xFFFF) return -EINVAL;
+            // Ports below 1024 are where system services live: root only
+            if (regs->rsi < 1024 && task->uid != UID_ROOT) return -EACCES;
+            return udp_bind(socket, (uint16_t)regs->rsi);
         }
         case SYS_SENDTO:   return sys_sendto((int)regs->rdi, regs->rsi, (size_t)regs->rdx, (uint32_t)regs->r10, regs->r8);
         case SYS_RECVFROM: return sys_recvfrom((int)regs->rdi, regs->rsi, (size_t)regs->rdx, regs->r10, regs->r8);

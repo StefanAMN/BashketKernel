@@ -104,7 +104,7 @@ static void one_call(void) {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
-        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_BIND, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM,
+        SYS_SIGNAL, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_BIND, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_SETUID, SYS_CHMOD, SYS_CHOWN,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -178,6 +178,22 @@ static void one_call(void) {
         case SYS_SLEEP:
             a = rnd() % 3; /* Milliseconds */
             break;
+        case SYS_SETUID:
+            /* Giving up root would make most later calls fail on permissions
+             * instead of reaching the code they are meant to exercise */
+            if (rnd() % 30 != 0) return;
+            break;
+        case SYS_CHMOD:
+        case SYS_CHOWN: {
+            /* We run as root, so these really change things. Only names
+             * under /tmp, or pointers that cannot be a path at all: a random
+             * valid pointer may happen to point at the text "/" in our own
+             * memory, and then the root directory changes hands. */
+            static const unsigned long not_paths[] = { 0, 1, 0x0000800000000000UL, 0xFFFF800000000000UL,
+                                                       0xFFFFFFFF80000000UL, 0xFFFFFFFFFFFFFFFFUL };
+            a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
+            break;
+        }
         case SYS_SHMGET:
             if (shaped) { a = 0xF000 + rnd() % 4; b = 4096 * (1 + rnd() % 8); }
             break;
