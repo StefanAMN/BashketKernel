@@ -146,6 +146,13 @@ uint64_t sched_lock_contention(void);
 uint32_t sched_queue_length(uint32_t cpu_id);
 
 /**
+ * @brief How many tasks are asleep with a deadline in CPU `cpu_id`'s list
+ *        of timed sleepers (0 for a CPU number out of range). Read without
+ *        the scheduler lock: a snapshot.
+ */
+uint32_t sched_sleeper_count(uint32_t cpu_id);
+
+/**
  * @brief Whether a signal is waiting for the current task's handler. Code
  *        that waits in a loop around sched_sleep must check this after each
  *        return and give up with -EINTR if it is true:

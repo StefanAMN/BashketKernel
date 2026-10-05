@@ -81,6 +81,46 @@ typedef struct {
 
 static runqueue_t runqueues[MAX_CPUS];
 
+// Each CPU's timed sleepers (tasks asleep with a deadline, which went to
+// sleep on it and set its timer for that), earliest deadline first, under
+// the scheduler lock: its timer looks at the front of its own list only,
+// not at every task (sched_wake_sleepers)
+static task_t *sleepers[MAX_CPUS];
+static uint32_t sleeper_counts[MAX_CPUS];
+
+// Put the current task, about to sleep until `key_ns` (clock_ns scale), in
+// CPU `cpu`'s list, in deadline order. Scheduler lock held.
+static void sleeper_add(task_t *t, uint32_t cpu, uint64_t key_ns) {
+    t->sleep_key_ns = key_ns;
+    t->sleeping_on = (int32_t)cpu;
+    task_t *prev = NULL, *at = sleepers[cpu];
+    while (at && at->sleep_key_ns <= key_ns) {
+        prev = at;
+        at = at->sleep_next;
+    }
+    t->sleep_prev = prev;
+    t->sleep_next = at;
+    if (prev) prev->sleep_next = t; else sleepers[cpu] = t;
+    if (at) at->sleep_prev = t;
+    sleeper_counts[cpu]++;
+}
+
+// Take `t` out of the list of timed sleepers it is in, if any. Scheduler
+// lock held.
+static void sleeper_remove(task_t *t) {
+    if (t->sleeping_on < 0) return;
+    uint32_t cpu = (uint32_t)t->sleeping_on;
+    if (t->sleep_prev) t->sleep_prev->sleep_next = t->sleep_next; else sleepers[cpu] = t->sleep_next;
+    if (t->sleep_next) t->sleep_next->sleep_prev = t->sleep_prev;
+    t->sleep_prev = t->sleep_next = NULL;
+    t->sleeping_on = -1;
+    sleeper_counts[cpu]--;
+}
+
+uint32_t sched_sleeper_count(uint32_t cpu_id) {
+    return cpu_id < MAX_CPUS ? sleeper_counts[cpu_id] : 0;
+}
+
 uint64_t sched_lock_irqsave(void) {
     return spinlock_acquire_irqsave(&sched_lock);
 }
@@ -247,6 +287,7 @@ void sched_init(void) {
     main_task->slice_left = priority_time_slice(PRIO_NORMAL);
     main_task->next = NULL;
     main_task->queued_on = -1;
+    main_task->sleeping_on = -1;
     for (uint32_t i = 0; i < MAX_CPUS; i++) spinlock_init_ranked(&runqueues[i].lock, "runqueue", LOCK_RANK_RUNQUEUE);
 
     // This task is the boot sequence and then the loop that frees dead
@@ -262,6 +303,7 @@ void sched_init(void) {
     idle->priority = PRIO_LOW;
     idle->affinity = 0;
     idle->queued_on = -1;
+    idle->sleeping_on = -1;
 
     uint64_t flags = sched_lock_irqsave();
     main_task->pid = next_pid++;
@@ -300,6 +342,7 @@ task_t *sched_prepare_cpu(uint32_t cpu_id) {
     idle->affinity = (int32_t)cpu_id;
     idle->last_cpu = cpu_id;
     idle->queued_on = -1;
+    idle->sleeping_on = -1;
     cpu_get(cpu_id)->idle = idle;
     return idle;
 }
@@ -354,6 +397,7 @@ static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool a
     t->state = TASK_READY;
     t->affinity = TASK_ANY_CPU;
     t->queued_on = -1;
+    t->sleeping_on = -1;
     t->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys(); // Kernel threads share the kernel address space
     t->detached = true;
     t->parent_pid = current_task ? current_task->pid : 0;
@@ -681,6 +725,7 @@ static void stop_current(task_t *self);
 // wake, and tell an idle CPU (another may take it before this one looks).
 // Caller holds the scheduler lock.
 static void wake_task(task_t *t) {
+    sleeper_remove(t);
     t->wait_channel = NULL;
     t->wake_tick = 0;
     t->wake_ns = 0;
@@ -739,6 +784,9 @@ static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, uint64
     self->wake_tick = wake_tick;
     self->wake_ns = wake_ns;
     self->state = TASK_BLOCKED;
+    if (wake_tick || wake_ns) {
+        sleeper_add(self, this_cpu()->cpu_id, wake_ns ? wake_ns : timer_tick_to_ns(wake_tick));
+    }
 
     // With one-shot timers nothing looks at sleepers regularly: this CPU's
     // timer has to be set for this one. (This CPU, because it is the one
@@ -897,25 +945,24 @@ void sched_wakeup(void *channel) {
     sched_unlock_irqrestore(flags);
 }
 
-// Each CPU is responsible for the deadlines of the tasks that went to sleep
-// on it (a blocked task's last_cpu): it set its timer when they did, and it
-// asks here what to set it to next. Any CPU that looks wakes every task
-// that is due, whoever's it is.
+// One-shot timers: each CPU wakes the timed sleepers that went to sleep on
+// it (its timer was set for them), from the front of its own list, and
+// says when the next one is due. The periodic tick (one CPU's) wakes those
+// of every CPU whose tick has come, from the front of each list.
 uint64_t sched_wake_sleepers(uint64_t now_ticks, uint64_t now_ns) {
     uint64_t earliest = 0;
     uint64_t flags = sched_lock_irqsave();
-    uint32_t here = this_cpu()->cpu_id;
-    for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->state != TASK_BLOCKED) continue;
-        if (now_ns == 0) {
-            // Periodic tick: only deadlines given in ticks exist
-            if (t->wake_tick != 0 && now_ticks >= t->wake_tick) wake_task(t);
-            continue;
+    if (now_ns == 0) {
+        // Periodic tick: the lists keep every deadline on one scale (a
+        // deadline in ticks as its tick's time), so "now" is put on it too
+        uint64_t now = timer_tick_to_ns(now_ticks);
+        for (uint32_t cpu = 0; cpu < MAX_CPUS; cpu++) {
+            while (sleepers[cpu] && now >= sleepers[cpu]->sleep_key_ns) wake_task(sleepers[cpu]);
         }
-        uint64_t at = t->wake_ns ? t->wake_ns : t->wake_tick ? timer_tick_to_ns(t->wake_tick) : 0;
-        if (at == 0) continue;
-        if (now_ns >= at) wake_task(t);
-        else if (t->last_cpu == here && (earliest == 0 || at < earliest)) earliest = at;
+    } else {
+        uint32_t here = this_cpu()->cpu_id;
+        while (sleepers[here] && now_ns >= sleepers[here]->sleep_key_ns) wake_task(sleepers[here]);
+        if (sleepers[here]) earliest = sleepers[here]->sleep_key_ns;
     }
     sched_unlock_irqrestore(flags);
     return earliest;
@@ -967,6 +1014,37 @@ size_t sched_reap(void) {
     return reaped;
 }
 
+// At a busy CPU's tick: if its load is more than one task above the least
+// loaded CPU's, hand that CPU the oldest task of ours that may move. (Only
+// an idle CPU, or one whose queue has run dry, takes work by itself: two
+// busy CPUs with three and one tasks waiting would otherwise stay so.) The
+// other queue's lock is taken with a try-lock while we hold ours, as in
+// steal: if it is busy, we try at the next tick. Interrupts off.
+static void hand_over_work(uint32_t here) {
+    runqueue_t *rq = &runqueues[here];
+    if (rq->count == 0) return;
+    uint32_t target = MAX_CPUS, least = UINT32_MAX;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        if (i == here || !cpu_get(i)->online) continue;
+        uint32_t load = load_of(i);
+        if (load < least) {
+            least = load;
+            target = i;
+        }
+    }
+    if (target == MAX_CPUS || load_of(here) <= least + 1) return;
+    spinlock_acquire(&rq->lock);
+    runqueue_t *other = &runqueues[target];
+    task_t *moved = NULL;
+    if (spinlock_try_acquire(&other->lock)) {
+        moved = rq_take(rq, true);
+        if (moved) rq_push(target, moved);
+        spinlock_release(&other->lock);
+    }
+    spinlock_release(&rq->lock);
+    if (moved) kick_cpu(target);
+}
+
 void sched_tick(void) {
     // Another CPU has stopped the kernel: stop here too
     if (kernel_halted) for (;;) asm volatile("cli\n\thlt");
@@ -982,6 +1060,7 @@ void sched_tick(void) {
     // and its idle task's ticks are not counted with the periodic one, so
     // the count means the same in both modes
     if (self != this_cpu()->idle) this_cpu()->busy_ticks++;
+    if (self != this_cpu()->idle) hand_over_work(this_cpu()->cpu_id);
 
     // Preempt only when the running task has used up its turn. The idle
     // task has no turn: it gives way as soon as anything is runnable.
