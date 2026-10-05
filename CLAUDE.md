@@ -216,7 +216,13 @@ code comments and commit messages; `git log` is the full history.
   real bug: the other processes could kill the shutdown half way.) A fourth
   time, symbolic links turned "safe" names into unsafe ones: a link from
   `/tmp/fuzz-dir` to `/tmp` let `chmod` reach `/tmp` itself. Whatever can
-  redirect a name must itself only point at safe names.
+  redirect a name must itself only point at safe names. A fifth time it
+  was the comments that lied: `mkdir` and `unlink`, "only names under
+  /tmp", took random pointers, `rename` had no rule at all, and `open` with
+  `O_CREAT` resolved "./fuzz-b" from wherever `chdir` had left the fuzzer:
+  directories named "t" and "BashketOS" appeared in `/`, and a shell check
+  of `echo [$l]` (a wildcard) matched them. Check the code against the rule,
+  call by call, when the list changes.
 - **Some defences cannot be demonstrated here.** QEMU, like AMD CPUs, faults
   in ring 3 on `sysretq` to a non-canonical address; Intel faults in ring 0.
   The check for it rests on the manual, and its test passes either way. Say
