@@ -740,6 +740,19 @@ test-jobs: iso
 		'sleep 5 &' '!wait' '@wait:1' '^C' 'echo wait-status $$?' 'jobs' 'wait %1' 'echo waited $$?' \
 		"trap '' INT" '!sleep 2' '@wait:1' '^C' 'echo slept-through $$?' 'exit' > $(BUILD)/trap-wait.log 2>&1 \
 		&& echo "trap and wait at the terminal: ok" || { echo "trap and wait at the terminal: FAILED (see $(BUILD)/trap-wait.log)"; exit 1; }
+	@# A background job that reads the terminal is stopped (SIGTTIN) and the
+	@# next prompt says so; fg gives it the terminal and it reads a line.
+	@# With stty tostop, one that writes is stopped too (SIGTTOU) until fg.
+	@# (The loops wait for /proc to show the job stopped, not for a time.)
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect '\[1\] Stopped \(tty input\)   cat' --expect '\ncat\ntyped line\ntyped line\n' \
+		--expect '\[1\] Stopped \(tty output\)   echo out' --expect '\necho out\nout\n' \
+		'exec /bin/sh' 'cat &' 'until [ $$(grep -c stopped /proc/tasks) -gt 0 ]; do sleep 0; done' 'jobs' \
+		'!fg' '@wait:1' '~typed line\r' '@wait:1' '^D' \
+		'stty tostop' 'echo out &' 'until [ $$(grep -c stopped /proc/tasks) -gt 0 ]; do sleep 0; done' 'jobs' \
+		'stty -tostop' 'fg' 'exit' > $(BUILD)/tty-jobs.log 2>&1 \
+		&& echo "background jobs and the terminal (SIGTTIN, SIGTTOU): ok" \
+		|| { echo "background jobs and the terminal: FAILED (see $(BUILD)/tty-jobs.log)"; exit 1; }
 
 # The text tools against files with known answers: head, tail, grep (with
 # -v, -c, several files, the exit status), sort (-n, -r, stable), cp (into

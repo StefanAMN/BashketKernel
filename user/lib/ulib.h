@@ -50,6 +50,8 @@ void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 #define SIGCONT 18                  /* Continue a stopped process */
 #define SIGSTOP 19                  /* Stop (suspend) a process; it has no say */
 #define SIGTSTP 20                  /* Stop, from the terminal (Ctrl-Z); may be caught or ignored */
+#define SIGTTIN 21                  /* Stop: a background job read the terminal */
+#define SIGTTOU 22                  /* Stop: a background job wrote to the terminal while tostop is set */
 typedef void (*sighandler_t)(int);
 #define SIG_DFL ((sighandler_t)0)   /* End the process */
 #define SIG_IGN ((sighandler_t)1)   /* Do nothing */
@@ -87,6 +89,9 @@ long setpgid(long pid, long pgid);           /* pid 0: the caller; pgid 0: a gro
 long getpgid(long pid); /* The process group of `pid` (0: the caller) */
 long tcsetpgrp(long pgid);                   /* 0: no job control (Ctrl-C reaches every process) */
 long tcgetpgrp(void); /* The terminal's foreground group (0: none) */
+long setsid(void);    /* A session and process group of one's own, without the terminal: its number; -EPERM for a group leader */
+long getsid(long pid); /* The session of `pid` (0: the caller); 0 is the console's session */
+long tty_tostop(int on); /* 1: background jobs that write to the terminal stop (SIGTTOU); 0: they may write; -1: just say (1 or 0) */
 
 /* Users and permissions. uid 0 is root and may do anything. */
 long getuid(void);                           /* The real user: who started this process */

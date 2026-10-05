@@ -101,6 +101,8 @@ typedef struct task {
     uint16_t umask;          // Permission bits removed from every file it creates
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
     uint32_t pgid;           // Process group: the job it belongs to (signals from the terminal go to a whole group)
+    uint32_t sid;            // Session: the pid of its leader (setsid), or 0 for the console's, which has none
+    bool has_tty;            // Its session's controlling terminal is the console (lost by setsid)
     int stop_pending;        // Stop signal that will suspend this process at its next safe point (0: none)
     int stop_signal;         // While TASK_STOPPED: the signal that did it
     bool stop_reported;      // ...and whether waitpid has told the parent yet

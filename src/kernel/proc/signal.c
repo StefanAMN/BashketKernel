@@ -48,7 +48,7 @@ static bool valid_signal(int sig) {
 
 // Signals that can never be caught, ignored or blocked
 #define UNBLOCKABLE ((1u << SIGKILL) | (1u << SIGSTOP))
-#define STOP_SIGNALS ((1u << SIGSTOP) | (1u << SIGTSTP))
+#define STOP_SIGNALS ((1u << SIGSTOP) | (1u << SIGTSTP) | (1u << SIGTTIN) | (1u << SIGTTOU))
 
 // What a signal does when the program has not said: nearly all end the
 // process; a few are only of interest to a program that asks for them
@@ -60,7 +60,7 @@ static bool default_is_ignore(int sig) {
 
 // Does `sig`, when it is not handled, stop the process (rather than end it)?
 static bool default_is_stop(int sig) {
-    return sig == SIGSTOP || sig == SIGTSTP;
+    return sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU;
 }
 
 bool signal_deliverable(const task_t *task) {

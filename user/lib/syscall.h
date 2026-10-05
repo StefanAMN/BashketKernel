@@ -67,6 +67,9 @@
 #define SYS_GETGROUPS 321
 #define SYS_GETEGID   322
 #define SYS_MSYNC     323
+#define SYS_SETSID    324
+#define SYS_GETSID    325
+#define SYS_TTY_TOSTOP 326
 #define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
@@ -128,6 +131,7 @@
 #define ECONNREFUSED 111
 #define EHOSTUNREACH 113
 #define ETXTBSY 26
+#define ENOTTY    25
 #define EFBIG 27
 #define EMLINK 31
 #define ENAMETOOLONG 36
