@@ -5,8 +5,9 @@ Welcome to **BashketKernel**! This document serves as an ordered, structured gui
 Each section breaks down a kernel subsystem, key operating system concepts, and the source files for it.
 
 **Read the status line under each heading first.** Where a phase is marked
-*partial* or *stub*, the "Concepts" below it describe what the subsystem is
-meant to teach, not what the listed files currently contain.
+*partial*, the status line says which part is missing. Phase numbers are the
+original ones; phases whose code was only a placeholder have been removed,
+so the numbering has gaps.
 
 ---
 
