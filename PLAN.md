@@ -1938,6 +1938,58 @@ run); the boot CPU is last in the turn, not left out.
 
 ---
 
+## Track S — The screen as memory, larger windows and datagrams, shell arguments
+
+Planned 2026-10-26, after track R, from limits the README and earlier
+tracks wrote down (each checked in the code first).
+
+### S1. The screen mapped into a program, and mouse and keyboard at once (M)
+
+`/dev/fb0` can only be written with `write()` and `lseek()`, and nothing
+has waited for the mouse and the keyboard together (both answer `poll`,
+untested). Let the program that owns the screen map it (`mmap` of
+`/dev/fb0`, shared, writable; the frames are the framebuffer's own, not
+the page cache's, mapped uncached or write-combining as the device needs;
+refused to anyone but the screen's owner, and gone when it gives the
+screen back or dies), and make `/bin/paint` draw through the mapping and
+`poll` both devices. **Check:** `make test-paint` (screenshots as now);
+syscheck (mapping refused without owning the screen, refused past its
+size; `poll` on console and mouse reports the one that has input); a
+screenshot taken after the owner is killed shows the console again.
+
+### S2. TCP window scaling (M)
+
+A connection's window stops at 64 KiB (no window scale option, RFC 7323
+section 2), which limits a transfer to one window per round trip. Offer
+and accept the option, scale the window advertised and the one obeyed,
+and let a receive buffer grow past 64 KiB. **Check:** unit tests of the
+option (offered, accepted, refused when the other end does not offer it,
+a shift above 14 clamped); `make test-net` against the host's TCP (which
+scales), with the transfer time before and after written down; the
+reassembly and congestion tests of O1 and P1 keep passing.
+
+### S3. IPv4 fragments (M)
+
+Fragments are dropped on arrival, and nothing larger than the link's MTU
+can be sent ("don't fragment" is set). Reassemble arriving fragments
+(RFC 791, holes as in RFC 815; a time limit and a memory limit, overlaps
+refused), and fragment outgoing datagrams that do not fit. **Check:**
+unit tests (out of order, duplicates, overlaps, a missing piece timing
+out, the memory limit); `tools/test_net.py` exchanges an 8 KiB UDP
+datagram with the host in both directions (the host's stack fragments and
+reassembles: something we did not write).
+
+### S4. `set -- ARGS`, `$*` and `getopts` in the shell (S)
+
+The shell cannot set its arguments ("set -- a b" is refused, Q3), has no
+`$*`, and no `getopts`. Add `set -- ARGS` (and `set ARGS`), `$*` and
+`"$*"` (one word, joined by a blank), and `getopts OPTSTRING NAME` with
+`OPTIND` and `OPTARG`, as POSIX describes. **Check:** syscheck, a check
+per case (`set --` with none, `"$@"` against `"$*"`, `getopts` with
+grouped options, an argument joined and apart, an unknown option, `--`).
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -2032,6 +2084,8 @@ R4                               done
 R1                               done
 R2                               done
 R3                               done
+        |
+S4, S1, S3, S2                   next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
