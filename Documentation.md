@@ -230,33 +230,6 @@ meant to teach, not what the listed files currently contain.
 
 ---
 
-### 14. Bootloader Information Handover (Phase 14)
-**Status: stub.** A CPUID check. Limine boots the kernel.
-
-**Goal:** Structured inspection of Limine boot tags (framebuffer, memory map, RSDP, modules).
-
-- **Order of Learning:**
-  1. **Boot Tag Inspection:**
-     - **Concepts:** Retrieving system boot information handed over from Limine protocol.
-     - Files to inspect: `src/boot/boot_loader.h`, `src/boot/boot_loader.c`
-
----
-
-### 15. PS/2 Mouse Driver & Graphical Cursor (Phase 15)
-**Status: stub.** The IRQ handler discards mouse bytes. Nothing is drawn.
-
-**Goal:** PS/2 mouse packet parsing, hardware cursor blitting.
-
-- **Order of Learning:**
-  1. **PS/2 Mouse Driver:**
-     - **Concepts:** 3-byte mouse packet stream parsing (X/Y delta, left/right/middle button states).
-     - Files to inspect: `src/drivers/input/mouse.h`, `src/drivers/input/mouse.c`
-  2. **Graphical Cursor Blitter:**
-     - **Concepts:** Alpha-blended cursor bitmap overlay, double buffering back-buffer updates.
-     - Files to inspect: `src/drivers/input/cursor.h`, `src/drivers/input/cursor.c`
-
----
-
 ### 16. Userland Application Infrastructure (Phase 16)
 **Status: real.** `user/*.c` are built into `/bin` with a small C library (`user/lib`): `sh`, `ls`, `cat`, `echo`, `wc`, `hello`, `fault`, `syscheck`.
 
@@ -282,14 +255,14 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 18. Environment Variables (Phase 18)
-**Status: real.** Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. (The kernel shell still has a separate global table for its `env`/`export` commands.)
+**Status: real.** Each process has its own environment in its own memory, carried across `fork` and `execve`. The C library has `getenv`/`setenv`; `/bin/sh` has `export`, `$NAME`, `$?` and `PATH` lookup. 
 
 **Goal:** Per-process environment variable management (`getenv`, `setenv`, `env`).
 
 - **Order of Learning:**
   1. **Process Environment Storage:**
      - **Concepts:** Key-value string array storage, inheritance across `fork`/`exec`.
-     - Files to inspect: `src/kernel/proc/env.h`, `src/kernel/proc/env.c`
+     - Files to inspect: `src/kernel/proc/process.c` (`build_user_stack`), `user/lib/ulib.c` (`getenv`, `setenv`), `user/sh.c` (`export`)
 
 ---
 
@@ -306,26 +279,14 @@ meant to teach, not what the listed files currently contain.
 ---
 
 ### 20. Terminal ANSI Escape Sequence Parser (Phase 20)
-**Status: real.** The console interprets ANSI escape sequences: 16 text and background colours, bold, cursor positioning and relative movement, erasing the screen or a line. `/bin/clear` and `/bin/colors` use them. Unsupported sequences are swallowed. See `src/gui/compositor/ansi.c` (parser) and `src/drivers/console/console.c` (what the screen does with it).
+**Status: real.** The console interprets ANSI escape sequences: 16 text and background colours, bold, cursor positioning and relative movement, erasing the screen or a line. `/bin/clear` and `/bin/colors` use them. Unsupported sequences are swallowed. See `src/drivers/console/ansi.c` (parser) and `src/drivers/console/console.c` (what the screen does with it).
 
 **Goal:** ANSI escape sequence handling for text coloring and cursor movement.
 
 - **Order of Learning:**
   1. **ANSI Sequence Parser:**
      - **Concepts:** State machine parsing for CSI sequences (e.g. `\033[31m` for red text).
-     - Files to inspect: `src/gui/compositor/ansi.h`, `src/gui/compositor/ansi.c`
-
----
-
-### 21. In-Memory RAM Filesystem (RAMFS) (Phase 21)
-**Status: stub.** Creates `/tmp` in the VFS tree. Not a separate filesystem.
-
-**Goal:** Dynamic in-memory hierarchical filesystem (`mkdir`, `create`, `write`, `read`).
-
-- **Order of Learning:**
-  1. **RAMFS Storage Engine:**
-     - **Concepts:** Dynamic memory inode trees, directory child node linked lists.
-     - Files to inspect: `src/fs/ramfs.h`, `src/fs/ramfs.c`
+     - Files to inspect: `src/drivers/console/ansi.h`, `src/drivers/console/ansi.c`
 
 ---
 
@@ -389,18 +350,6 @@ meant to teach, not what the listed files currently contain.
 
 ---
 
-### 27. Paging Swap Subsystem (Phase 27)
-**Status: stub.** A slot bitmap. No page is ever written out.
-
-**Goal:** Out-of-memory page swapping to disk block storage (`swap_out`, `swap_in`).
-
-- **Order of Learning:**
-  1. **Swap Memory Engine:**
-     - **Concepts:** Evicting anonymous physical pages to swap disk space, demand paging on swap fault.
-     - Files to inspect: `src/mm/swap.h`, `src/mm/swap.c`
-
----
-
 ### 28. Dynamic Executable Linking (Phase 28)
 **Status: real.** Static position-independent executables: the loader places them at a chosen or random address and applies their relative relocations, refusing any that would write outside the image. No shared libraries, no symbol resolution, no dynamic linker.
 
@@ -422,18 +371,6 @@ meant to teach, not what the listed files currently contain.
   1. **Network Sockets:**
      - **Concepts:** Socket descriptor table, UDP packet header building, IP checksum computation.
      - Files to inspect: `src/net/socket.h`, `src/net/socket.c`
-
----
-
-### 30. Desktop Window Manager & GUI Compositor (Phase 30)
-**Status: stub.** Allocates a pixel buffer. Nothing is composited.
-
-**Goal:** Graphical GUI window creation (`window_create`), compositing back-buffer blitter.
-
-- **Order of Learning:**
-  1. **GUI Compositor:**
-     - **Concepts:** Window z-ordering, title bar rendering, window drag/move handling.
-     - Files to inspect: `src/gui/compositor/window.h`, `src/gui/compositor/window.c`
 
 ---
 

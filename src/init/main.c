@@ -31,22 +31,15 @@
 #include "process.h"
 #include "pci.h"
 #include "virtio_net.h"
-#include "boot_loader.h"
-#include "mouse.h"
-#include "cursor.h"
 #include "rtc.h"
-#include "env.h"
 #include "pipe.h"
 #include "ansi.h"
-#include "ramfs.h"
 #include "priority.h"
 #include "sem.h"
 #include "procfs.h"
 #include "tty.h"
 #include "fpu.h"
-#include "swap.h"
 #include "net.h"
-#include "window.h"
 #include "auth.h"
 #include "klog.h"
 #include "hrtimer.h"
@@ -212,7 +205,7 @@ void _start(void) {
     // Phase 6: Filesystem & Initrd
     vfs_init();
     file_init();
-    mount_register("/", "ramfs", "memory");
+    mount_register("/", "memfs", "memory");
     if (module_request.response && module_request.response->module_count > 0) {
         struct limine_file *initrd = module_request.response->modules[0];
         mount_register("/bin", "initrd", "boot-module");
@@ -249,21 +242,12 @@ void _start(void) {
     // Phase 13: PCI Bus & VirtIO Network Stack
     if (virtio_net_init() == 0) net_init();
 
-    // Phase 14: Custom x86_64 Bare-Metal Bootloader Transition
-    boot_loader_init();
-
-    // Phase 15: PS/2 Mouse Driver & Framebuffer Canvas
-    mouse_init();
-    cursor_init();
-
     // Phase 17: Real-Time Clock & CMOS Driver
     rtc_init();
 
-    // Phase 18: Process Environment Variables
-    env_init();
-
-    // Phase 21: Dynamic RAM Filesystem (RamFS)
-    ramfs_init();
+    // /tmp: the one place every user may create files (and remove their own)
+    vnode_t *tmp_dir = vfs_create_dir(vfs_get_root(), "tmp");
+    if (tmp_dir) tmp_dir->mode = 0666;
 
     // Phase 24: Pseudo-Filesystem ProcFS
     procfs_init();
@@ -273,9 +257,6 @@ void _start(void) {
 
     // Phase 26: Hardware FPU & SSE State Management
     fpu_init();
-
-    // Phase 27: Virtual Memory Swap Manager
-    swap_init(1024);
 
     // Phase 32: Kernel Logging Ring Buffer
     klog_init();

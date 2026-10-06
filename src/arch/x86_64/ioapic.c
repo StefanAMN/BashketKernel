@@ -38,12 +38,11 @@ void ioapic_init(void) {
     pic_disable();
 
     // Route legacy ISA IRQs to vector 32 + IRQ:
-    // IRQ 0 (PIT timer), IRQ 1 (keyboard), IRQ 4 (COM1 serial), IRQ 12 (PS/2 mouse).
+    // IRQ 0 (PIT timer), IRQ 1 (keyboard), IRQ 4 (COM1 serial).
     // Each IRQ is routed through exactly one pin, the one the MADT names.
     ioapic_route_isa_irq(0);
     ioapic_route_isa_irq(1);
     ioapic_route_isa_irq(4);
-    ioapic_route_isa_irq(12);
 
     kprintf("IOAPIC Init: Controller mapped (Max Redirection Lines: %u)\n", max_redirection_entries);
 }

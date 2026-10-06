@@ -49,16 +49,3 @@ uint32_t lapic_get_id(void) {
     if (!lapic_base) return 0;
     return lapic_read(0x020) >> 24; // ID Register 0x020 bits 31..24
 }
-
-void lapic_timer_init(uint32_t quantum) {
-    if (!lapic_base) return;
-
-    // Divide Configuration Register (0x3E0) -> Divide by 16 (value 0x03)
-    lapic_write(0x3E0, 0x03);
-
-    // LVT Timer Register (0x320) -> Periodic mode (0x20000) | Vector 32 (IRQ 0)
-    lapic_write(0x320, 32 | 0x20000);
-
-    // Initial Count Register (0x380)
-    lapic_write(0x380, quantum);
-}

@@ -15,7 +15,6 @@
 #include "process.h"
 #include "string_util.h"
 #include "rtc.h"
-#include "env.h"
 #include "klog.h"
 #include "mount.h"
 #include "bench.h"
@@ -135,9 +134,6 @@ void shell_run_cmd(const char *cmdline) {
         kprintf("  ps              - List active processes and tasks\n");
         kprintf("  uptime          - Display system uptime and timer ticks\n");
         kprintf("  date            - Display real-time clock UTC timestamp\n");
-        kprintf("  env             - Display environment variables\n");
-        kprintf("  export K=V      - Set environment variable\n");
-        kprintf("  unset K         - Unset environment variable\n");
         kprintf("  dmesg           - Display kernel log ring buffer\n");
         kprintf("  mount           - Display active VFS mount table\n");
         kprintf("  bench           - Execute kernel performance benchmarks\n");
@@ -187,17 +183,7 @@ void shell_run_cmd(const char *cmdline) {
         }
         kprintf("\n");
     } else if (strncmp(cmdline, "echo ", 5) == 0) {
-        const char *arg = cmdline + 5;
-        if (arg[0] == '$') {
-            const char *val = env_get(arg + 1);
-            if (val) {
-                kprintf("%s\n", val);
-            } else {
-                kprintf("\n");
-            }
-        } else {
-            kprintf("%s\n", arg);
-        }
+        kprintf("%s\n", cmdline + 5);
     } else if (strcmp(cmdline, "mem") == 0) {
         kprintf("Physical Memory:\n");
         kprintf("  Total Frames: %zu (%zu MB)\n", pmm_get_total_frames(), (pmm_get_total_frames() * 4096) / (1024 * 1024));
@@ -214,35 +200,6 @@ void shell_run_cmd(const char *cmdline) {
         struct rtc_time t;
         rtc_read_time(&t);
         kprintf("Date (UTC): %d-%02d-%02d %02d:%02d:%02d\n", t.year, t.month, t.day, t.hour, t.minute, t.second);
-    } else if (strcmp(cmdline, "env") == 0) {
-        env_print_all();
-    } else if (strcmp(cmdline, "dmesg") == 0) {
-        klog_print_dmesg();
-    } else if (strcmp(cmdline, "mount") == 0) {
-        vfs_list_mounts();
-    } else if (strcmp(cmdline, "bench") == 0) {
-        bench_run_all();
-    } else if (strncmp(cmdline, "export ", 7) == 0) {
-        const char *expr = cmdline + 7;
-        char key[64], val[128];
-        size_t i = 0;
-        while (expr[i] != '\0' && expr[i] != '=' && i < sizeof(key) - 1) {
-            key[i] = expr[i];
-            i++;
-        }
-        key[i] = '\0';
-        if (expr[i] == '=') {
-            size_t j = 0;
-            const char *val_src = expr + i + 1;
-            while (val_src[j] != '\0' && j < sizeof(val) - 1) {
-                val[j] = val_src[j];
-                j++;
-            }
-            val[j] = '\0';
-            env_set(key, val);
-        }
-    } else if (strncmp(cmdline, "unset ", 6) == 0) {
-        env_unset(cmdline + 6);
     } else if (strncmp(cmdline, "touch ", 6) == 0) {
         const char *filename = cmdline + 6;
         vnode_t *file = vfs_create_file(NULL, filename, "", 0);
