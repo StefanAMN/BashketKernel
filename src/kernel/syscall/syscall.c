@@ -145,6 +145,21 @@ static uint8_t *io_buffer(task_t *task) {
     return task->io_buffer;
 }
 
+// A buffer of at least `size` bytes owned by the calling task, for a
+// datagram on its way to or from the program: the I/O page when that is
+// enough, otherwise one kept for the purpose and replaced by a larger one
+// when it is too small. Owned by the task for the same reason as the page
+// (sendto and recvfrom can sleep). NULL if memory runs out.
+static uint8_t *datagram_buffer(task_t *task, size_t size) {
+    if (size <= IO_BUFFER_SIZE) return io_buffer(task);
+    if (task->datagram_buffer_size < size) {
+        kfree(task->datagram_buffer);
+        task->datagram_buffer = kmalloc(size);
+        task->datagram_buffer_size = task->datagram_buffer ? size : 0;
+    }
+    return task->datagram_buffer;
+}
+
 // read(fd, buf, count): read up to `count` bytes into buf. A file is read
 // until the request is met or the file ends; a terminal, pipe or socket
 // gives what it has (waiting for something first). Returns the number of
@@ -1007,7 +1022,8 @@ static int64_t sys_sendto(int fd, uint64_t user_buf, size_t len, uint32_t ip, ui
 
     // Sending can sleep (waiting for an ARP answer), so the datagram is
     // copied into kernel memory first and the user's buffer is left alone
-    uint8_t data[UDP_PAYLOAD_MAX];
+    uint8_t *data = datagram_buffer(sched_get_current_task(), len);
+    if (!data) return -ENOMEM;
     user_access_begin();
     memcpy(data, (const void *)user_buf, len);
     user_access_end();
@@ -1048,7 +1064,8 @@ static int64_t sys_recvfrom(int fd, uint64_t user_buf, size_t len, uint64_t user
     if (len > 0 && !user_range_ok(user_buf, len, true)) return -EFAULT;
     if (user_from != 0 && !user_range_ok(user_from, sizeof(struct net_address), true)) return -EFAULT;
 
-    uint8_t data[UDP_PAYLOAD_MAX];
+    uint8_t *data = datagram_buffer(sched_get_current_task(), len);
+    if (!data) return -ENOMEM;
     struct net_address from = {0};
     int64_t n = udp_recvfrom(socket, data, len, &from.ip, &from.port, ms_to_ticks(timeout_ms));
     if (n < 0) return n;
