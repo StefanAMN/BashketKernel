@@ -410,7 +410,7 @@ test-smp:
 		tools/qemu_shell.py --quiet --timeout 120 $(SHELL_CPU) --qemu-arg=-smp --qemu-arg=$$n \
 			--expect "SMP: $$n CPUs scheduling" --expect 'syscheck: all checks passed' \
 			--expect 'fptest: all workers computed the right values' --expect '\n$(words $(USER_PROGS)) [0-9]+ [0-9]+\n' \
-			--expect 'IRQ  4 +0 +[1-9][0-9]* ' --forbid 'LOCK RULE' \
+			--expect 'IRQ  4 +0 +[1-9][0-9]* ' --forbid 'LOCK RULE' --forbid 'PMM WARNING' \
 			'exec /bin/syscheck' 'exec /bin/fptest' 'exec /bin/sh -c "ls /bin | wc"' 'cat /proc/interrupts' > $(BUILD)/smp-$$n.log 2>&1 \
 			&& echo "$$n CPUs: programs run" \
 			|| { echo "$$n CPUs: FAILED (see $(BUILD)/smp-$$n.log)"; exit 1; }; \
@@ -525,7 +525,8 @@ test-paint: iso
 	@rm -rf $(PAINT_SHOTS) && mkdir -p $(PAINT_SHOTS)
 	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
 		--expect 'paint: 1280x800, pointer at 640,400' --expect 'paint: 2 strokes; pointer last at 124,320' \
-		--expect 'Hello from ring 3' --forbid 'no mouse|no screen' \
+		--expect 'Hello from ring 3' --expect 'paint: 1 strokes; pointer last at 660,400' \
+		--forbid 'no mouse|no screen|cannot map|PMM WARNING' \
 		'exec /bin/clear' '!exec /bin/paint' \
 		'@button:1' '@mouse:60,0' '@mouse:0,40' '@button:0' \
 		'@screendump:$(PAINT_SHOTS)/1-stroke.ppm' \
@@ -537,7 +538,9 @@ test-paint: iso
 		'@screendump:$(PAINT_SHOTS)/3-text.ppm' \
 		'exec /bin/hello' '!exec /bin/paint' '@button:1' '@mouse:30,30' '@button:0' \
 		'@screendump:$(PAINT_SHOTS)/4-again.ppm' '^C' '@wait:1' \
-		'@screendump:$(PAINT_SHOTS)/5-killed.ppm' 'exec /bin/hello' > $(BUILD)/paint.log 2>&1 \
+		'@screendump:$(PAINT_SHOTS)/5-killed.ppm' 'exec /bin/hello' \
+		'!exec /bin/paint' '@button:1' '@mouse:20,0' '@button:0' '~q\r' '@wait:1' \
+		'@screendump:$(PAINT_SHOTS)/6-quit.ppm' 'exec /bin/hello' > $(BUILD)/paint.log 2>&1 \
 		|| { echo "paint: FAILED (see $(BUILD)/paint.log)"; exit 1; }
 	@tools/check_ppm.py $(PAINT_SHOTS)/1-stroke.ppm 100,300=202428 670,400=ffffff 700,420=ffffff 690,410=202428 \
 			28,16=ffffff 8,4=ffffff 60,4=101010 1250,6=c02020 640,395=202428 \
@@ -546,7 +549,8 @@ test-paint: iso
 		&& tools/check_ppm.py $(PAINT_SHOTS)/3-text.ppm 670,400!=ffffff 100,320!=e04040 1250,6!=c02020 1000,700=000000 \
 		&& tools/check_ppm.py $(PAINT_SHOTS)/4-again.ppm 655,415=ffffff 1250,6=c02020 100,320=202428 \
 		&& tools/check_ppm.py $(PAINT_SHOTS)/5-killed.ppm 655,415!=ffffff 1250,6!=c02020 1000,700=000000 \
-		&& echo "paint (mouse and screen as devices; the text screen returns after exit and after a kill): ok" \
+		&& tools/check_ppm.py $(PAINT_SHOTS)/6-quit.ppm 1250,6!=c02020 1000,700=000000 \
+		&& echo "paint (the screen mapped, mouse and keyboard polled; the text screen returns after exit, q and a kill): ok" \
 		|| { echo "paint: FAILED, the screenshots in $(PAINT_SHOTS) are not as expected"; exit 1; }
 
 # Swap: a program that needs 80 MiB on a machine with 64. Without a swap
