@@ -172,7 +172,7 @@ so the numbering has gaps.
 ---
 
 ### 10. SMP Multiprocessing & Spinlocks (Phase 10)
-**Status: partial.** Every CPU the bootloader reports is started with its own per-CPU structure (reached through GS, with `swapgs` on every crossing between ring 3 and the kernel), task state segment and double-fault stack. Shared kernel structures are protected by ranked spinlocks and mutexes rather than by masking interrupts, and the lock order is checked at run time; a test runs the allocators, page tables, semaphores and wakeups on all CPUs at once. Only the boot CPU runs tasks so far: the others sleep until asked to run a function. See `src/arch/x86_64/percpu.h`, `smp.h`, and `src/kernel/sync/spinlock.h` (the lock order), `mutex.h`.
+**Status: partial.** Every CPU the bootloader reports is started with its own per-CPU structure (reached through GS, with `swapgs` on every crossing between ring 3 and the kernel), task state segment and double-fault stack, and runs tasks: each has an idle task and a tick from its local APIC timer, an idle CPU is woken by an inter-processor interrupt when a task becomes runnable, tasks move between CPUs (or are tied to one), and removing a kernel mapping waits for every CPU to drop its cached copy (TLB shootdown). Shared structures are protected by ranked spinlocks and mutexes, with the lock order checked at run time. Not done: one scheduler lock and task list for all CPUs (no per-CPU queues), and all device interrupts go to the boot CPU. See `src/arch/x86_64/percpu.h`, `smp.h` and `smp.c`, `src/kernel/sync/spinlock.h` (the lock order), `mutex.h`, and `src/kernel/sched/sched.c`.
 
 **Goal:** Multi-core CPU initialization via Limine SMP, kernel spinlocks.
 

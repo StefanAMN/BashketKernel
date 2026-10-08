@@ -45,19 +45,10 @@ static uint64_t read_efer(void) {
     return rdmsr(MSR_EFER);
 }
 
-void cpu_protection_init(void) {
-    uint32_t r[4];
-    bool has_smep = false, has_umip = false, has_smap = false;
+static bool has_smep = false, has_umip = false, has_smap = false;
+static bool nx_enabled = false; // The boot CPU has EFER.NXE set (the bootloader does it)
 
-    // Leaf 7 exists only if leaf 0 reports a maximum of at least 7
-    cpuid(0, 0, r);
-    if (r[0] >= 7) {
-        cpuid(7, 0, r);
-        has_smep = (r[1] >> 7) & 1;  // EBX bit 7
-        has_smap = (r[1] >> 20) & 1; // EBX bit 20
-        has_umip = (r[2] >> 2) & 1;  // ECX bit 2
-    }
-
+void cpu_protection_enable_on_this_cpu(void) {
     uint64_t cr0, cr4;
     asm volatile("mov %0, cr0" : "=r"(cr0));
     asm volatile("mov %0, cr4" : "=r"(cr4));
@@ -70,10 +61,27 @@ void cpu_protection_init(void) {
     asm volatile("mov cr0, %0" : : "r"(cr0));
     asm volatile("mov cr4, %0" : : "r"(cr4));
 
-    if (has_smap) {
-        cpu_smap_enabled = true;
-        user_access_end(); // Start with the window closed
+    // No-execute pages only work with EFER.NXE set; without it the NX bit
+    // in a page table entry is a reserved bit and every access faults
+    if (nx_enabled) wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_NXE);
+    if (has_smap) user_access_end(); // Start with the window closed
+}
+
+void cpu_protection_init(void) {
+    uint32_t r[4];
+
+    // Leaf 7 exists only if leaf 0 reports a maximum of at least 7
+    cpuid(0, 0, r);
+    if (r[0] >= 7) {
+        cpuid(7, 0, r);
+        has_smep = (r[1] >> 7) & 1;  // EBX bit 7
+        has_smap = (r[1] >> 20) & 1; // EBX bit 20
+        has_umip = (r[2] >> 2) & 1;  // ECX bit 2
     }
+
+    nx_enabled = (read_efer() & EFER_NXE) != 0;
+    if (has_smap) cpu_smap_enabled = true;
+    cpu_protection_enable_on_this_cpu();
 
     ksnprintf(summary, sizeof(summary), "%swp%s%s%s",
               (read_efer() & EFER_NXE) ? "nx " : "",

@@ -31,7 +31,7 @@ TEST(sleeping_task_is_blocked_not_spinning) {
     sleeper_task = task_create("sleeper", sleeper_entry);
     EXPECT_TRUE(sleeper_task != NULL);
 
-    sched_yield();                                 // Let it start and go to sleep
+    TEST_WAIT(sleeper_task->state == TASK_BLOCKED, 5); // Let it start and go to sleep
     EXPECT_EQ(sleeper_task->state, TASK_BLOCKED);
     EXPECT_TRUE(sleeper_task->wake_tick >= started + 10);
 

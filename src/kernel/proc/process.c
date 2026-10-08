@@ -392,12 +392,14 @@ int process_kill(pid_t pid, int sig) {
     // be reaped in between
     int result = -1;
     uint64_t flags = sched_lock_irqsave();
-    task_t *target = sched_find_task((uint32_t)pid);
-    if (target && target->is_user && target->state != TASK_ZOMBIE) {
+    task_t *target = sched_find_task_locked((uint32_t)pid);
+    if (target && target->is_user) {
         // The target may be half way through a system call, so nothing is
         // done to it here: the signal is recorded and takes effect at its
         // next safe point. That is true even when the target is the caller.
-        signal_send_locked(target, sig);
+        // (Sending to a process that is already dead but not yet waited
+        // for succeeds and does nothing.)
+        if (target->state != TASK_ZOMBIE) signal_send_locked(target, sig);
         result = 0;
     }
     sched_unlock_irqrestore(flags);

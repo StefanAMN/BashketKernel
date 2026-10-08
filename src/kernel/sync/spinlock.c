@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "percpu.h"
 #include "kprintf.h"
+#include "smp.h"
 
 // Off until per-CPU data exists: the check finds the calling CPU through GS
 static bool tracking = false;
@@ -97,6 +98,9 @@ void spinlock_acquire(spinlock_t *lock) {
     }
 
     while (__atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE)) {
+        // The CPU we are waiting for may itself be waiting for us to drop
+        // stale page-table lookups (see smp_tlb_shootdown)
+        if (cpu) smp_tlb_service();
         asm volatile("pause");
     }
 

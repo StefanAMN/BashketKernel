@@ -5,8 +5,9 @@ description: Build BashketKernel and verify a change in QEMU - run the in-kernel
 
 # Verifying a kernel change
 
-The short version: `make check` runs the unit tests, the low-memory scenarios
-and a few fuzz seeds on both CPU models (about three minutes) and ends with
+The short version: `make check` runs the unit tests, the low-memory, disk,
+network, editor and login scenarios and a few fuzz seeds, on both CPU models
+and on machines with one to eight CPUs (about nine minutes), and ends with
 `ALL CHECKS PASSED`. Use it before every commit that touches kernel code. The
 sections below are the individual steps, for when one of them fails or a
 quicker, narrower check is enough while iterating.
@@ -38,6 +39,13 @@ lines contain `-DKERNEL_TESTS` and will match. Anchor the pattern
 
 Builds a separate test kernel in `build-test/` (with `-DKERNEL_TESTS`), boots
 it headless, and exits 0 only if the kernel reported every expectation passed.
+
+`make test-smp` runs the same tests on four CPUs (log: `build-test/test-smp.log`)
+and then real programs on 2, 4 and 8. Run it for anything that touches the
+scheduler, locking, per-CPU state or page tables: a test that waits by
+yielding a fixed number of times, or assumes another task has not run yet,
+passes on one CPU and fails there. A failure that appears on only some runs
+is a race: repeat the run a few times before believing a pass.
 It prints `[FAIL]` lines, any `CPU EXCEPTION`, and the summary. Full serial
 output is in `build-test/test.log`. Takes about 10 seconds.
 

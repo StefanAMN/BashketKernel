@@ -43,6 +43,40 @@ void task_free(task_t *t);
  */
 task_t *sched_find_task(uint32_t pid);
 
+// The same, for a caller that holds the scheduler lock (and so may go on to
+// use the task before anyone can free it)
+task_t *sched_find_task_locked(uint32_t pid);
+
+/**
+ * @brief Give CPU `cpu_id` an idle task. Called on the boot CPU before that
+ *        CPU is started: the new CPU must not allocate while starting.
+ */
+task_t *sched_prepare_cpu(uint32_t cpu_id);
+
+/**
+ * @brief Called on a newly started CPU: from here on it takes part in
+ *        scheduling. Its caller then goes into sched_idle_loop().
+ */
+void sched_join_this_cpu(void);
+
+/**
+ * @brief What a CPU does when it has no task to run. Never returns.
+ */
+void sched_idle_loop(void);
+
+/**
+ * @brief Tie a task to one CPU, or (TASK_ANY_CPU) let it run on any. Takes
+ *        effect the next time the task is scheduled. A CPU that is not
+ *        scheduling is treated as TASK_ANY_CPU.
+ */
+void task_set_affinity(task_t *task, int32_t cpu_id);
+
+/**
+ * @brief How many tasks on the task list are running at this instant (one
+ *        per CPU at most; idle CPUs do not count).
+ */
+uint32_t sched_running_count(void);
+
 /**
  * @brief Put the current task to sleep until sched_wakeup(channel) is called
  *        or, if wake_tick is non-zero, until that timer tick.

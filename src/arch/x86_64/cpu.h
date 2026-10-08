@@ -33,6 +33,12 @@ void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t regs[4]);
  */
 void cpu_protection_init(void);
 
+/**
+ * @brief Turn the same protections on on another CPU: these are bits in
+ *        control registers, and every CPU has its own.
+ */
+void cpu_protection_enable_on_this_cpu(void);
+
 // True once SMAP is switched on. Read by the inline helpers below.
 extern bool cpu_smap_enabled;
 

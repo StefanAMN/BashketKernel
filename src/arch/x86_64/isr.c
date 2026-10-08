@@ -152,6 +152,7 @@ void isr_handler(struct registers *regs) {
     if (regs->int_no < 32) {
         // CPU Exception (0..31). The fault may have happened while the
         // interrupted code held the kprintf lock, so take it away first.
+        kernel_halt_other_cpus();
         kprintf_force_unlock();
         kprintf("\n=================================================\n");
         kprintf("CPU EXCEPTION: %s (Interrupt %zd)\n", exception_messages[regs->int_no], regs->int_no);
@@ -210,10 +211,17 @@ void isr_handler(struct registers *regs) {
             sched_check_kill();
             signal_deliver(regs); // And for a signal handler to be entered
         }
-    } else if (regs->int_no == IPI_VECTOR_WAKE) {
-        // Sent by another CPU only to end this one's hlt; the code that was
-        // halted looks for its work once we return
-        lapic_eoi();
+    } else if (regs->int_no == IPI_VECTOR_WAKE || regs->int_no == IPI_VECTOR_TIMER) {
+        lapic_eoi(); // First, as above: the handler may switch tasks
+
+        if (regs->int_no == IPI_VECTOR_WAKE) smp_handle_ipi();
+        else sched_tick();
+
+        // The same safe point as after a device interrupt
+        if ((regs->cs & 3) == 3) {
+            sched_check_kill();
+            signal_deliver(regs);
+        }
     } else {
         kprintf("Unhandled Interrupt Vector: %zd\n", regs->int_no);
     }

@@ -86,9 +86,11 @@ make test         # separate test kernel in build-test/, exit 0 only if all pass
 make run          # QEMU with serial and monitor on stdio
 make run-gdb      # QEMU halted, gdb stub on :1234
 
-make check                      # everything below, on both CPU models (~5 min); run before committing
-make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s)
-make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one
+make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
+make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
+make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
+make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one; SMP=4
+tools/qemu_shell.py --qemu-arg=-smp --qemu-arg=4 'exec /bin/ps'   # any scripted boot on more CPUs
 tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell commands (<1 s)
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
@@ -312,6 +314,24 @@ code comments and commit messages; `git log` is the full history.
 - **A node pointer from a path lookup is only good under `vfs_lock()`** or
   while the node is open. Look up and pin (or look up and change) inside one
   hold of the lock.
+- **Read the current task with one instruction** (`mov reg, gs:[24]`). "Find
+  my CPU, then read its current task" reads another CPU's task if the task
+  is moved between the two steps. For the same reason `this_cpu()` is only
+  meaningful with interrupts off.
+- **Control registers and MSRs are per CPU.** A second CPU needs CR0.WP,
+  CR4 (SMEP, SMAP, UMIP, OSFXSR), EFER (NXE, SCE), STAR/LSTAR/SFMASK and the
+  FPU set up itself, or the first user task that lands on it faults.
+- **A CPU waiting with interrupts off must still answer TLB shootdowns**,
+  because the CPU that asked may hold the lock it is waiting for. The request
+  is a per-CPU flag, serviced from the interrupt handler *and* from every
+  spin loop (lock acquire, cross-CPU call). Without the shootdown, a freed
+  kernel stack slot reused at the same address was read through a stale
+  translation on another CPU: a page fault within one test run.
+- **"Yield N times" is not a wait on more than one CPU.** The other tasks run
+  elsewhere, and N yields can be over before they have started. Tests wait
+  for a condition with a time limit (`TEST_WAIT`). Likewise a process killed
+  on another CPU is dead before the next statement: `kill` on an unreaped
+  zombie succeeds, as in POSIX.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

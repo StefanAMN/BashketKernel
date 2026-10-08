@@ -17,17 +17,27 @@
 #include "priority.h"
 #include "tty.h"
 #include "percpu.h"
+#include "smp.h"
+#include "lapic.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 extern void task_start_trampoline(void);
 
-// The task running on this CPU lives in the CPU's own structure
-#define current_task (this_cpu()->current)
+// The task running on this CPU lives in the CPU's own structure. (Read with
+// one instruction: see cpu_current_task.)
+#define current_task (cpu_current_task())
 static task_t *task_queue_head = NULL;
 static task_t *task_queue_tail = NULL;
 static uint32_t next_pid = 0;
 static bool scheduler_active = false;
 
+// One task list and one lock for all CPUs. Each CPU, when it schedules,
+// takes the next runnable task from the list that is allowed to run on it,
+// so work spreads over the CPUs by itself: an idle CPU takes whatever
+// becomes runnable. (Simple rather than fast: with many CPUs the one lock
+// would be fought over, and tasks do not stay on the CPU whose caches they
+// have warmed.)
+//
 // The scheduler lock protects the task list and, in every task, the fields
 // that decide whether and when it runs: state, wait_channel, wake_tick,
 // slice_left, kill_pending, sig_pending, the signal handlers, detached,
@@ -49,6 +59,24 @@ void sched_unlock_irqrestore(uint64_t flags) {
     spinlock_release_irqrestore(&sched_lock, flags);
 }
 
+// Tell a CPU that has nothing to do that there is now a task it could run.
+// Without this it would only notice at its next timer tick. One is enough:
+// if that CPU's next look finds more work than it can take, the others have
+// their ticks. Caller holds the scheduler lock.
+static void kick_idle_cpu(const task_t *t) {
+    cpu_t *self = this_cpu();
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        cpu_t *cpu = cpu_get(i);
+        if (!cpu->online || cpu == self || cpu->current != cpu->idle) continue;
+        if (t->affinity != TASK_ANY_CPU && t->affinity != (int32_t)i) continue;
+        if (!cpu->resched_kicked) {
+            cpu->resched_kicked = 1;
+            lapic_send_ipi(cpu->lapic_id, IPI_VECTOR_WAKE);
+        }
+        return;
+    }
+}
+
 // Caller holds the scheduler lock
 static void enqueue_task(task_t *t) {
     t->next = NULL;
@@ -59,13 +87,14 @@ static void enqueue_task(task_t *t) {
         task_queue_tail->next = t;
         task_queue_tail = t;
     }
+    if (t->state == TASK_READY) kick_idle_cpu(t);
 }
 
 // What a CPU runs when no task is runnable: wait for an interrupt, then see
 // whether it made one runnable. Interrupts are off around the check and
 // "sti; hlt" is atomic (an interrupt can not slip in between the two), so a
 // wakeup is never slept through.
-static void idle_entry(void) {
+void sched_idle_loop(void) {
     for (;;) {
         asm volatile("cli");
         sched_yield();
@@ -89,22 +118,56 @@ void sched_init(void) {
     main_task->slice_left = priority_time_slice(PRIO_NORMAL);
     main_task->next = NULL;
 
+    // This task is the boot sequence and then the loop that frees dead
+    // tasks. It stays on the boot CPU, which is also where every device
+    // interrupt arrives.
+    main_task->affinity = 0;
+
     // The idle task is not on the task list and has no PID of its own: it
     // is never chosen by the round robin, only when that finds nothing
-    task_t *idle = task_alloc_with_pid("idle", idle_entry, false);
+    task_t *idle = task_alloc_with_pid("idle", sched_idle_loop, false);
     if (!idle) panic("sched_init: no memory for the idle task");
     idle->pid = IDLE_PID;
     idle->priority = PRIO_LOW;
+    idle->affinity = 0;
 
     uint64_t flags = sched_lock_irqsave();
     main_task->pid = next_pid++;
     enqueue_task(main_task);
-    current_task = main_task;
+    this_cpu()->current = main_task;
     this_cpu()->idle = idle;
+    this_cpu()->online = true;
     scheduler_active = true;
     sched_unlock_irqrestore(flags);
 
     kprintf("Scheduler Init: Preemptive multitasking enabled (Main Kernel PID: %d)\n", main_task->pid);
+}
+
+task_t *sched_prepare_cpu(uint32_t cpu_id) {
+    // The CPU's own boot stack becomes its idle task's stack, the way the
+    // boot CPU's became PID 0's: there is no separate stack to allocate,
+    // and nothing to set up on it. The first switch away saves its place.
+    task_t *idle = (task_t *)kmalloc(sizeof(task_t));
+    if (!idle) return NULL;
+    memset(idle, 0, sizeof(task_t));
+    idle->name[0] = 'i'; idle->name[1] = 'd'; idle->name[2] = 'l'; idle->name[3] = 'e'; idle->name[4] = '\0';
+    idle->pid = IDLE_PID;
+    idle->state = TASK_RUNNING;
+    idle->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys();
+    idle->detached = true;
+    idle->priority = PRIO_LOW;
+    idle->affinity = (int32_t)cpu_id;
+    idle->last_cpu = cpu_id;
+    cpu_get(cpu_id)->idle = idle;
+    return idle;
+}
+
+void sched_join_this_cpu(void) {
+    uint64_t flags = sched_lock_irqsave();
+    cpu_t *cpu = this_cpu();
+    cpu->current = cpu->idle;
+    cpu->online = true;
+    sched_unlock_irqrestore(flags);
 }
 
 // First C code a new task runs (from task_start_trampoline): the switch that
@@ -142,6 +205,7 @@ static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool a
     }
 
     t->state = TASK_READY;
+    t->affinity = TASK_ANY_CPU;
     t->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys(); // Kernel threads share the kernel address space
     t->detached = true;
     t->parent_pid = current_task ? current_task->pid : 0;
@@ -217,20 +281,42 @@ void task_free(task_t *t) {
     kfree(t);
 }
 
+void task_set_affinity(task_t *task, int32_t cpu_id) {
+    if (!task) return;
+    uint64_t flags = sched_lock_irqsave();
+    cpu_t *cpu = cpu_id >= 0 ? cpu_get((uint32_t)cpu_id) : NULL;
+    // A task tied to a CPU that is not scheduling would never run again
+    task->affinity = (cpu && cpu->online) ? cpu_id : TASK_ANY_CPU;
+    sched_unlock_irqrestore(flags);
+}
+
+uint32_t sched_running_count(void) {
+    uint32_t running = 0;
+    uint64_t flags = sched_lock_irqsave();
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->state == TASK_RUNNING) running++;
+    }
+    sched_unlock_irqrestore(flags);
+    return running;
+}
+
 task_t *sched_first_task(void) {
     return task_queue_head;
 }
 
-task_t *sched_find_task(uint32_t pid) {
-    bool locked = spinlock_held(&sched_lock);
-    uint64_t flags = 0;
-    if (!locked) flags = sched_lock_irqsave();
+task_t *sched_find_task_locked(uint32_t pid) {
     task_t *curr = task_queue_head;
     while (curr && curr->pid != pid) {
         curr = curr->next;
     }
-    if (!locked) sched_unlock_irqrestore(flags);
     return curr;
+}
+
+task_t *sched_find_task(uint32_t pid) {
+    uint64_t flags = sched_lock_irqsave();
+    task_t *task = sched_find_task_locked(pid);
+    sched_unlock_irqrestore(flags);
+    return task;
 }
 
 task_t *sched_get_current_task(void) {
@@ -254,23 +340,34 @@ static void schedule(void) {
     // Round robin: walk the list once, starting after the current task and
     // wrapping at the end, and take the first runnable task. (The idle task
     // is not on the list: from there, start at the head.)
+    // A task that is READY is on no CPU: whoever last ran it finished
+    // switching away before releasing this lock.
+    cpu->resched_kicked = 0;
+    int32_t here = (int32_t)cpu->cpu_id;
     task_t *start = (old_task != cpu->idle && old_task->next) ? old_task->next : task_queue_head;
     for (task_t *t = start; t && !next_task; t = t->next) {
-        if (t->state == TASK_READY) next_task = t;
+        if (t->state == TASK_READY && (t->affinity == TASK_ANY_CPU || t->affinity == here)) next_task = t;
     }
     for (task_t *t = task_queue_head; t != start && !next_task; t = t->next) {
-        if (t->state == TASK_READY) next_task = t;
+        if (t->state == TASK_READY && (t->affinity == TASK_ANY_CPU || t->affinity == here)) next_task = t;
     }
 
+    // The current task may only carry on here if it is still allowed on
+    // this CPU (its affinity may have been changed while it ran)
+    bool may_stay = old_task->state == TASK_RUNNING &&
+                    (old_task->affinity == TASK_ANY_CPU || old_task->affinity == here);
+
     if (!next_task) {
-        if (old_task->state == TASK_RUNNING) return; // Nobody else wants the CPU: carry on
-        next_task = cpu->idle;                       // We can not carry on: idle until someone can
+        if (may_stay) return;       // Nobody else wants the CPU: carry on
+        next_task = cpu->idle;      // We can not carry on: idle until someone can
     }
 
     if (old_task->state == TASK_RUNNING) {
         old_task->state = TASK_READY;
+        if (!may_stay) kick_idle_cpu(old_task); // Its CPU may be asleep
     }
     next_task->state = TASK_RUNNING;
+    next_task->last_cpu = cpu->cpu_id;
     next_task->slice_left = priority_time_slice(next_task->priority); // A fresh turn
     cpu->current = next_task;
 
@@ -290,8 +387,9 @@ static void schedule(void) {
 
     ctx_switch((uint64_t **)&old_task->rsp, (uint64_t *)next_task->rsp, next_task->pml4_phys);
 
-    // Back in old_task, possibly much later, with the lock held by whoever
-    // switched to us and interrupts off.
+    // Back in old_task, possibly much later and on a different CPU (`cpu`
+    // above is no longer ours), with the lock held by whoever switched to us
+    // and interrupts off.
 }
 
 void sched_yield(void) {
@@ -328,6 +426,7 @@ static void wake_task(task_t *t) {
     t->wait_channel = NULL;
     t->wake_tick = 0;
     t->state = TASK_READY;
+    kick_idle_cpu(t);
 }
 
 static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, bool interruptible) {
@@ -486,6 +585,9 @@ size_t sched_reap(void) {
 }
 
 void sched_tick(void) {
+    // Another CPU has stopped the kernel: stop here too
+    if (kernel_halted) for (;;) asm volatile("cli\n\thlt");
+
     if (!scheduler_active || !current_task) return;
 
     uint64_t flags = sched_lock_irqsave();

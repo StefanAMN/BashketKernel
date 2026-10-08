@@ -267,6 +267,9 @@ void _start(void) {
     // Phase 37: Virtual Devices (/dev)
     dev_init();
 
+    // Everything is set up: the other CPUs may run tasks from here on
+    smp_start_scheduling();
+
 #ifdef KERNEL_TESTS
     // Test build (`make test`): run the unit tests, report the verdict to
     // QEMU through the isa-debug-exit device, and stop.

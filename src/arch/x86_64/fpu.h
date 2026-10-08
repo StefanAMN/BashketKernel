@@ -21,6 +21,12 @@
 void fpu_init(void);
 
 /**
+ * @brief Enable the FPU and SSE on another CPU (control register bits are
+ *        per CPU).
+ */
+void fpu_enable_on_this_cpu(void);
+
+/**
  * @brief Fill `state` with the clean state every new program starts from.
  */
 void fpu_state_init(uint8_t *state);

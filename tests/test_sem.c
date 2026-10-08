@@ -36,15 +36,16 @@ TEST(semaphore_blocks_until_post) {
     EXPECT_TRUE(waiter_task != NULL);
 
     // Give it plenty of chances to run; it must stay parked
+    TEST_WAIT(waiter_task->state == TASK_BLOCKED, 100);
     for (int i = 0; i < 50; i++) sched_yield();
     EXPECT_EQ(waiter_passed, 0);
     EXPECT_EQ(waiter_task->state, TASK_BLOCKED);
     EXPECT_TRUE(waiter_task->wait_channel == &gate);
 
     sem_post(&gate);
-    EXPECT_EQ(waiter_task->state, TASK_READY);   // Woken by the post itself
+    EXPECT_TRUE(waiter_task->state != TASK_BLOCKED); // Woken by the post itself (and perhaps already running on another CPU)
 
-    for (int i = 0; i < 1000 && !waiter_passed; i++) sched_yield();
+    TEST_WAIT(waiter_passed, 200);
     EXPECT_EQ(waiter_passed, 1);
     EXPECT_EQ(sem_getvalue(&gate), 0);
 }
@@ -103,6 +104,7 @@ TEST(mutex_admits_one_holder_and_may_sleep) {
     EXPECT_TRUE(a && b && c);
 
     // While we hold it, nobody gets in: they sleep on it instead of spinning
+    TEST_WAIT(a->state == TASK_BLOCKED && b->state == TASK_BLOCKED && c->state == TASK_BLOCKED, 100);
     for (int i = 0; i < 50; i++) sched_yield();
     EXPECT_EQ(visits, 0);
     EXPECT_EQ(a->state, TASK_BLOCKED);

@@ -31,11 +31,17 @@ TEST(priority_decides_cpu_share) {
     stop_spinning = 0;
     spinners_done = 0;
 
-    task_t *high = task_create("spin_high", spinner_entry);
-    task_t *low = task_create("spin_low", spinner_entry);
+    // Both on this CPU, whatever others the machine has: the question is
+    // how one CPU is shared
+    task_t *high = task_alloc("spin_high", spinner_entry);
+    task_t *low = task_alloc("spin_low", spinner_entry);
     EXPECT_TRUE(high != NULL && low != NULL);
     task_set_priority(high, PRIO_HIGH);
     task_set_priority(low, PRIO_LOW);
+    task_set_affinity(high, 0);
+    task_set_affinity(low, 0);
+    sched_add(high);
+    sched_add(low);
 
     uint64_t high_before = high->cpu_ticks, low_before = low->cpu_ticks;
     sched_sleep_ticks(100);                          // This task is asleep: they have the CPU to themselves
@@ -43,7 +49,7 @@ TEST(priority_decides_cpu_share) {
     uint64_t low_ticks = low->cpu_ticks - low_before;
 
     stop_spinning = 1;
-    for (int i = 0; i < 1000 && spinners_done < 2; i++) sched_yield();
+    TEST_WAIT(spinners_done == 2, 200);
     EXPECT_EQ(spinners_done, 2);
 
     // Slices are 4 and 1 ticks, so about 80 and 20 of the 100 ticks

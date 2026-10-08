@@ -19,6 +19,13 @@
  *     in ring 0:  GS base = this CPU's cpu_t,  KERNEL_GS_BASE = the user's value
  *     in ring 3:  GS base = the user's value,  KERNEL_GS_BASE = this CPU's cpu_t
  *
+ * Every program's own GS base is 0: nothing lets a program change it (no
+ * system call for it, and CR4.FSGSBASE is off). So the "user's value" a CPU
+ * holds is the same whichever task it belongs to, and a task that enters the
+ * kernel on one CPU and leaves on another gets the right one back. A kernel
+ * that gave programs their own GS or FS base (thread-local storage) would
+ * have to save and restore it per task.
+ *
  * The paths are: the `syscall` entry and its `sysretq` exit, interrupts and
  * exceptions that arrive from ring 3 (the stub checks the saved CS), and the
  * `iretq` exits to ring 3 (first entry of a program, fork child, sigreturn).
@@ -44,8 +51,11 @@ typedef struct cpu {
     struct cpu *self;          // gs:[0]   This structure's own address
     uint64_t kernel_rsp;       // gs:[8]   Kernel stack for a system call arriving on this CPU
     uint64_t user_rsp;         // gs:[16]  Scratch: the user's RSP during the first instructions of a system call
-    struct task *current;      // Task running on this CPU
+    struct task *current;      // gs:[24]  Task running on this CPU
     struct task *idle;         // What this CPU runs when nothing else is runnable
+    bool online;               // Takes part in scheduling
+    volatile uint32_t resched_kicked;    // Another CPU has told this one there is work
+    volatile uint32_t tlb_flush_pending; // Another CPU has changed the kernel's page tables
 
     // Spinlocks this CPU holds, in the order taken (see spinlock.h)
     struct spinlock *held[LOCK_HELD_MAX];
@@ -72,6 +82,7 @@ typedef struct cpu {
 
 _Static_assert(offsetof(cpu_t, kernel_rsp) == 8, "syscall_entry.S uses gs:[8]");
 _Static_assert(offsetof(cpu_t, user_rsp) == 16, "syscall_entry.S uses gs:[16]");
+_Static_assert(offsetof(cpu_t, current) == 24, "cpu_current_task uses gs:[24]");
 
 /**
  * @brief The structure of the CPU this code is running on.
@@ -80,6 +91,21 @@ static inline cpu_t *this_cpu(void) {
     cpu_t *cpu;
     asm volatile("mov %0, gs:[0]" : "=r"(cpu));
     return cpu;
+}
+
+/**
+ * @brief The task running on this CPU.
+ *
+ * One instruction, on purpose. A task can be moved to another CPU whenever
+ * interrupts are on, so "find my CPU, then read its current task" could read
+ * some other CPU's task if the move happened between the two steps.
+ * this_cpu() has that problem in general: use its result only with
+ * interrupts off.
+ */
+static inline struct task *cpu_current_task(void) {
+    struct task *task;
+    asm volatile("mov %0, gs:[24]" : "=r"(task));
+    return task;
 }
 
 /**

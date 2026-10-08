@@ -33,6 +33,25 @@ uint32_t lapic_get_id(void);
  */
 void lapic_send_ipi(uint32_t lapic_id, uint8_t vector);
 
+/**
+ * @brief Measure how fast the local APIC timer counts, against a tick
+ *        counter that is already running (interrupts must be on).
+ * @param get_ticks Returns the current tick count.
+ * @param ticks     How many ticks to measure over.
+ */
+bool lapic_timer_calibrate(uint64_t (*get_ticks)(void), uint32_t ticks);
+
+/**
+ * @brief Timer counts in one tick, as measured (0: not calibrated).
+ */
+uint32_t lapic_timer_counts_per_tick(void);
+
+/**
+ * @brief Make the calling CPU's local APIC interrupt it with `vector` once
+ *        per tick. Does nothing before calibration.
+ */
+void lapic_timer_start_on_this_cpu(uint8_t vector);
+
 
 /**
  * @brief Enable the local APIC of the CPU this runs on (for CPUs other than

@@ -25,6 +25,8 @@ struct vnode;
 #define PRIO_NORMAL 1
 #define PRIO_LOW    2
 
+#define TASK_ANY_CPU (-1)
+
 // PID of the idle tasks, which are not on the task list
 #define IDLE_PID 0xFFFFFFFFu
 
@@ -48,6 +50,8 @@ typedef struct task {
     uint8_t priority;        // PRIO_HIGH, PRIO_NORMAL or PRIO_LOW: sets the time slice length
     uint8_t slice_left;      // Timer ticks left before it is preempted
     uint64_t cpu_ticks;      // Timer ticks that found this task running
+    int32_t affinity;        // The only CPU it may run on, or TASK_ANY_CPU
+    uint32_t last_cpu;       // The CPU it is running on, or last ran on
 
     // --- Blocking (valid while state is TASK_BLOCKED) ---
     void *wait_channel;      // What it is waiting for; sched_wakeup(channel) wakes it

@@ -28,13 +28,16 @@ TEST(multitasking_cooperative) {
     EXPECT_TRUE(t1 != NULL);
     EXPECT_TRUE(t2 != NULL);
 
-    // Yield several times to run dummy tasks
-    for (int i = 0; i < 15; i++) {
-        sched_yield();
-    }
+    // Let the dummy tasks run
+    TEST_WAIT(task1_counter == 5 && task2_counter == 5, 200);
 
     EXPECT_EQ(task1_counter, 5);
     EXPECT_EQ(task2_counter, 5);
+
+    // The next test counts them as dead. On another CPU they may still be
+    // on their way out after the last increment.
+    TEST_WAIT(t1->state == TASK_ZOMBIE && t2->state == TASK_ZOMBIE, 200);
+    EXPECT_TRUE(t1->state == TASK_ZOMBIE && t2->state == TASK_ZOMBIE);
 }
 
 TEST(zombie_reaping) {
@@ -109,10 +112,7 @@ TEST(heap_stress_under_preemption) {
     // A task bumps stress_done just before it exits, so give the last ones
     // a moment to actually become zombies.
     size_t reaped = 0;
-    for (int tries = 0; tries < 1000 && reaped < STRESS_TASKS; tries++) {
-        reaped += sched_reap();
-        sched_yield();
-    }
+    TEST_WAIT((reaped += sched_reap()) >= STRESS_TASKS, 200);
     EXPECT_EQ(reaped, (size_t)STRESS_TASKS);
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
