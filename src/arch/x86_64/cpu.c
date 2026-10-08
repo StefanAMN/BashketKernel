@@ -42,9 +42,7 @@ void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t regs[4]) {
 }
 
 static uint64_t read_efer(void) {
-    uint32_t low, high;
-    asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(MSR_EFER));
-    return ((uint64_t)high << 32) | low;
+    return rdmsr(MSR_EFER);
 }
 
 void cpu_protection_init(void) {

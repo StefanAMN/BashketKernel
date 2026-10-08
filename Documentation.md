@@ -172,7 +172,7 @@ so the numbering has gaps.
 ---
 
 ### 10. SMP Multiprocessing & Spinlocks (Phase 10)
-**Status: partial.** Every CPU the bootloader reports is started, loads the kernel's tables, enables its local APIC and reports in. They are then parked: only the boot CPU runs tasks, because the scheduler and many locks assume one CPU. Spinlocks are real. See the header of `src/arch/x86_64/smp.h` for what running tasks on them would need.
+**Status: partial.** Every CPU the bootloader reports is started with its own per-CPU structure (reached through GS, with `swapgs` on every crossing between ring 3 and the kernel), task state segment and double-fault stack; it takes a breakpoint exception to prove it, reports in, and is parked. Only the boot CPU runs tasks so far, because many locks still assume one CPU. Spinlocks are real. See `src/arch/x86_64/percpu.h` and `smp.h`.
 
 **Goal:** Multi-core CPU initialization via Limine SMP, kernel spinlocks.
 

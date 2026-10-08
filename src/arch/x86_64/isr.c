@@ -14,6 +14,7 @@
 #include "process.h"
 #include "cpu.h"
 #include "console.h"
+#include "percpu.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -135,6 +136,16 @@ void isr_handler(struct registers *regs) {
     if (regs->int_no < 32 && (regs->cs & 3) == 3) {
         kill_faulting_process(regs);
         return; // Not reached
+    }
+
+    // A breakpoint in kernel code: used as a self-test that a CPU can take
+    // an exception and find its own per-CPU data while doing so. Count it,
+    // note which CPU the hardware says we are, and carry on after the int3.
+    if (regs->int_no == 3) {
+        cpu_t *cpu = this_cpu();
+        cpu->breakpoints++;
+        cpu->breakpoint_lapic_id = lapic_get_id();
+        return;
     }
 
     if (regs->int_no < 32) {

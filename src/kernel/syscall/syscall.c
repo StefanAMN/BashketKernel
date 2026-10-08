@@ -46,18 +46,6 @@ extern void syscall_entry(void);
 
 #define PATH_MAX 128
 
-static inline void wrmsr(uint32_t msr, uint64_t val) {
-    uint32_t low = (uint32_t)val;
-    uint32_t high = (uint32_t)(val >> 32);
-    asm volatile ("wrmsr" : : "c"(msr), "a"(low), "d"(high));
-}
-
-static inline uint64_t rdmsr(uint32_t msr) {
-    uint32_t low, high;
-    asm volatile ("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
-    return ((uint64_t)high << 32) | low;
-}
-
 void syscall_init(void) {
     // 1. Enable SCE (System Call Extensions), bit 0 of EFER
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1ULL);

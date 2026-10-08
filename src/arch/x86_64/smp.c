@@ -10,8 +10,9 @@
 #include "vmm.h"
 #include "pit.h"
 #include "kprintf.h"
+#include "kstack.h"
+#include "task.h"
 
-static per_cpu_t cpus[MAX_CPUS];
 static size_t cpu_total = 1;
 static volatile size_t cpus_running = 1; // The boot CPU
 
@@ -19,17 +20,22 @@ static volatile size_t cpus_running = 1; // The boot CPU
 // Other CPUs run this at the same time as each other and as the boot CPU, so
 // it touches shared state only with atomic operations.
 static void ap_entry(struct LIMINE_MP(info) *info) {
+    uint32_t id = (uint32_t)info->extra_argument;
+    cpu_t *cpu = cpu_get(id);
+
     // Use the kernel's own tables rather than the bootloader's
     asm volatile("mov cr3, %0" : : "r"(vmm_get_kernel_pml4_phys()) : "memory");
     gdt_load_on_this_cpu();
+    cpu_init_this(id, (uint64_t)cpu->fault_stack + KERNEL_STACK_SIZE); // GS and this CPU's TSS
     idt_load_on_this_cpu();
     lapic_enable_on_this_cpu();
+    cpu->lapic_id = lapic_get_id();
 
-    uint64_t index = info->extra_argument;
-    if (index < MAX_CPUS) {
-        cpus[index].lapic_id = lapic_get_id();
-        cpus[index].active = true;
-    }
+    // Prove that this CPU can take an exception by itself: the handler runs
+    // here, finds this CPU's structure through GS, and counts it
+    asm volatile("int3");
+
+    cpu->active = true;
     __atomic_add_fetch(&cpus_running, 1, __ATOMIC_SEQ_CST);
 
     // Parked: nothing may run here until the kernel is ready for more than
@@ -38,9 +44,9 @@ static void ap_entry(struct LIMINE_MP(info) *info) {
 }
 
 void smp_init(struct LIMINE_MP(response) *response) {
-    cpus[0].cpu_id = 0;
-    cpus[0].lapic_id = lapic_get_id();
-    cpus[0].active = true;
+    cpu_t *boot = cpu_get(0);
+    boot->lapic_id = lapic_get_id();
+    boot->active = true;
 
     if (!response || response->cpu_count <= 1) {
         kprintf("SMP: one CPU\n");
@@ -55,7 +61,10 @@ void smp_init(struct LIMINE_MP(response) *response) {
         struct LIMINE_MP(info) *cpu = response->cpus[i];
         if (cpu->lapic_id == response->bsp_lapic_id) continue; // That is us
 
-        cpus[next_id].cpu_id = (uint32_t)next_id;
+        // Everything the new CPU needs is prepared here: it must not call
+        // the allocators itself while we may be in them
+        cpu_get((uint32_t)next_id)->fault_stack = kstack_alloc();
+        if (!cpu_get((uint32_t)next_id)->fault_stack) break;
         cpu->extra_argument = next_id;
         next_id++;
         __atomic_store_n(&cpu->goto_address, ap_entry, __ATOMIC_SEQ_CST);
@@ -78,6 +87,5 @@ size_t smp_get_cpu_total(void) {
 }
 
 per_cpu_t *smp_get_per_cpu(uint32_t cpu_id) {
-    if (cpu_id >= MAX_CPUS) return NULL;
-    return &cpus[cpu_id];
+    return cpu_get(cpu_id);
 }

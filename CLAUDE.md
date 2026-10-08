@@ -183,6 +183,14 @@ code comments and commit messages; `git log` is the full history.
   entries near 1 TiB. The kernel image and boot stack are never in `USABLE`.
 - **`sysretq` picks selectors by arithmetic** (CS = STAR[63:48]+16, SS = +8),
   so user data must come before user code in the GDT.
+- **`swapgs` is decided by the saved CS, on the way in and on the way out
+  separately.** Entry: swap if the interrupted code was ring 3. Exit: swap if
+  the frame being returned to is ring 3, which is not always how we came in
+  (exec, signal delivery and fork rewrite or copy frames). Loading a segment
+  register resets the GS base, so the per-CPU pointer is set after the GDT
+  reload, not before.
+- **A TSS descriptor can be loaded once.** `ltr` marks it busy and a second
+  load faults, so each CPU needs its own descriptor and its own TSS.
 - **Interrupt entry clears neither DF nor AC.** The stub must `cld` (or
   compiler-generated `rep movs` runs backwards after a user `std`), and the
   handler must `clac` (ring 3 can set AC and so defeat SMAP).

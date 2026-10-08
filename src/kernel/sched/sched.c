@@ -16,19 +16,16 @@
 #include "fpu.h"
 #include "priority.h"
 #include "tty.h"
+#include "percpu.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 
-static task_t *current_task = NULL;
+// The task running on this CPU lives in the CPU's own structure
+#define current_task (this_cpu()->current)
 static task_t *task_queue_head = NULL;
 static task_t *task_queue_tail = NULL;
 static uint32_t next_pid = 0;
 static bool scheduler_active = false;
-
-// Kernel stack the syscall entry stub switches to. Kept equal to TSS.RSP0:
-// both are "the top of the running task's kernel stack". One variable is
-// enough while there is one CPU; SMP will need this per CPU (via swapgs).
-uint64_t syscall_kernel_rsp = 0;
 
 // The run queue is touched from task context and from the timer interrupt.
 // On one CPU, disabling interrupts is enough to make each update atomic;
@@ -214,12 +211,12 @@ void sched_yield(void) {
     current_task = next_task;
 
     // Point the CPU at the incoming task's kernel stack for the next entry
-    // from ring 3: TSS.RSP0 for interrupts and exceptions, syscall_kernel_rsp
+    // from ring 3: TSS.RSP0 for interrupts and exceptions, this CPU's kernel_rsp
     // for the syscall instruction (which does not use the TSS).
     if (next_task->kernel_stack) {
         uint64_t kstack_top = (uint64_t)next_task->kernel_stack + KERNEL_STACK_SIZE;
         tss_set_rsp0(kstack_top);
-        syscall_kernel_rsp = kstack_top;
+        this_cpu()->kernel_rsp = kstack_top;
     }
 
     // Floating point registers are not part of ctx_switch. The kernel never

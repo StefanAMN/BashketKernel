@@ -3,13 +3,15 @@
  * @brief Starting the other CPUs
  *
  * What is done: every CPU the bootloader found is started, loads the
- * kernel's GDT, IDT and page tables, enables its local APIC, reports in,
- * and is then parked (halted with interrupts off).
+ * kernel's GDT, IDT and page tables, gets its own per-CPU structure (GS),
+ * task state segment and double-fault stack, enables its local APIC, takes
+ * a breakpoint exception to prove it can handle one, reports in, and is
+ * then parked (halted with interrupts off).
  *
  * What is not done: the other CPUs run no tasks. The scheduler, and every
  * place that uses "interrupts off" as its lock, assumes one CPU. Putting
- * the parked CPUs to work needs per-CPU run state, a task state segment per
- * CPU, real locks in place of interrupt masking, and TLB shootdown.
+ * the parked CPUs to work needs real locks in place of interrupt masking, a
+ * run queue per CPU, and TLB shootdown (see PLAN.md, A2 and A3).
  */
 
 #ifndef SMP_H
@@ -20,14 +22,10 @@
 #include <stdbool.h>
 #include "spinlock.h"
 #include "limine.h"
+#include "percpu.h"
 
-#define MAX_CPUS 32
-
-typedef struct per_cpu {
-    uint32_t cpu_id;       // Our numbering: 0 is the boot CPU
-    uint32_t lapic_id;     // The hardware's identifier for it
-    bool active;           // It has started and reported in
-} per_cpu_t;
+// The per-CPU structure itself is in percpu.h
+typedef cpu_t per_cpu_t;
 
 /**
  * @brief Start every other CPU and wait for them to report in.
