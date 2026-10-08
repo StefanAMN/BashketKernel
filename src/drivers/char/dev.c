@@ -7,6 +7,8 @@
  */
 
 #include "dev.h"
+#include "vmm.h"
+#include "pmm.h"
 #include "random.h"
 #include "vfs.h"
 #include "tty.h"
@@ -115,6 +117,21 @@ static int64_t fb_transfer(size_t offset, void *buf, size_t count, bool write) {
     return (int64_t)count;
 }
 
+// mmap of /dev/fb0: the screen's own memory. The bootloader gives its
+// address in the direct map, so the physical one is that less the map's
+// offset. -ENODEV without a screen, -EINVAL past its end.
+static int fb_map_page(vnode_t *node, uint64_t offset, uint64_t *phys) {
+    (void)node;
+    uint8_t *pixels;
+    uint32_t height, pitch;
+    if (!console_framebuffer(&pixels, NULL, &height, &pitch)) return -ENODEV;
+    uint64_t hhdm = pmm_get_hhdm_offset();
+    if ((uint64_t)pixels < hhdm) return -ENODEV;            // Not in the direct map: no physical address known
+    if (offset >= page_align_up((uint64_t)pitch * height)) return -EINVAL;
+    *phys = ((uint64_t)pixels - hhdm) + offset;
+    return 0;
+}
+
 // The read and write operations of /dev/fb0 (see fb_transfer)
 static int64_t fb_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     (void)node;
@@ -159,7 +176,8 @@ static int dev_console_poll(vnode_t *node) {
     return tty_poll();
 }
 
-static const vnode_ops_t fb_ops = { .read = fb_read, .write = fb_write, .opened = fb_opened, .closed = fb_closed };
+static const vnode_ops_t fb_ops = { .read = fb_read, .write = fb_write, .opened = fb_opened, .closed = fb_closed,
+                                     .map_page = fb_map_page };
 static const vnode_ops_t mouse_ops = { .read = dev_mouse_read, .poll = dev_mouse_poll };
 static const vnode_ops_t disk_ops = { .read = disk_read, .write = disk_write };
 static const vnode_ops_t null_ops    = { .read = NULL,             .write = null_write };

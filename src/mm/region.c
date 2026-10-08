@@ -94,6 +94,18 @@ static void pin(const mem_region_t *region, int by) {
     vfs_unlock();
 }
 
+// A mapping of a device (the screen) holds it as an open descriptor would
+// (its opened and closed operations: the console takes the screen back only
+// when every descriptor and every mapping is gone). +1 when a region of it
+// is made (it may refuse: a negative error), -1 when one goes.
+static int hold_device(const mem_region_t *r, int by) {
+    if (!r->device || !r->node->ops) return 0;
+    bool writable = (r->prot & PROT_WRITE) != 0;
+    if (by > 0) return r->node->ops->opened ? r->node->ops->opened(r->node, writable) : 0;
+    if (r->node->ops->closed) r->node->ops->closed(r->node, writable);
+    return 0;
+}
+
 // The pages of `r`'s file that [start, end) (inside `r`) maps: indices
 // [*first, *end_index)
 static void file_pages(const mem_region_t *r, uint64_t start, uint64_t end, uint64_t *first, uint64_t *end_index) {
@@ -147,7 +159,8 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
 
     mem_region_t *region = free_slot(task);
     if (!region) return 0;
-    if (!can_promise(size / PAGE_SIZE)) return 0;
+    bool device = node && node->ops && node->ops->map_page;
+    if (!device && !can_promise(size / PAGE_SIZE)) return 0;   // (A device's pages are not memory to promise)
 
     region->start = addr;
     region->end = addr + size;
@@ -155,9 +168,18 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
     region->node = node;
     region->file_offset = offset;
     region->program = false;
-    region->shared = shared && node;
+    region->shared = shared && node && !device;
+    region->device = device;
     pin(region, +1);
-    charge(task, size / PAGE_SIZE);
+    int held = hold_device(region, +1);
+    if (held < 0) {
+        mem_region_t gone = *region;
+        memset(region, 0, sizeof(*region));
+        pin(&gone, -1);
+        *error = held;
+        return 0;
+    }
+    if (!device) charge(task, size / PAGE_SIZE);
 
     task->mmap_next = addr + size;
     *error = 0;
@@ -199,7 +221,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
 
         uint64_t cut_start = r->start > addr ? r->start : addr;
         uint64_t cut_end = r->end < end ? r->end : end;
-        uncharge(task, untouched_pages(task, cut_start, cut_end)); // The frames are freed below
+        if (!r->device) uncharge(task, untouched_pages(task, cut_start, cut_end)); // The frames are freed below
 
         if (cut_start == r->start && cut_end == r->end) {
             // The entry goes before the file's pin: /proc/<pid>/maps reads
@@ -207,6 +229,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
             // never find one naming a file that could already be gone
             mem_region_t gone = *r;
             memset(r, 0, sizeof(*r));
+            hold_device(&gone, -1);
             pin(&gone, -1);
         } else if (cut_start == r->start) {
             r->file_offset += cut_end - r->start;                   // The front goes
@@ -219,6 +242,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
             tail->start = cut_end;
             tail->file_offset = r->file_offset + (cut_end - r->start);
             pin(tail, +1);
+            hold_device(tail, +1);                                  // (Each piece holds the device)
             r->end = cut_start;
         }
     }
@@ -263,7 +287,7 @@ int region_fault(struct task *task, uint64_t addr) {
     int prot = 0;
     struct vnode *node = NULL;
     uint64_t file_offset = 0;
-    bool found = false, shared = false;
+    bool found = false, shared = false, device = false;
 
     if (page >= task->brk_start && page < page_align_up(task->brk_end)) {
         prot = PROT_READ | PROT_WRITE;                    // The heap
@@ -275,6 +299,7 @@ int region_fault(struct task *task, uint64_t addr) {
         prot = r->prot;
         node = r->node;
         shared = r->shared;
+        device = r->device;
         file_offset = r->file_offset + (page - r->start);
         found = true;
     }
@@ -291,6 +316,16 @@ int region_fault(struct task *task, uint64_t addr) {
     uint64_t flags = VMM_USER;
     if (prot & PROT_WRITE) flags |= VMM_WRITABLE;
     if (!(prot & PROT_EXEC)) flags |= VMM_NO_EXECUTE;
+
+    if (device) {
+        // The device's own page (the screen's memory), as it is: not a frame
+        // of ours, so marked to be left alone by unmapping, fork and swap
+        uint64_t phys;
+        if (node->ops->map_page(node, file_offset, &phys) != 0) return REGION_PAST_THE_END;
+        flags |= VMM_SHARED | VMM_DEVICE;
+        if (!vmm_map_page(space, page, phys, flags | VMM_PRESENT)) return REGION_NO_MEMORY;
+        return 1;                                // (Nothing was promised for it)
+    }
 
     if (shared) {
         // The cached frame itself, writable if the mapping is, in every
@@ -338,7 +373,9 @@ int region_fault(struct task *task, uint64_t addr) {
 void region_fork(struct task *child, const struct task *parent) {
     memcpy(child->regions, parent->regions, sizeof(child->regions));
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        if (child->regions[i].end != 0) pin(&child->regions[i], +1);
+        if (child->regions[i].end == 0) continue;
+        pin(&child->regions[i], +1);
+        hold_device(&child->regions[i], +1);     // (The parent holds it already: this cannot be refused)
     }
     // The child may touch every page the parent has not: the same promise
     // made a second time. (Not refused for lack of memory: fork has its own
@@ -350,6 +387,7 @@ void region_fork(struct task *child, const struct task *parent) {
 // Done with a region taken off its task: what a shared mapping wrote goes
 // to its file, and the file is unpinned
 static void put_region(const mem_region_t *gone) {
+    hold_device(gone, -1);
     if (gone->shared) {
         uint64_t first, end;
         file_pages(gone, gone->start, gone->end, &first, &end);
