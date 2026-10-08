@@ -57,9 +57,9 @@ size_t virtio_net_poll(void *frame, size_t max);
 bool virtio_net_rx_pending(void);
 
 /**
- * @brief The channel (see sched_block) woken when frames arrive.
+ * @brief Sleep until the card has a received frame waiting.
  */
-void *virtio_net_rx_channel(void);
+void virtio_net_wait_rx(void);
 
 /**
  * @brief Frames received and sent since boot.

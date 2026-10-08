@@ -15,6 +15,7 @@
 #include "cpu.h"
 #include "console.h"
 #include "percpu.h"
+#include "smp.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -209,6 +210,10 @@ void isr_handler(struct registers *regs) {
             sched_check_kill();
             signal_deliver(regs); // And for a signal handler to be entered
         }
+    } else if (regs->int_no == IPI_VECTOR_WAKE) {
+        // Sent by another CPU only to end this one's hlt; the code that was
+        // halted looks for its work once we return
+        lapic_eoi();
     } else {
         kprintf("Unhandled Interrupt Vector: %zd\n", regs->int_no);
     }

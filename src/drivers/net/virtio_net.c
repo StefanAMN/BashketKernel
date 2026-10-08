@@ -57,11 +57,20 @@ static bool tx_in_use[TX_BUFFERS];
 
 static uint64_t rx_count = 0, tx_count = 0;
 
+// Protects both virtqueues and the buffer tables above
+static spinlock_t card_lock = SPINLOCK_RANKED("virtio-net", LOCK_RANK_DEVICE);
+
 static void virtio_net_irq(struct registers *regs) {
     (void)regs;
     // Reading the ISR register makes the card lower its interrupt line
     uint8_t isr = inb(io_base + VIRTIO_REG_ISR_STATUS);
-    if (isr & 1) sched_wakeup(&rx_queue);
+    if (isr & 1) {
+        // Under the lock, so that a receiver between "nothing there" and
+        // "asleep" (virtio_net_wait_rx) can not miss this
+        uint64_t flags = spinlock_acquire_irqsave(&card_lock);
+        sched_wakeup(&rx_queue);
+        spinlock_release_irqrestore(&card_lock, flags);
+    }
 }
 
 static bool post_rx_buffer(unsigned buffer) {
@@ -143,7 +152,6 @@ int virtio_net_init(void) {
 
 bool virtio_net_present(void) { return present; }
 void virtio_net_get_mac(uint8_t mac[6]) { memcpy(mac, mac_address, 6); }
-void *virtio_net_rx_channel(void) { return &rx_queue; }
 uint64_t virtio_net_rx_count(void) { return rx_count; }
 uint64_t virtio_net_tx_count(void) { return tx_count; }
 
@@ -151,10 +159,18 @@ bool virtio_net_rx_pending(void) {
     return present && virtqueue_has_used(&rx_queue);
 }
 
+void virtio_net_wait_rx(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&card_lock);
+    while (present && !virtqueue_has_used(&rx_queue)) {
+        sched_sleep_uninterruptible(&rx_queue, &card_lock, 0);
+    }
+    spinlock_release_irqrestore(&card_lock, flags);
+}
+
 size_t virtio_net_poll(void *frame, size_t max) {
     if (!present || !frame) return 0;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&card_lock);
     uint16_t id;
     uint32_t len;
     size_t result = 0;
@@ -175,14 +191,14 @@ size_t virtio_net_poll(void *frame, size_t max) {
         }
     }
 
-    irq_restore(flags);
+    spinlock_release_irqrestore(&card_lock, flags);
     return result;
 }
 
 int virtio_net_send(const void *frame, size_t len) {
     if (!present || !frame || len < 14 || len > ETH_FRAME_MAX) return -1;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&card_lock);
 
     // Buffers of frames the card has finished sending are free again
     uint16_t id;
@@ -214,6 +230,6 @@ int virtio_net_send(const void *frame, size_t len) {
         }
     }
 
-    irq_restore(flags);
+    spinlock_release_irqrestore(&card_lock, flags);
     return result;
 }

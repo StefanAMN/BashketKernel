@@ -23,8 +23,8 @@
  * directly (DMA). They must be frames from the frame allocator, not heap
  * memory.
  *
- * Nothing here locks: callers serialise access to a queue themselves
- * (interrupts off, on this single-CPU kernel).
+ * Nothing here locks: each driver has a spinlock for its device and holds
+ * it around every call that changes a queue.
  */
 
 #ifndef VIRTQUEUE_H

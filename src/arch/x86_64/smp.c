@@ -38,9 +38,47 @@ static void ap_entry(struct LIMINE_MP(info) *info) {
     cpu->active = true;
     __atomic_add_fetch(&cpus_running, 1, __ATOMIC_SEQ_CST);
 
-    // Parked: nothing may run here until the kernel is ready for more than
-    // one CPU (see smp.h). Interrupts stay off, so hlt never returns.
-    for (;;) asm volatile("cli\n\thlt");
+    // Parked: no task runs here until the scheduler is ready for more than
+    // one CPU (see smp.h). The CPU sleeps until another one asks it to run
+    // a function (smp_call) and wakes it with an interrupt. The check is
+    // made with interrupts off and "sti; hlt" is atomic, so a request that
+    // arrives in between is not slept through.
+    for (;;) {
+        asm volatile("cli");
+        if (cpu->call_pending) {
+            cpu->call_fn(cpu->call_arg);
+            cpu->calls_done++;
+            __atomic_store_n(&cpu->call_pending, 0, __ATOMIC_RELEASE);
+            continue;
+        }
+        asm volatile("sti\n\thlt");
+    }
+}
+
+bool smp_call(uint32_t cpu_id, void (*fn)(void *), void *arg, bool wait) {
+    cpu_t *cpu = cpu_get(cpu_id);
+    if (!cpu || !fn || cpu_id == 0 || !cpu->active || cpu == this_cpu()) return false;
+
+    // One request at a time per CPU: claim the slot, or wait for the
+    // function running there to finish
+    uint32_t expected = 0;
+    while (!__atomic_compare_exchange_n(&cpu->call_pending, &expected, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        expected = 0;
+        asm volatile("pause");
+    }
+    cpu->call_fn = fn;
+    cpu->call_arg = arg;
+    __atomic_store_n(&cpu->call_pending, 1, __ATOMIC_SEQ_CST); // Publishes fn and arg
+
+    lapic_send_ipi(cpu->lapic_id, IPI_VECTOR_WAKE);
+
+    while (wait && __atomic_load_n(&cpu->call_pending, __ATOMIC_ACQUIRE)) asm volatile("pause");
+    return true;
+}
+
+bool smp_call_busy(uint32_t cpu_id) {
+    cpu_t *cpu = cpu_get(cpu_id);
+    return cpu && __atomic_load_n(&cpu->call_pending, __ATOMIC_ACQUIRE) != 0;
 }
 
 void smp_init(struct LIMINE_MP(response) *response) {
@@ -74,7 +112,7 @@ void smp_init(struct LIMINE_MP(response) *response) {
     uint64_t deadline = pit_get_ticks() + 20;
     while (cpus_running < cpu_total && pit_get_ticks() < deadline) asm volatile("pause");
 
-    kprintf("SMP: %zu of %zu CPUs started; the others are parked, only CPU 0 runs tasks\n",
+    kprintf("SMP: %zu of %zu CPUs started; the others wait for work, only CPU 0 runs tasks\n",
             (size_t)cpus_running, cpu_total);
 }
 

@@ -266,8 +266,9 @@ test-net: iso
 	@tools/test_net.py $(SHELL_CPU) > $(BUILD)/net.log 2>&1 \
 		&& tail -1 $(BUILD)/net.log || { echo "network: FAILED (see $(BUILD)/net.log)"; exit 1; }
 
-# A machine with four CPUs: all four must start and report in (they are then
-# parked), and everything else must work exactly as with one.
+# A machine with four CPUs: all four must start and report in, the kernel's
+# shared structures must survive all four using them at once (the cross-CPU
+# test in tests/test_smp.c), and everything else must work exactly as with one.
 test-smp:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso build-test/disk.img
 	@timeout 120 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel.iso -boot d \

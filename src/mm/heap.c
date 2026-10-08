@@ -27,7 +27,7 @@ static size_t failed_allocations = 0;
 // The block list is walked and edited by every kmalloc/kfree, and a timer
 // interrupt can switch tasks in the middle of either one.
 // Lock order: heap_lock, then the VMM lock, then the PMM lock.
-static spinlock_t heap_lock = SPINLOCK_INIT;
+static spinlock_t heap_lock = SPINLOCK_RANKED("heap", LOCK_RANK_HEAP);
 
 // Give the pages in [new_end, heap_end_virt) back to the frame allocator.
 static void shrink_heap(uint64_t new_end) {

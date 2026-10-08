@@ -10,10 +10,12 @@
 
 // Keeps output from two tasks (or a task and an interrupt handler) from
 // interleaving mid-line. This is a leaf lock: nothing is acquired under it.
-static spinlock_t kprintf_lock = SPINLOCK_INIT;
+static spinlock_t kprintf_lock = SPINLOCK_RANKED("kprintf", LOCK_RANK_KPRINTF);
 
 void kprintf_force_unlock(void) {
-    spinlock_release(&kprintf_lock);
+    spinlock_force_release(&kprintf_lock);
+    klog_force_unlock();
+    console_force_unlock();
 }
 
 // The formatter writes through a "sink", so the same code serves kprintf

@@ -53,19 +53,24 @@ int64_t signal_set_handler(task_t *task, int sig, uint64_t handler, uint64_t res
         if (handler >= USER_SPACE_END || restorer == 0 || restorer >= USER_SPACE_END) return -EINVAL;
     }
 
-    uint64_t flags = irq_save();
+    uint64_t flags = sched_lock_irqsave();
     uint64_t previous = task->sig_handlers[sig];
     task->sig_handlers[sig] = handler;
     if (handler != SIG_DFL && handler != SIG_IGN) task->sig_restorer = restorer;
     if (handler == SIG_IGN) task->sig_pending &= ~(1u << sig); // Nothing left to deliver
-    irq_restore(flags);
+    sched_unlock_irqrestore(flags);
     return (int64_t)previous;
 }
 
 void signal_send(task_t *task, int sig) {
-    if (!task || !task->is_user || !valid_signal(sig)) return;
+    uint64_t flags = sched_lock_irqsave();
+    signal_send_locked(task, sig);
+    sched_unlock_irqrestore(flags);
+}
 
-    uint64_t flags = irq_save();
+void signal_send_locked(task_t *task, int sig) {
+    if (!task || !task->is_user || !valid_signal(sig) || task->exiting) return;
+
     uint64_t handler = (sig == SIGKILL) ? SIG_DFL : task->sig_handlers[sig];
 
     if (handler == SIG_DFL) {
@@ -74,7 +79,6 @@ void signal_send(task_t *task, int sig) {
         task->sig_pending |= (1u << sig);   // Delivered when it next returns to user mode
         sched_interrupt_sleep(task);        // If it is asleep in a system call, that call ends with EINTR
     }
-    irq_restore(flags);
 }
 
 void signal_reset_on_exec(task_t *task) {
@@ -100,14 +104,14 @@ void signal_deliver(struct registers *regs) {
     if ((regs->cs & 3) != 3) return;        // Not a return to user mode
 
     // Take the lowest-numbered pending signal
-    uint64_t flags = irq_save();
+    uint64_t flags = sched_lock_irqsave();
     int sig = 0;
     for (int s = 1; s < TASK_NSIG; s++) {
         if (task->sig_pending & (1u << s)) { sig = s; break; }
     }
     if (sig) task->sig_pending &= ~(1u << sig);
     uint64_t handler = sig ? task->sig_handlers[sig] : SIG_IGN;
-    irq_restore(flags);
+    sched_unlock_irqrestore(flags);
 
     if (handler == SIG_IGN) return;         // Disposition changed since it was sent
     if (handler == SIG_DFL) {

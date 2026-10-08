@@ -4,6 +4,7 @@
  */
 
 #include "hrtimer.h"
+#include "spinlock.h"
 #include "pit.h"
 #include "sched.h"
 #include "kprintf.h"
@@ -58,6 +59,9 @@ uint64_t hrtimer_tsc_hz(void) {
     return tsc_hz;
 }
 
+// Protects last_reading, which every CPU reads and advances
+static spinlock_t clock_lock = SPINLOCK_RANKED("clock", LOCK_RANK_TIME);
+
 uint64_t clock_ns(void) {
     uint64_t now;
 
@@ -71,11 +75,10 @@ uint64_t clock_ns(void) {
     }
 
     // Never report a time earlier than one already reported
-    uint64_t flags;
-    asm volatile("pushfq\n\tpop %0\n\tcli" : "=r"(flags) : : "memory");
+    uint64_t flags = spinlock_acquire_irqsave(&clock_lock);
     if (now < last_reading) now = last_reading;
     last_reading = now;
-    if (flags & (1ULL << 9)) asm volatile("sti");
+    spinlock_release_irqrestore(&clock_lock, flags);
     return now;
 }
 

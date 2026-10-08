@@ -47,38 +47,59 @@ task_t *sched_find_task(uint32_t pid);
  * @brief Put the current task to sleep until sched_wakeup(channel) is called
  *        or, if wake_tick is non-zero, until that timer tick.
  *
- * Call with interrupts disabled, in a loop that re-checks the condition being
- * waited for (see the comment in sched.c). Returns with interrupts disabled.
+ * `lock` protects the condition being waited for. The caller holds it (taken
+ * with interrupts off); it is released while the task sleeps and held again
+ * on return. Because waking can be spurious, always call this in a loop that
+ * re-checks the condition.
+ *
+ * `lock` may be NULL only when a missed wakeup does no harm: a pure timed
+ * sleep, or a wait that polls with a deadline.
+ *
+ * A kill ends the task here (after releasing `lock`). A signal with a
+ * handler makes it return at once without sleeping: see sched_interrupted().
  */
-void sched_block(void *channel, uint64_t wake_tick);
+struct spinlock;
+void sched_sleep(void *channel, struct spinlock *lock, uint64_t wake_tick);
 
 /**
- * @brief Like sched_block, but a kill or a signal does not cut the sleep
- *        short and never ends the task here. For waits during which the task
- *        owns something that must be released in an orderly way, such as a
- *        disk request in progress. Such waits must be short and certain to
- *        end. The task may still be woken early; callers loop on their
- *        condition as usual.
+ * @brief Like sched_sleep, but a kill or a signal does not cut the sleep
+ *        short. For waits inside the kernel that hold something (a device
+ *        request in flight, a volume lock) and must finish first.
  */
-void sched_block_uninterruptible(void *channel, uint64_t wake_tick);
+void sched_sleep_uninterruptible(void *channel, struct spinlock *lock, uint64_t wake_tick);
 
 /**
- * @brief True if the current task has a signal waiting for its handler. Code
- *        that waits in a loop around sched_block must check this after each
- *        wakeup and give up (EINTR) instead of going back to sleep:
+ * @brief sched_sleep for a condition on the task list itself: the caller
+ *        holds the scheduler lock (sched_lock_irqsave) and holds it again
+ *        on return.
+ */
+void sched_sleep_on_task_list(void *channel);
+
+/**
+ * @brief Take and release the scheduler lock, for code outside the
+ *        scheduler that walks the task list (sched_first_task) or changes
+ *        the fields it protects (see sched.c).
+ */
+uint64_t sched_lock_irqsave(void);
+void sched_unlock_irqrestore(uint64_t flags);
+
+/**
+ * @brief Whether a signal is waiting for the current task's handler. Code
+ *        that waits in a loop around sched_sleep must check this after each
+ *        return and give up with -EINTR if it is true:
  *
  *     while (!condition) {
  *         if (sched_interrupted()) { ...undo...; return -EINTR; }
- *         sched_block(channel, 0);
+ *         sched_sleep(channel, &lock, 0);
  *     }
  *
- * sched_block itself returns at once while this is true.
+ * sched_sleep itself returns at once while this is true.
  */
 bool sched_interrupted(void);
 
 /**
  * @brief Wake a task out of whatever it is blocked on, without the event it
- *        was waiting for having happened.
+ *        was waiting for having happened. Caller holds the scheduler lock.
  */
 void sched_interrupt_sleep(task_t *task);
 
@@ -103,6 +124,7 @@ bool sched_sleep_ticks(uint64_t ticks);
  *        the middle of a kernel operation that must finish. It dies at its
  *        next safe point: when it would sleep, when a system call is about to
  *        return, or when an interrupt is about to return to its user code.
+ *        Caller holds the scheduler lock.
  */
 void sched_request_kill(task_t *task, int sig);
 
@@ -111,11 +133,6 @@ void sched_request_kill(task_t *task, int sig);
  */
 void sched_check_kill(void);
 
-/**
- * @brief Mark a task dead: record its status, orphan its children and wake
- *        its parent. The task must not be running on another CPU.
- */
-void sched_make_zombie(task_t *task, int status);
 
 /**
  * @brief Change a task's working directory (NULL: the root).
@@ -123,14 +140,14 @@ void sched_make_zombie(task_t *task, int status);
 void task_set_cwd(task_t *task, struct vnode *dir);
 
 /**
- * @brief Remove one zombie from the task list and free it. The caller must
- *        not be the zombie. On one CPU a zombie other than the caller is never
- *        still on its kernel stack, so freeing it at once is safe.
+ * @brief Take a zombie off the task list. The caller holds the scheduler
+ *        lock, and calls task_free() on it after releasing the lock.
  */
-void sched_free_zombie(task_t *task);
+void sched_unlink_zombie(task_t *task);
 
 /**
- * @brief Head of the run queue, for walking all tasks via ->next.
+ * @brief Head of the task list, for walking all tasks via ->next. Hold the
+ *        scheduler lock while walking.
  */
 task_t *sched_first_task(void);
 

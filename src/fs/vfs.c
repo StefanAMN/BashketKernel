@@ -4,6 +4,7 @@
  */
 
 #include "vfs.h"
+#include "mutex.h"
 #include "heap.h"
 #include "kprintf.h"
 #include "string_util.h"
@@ -28,11 +29,38 @@ void vfs_init(void) {
     kprintf("VFS Init: Root directory ('/') created successfully.\n");
 }
 
+// One lock for the whole tree: the links between nodes, their names, owners
+// and modes, their open counts, and the contents of files kept in memory. It
+// is a mutex because a filesystem behind a directory (FAT32) sleeps on the
+// disk while creating or removing an entry. Every public function below
+// takes it; a caller that does several steps which must not be separated
+// (look a name up, then pin or change what it found) takes it around them
+// with vfs_lock(), which nests.
+static mutex_t vfs_mutex = MUTEX_INIT("vfs");
+
+void vfs_lock(void) { mutex_lock(&vfs_mutex); }
+void vfs_unlock(void) { mutex_unlock(&vfs_mutex); }
+
+static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name);
+static vnode_t * vfs_find_parent_at_unlocked(vnode_t *base, const char *path, const char **out_leaf);
+static size_t vfs_path_of_unlocked(vnode_t *node, char *buf, size_t size);
+static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t type);
+static int vfs_create_unlocked(vnode_t *parent, const char *name, uint32_t type, vnode_t **out);
+static vnode_t * vfs_create_dir_unlocked(vnode_t *parent, const char *name);
+static vnode_t * vfs_create_file_unlocked(vnode_t *parent, const char *name, const void *data, size_t size);
+static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, const vnode_ops_t *ops);
+static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path);
+static void vfs_truncate_unlocked(vnode_t *file, size_t size);
+static int vfs_unlink_unlocked(vnode_t *parent, const char *name);
+static int vfs_stat_unlocked(vnode_t *node, size_t *out_size, uint32_t *out_type);
+static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void *buf);
+static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, const void *buf);
+
 vnode_t *vfs_get_root(void) {
     return vfs_root;
 }
 
-vnode_t *vfs_find_child(vnode_t *dir, const char *name) {
+static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name) {
     if (!dir || dir->type != VFS_DIRECTORY || !name) return NULL;
     for (vnode_t *child = dir->children; child; child = child->next) {
         if (strcmp(child->name, name) == 0) return child;
@@ -40,7 +68,7 @@ vnode_t *vfs_find_child(vnode_t *dir, const char *name) {
     return NULL;
 }
 
-vnode_t *vfs_find_parent_at(vnode_t *base, const char *path, const char **out_leaf) {
+static vnode_t * vfs_find_parent_at_unlocked(vnode_t *base, const char *path, const char **out_leaf) {
     if (!path || !out_leaf) return NULL;
 
     // The leaf is what follows the last '/' that has something after it
@@ -75,7 +103,7 @@ vnode_t *vfs_find_parent(const char *path, const char **out_leaf) {
     return vfs_find_parent_at(NULL, path, out_leaf);
 }
 
-size_t vfs_path_of(vnode_t *node, char *buf, size_t size) {
+static size_t vfs_path_of_unlocked(vnode_t *node, char *buf, size_t size) {
     if (!node || !buf || size < 2) return 0;
 
     // Collect the names from the node up to the root, then write them out in
@@ -101,7 +129,7 @@ size_t vfs_path_of(vnode_t *node, char *buf, size_t size) {
     return len;
 }
 
-vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type) {
+static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t type) {
     if (!parent || parent->type != VFS_DIRECTORY || !name || name[0] == '\0') return NULL;
 
     vnode_t *node = (vnode_t *)kmalloc(sizeof(vnode_t));
@@ -125,7 +153,7 @@ vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type) {
     return node;
 }
 
-int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out) {
+static int vfs_create_unlocked(vnode_t *parent, const char *name, uint32_t type, vnode_t **out) {
     if (!parent) parent = vfs_root;
     if (!name || parent->type != VFS_DIRECTORY) return -ENOTDIR;
     if (name[0] == '\0') return -EINVAL;
@@ -147,7 +175,7 @@ int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out) 
     return 0;
 }
 
-vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
+static vnode_t * vfs_create_dir_unlocked(vnode_t *parent, const char *name) {
     if (!parent) parent = vfs_root;
 
     // An existing directory of that name is returned as it is
@@ -158,7 +186,7 @@ vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
     return vfs_create(parent, name, VFS_DIRECTORY, &dir) == 0 ? dir : NULL;
 }
 
-vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, size_t size) {
+static vnode_t * vfs_create_file_unlocked(vnode_t *parent, const char *name, const void *data, size_t size) {
     if (!parent) parent = vfs_root;
 
     // Initial contents by pointer only make sense for a file kept in memory
@@ -173,14 +201,14 @@ vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, si
     return file;
 }
 
-vnode_t *vfs_create_device(vnode_t *parent, const char *name, const vnode_ops_t *ops) {
+static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, const vnode_ops_t *ops) {
     if (!ops) return NULL;
     vnode_t *node = vfs_create_file(parent, name, NULL, 0);
     if (node) node->ops = ops;
     return node;
 }
 
-vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
+static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
     if (!path) return NULL;
 
     // An absolute path starts at the root whatever the caller's directory is
@@ -214,7 +242,7 @@ vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
     return node;
 }
 
-size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
+static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void *buf) {
     if (!file || file->type != VFS_FILE || !buf) return 0;
     if (file->ops) {
         int64_t n = file->ops->read ? file->ops->read(file, offset, buf, count) : 0;
@@ -230,7 +258,7 @@ size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
     return to_read;
 }
 
-size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf) {
+static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, const void *buf) {
     if (!file || file->type != VFS_FILE || !buf || count == 0) return 0;
     if (file->ops) {
         int64_t n = file->ops->write ? file->ops->write(file, offset, buf, count) : 0;
@@ -268,7 +296,7 @@ size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf) {
     return count;
 }
 
-void vfs_truncate(vnode_t *file, size_t size) {
+static void vfs_truncate_unlocked(vnode_t *file, size_t size) {
     if (!file || file->type != VFS_FILE) return;
 
     if (file->ops) {
@@ -279,7 +307,7 @@ void vfs_truncate(vnode_t *file, size_t size) {
     if (size < file->size) file->size = size;
 }
 
-int vfs_unlink(vnode_t *parent, const char *name) {
+static int vfs_unlink_unlocked(vnode_t *parent, const char *name) {
     if (!parent) parent = vfs_root;
     if (!name || parent->type != VFS_DIRECTORY) return -ENOTDIR;
     if (parent->read_only) return -EROFS;
@@ -313,9 +341,116 @@ int vfs_unlink(vnode_t *parent, const char *name) {
     return -ENOENT;
 }
 
-int vfs_stat(vnode_t *node, size_t *out_size, uint32_t *out_type) {
+static int vfs_stat_unlocked(vnode_t *node, size_t *out_size, uint32_t *out_type) {
     if (!node) return -1;
     if (out_size) *out_size = node->size;
     if (out_type) *out_type = node->type;
     return 0;
+}
+
+// --- The public functions: each of the above, under the tree lock ----------
+
+vnode_t *vfs_find_child(vnode_t *dir, const char *name) {
+    vfs_lock();
+    vnode_t *result = vfs_find_child_unlocked(dir, name);
+    vfs_unlock();
+    return result;
+}
+
+vnode_t *vfs_find_parent_at(vnode_t *base, const char *path, const char **out_leaf) {
+    vfs_lock();
+    vnode_t *result = vfs_find_parent_at_unlocked(base, path, out_leaf);
+    vfs_unlock();
+    return result;
+}
+
+size_t vfs_path_of(vnode_t *node, char *buf, size_t size) {
+    vfs_lock();
+    size_t result = vfs_path_of_unlocked(node, buf, size);
+    vfs_unlock();
+    return result;
+}
+
+vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type) {
+    vfs_lock();
+    vnode_t *result = vfs_attach_unlocked(parent, name, type);
+    vfs_unlock();
+    return result;
+}
+
+int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out) {
+    vfs_lock();
+    int result = vfs_create_unlocked(parent, name, type, out);
+    vfs_unlock();
+    return result;
+}
+
+vnode_t *vfs_create_dir(vnode_t *parent, const char *name) {
+    vfs_lock();
+    vnode_t *result = vfs_create_dir_unlocked(parent, name);
+    vfs_unlock();
+    return result;
+}
+
+vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, size_t size) {
+    vfs_lock();
+    vnode_t *result = vfs_create_file_unlocked(parent, name, data, size);
+    vfs_unlock();
+    return result;
+}
+
+vnode_t *vfs_create_device(vnode_t *parent, const char *name, const vnode_ops_t *ops) {
+    vfs_lock();
+    vnode_t *result = vfs_create_device_unlocked(parent, name, ops);
+    vfs_unlock();
+    return result;
+}
+
+vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
+    vfs_lock();
+    vnode_t *result = vfs_find_unlocked(relative_root, path);
+    vfs_unlock();
+    return result;
+}
+
+void vfs_truncate(vnode_t *file, size_t size) {
+    vfs_lock();
+    vfs_truncate_unlocked(file, size);
+    vfs_unlock();
+}
+
+int vfs_unlink(vnode_t *parent, const char *name) {
+    vfs_lock();
+    int result = vfs_unlink_unlocked(parent, name);
+    vfs_unlock();
+    return result;
+}
+
+int vfs_stat(vnode_t *node, size_t *out_size, uint32_t *out_type) {
+    vfs_lock();
+    int result = vfs_stat_unlocked(node, out_size, out_type);
+    vfs_unlock();
+    return result;
+}
+
+size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf) {
+    // A node with its own operations (a device, /proc, a disk file) looks
+    // after itself, and may wait a long time (a terminal read): the tree
+    // lock is not held for it. An open node can not go away meanwhile.
+    if (file && file->ops) return vfs_read_unlocked(file, offset, count, buf);
+    vfs_lock();
+    size_t result = vfs_read_unlocked(file, offset, count, buf);
+    vfs_unlock();
+    return result;
+}
+
+size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf) {
+    // A node with its own operations (a device, /proc, a disk file) looks
+    // after itself, and may wait a long time (a terminal read): the tree
+    // lock is not held for it. An open node can not go away meanwhile.
+    if (file && file->ops) return vfs_write_unlocked(file, offset, count, buf);
+    vfs_lock();
+    size_t result = vfs_write_unlocked(file, offset, count, buf);
+    vfs_unlock();
+    return result;
 }

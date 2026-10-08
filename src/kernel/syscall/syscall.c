@@ -274,9 +274,16 @@ static int64_t sys_chown(uint64_t user_path, uint64_t new_uid) {
 }
 
 static int64_t sys_kill(int pid, int sig) {
+    // Look at the target under the scheduler lock: it may be reaped at any
+    // other time. (PIDs are never reused, so the kill below can not reach a
+    // different process.)
+    uint64_t flags = sched_lock_irqsave();
     task_t *target = sched_find_task((uint32_t)pid);
-    if (!target || !target->is_user || target->state == TASK_ZOMBIE) return -ESRCH;
-    if (!auth_may_signal(sched_get_current_task()->uid, target->uid)) return -EPERM;
+    bool exists = target && target->is_user && target->state != TASK_ZOMBIE;
+    uint32_t target_uid = exists ? target->uid : 0;
+    sched_unlock_irqrestore(flags);
+    if (!exists) return -ESRCH;
+    if (!auth_may_signal(sched_get_current_task()->uid, target_uid)) return -EPERM;
     return process_kill((pid_t)pid, sig) == 0 ? 0 : -ESRCH;
 }
 
@@ -585,8 +592,8 @@ static int64_t dispatch(struct registers *regs) {
             if (task->uid != UID_ROOT && (uint32_t)regs->rdi != task->uid) return -EPERM;
             task->uid = (uint32_t)regs->rdi;
             return 0;
-        case SYS_CHMOD:   return sys_chmod(regs->rdi, regs->rsi);
-        case SYS_CHOWN:   return sys_chown(regs->rdi, regs->rsi);
+        case SYS_CHMOD: { vfs_lock(); int64_t r = sys_chmod(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_CHOWN: { vfs_lock(); int64_t r = sys_chown(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
 
         case SYS_SETPRIORITY:
             if (regs->rdi > PRIO_LOW) return -EINVAL;
@@ -630,8 +637,8 @@ static int64_t dispatch(struct registers *regs) {
             return 0; // Ignored: the frame's own RAX is what the program gets
 
         case SYS_UNAME:   return sys_uname(regs->rdi);
-        case SYS_GETCWD:  return sys_getcwd(regs->rdi, (size_t)regs->rsi);
-        case SYS_CHDIR:   return sys_chdir(regs->rdi);
+        case SYS_GETCWD: { vfs_lock(); int64_t r = sys_getcwd(regs->rdi, (size_t)regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_CHDIR: { vfs_lock(); int64_t r = sys_chdir(regs->rdi); vfs_unlock(); return r; } // Look up, then act: one step
 
         case SYS_CLEAR:
             kprintf("\033[2J\033[H"); // Erase the screen, cursor to the top left
@@ -646,8 +653,8 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_PIPE:    return sys_pipe(regs->rdi);
         case SYS_DUP2:    return sys_dup2((int)regs->rdi, (int)regs->rsi);
         case SYS_READDIR: return sys_readdir((int)regs->rdi, regs->rsi);
-        case SYS_MKDIR:   return sys_mkdir(regs->rdi);
-        case SYS_UNLINK:  return sys_unlink(regs->rdi);
+        case SYS_MKDIR: { vfs_lock(); int64_t r = sys_mkdir(regs->rdi); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_UNLINK: { vfs_lock(); int64_t r = sys_unlink(regs->rdi); vfs_unlock(); return r; } // Look up, then act: one step
 
         default:
             return -ENOSYS;

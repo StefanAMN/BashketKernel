@@ -60,6 +60,9 @@ int64_t signal_set_handler(task_t *task, int sig, uint64_t handler, uint64_t res
  */
 void signal_send(task_t *task, int sig);
 
+// The same, for a caller that already holds the scheduler lock
+void signal_send_locked(task_t *task, int sig);
+
 /**
  * @brief Safe point: if the current process has a signal waiting for a
  *        handler, arrange for the return to user mode described by `regs` to

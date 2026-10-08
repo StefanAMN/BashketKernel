@@ -26,8 +26,10 @@ static inline uint64_t rdtsc(void) {
 
 static uint64_t rng_state = 0x9E3779B97F4A7C15ULL; // Never zero: xorshift would stick there
 
+static spinlock_t rng_lock = SPINLOCK_RANKED("rng", LOCK_RANK_TIME);
+
 static uint64_t rng_next(void) {
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&rng_lock);
     // Stir in the timestamp counter so the stream depends on when it is read
     uint64_t x = rng_state ^ rdtsc();
     if (x == 0) x = 0x9E3779B97F4A7C15ULL;
@@ -35,7 +37,7 @@ static uint64_t rng_next(void) {
     x ^= x << 25;
     x ^= x >> 27;
     rng_state = x;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&rng_lock, flags);
     return x * 0x2545F4914F6CDD1DULL;
 }
 

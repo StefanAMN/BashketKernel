@@ -27,6 +27,12 @@ void lapic_eoi(void);
  */
 uint32_t lapic_get_id(void);
 
+/**
+ * @brief Raise interrupt `vector` on the CPU whose local APIC has this id
+ *        (an inter-processor interrupt).
+ */
+void lapic_send_ipi(uint32_t lapic_id, uint8_t vector);
+
 
 /**
  * @brief Enable the local APIC of the CPU this runs on (for CPUs other than

@@ -59,14 +59,21 @@ static bool busy = false;            // A request is in flight
 static uint64_t completed_requests = 0;
 static volatile uint64_t interrupt_count = 0;
 
+// Protects the queue, `busy` and the request pages
+static spinlock_t disk_lock = SPINLOCK_RANKED("virtio-blk", LOCK_RANK_DEVICE);
+
 static void virtio_blk_irq(struct registers *regs) {
     (void)regs;
     // Reading the ISR register is what makes the device lower its interrupt
     // line. Bit 0 set means the used ring changed.
     uint8_t isr = inb(io_base + VIRTIO_REG_ISR_STATUS);
     if (isr & 1) {
+        // Under the lock, so the requester can not be between "not done
+        // yet" and "asleep" when this arrives
+        uint64_t flags = spinlock_acquire_irqsave(&disk_lock);
         interrupt_count++;
         sched_wakeup(&queue);
+        spinlock_release_irqrestore(&disk_lock, flags);
     }
 }
 
@@ -143,7 +150,7 @@ uint64_t virtio_blk_requests(void) { return completed_requests; }
 uint64_t virtio_blk_interrupts(void) { return interrupt_count; }
 
 // One request of up to SECTORS_PER_REQUEST sectors through the data page.
-// Called with interrupts off and `busy` held.
+// Called with disk_lock and `busy` held; the lock is released while waiting.
 static int do_request(uint32_t type, uint64_t lba, size_t count) {
     req_header->type = type;
     req_header->reserved = 0;
@@ -163,7 +170,7 @@ static int do_request(uint32_t type, uint64_t lba, size_t count) {
 
     // Sleep until the used ring moves. The interrupt handler wakes us; the
     // one-tick timeout makes this work even if the interrupt is lost, and
-    // before the scheduler runs sched_block returns at once, so this loop
+    // before the scheduler runs sched_sleep returns at once, so this loop
     // simply polls. Uninterruptible: the request must be seen through, or
     // the queue would be left in the middle of one.
     uint64_t deadline = pit_get_ticks() + 5 * TIMER_HZ;
@@ -172,7 +179,7 @@ static int do_request(uint32_t type, uint64_t lba, size_t count) {
             kprintf("virtio-blk: request timed out (sector %lu)\n", lba);
             return -1;
         }
-        sched_block_uninterruptible(&queue, pit_get_ticks() + 1);
+        sched_sleep_uninterruptible(&queue, &disk_lock, pit_get_ticks() + 1);
     }
     virtqueue_collect(&queue, NULL, NULL);
     completed_requests++;
@@ -191,8 +198,8 @@ static int transfer(uint32_t type, uint64_t lba, void *buf, size_t count) {
     // One request at a time. Whoever finds the device busy sleeps until the
     // owner is done; these waits end with the request, so they need not be
     // interruptible, and must not be (see do_request).
-    uint64_t flags = irq_save();
-    while (busy) sched_block_uninterruptible(&busy, 0);
+    uint64_t flags = spinlock_acquire_irqsave(&disk_lock);
+    while (busy) sched_sleep_uninterruptible(&busy, &disk_lock, 0);
     busy = true;
 
     while (count > 0 && result == 0) {
@@ -210,7 +217,7 @@ static int transfer(uint32_t type, uint64_t lba, void *buf, size_t count) {
 
     busy = false;
     sched_wakeup(&busy);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&disk_lock, flags);
     return result;
 }
 

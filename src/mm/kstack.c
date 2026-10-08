@@ -15,7 +15,7 @@
 #define KSTACK_SLOT_SIZE ((KSTACK_PAGES + 1) * PAGE_SIZE)
 
 static bool slot_used[KSTACK_MAX_SLOTS];
-static spinlock_t kstack_lock = SPINLOCK_INIT;
+static spinlock_t kstack_lock = SPINLOCK_RANKED("kstack", LOCK_RANK_KSTACK);
 
 static uint64_t slot_stack_base(size_t slot) {
     return KSTACK_REGION_BASE + slot * KSTACK_SLOT_SIZE + PAGE_SIZE;

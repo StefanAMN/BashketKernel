@@ -219,10 +219,12 @@ code comments and commit messages; `git log` is the full history.
   target ends itself at a safe point (when it would sleep, at system call
   return, or when an interrupt returns to its user code). Anything that
   sleeps holds no lock, so sleeping is always a safe point.
-- **Waiting is a loop with three outcomes.** Check the condition and call
-  `sched_block` with interrupts off (or the wakeup is lost); `sched_block`
-  ends a killed task itself; and for a handled signal it returns at once, so
-  the loop must test `sched_interrupted()` and return `EINTR` or it will spin.
+- **Waiting is a loop with three outcomes.** Hold the lock that protects the
+  condition, check it, and call `sched_sleep(channel, &lock, deadline)`, which
+  releases the lock only once the task is marked blocked (or the wakeup is
+  lost). `sched_sleep` ends a killed task itself; and for a handled signal it
+  returns at once, so the loop must test `sched_interrupted()` and return
+  `EINTR` or it will spin.
 - **Sleep on a channel, not a linked wait queue.** A killed sleeper leaves
   nothing to unlink. Likewise no sleeping lock around the terminal: a reader
   killed while holding it would lock the terminal for good.
@@ -283,7 +285,7 @@ code comments and commit messages; `git log` is the full history.
   handler. (The disk kept working only because of its timeout fallback: a
   safety net can hide the bug it catches.)
 - **A wait during which the task owns a device must be uninterruptible**
-  (`sched_block_uninterruptible`). A disk request in flight cannot be
+  (`sched_sleep_uninterruptible`). A disk request in flight cannot be
   abandoned half way: a task killed there would leave the virtqueue mid-
   request and the device marked busy for good. The kill waits a few
   milliseconds for the request to finish instead.
@@ -291,5 +293,26 @@ code comments and commit messages; `git log` is the full history.
   from the frame allocator, reached through the direct map, with data copied
   to and from the caller. Heap memory is neither contiguous nor identity-
   related to physical addresses.
-- **Lock order:** heap or slab, then VMM, then PMM; `kprintf` is a leaf and
-  fatal paths force-unlock it. Locks shared with interrupts disable them.
+- **"Interrupts off" is not a lock.** It keeps this CPU's interrupt handlers
+  out and nobody else. Every shared structure has a spinlock (always taken
+  with interrupts off) or, where the holder must sleep, a `mutex_t`. The lock
+  order is the rank table in `src/kernel/sync/spinlock.h`; the kernel checks
+  it on every acquire and panics at the next timer tick on a breach, in every
+  build. Trust that report over reasoning: on its first run it found the
+  serial receive path waking a task under a lock ranked as output. Fatal
+  paths force-unlock `kprintf`, the log and the console before printing.
+- **The scheduler lock is held across the task switch** and released by the
+  task that comes in (a new task does it in `task_start_trampoline`). That is
+  what lets another CPU free a zombie's stack the moment it sees `ZOMBIE`.
+  It also means a task can never halt "in place" waiting to be woken: there
+  is an idle task to switch to.
+- **Nothing the kernel does under a spinlock may fault.** Kernel writes to
+  user buffers happen under locks (a pipe's), so `vmm_user_range_ok(write)`
+  resolves copy-on-write up front instead of leaving it to the fault.
+- **A node pointer from a path lookup is only good under `vfs_lock()`** or
+  while the node is open. Look up and pin (or look up and change) inside one
+  hold of the lock.
+- **Check that a concurrency test can fail.** Removing the test's own lock
+  made the four-CPU test fail at once; putting the semaphore back on
+  interrupt masking alone did not, because its window is two instructions
+  wide. Such a test shows the absence of gross errors, not of races.

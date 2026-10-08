@@ -35,6 +35,7 @@
 #include "kprintf.h"
 #include "kstring.h"
 #include "spinlock.h"
+#include "mutex.h"
 #include "kerrno.h"
 #include "heap.h"
 #include "sched.h"
@@ -89,7 +90,8 @@ static bool mounted = false;
 
 // One sector of the FAT is kept in memory: following a chain reads the same
 // sector many times over.
-static bool volume_locked = false;    // See the comment at the top about the lock
+static mutex_t volume_mutex = MUTEX_INIT("fat-volume"); // See the comment at the top about the lock
+static spinlock_t fat_cache_lock = SPINLOCK_RANKED("fat-cache", LOCK_RANK_FS);
 static uint32_t alloc_hint = 2;       // Where the search for a free cluster starts
 static bool fsinfo_invalidated = false;
 
@@ -158,10 +160,10 @@ static uint32_t next_cluster(uint32_t cluster) {
     uint32_t index = cluster % (SECTOR / 4);
     uint32_t entry;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&fat_cache_lock);
     bool cached = (fat_cache_sector == sector);
     if (cached) entry = read32(fat_cache + index * 4);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&fat_cache_lock, flags);
 
     if (!cached) {
         // Read into a private buffer: the disk read sleeps, and another task
@@ -170,10 +172,10 @@ static uint32_t next_cluster(uint32_t cluster) {
         if (virtio_blk_read(sector, fresh, 1) != 0) return 0;
         entry = read32(fresh + index * 4);
 
-        flags = irq_save();
+        flags = spinlock_acquire_irqsave(&fat_cache_lock);
         memcpy(fat_cache, fresh, SECTOR);
         fat_cache_sector = sector;
-        irq_restore(flags);
+        spinlock_release_irqrestore(&fat_cache_lock, flags);
     }
 
     entry &= FAT_ENTRY_MASK;
@@ -224,17 +226,11 @@ static int64_t read_chain(uint32_t first_cluster, uint64_t limit, size_t offset,
 // --- Locking ---------------------------------------------------------------
 
 static void volume_lock(void) {
-    uint64_t flags = irq_save();
-    while (volume_locked) sched_block_uninterruptible(&volume_locked, 0);
-    volume_locked = true;
-    irq_restore(flags);
+    mutex_lock(&volume_mutex);
 }
 
 static void volume_unlock(void) {
-    uint64_t flags = irq_save();
-    volume_locked = false;
-    sched_wakeup(&volume_locked);
-    irq_restore(flags);
+    mutex_unlock(&volume_mutex);
 }
 
 // --- Changing the FAT (all callers hold the volume lock) ---------------------
@@ -278,9 +274,9 @@ static bool set_fat_entry(uint32_t cluster, uint32_t value) {
         if (virtio_blk_write(lba, sector, 1) != 0) return false;
     }
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&fat_cache_lock);
     if (fat_cache_sector == volume.fat_start + offset_sector) memcpy(fat_cache, sector, SECTOR);
-    irq_restore(flags);
+    spinlock_release_irqrestore(&fat_cache_lock, flags);
     return true;
 }
 

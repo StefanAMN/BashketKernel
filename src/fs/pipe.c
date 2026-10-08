@@ -4,7 +4,7 @@
  *
  * A pipe is a ring buffer with a blocking reader and a blocking writer. Both
  * sides sleep on the pipe's address and wake each other after every transfer.
- * Interrupts are disabled around each check-then-sleep (see sched_block).
+ * Each pipe has a lock, held around each check-then-sleep (see sched_sleep).
  */
 
 #include "pipe.h"
@@ -20,6 +20,7 @@ pipe_t *pipe_create(void) {
     memset(p, 0, sizeof(pipe_t));
     p->reader_open = true;
     p->writer_open = true;
+    spinlock_init_ranked(&p->lock, "pipe", LOCK_RANK_PIPE);
     return p;
 }
 
@@ -30,13 +31,13 @@ int64_t pipe_read(pipe_t *pipe, void *buf, size_t count) {
     uint8_t *dst = (uint8_t *)buf;
     size_t done = 0;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&pipe->lock);
     while (pipe->count == 0 && pipe->writer_open) {
         if (sched_interrupted()) {
-            irq_restore(flags);
+            spinlock_release_irqrestore(&pipe->lock, flags);
             return -EINTR;
         }
-        sched_block(pipe, 0);
+        sched_sleep(pipe, &pipe->lock, 0);
     }
 
     // Return what is there now, like a terminal: do not wait to fill `count`
@@ -47,7 +48,7 @@ int64_t pipe_read(pipe_t *pipe, void *buf, size_t count) {
     }
 
     if (done > 0) sched_wakeup(pipe); // A writer may be waiting for room
-    irq_restore(flags);
+    spinlock_release_irqrestore(&pipe->lock, flags);
     return (int64_t)done;
 }
 
@@ -57,17 +58,17 @@ int64_t pipe_write(pipe_t *pipe, const void *buf, size_t count) {
     const uint8_t *src = (const uint8_t *)buf;
     size_t done = 0;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&pipe->lock);
     while (done < count) {
         if (!pipe->reader_open) break; // Nobody will ever read this
 
         if (pipe->count == PIPE_BUFFER_SIZE) {
             if (sched_interrupted()) {
                 // Report what did go through; EINTR only if nothing did
-                irq_restore(flags);
+                spinlock_release_irqrestore(&pipe->lock, flags);
                 return done > 0 ? (int64_t)done : -EINTR;
             }
-            sched_block(pipe, 0);
+            sched_sleep(pipe, &pipe->lock, 0);
             continue;
         }
 
@@ -78,7 +79,7 @@ int64_t pipe_write(pipe_t *pipe, const void *buf, size_t count) {
         }
         sched_wakeup(pipe); // A reader may be waiting for data
     }
-    irq_restore(flags);
+    spinlock_release_irqrestore(&pipe->lock, flags);
 
     if (done == 0 && count > 0) return -EPIPE;
     return (int64_t)done;
@@ -87,11 +88,11 @@ int64_t pipe_write(pipe_t *pipe, const void *buf, size_t count) {
 static void close_end(pipe_t *pipe, bool *end) {
     if (!pipe) return;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&pipe->lock);
     *end = false;
     bool unused = !pipe->reader_open && !pipe->writer_open;
     if (!unused) sched_wakeup(pipe); // Let the other side notice
-    irq_restore(flags);
+    spinlock_release_irqrestore(&pipe->lock, flags);
 
     if (unused) kfree(pipe);
 }

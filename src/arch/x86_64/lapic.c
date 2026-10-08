@@ -49,3 +49,16 @@ uint32_t lapic_get_id(void) {
     if (!lapic_base) return 0;
     return lapic_read(0x020) >> 24; // ID Register 0x020 bits 31..24
 }
+
+void lapic_send_ipi(uint32_t lapic_id, uint8_t vector) {
+    if (!lapic_base) return;
+
+    // Interrupt Command Register (Intel SDM Vol. 3A, 11.6.1): the high half
+    // (0x310) names the destination APIC in bits 31..24; writing the low
+    // half (0x300) sends. Low half: bits 7..0 vector, delivery mode 000
+    // (fixed), destination mode physical, no shorthand. Bit 12 reads as 1
+    // while the previous send is still on its way.
+    while (lapic_read(0x300) & (1u << 12)) asm volatile("pause");
+    lapic_write(0x310, lapic_id << 24);
+    lapic_write(0x300, vector);
+}

@@ -170,10 +170,15 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void *udp, 
 
 // --- ARP -----------------------------------------------------------------------
 
+// One lock for the stack's tables: the ARP cache, the pings awaiting an
+// answer, and the sockets with their queues. Not held while a frame is
+// built or handed to the card.
+static spinlock_t net_lock = SPINLOCK_RANKED("net", LOCK_RANK_NET);
+
 static void arp_learn(uint32_t ip, const uint8_t mac[6]) {
     if (ip == 0 || ip == NET_LOCAL_IP) return;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     arp_entry_t *slot = NULL, *oldest = &arp_cache[0];
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].ip == ip) { slot = &arp_cache[i]; break; }
@@ -184,14 +189,14 @@ static void arp_learn(uint32_t ip, const uint8_t mac[6]) {
     slot->ip = ip;
     memcpy(slot->mac, mac, 6);
     slot->last_used = pit_get_ticks();
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
 
     sched_wakeup(arp_cache); // Someone may be waiting for exactly this answer
 }
 
-static bool arp_lookup(uint32_t ip, uint8_t mac[6]) {
+// Caller holds net_lock
+static bool arp_lookup_locked(uint32_t ip, uint8_t mac[6]) {
     bool found = false;
-    uint64_t flags = irq_save();
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].ip == ip) {
             memcpy(mac, arp_cache[i].mac, 6);
@@ -200,7 +205,13 @@ static bool arp_lookup(uint32_t ip, uint8_t mac[6]) {
             break;
         }
     }
-    irq_restore(flags);
+    return found;
+}
+
+static bool arp_lookup(uint32_t ip, uint8_t mac[6]) {
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
+    bool found = arp_lookup_locked(ip, mac);
+    spinlock_release_irqrestore(&net_lock, flags);
     return found;
 }
 
@@ -262,15 +273,15 @@ static int arp_resolve(uint32_t ip, uint8_t mac[6], bool can_block) {
         arp_send(ARP_REQUEST, broadcast_mac, unknown, ip);
 
         uint64_t deadline = pit_get_ticks() + ARP_WAIT_TICKS;
-        uint64_t flags = irq_save();
-        while (!arp_lookup(ip, mac) && pit_get_ticks() < deadline) {
+        uint64_t flags = spinlock_acquire_irqsave(&net_lock);
+        while (!arp_lookup_locked(ip, mac) && pit_get_ticks() < deadline) {
             if (sched_interrupted()) {
-                irq_restore(flags);
+                spinlock_release_irqrestore(&net_lock, flags);
                 return -EINTR;
             }
-            sched_block(arp_cache, deadline);
+            sched_sleep(arp_cache, &net_lock, deadline);
         }
-        irq_restore(flags);
+        spinlock_release_irqrestore(&net_lock, flags);
         if (arp_lookup(ip, mac)) return 0;
     }
     return -EHOSTUNREACH;
@@ -337,13 +348,13 @@ static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
         out->checksum = htons(net_checksum(reply, len));
         if (ipv4_send(src, IP_PROTO_ICMP, reply, len, false) == 0) stats.echo_replies_sent++;
     } else if (icmp->type == ICMP_ECHO_REPLY) {
-        uint64_t flags = irq_save();
+        uint64_t flags = spinlock_acquire_irqsave(&net_lock);
         for (size_t i = 0; i < sizeof(pings) / sizeof(pings[0]); i++) {
             if (pings[i].active && pings[i].id == ntohs(icmp->id) && pings[i].sequence == ntohs(icmp->sequence)) {
                 pings[i].answered = true;
             }
         }
-        irq_restore(flags);
+        spinlock_release_irqrestore(&net_lock, flags);
         sched_wakeup(pings);
     } else {
         stats.dropped++;
@@ -363,7 +374,7 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
     uint16_t port = ntohs(udp->dst_port);
     if (payload_len > UDP_PAYLOAD_MAX) { stats.dropped++; return; }
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     struct udp_socket *sock = NULL;
     for (int i = 0; i < UDP_MAX_SOCKETS; i++) {
         if (sockets[i].open && sockets[i].port == port && port != 0) { sock = &sockets[i]; break; }
@@ -382,7 +393,7 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
         sock->count++;
         stats.udp_delivered++;
     }
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
 
     if (sock) sched_wakeup(sock);
 }
@@ -441,7 +452,7 @@ int net_ping(uint32_t ip, uint64_t timeout_ticks, uint64_t *rtt_ticks) {
     // Claim a slot for matching the reply
     static uint16_t next_sequence = 1;
     ping_wait_t *wait = NULL;
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     for (size_t i = 0; i < sizeof(pings) / sizeof(pings[0]); i++) {
         if (!pings[i].active) { wait = &pings[i]; break; }
     }
@@ -451,7 +462,7 @@ int net_ping(uint32_t ip, uint64_t timeout_ticks, uint64_t *rtt_ticks) {
         wait->id = (uint16_t)get_random_u32();
         wait->sequence = next_sequence++;
     }
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
     if (!wait) return -EBUSY;
 
     struct {
@@ -471,13 +482,13 @@ int net_ping(uint32_t ip, uint64_t timeout_ticks, uint64_t *rtt_ticks) {
 
     if (result == 0) {
         uint64_t deadline = start + timeout_ticks;
-        flags = irq_save();
+        flags = spinlock_acquire_irqsave(&net_lock);
         while (!wait->answered && pit_get_ticks() < deadline) {
             if (sched_interrupted()) { result = -EINTR; break; }
-            sched_block(pings, deadline);
+            sched_sleep(pings, &net_lock, deadline);
         }
         if (result == 0 && !wait->answered) result = -ETIMEDOUT;
-        irq_restore(flags);
+        spinlock_release_irqrestore(&net_lock, flags);
     }
 
     if (result == 0 && rtt_ticks) *rtt_ticks = pit_get_ticks() - start;
@@ -498,7 +509,7 @@ udp_socket_t *udp_open(void) {
     udp_datagram_t *queue = kmalloc(sizeof(udp_datagram_t) * UDP_QUEUE_LEN);
     if (!queue) return NULL;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     struct udp_socket *sock = NULL;
     for (int i = 0; i < UDP_MAX_SOCKETS; i++) {
         if (!sockets[i].open) { sock = &sockets[i]; break; }
@@ -510,7 +521,7 @@ udp_socket_t *udp_open(void) {
         sock->head = 0;
         sock->count = 0;
     }
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
 
     if (!sock) kfree(queue);
     return sock;
@@ -519,23 +530,23 @@ udp_socket_t *udp_open(void) {
 int udp_bind(udp_socket_t *sock, uint16_t port) {
     if (!sock || !sock->open || port == 0 || sock->port != 0) return -EINVAL;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     int result = port_in_use(port) ? -EADDRINUSE : 0;
     if (result == 0) sock->port = port;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
     return result;
 }
 
 void udp_close(udp_socket_t *sock) {
     if (!sock || !sock->open) return;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     udp_datagram_t *queue = sock->queue;
     sock->open = false;
     sock->port = 0;
     sock->queue = NULL;
     sock->count = 0;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
 
     sched_wakeup(sock); // Anyone still waiting on it finds it closed
     kfree(queue);
@@ -547,14 +558,14 @@ int64_t udp_sendto(udp_socket_t *sock, uint32_t ip, uint16_t port, const void *d
 
     // A socket that never bound gets a port now: the receiver needs
     // somewhere to send its answer
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     for (int tries = 0; sock->port == 0 && tries < 16384; tries++) {
         uint16_t candidate = next_ephemeral++;
         if (next_ephemeral == 0) next_ephemeral = EPHEMERAL_PORT_FIRST;
         if (candidate >= EPHEMERAL_PORT_FIRST && !port_in_use(candidate)) sock->port = candidate;
     }
     uint16_t src_port = sock->port;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
     if (src_port == 0) return -EADDRINUSE;
 
     uint8_t packet[sizeof(struct udp_header) + UDP_PAYLOAD_MAX];
@@ -578,14 +589,14 @@ int64_t udp_recvfrom(udp_socket_t *sock, void *buf, size_t len, uint32_t *src_ip
 
     uint64_t deadline = timeout_ticks ? pit_get_ticks() + timeout_ticks : 0;
 
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     while (sock->open && sock->count == 0) {
-        if (sched_interrupted()) { irq_restore(flags); return -EINTR; }
-        if (deadline && pit_get_ticks() >= deadline) { irq_restore(flags); return -ETIMEDOUT; }
-        sched_block(sock, deadline);
+        if (sched_interrupted()) { spinlock_release_irqrestore(&net_lock, flags); return -EINTR; }
+        if (deadline && pit_get_ticks() >= deadline) { spinlock_release_irqrestore(&net_lock, flags); return -ETIMEDOUT; }
+        sched_sleep(sock, &net_lock, deadline);
     }
     if (!sock->open) {
-        irq_restore(flags);
+        spinlock_release_irqrestore(&net_lock, flags);
         return -EBADF; // Closed while we waited
     }
 
@@ -600,7 +611,7 @@ int64_t udp_recvfrom(udp_socket_t *sock, void *buf, size_t len, uint32_t *src_ip
     memcpy(local, front->data, n);
     sock->head = (sock->head + 1) % UDP_QUEUE_LEN;
     sock->count--;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&net_lock, flags);
 
     memcpy(buf, local, n);
     if (src_ip) *src_ip = from_ip;
@@ -620,9 +631,7 @@ static void netd(void) {
             net_handle_frame(frame, len);
         }
 
-        uint64_t flags = irq_save();
-        if (!virtio_net_rx_pending()) sched_block(virtio_net_rx_channel(), 0);
-        irq_restore(flags);
+        virtio_net_wait_rx();
     }
 }
 

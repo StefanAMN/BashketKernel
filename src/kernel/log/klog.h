@@ -19,10 +19,13 @@ void klog_init(void);
 
 /**
  * @brief Append one character. Called by kprintf for every character it
- *        prints. Needs no initialisation and takes no lock: callers run with
- *        interrupts off.
+ *        prints. Needs no initialisation; safe from any CPU and from
+ *        interrupt handlers.
  */
 void klog_putchar(char c);
+
+// Drop the log's lock whoever holds it. Only for fatal paths that must print.
+void klog_force_unlock(void);
 
 /**
  * @brief Append a string.

@@ -19,6 +19,10 @@ static void pit_irq_handler(struct registers *regs) {
     (void)regs;
     ticks++;
 
+    // Nothing is locked here, so this is where a recorded breach of the
+    // locking rules can be reported
+    lock_debug_poll();
+
     // Show scrolled output at most 50 times a second (see console.c)
     if (ticks % 2 == 0) console_refresh();
 
@@ -54,7 +58,8 @@ void pit_init(uint32_t frequency_hz) {
 bool sched_sleep_ticks(uint64_t count) {
     if (count == 0) return true;
 
-    uint64_t flags = irq_save();
+    // No lock: the wake-up time is part of the sleep itself, so a tick that
+    // passes the deadline just before we sleep still wakes us at the next
     uint64_t deadline = ticks + count;
     bool completed = true;
     while (ticks < deadline) {
@@ -62,9 +67,8 @@ bool sched_sleep_ticks(uint64_t count) {
             completed = false;
             break;
         }
-        sched_block(NULL, deadline);
+        sched_sleep(NULL, NULL, deadline);
     }
-    irq_restore(flags);
     return completed;
 }
 

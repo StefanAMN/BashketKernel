@@ -48,7 +48,18 @@ int file_open_at(vnode_t *base, const char *path, int flags, file_t **out) {
     return file_open_as(UID_ROOT, base, path, flags, out); // The kernel itself is not restricted
 }
 
+static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out);
+
 int file_open_as(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out) {
+    // From looking the name up until the node is pinned by its open count,
+    // nothing may remove it
+    vfs_lock();
+    int result = open_as_locked(uid, base, path, flags, out);
+    vfs_unlock();
+    return result;
+}
+
+static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int flags, file_t **out) {
     if (!path || !out) return -EINVAL;
 
     int access = flags & O_ACCMODE;
@@ -119,8 +130,10 @@ file_t *file_open_socket(void) {
     return file;
 }
 
+// An open file can be shared by processes on different CPUs (fork copies
+// the descriptor table), so the count of holders is changed atomically
 file_t *file_dup(file_t *file) {
-    if (file) file->refs++;
+    if (file) __atomic_add_fetch(&file->refs, 1, __ATOMIC_SEQ_CST);
     return file;
 }
 
@@ -232,7 +245,16 @@ int64_t file_seek(file_t *file, int64_t offset, int whence) {
     return target;
 }
 
+static int readdir_locked(file_t *file, struct dirent_info *out);
+
 int file_readdir(file_t *file, struct dirent_info *out) {
+    vfs_lock(); // The list of children must not change while it is walked
+    int result = readdir_locked(file, out);
+    vfs_unlock();
+    return result;
+}
+
+static int readdir_locked(file_t *file, struct dirent_info *out) {
     if (!file || !file->readable || !out) return -EBADF;
     if (file->kind != FILE_VNODE || file->node->type != VFS_DIRECTORY) return -ENOTDIR;
 

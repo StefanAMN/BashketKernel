@@ -9,6 +9,9 @@ void console_init(struct limine_framebuffer *fb);
 void console_enable_backbuffer(void);
 void console_putchar(char c);
 
+// Drop the console's lock whoever holds it. Only for fatal paths that must print.
+void console_force_unlock(void);
+
 // Let scrolling update only the in-RAM copy of the screen and leave it to
 // console_refresh to show the result. Turn on once something (the timer)
 // calls console_refresh regularly.

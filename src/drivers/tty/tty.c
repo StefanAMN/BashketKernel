@@ -31,6 +31,10 @@ static uint32_t raw_owner = 0;
 // this tracks an escape sequence in the input so that it can be dropped.
 static int input_escape = 0; // 0: text, 1: seen ESC, 2: inside ESC [ ...
 
+// Protects the line being collected and the mode. Not held while waiting
+// for a key: that wait sleeps.
+static spinlock_t tty_lock = SPINLOCK_RANKED("tty", LOCK_RANK_TTY);
+
 void tty_init(void) {
     line_len = 0;
     line_pos = 0;
@@ -53,7 +57,7 @@ static void echo(const char *text, size_t count) {
 }
 
 bool tty_input(char c) {
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&tty_lock);
 
     if (line_ready) {
         // The previous line is still waiting for a reader
@@ -87,12 +91,12 @@ bool tty_input(char c) {
     }
 
     bool ready = line_ready;
-    irq_restore(flags);
+    spinlock_release_irqrestore(&tty_lock, flags);
     return ready;
 }
 
 void tty_set_raw(bool raw, uint32_t owner_pid) {
-    uint64_t flags = irq_save();
+    uint64_t flags = spinlock_acquire_irqsave(&tty_lock);
     raw_mode = raw;
     raw_owner = raw ? owner_pid : 0;
     if (raw) {
@@ -102,7 +106,7 @@ void tty_set_raw(bool raw, uint32_t owner_pid) {
         line_ready = false;
         input_escape = 0;
     }
-    irq_restore(flags);
+    spinlock_release_irqrestore(&tty_lock, flags);
 }
 
 bool tty_is_raw(void) {
@@ -132,20 +136,21 @@ int64_t tty_read(char *out, size_t count) {
     if (count == 0) return 0;
     if (raw_mode) return read_raw(out, count);
 
-    // Interrupts stay off from here on, so that taking a character from the
-    // keyboard and running it through tty_input is one step: two programs
-    // reading the terminal can not interleave inside it. keyboard_getchar
-    // sleeps (and lets everything else run) while there is nothing typed.
-    uint64_t flags = irq_save();
+    // Wait for a whole line. The lock is given up around the wait for each
+    // key (which sleeps); tty_input takes it again to add the key to the
+    // line. Two programs reading the terminal at once both feed the same
+    // line, and whichever looks first once it is complete gets it.
+    uint64_t flags = spinlock_acquire_irqsave(&tty_lock);
     while (!line_ready) {
+        spinlock_release_irqrestore(&tty_lock, flags);
         char c = keyboard_getchar();
         if (c == 0) {
             // Interrupted by a signal. What has been typed so far stays in
             // the line for the next read.
-            irq_restore(flags);
             return -EINTR;
         }
         tty_input(c);
+        flags = spinlock_acquire_irqsave(&tty_lock);
     }
 
     size_t n = 0;
@@ -159,6 +164,6 @@ int64_t tty_read(char *out, size_t count) {
         line_ready = false;
     }
 
-    irq_restore(flags);
+    spinlock_release_irqrestore(&tty_lock, flags);
     return (int64_t)n;
 }

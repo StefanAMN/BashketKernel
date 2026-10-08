@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "spinlock.h"
 
 #define PIPE_BUFFER_SIZE 4096
 
@@ -19,6 +20,7 @@ typedef struct pipe {
     size_t count;                     // Bytes currently buffered
     bool reader_open;                 // The read end has not been closed
     bool writer_open;                 // The write end has not been closed
+    spinlock_t lock;                  // Protects everything above
 } pipe_t;
 
 /**
