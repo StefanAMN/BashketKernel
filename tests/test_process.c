@@ -30,12 +30,12 @@ TEST(spawn_runs_program_and_returns_status) {
 }
 
 TEST(spawn_rejects_bad_targets) {
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
     EXPECT_EQ(process_spawn("/bin/no-such-program", NULL), -1);
     EXPECT_EQ(process_spawn("/etc/motd", NULL), -1);   // A file, but not an ELF
     EXPECT_EQ(process_spawn("/bin", NULL), -1);        // A directory
     EXPECT_EQ(process_spawn(NULL, NULL), -1);
-    EXPECT_TRUE(pmm_get_free_frames() == free_before); // Failed spawns leak nothing
+    EXPECT_TRUE(test_free_frames() == free_before); // Failed spawns leak nothing
 }
 
 // Each of these does something ring 3 is not allowed to do. The kernel must
@@ -60,7 +60,7 @@ TEST(faulting_programs_are_killed) {
 
 TEST(processes_leave_nothing_behind) {
     sched_reap();
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
     size_t heap_before = kheap_get_allocated_bytes();
 
     for (int i = 0; i < 20; i++) {
@@ -68,7 +68,7 @@ TEST(processes_leave_nothing_behind) {
     }
 
     sched_reap();
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
@@ -76,7 +76,7 @@ TEST(processes_leave_nothing_behind) {
 // dup2 and open. Its results are checked here from the kernel side.
 TEST(shell_pipelines_and_redirection) {
     sched_reap();
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
     char buf[64] = {0};
 
     char *to_file[] = { "/bin/sh", "-c", "echo one two three | cat | wc > /tmp/sh_out", NULL };
@@ -142,7 +142,7 @@ TEST(shell_pipelines_and_redirection) {
     // Every descriptor was closed: the file can be deleted, and nothing leaked
     EXPECT_EQ(vfs_unlink(vfs_find(NULL, "/tmp"), "sh_out"), 0);
     sched_reap();
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
 }
 
 // Count tasks in a given state whose name matches
@@ -158,7 +158,7 @@ static int count_tasks(const char *name) {
 
 TEST(kill_takes_effect_at_a_safe_point) {
     sched_reap();
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
 
     // A program in an endless loop makes no system calls, so the only place
     // it can die is the timer interrupt's return to user mode.
@@ -196,14 +196,14 @@ TEST(kill_takes_effect_at_a_safe_point) {
     EXPECT_EQ(process_kill(pid, SIGKILL), -1);
     EXPECT_EQ(process_kill(99999, SIGKILL), -1);
 
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
 }
 
 // Ctrl-C ends the programs a shell is running but not the shell, which has
 // asked to be left alone.
 TEST(interrupt_spares_processes_that_ignore_it) {
     sched_reap();
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
 
     // An interactive shell reading from the console would wait for the test
     // forever, so run one that runs "spin | spin" and then one more command.
@@ -222,7 +222,7 @@ TEST(interrupt_spares_processes_that_ignore_it) {
     EXPECT_EQ(count_tasks("spin"), 0);
 
     sched_reap();
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
 }
 
 // A hostile executable: its code sits in the very last page of user address

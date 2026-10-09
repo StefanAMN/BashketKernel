@@ -287,7 +287,7 @@ test-smp:
 	@for n in 2 4 8; do \
 		tools/qemu_shell.py --quiet --timeout 120 $(SHELL_CPU) --qemu-arg=-smp --qemu-arg=$$n \
 			--expect "SMP: $$n CPUs scheduling" --expect 'syscheck: all checks passed' \
-			--expect 'fptest: all workers computed the right values' --expect '\n30 90 613\n' \
+			--expect 'fptest: all workers computed the right values' --expect '\n$(words $(USER_PROGS)) [0-9]+ [0-9]+\n' \
 			--forbid 'LOCK RULE' \
 			'exec /bin/syscheck' 'exec /bin/fptest' 'exec /bin/sh -c "ls /bin | wc"' > $(BUILD)/smp-$$n.log 2>&1 \
 			&& echo "$$n CPUs: programs run" \

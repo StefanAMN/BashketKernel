@@ -10,7 +10,7 @@
 // Load `image` into a throwaway address space and report whether the loader
 // accepted it. Also checks that a rejected image leaves no frames behind.
 static bool try_load(const void *image, size_t size) {
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
 
     uint64_t *space = vmm_create_address_space();
     if (!space) return false;
@@ -19,7 +19,7 @@ static bool try_load(const void *image, size_t size) {
     bool ok = elf_load(space, image, size, &entry, NULL);
     vmm_destroy_address_space(space);
 
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
     return ok;
 }
 
@@ -160,7 +160,7 @@ TEST(elf_load_address_is_random) {
 TEST(elf_rejects_bad_placement_and_relocations) {
     vnode_t *file = vfs_find(NULL, "/bin/colors");
     if (!file) return;
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
 
     uint8_t *copy = kmalloc(file->size);
     EXPECT_TRUE(copy != NULL);
@@ -235,7 +235,7 @@ TEST(elf_rejects_bad_placement_and_relocations) {
 #undef FRESH
 #undef LOADS_AT
     kfree(copy);
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);      // Rejected images left nothing behind
+    EXPECT_TRUE(test_free_frames() == free_before);      // Rejected images left nothing behind
 }
 
 TEST(elf_rejects_malformed_files) {

@@ -59,7 +59,14 @@
 #define SYS_PING        305  // (ip, timeout_ms): round-trip time in microseconds, or a negative error
 #define SYS_CLOCK_NS    228  // (): nanoseconds since boot
 #define SYS_NANOSLEEP   230  // (nanoseconds): sleep with sub-tick precision
-#define SYS_SOCKET      41   // (): a new UDP socket, as a file descriptor
+#define SYS_SOCKET      41   // (type): a new socket, as a file descriptor; SOCK_STREAM (TCP) or SOCK_DGRAM (UDP)
+#define SYS_CONNECT     42   // (fd, ip, port): open a TCP connection
+#define SYS_ACCEPT      43   // (fd, struct net_address *from): the next connection to a listening socket, as a new descriptor
+#define SYS_SHUTDOWN    48   // (fd): TCP: nothing more will be written; reading goes on
+#define SYS_LISTEN      50   // (fd, backlog): take connections on the bound port
+
+#define SOCK_STREAM 1
+#define SOCK_DGRAM  2
 #define SYS_SENDTO      44   // (fd, buf, len, ip, port)
 #define SYS_RECVFROM    45   // (fd, buf, len, struct net_address *from, timeout_ms); 0 ms waits for ever
 #define SYS_BIND        49   // (fd, port)

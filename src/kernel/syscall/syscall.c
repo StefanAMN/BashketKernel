@@ -29,6 +29,7 @@
 #include "cpu.h"
 #include "tty.h"
 #include "net.h"
+#include "tcp.h"
 #include "shm.h"
 #include "hrtimer.h"
 #include "auth.h"
@@ -506,14 +507,62 @@ static udp_socket_t *fd_to_socket(int fd) {
     return (file && file->kind == FILE_SOCKET) ? file->socket : NULL;
 }
 
-static int64_t sys_socket(void) {
+static tcp_socket_t *fd_to_tcp(int fd) {
+    file_t *file = fd_to_file(fd);
+    return (file && file->kind == FILE_TCP) ? file->tcp : NULL;
+}
+
+static int64_t sys_socket(uint64_t type) {
+    if (type != SOCK_STREAM && type != SOCK_DGRAM) return -EINVAL;
     if (!net_up()) return -ENETDOWN;
-    file_t *file = file_open_socket();
+    file_t *file = (type == SOCK_STREAM) ? file_open_tcp(NULL) : file_open_socket();
     if (!file) return -ENOMEM;
 
     int fd = fd_install(sched_get_current_task()->fds, file);
     if (fd < 0) file_close(file);
     return fd;
+}
+
+static int64_t sys_connect(int fd, uint64_t ip, uint64_t port) {
+    tcp_socket_t *socket = fd_to_tcp(fd);
+    if (!socket) return -EBADF;
+    if (ip == 0 || ip > 0xFFFFFFFFULL || port == 0 || port > 0xFFFF) return -EINVAL;
+    return tcp_connect(socket, (uint32_t)ip, (uint16_t)port);
+}
+
+static int64_t sys_accept(int fd, uint64_t user_from) {
+    tcp_socket_t *listener = fd_to_tcp(fd);
+    if (!listener) return -EBADF;
+    if (user_from != 0 && !user_range_ok(user_from, sizeof(struct net_address), true)) return -EFAULT;
+
+    // Make sure there is a descriptor to give the connection before taking
+    // it: once accepted it could only be dropped
+    task_t *task = sched_get_current_task();
+    bool have_slot = false;
+    for (int i = 0; i < TASK_MAX_FDS; i++) if (!task->fds[i]) have_slot = true;
+    if (!have_slot) return -EMFILE;
+
+    int error = 0;
+    tcp_socket_t *connection = tcp_accept(listener, &error);
+    if (!connection) return error;
+
+    struct net_address from = {0};
+    tcp_peer(connection, &from.ip, &from.port);
+
+    file_t *file = file_open_tcp(connection); // Closes the connection if it fails
+    if (!file) return -ENOMEM;
+    int new_fd = fd_install(task->fds, file);
+    if (new_fd < 0) {
+        file_close(file);
+        return new_fd;
+    }
+
+    if (user_from != 0) {
+        user_access_begin();
+        memcpy((void *)user_from, &from, sizeof(from));
+        user_access_end();
+    }
+    return new_fd;
 }
 
 static int64_t sys_sendto(int fd, uint64_t user_buf, size_t len, uint32_t ip, uint64_t port) {
@@ -654,13 +703,25 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_SHMAT:    return sys_shmat((int)regs->rdi);
         case SYS_SHMRM:    return shm_remove((int)regs->rdi);
 
-        case SYS_SOCKET:   return sys_socket();
+        case SYS_SOCKET:   return sys_socket(regs->rdi);
+        case SYS_CONNECT:  return sys_connect((int)regs->rdi, regs->rsi, regs->rdx);
+        case SYS_ACCEPT:   return sys_accept((int)regs->rdi, regs->rsi);
+        case SYS_SHUTDOWN: {
+            tcp_socket_t *stream = fd_to_tcp((int)regs->rdi);
+            return stream ? tcp_shutdown(stream) : -EBADF;
+        }
+        case SYS_LISTEN: {
+            tcp_socket_t *listener = fd_to_tcp((int)regs->rdi);
+            return listener ? tcp_listen(listener, (int)regs->rsi) : -EBADF;
+        }
         case SYS_BIND: {
             udp_socket_t *socket = fd_to_socket((int)regs->rdi);
-            if (!socket) return -EBADF;
-            if (regs->rsi > 0xFFFF) return -EINVAL;
+            tcp_socket_t *stream = fd_to_tcp((int)regs->rdi);
+            if (!socket && !stream) return -EBADF;
+            if (regs->rsi == 0 || regs->rsi > 0xFFFF) return -EINVAL;
             // Ports below 1024 are where system services live: root only
             if (regs->rsi < 1024 && task->uid != UID_ROOT) return -EACCES;
+            if (stream) return tcp_bind(stream, (uint16_t)regs->rsi);
             return udp_bind(socket, (uint16_t)regs->rsi);
         }
         case SYS_SENDTO:   return sys_sendto((int)regs->rdi, regs->rsi, (size_t)regs->rdx, (uint32_t)regs->r10, regs->r8);

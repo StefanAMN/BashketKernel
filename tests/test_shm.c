@@ -8,7 +8,7 @@
 #include "kerrno.h"
 
 TEST(shm_segments_are_shared_and_freed) {
-    size_t frames_before = pmm_get_free_frames();
+    size_t frames_before = test_free_frames();
     size_t heap_before = kheap_get_allocated_bytes();
     uint64_t hhdm = pmm_get_hhdm_offset();
 
@@ -17,7 +17,7 @@ TEST(shm_segments_are_shared_and_freed) {
     EXPECT_EQ(shm_get(0x5EED, PAGE_SIZE), id);                 // Same key: the same segment
     EXPECT_EQ(shm_get(0x5EED, 4 * PAGE_SIZE), -EINVAL);        // ... which is not that large
     EXPECT_TRUE(shm_count() == 1);
-    EXPECT_TRUE(pmm_get_free_frames() == frames_before - 3);
+    EXPECT_TRUE(test_free_frames() == frames_before - 3);
 
     // Two address spaces attach: the same frames behind both
     uint64_t *a = vmm_create_address_space(), *b = vmm_create_address_space();
@@ -56,12 +56,12 @@ TEST(shm_segments_are_shared_and_freed) {
     vmm_destroy_address_space(child);
     EXPECT_EQ(pmm_get_frame_ref((void *)first_frame), 1u);
     vmm_destroy_address_space(b);
-    EXPECT_TRUE(pmm_get_free_frames() == frames_before);
+    EXPECT_TRUE(test_free_frames() == frames_before);
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
 TEST(shm_limits) {
-    size_t frames_before = pmm_get_free_frames();
+    size_t frames_before = test_free_frames();
 
     EXPECT_EQ(shm_get(1, 0), -EINVAL);
     EXPECT_EQ(shm_get(1, (size_t)(SHM_MAX_PAGES + 1) * PAGE_SIZE), -EINVAL);
@@ -82,7 +82,7 @@ TEST(shm_limits) {
     EXPECT_EQ(shm_get(1005, PAGE_SIZE), ids[5]);
     for (int i = 0; i < SHM_MAX_SEGMENTS; i++) EXPECT_EQ(shm_remove(ids[i]), 0);
 
-    EXPECT_TRUE(pmm_get_free_frames() == frames_before);        // Refused requests kept nothing
+    EXPECT_TRUE(test_free_frames() == frames_before);        // Refused requests kept nothing
 }
 
 void test_suite_shm(void) {

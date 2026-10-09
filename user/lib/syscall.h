@@ -47,6 +47,13 @@
 #define SYS_SHMAT    30
 #define SYS_SHMRM    31
 #define SYS_SOCKET   41
+#define SYS_CONNECT  42
+#define SYS_ACCEPT   43
+#define SYS_SHUTDOWN 48
+#define SYS_LISTEN   50
+
+#define SOCK_STREAM 1   /* TCP: a connection; read and write */
+#define SOCK_DGRAM  2   /* UDP: separate datagrams; sendto and recvfrom */
 #define SYS_SENDTO   44
 #define SYS_RECVFROM 45
 #define SYS_BIND     49
@@ -78,7 +85,11 @@
 #define EMSGSIZE     90
 #define EADDRINUSE   98
 #define ENETDOWN    100
+#define ECONNRESET  104
+#define EISCONN     106
+#define ENOTCONN    107
 #define ETIMEDOUT   110
+#define ECONNREFUSED 111
 #define EHOSTUNREACH 113
 #define ENOTEMPTY 39
 

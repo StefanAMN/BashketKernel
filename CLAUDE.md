@@ -337,6 +337,26 @@ code comments and commit messages; `git log` is the full history.
   for a condition with a time limit (`TEST_WAIT`). Likewise a process killed
   on another CPU is dead before the next statement: `kill` on an unreaped
   zombie succeeds, as in POSIX.
+- **Do not inject faults on a regular beat.** "Drop every 7th TCP segment"
+  fell into step with a retransmission round that happened to be 7 segments
+  long (6 data, 1 acknowledgement): the same acknowledgement was lost every
+  round and the connection timed out. A fixed pseudo-random sequence is
+  just as repeatable and does not resonate.
+- **A protocol input routine must not transmit.** A packet to ourselves is
+  delivered inside the send call, so an answer sent from the input path
+  nests one send inside another without limit (and each has a 1.5 KiB frame
+  on a 16 KiB stack). `tcp_input` only updates state and wakes a thread that
+  sends. For the same reason only one CPU at a time sends for a socket, or
+  segments reach the wire in either order.
+- **Test against something you did not write.** The loopback tests passed
+  while data arriving before `accept` was being acknowledged and thrown
+  away: both ends were ours and never sent early. The host's TCP did, on the
+  first try.
+- **Background teardown breaks counting tests.** A closed TCP connection
+  frees its buffers two seconds later (TIME_WAIT), in whatever test happens
+  to be running then. Every test now starts once the stack is quiet
+  (`test_settle`), and leak checks count frames the heap holds as available
+  (`test_free_frames`), since the heap grows and never shrinks.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

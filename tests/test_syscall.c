@@ -1,4 +1,5 @@
 #include "test.h"
+#include "tcp.h"
 #include "kstring.h"
 #include "vmm.h"
 #include "vfs.h"
@@ -53,7 +54,7 @@ TEST(syscall_rejects_kernel_pointers) {
 // mmap, fork, exec, wait and kill, and exits 0 only if all of it worked.
 TEST(syscalls_from_ring3) {
     sched_reap();
-    size_t free_before = pmm_get_free_frames();
+    size_t free_before = test_free_frames();
 
     pid_t pid = process_spawn("/bin/syscheck", NULL);
     EXPECT_TRUE(pid > 0);
@@ -64,7 +65,12 @@ TEST(syscalls_from_ring3) {
 
     // Every process it created is gone and every frame is back
     sched_reap();
-    EXPECT_TRUE(pmm_get_free_frames() == free_before);
+    EXPECT_TRUE(test_free_frames() == free_before);
+
+    // Its TCP connections finish closing by themselves: two seconds in
+    // TIME_WAIT, not the much longer limit for a close that got stuck
+    TEST_WAIT(tcp_sockets_in_use() == 0, 400);
+    EXPECT_TRUE(tcp_sockets_in_use() == 0);
 }
 
 // --- read() and write() keep user memory out of the file layer ---------------

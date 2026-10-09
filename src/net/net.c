@@ -4,6 +4,7 @@
  */
 
 #include "net.h"
+#include "tcp.h"
 #include "virtio_net.h"
 #include "sched.h"
 #include "pit.h"
@@ -18,7 +19,6 @@
 #define ETHERTYPE_ARP  0x0806
 
 #define IP_PROTO_ICMP 1
-#define IP_PROTO_UDP  17
 
 #define ICMP_ECHO_REPLY   0
 #define ICMP_ECHO_REQUEST 8
@@ -154,18 +154,28 @@ uint16_t net_checksum(const void *data, size_t len) {
     return checksum_finish(checksum_add(0, data, len));
 }
 
-// UDP's checksum also covers a "pseudo header" of fields from the IP header:
-// both addresses, the protocol number and the UDP length
-static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void *udp, size_t len) {
+uint32_t net_source_for(uint32_t dst) {
+    // A packet to a loopback address comes from that address: the answer
+    // then goes back to the name the other end was reached by
+    return (dst >> 24) == 127 ? dst : NET_LOCAL_IP;
+}
+
+// The UDP and TCP checksums also cover a "pseudo header" of fields from the
+// IP header: both addresses, the protocol number and the segment length
+uint16_t net_transport_checksum(uint8_t protocol, uint32_t src_ip, uint32_t dst_ip, const void *segment, size_t len) {
     uint8_t pseudo[12];
     uint32_t src = htonl(src_ip), dst = htonl(dst_ip);
     uint16_t length = htons((uint16_t)len);
     memcpy(pseudo + 0, &src, 4);
     memcpy(pseudo + 4, &dst, 4);
     pseudo[8] = 0;
-    pseudo[9] = IP_PROTO_UDP;
+    pseudo[9] = protocol;
     memcpy(pseudo + 10, &length, 2);
-    return checksum_finish(checksum_add(checksum_add(0, pseudo, sizeof(pseudo)), udp, len));
+    return checksum_finish(checksum_add(checksum_add(0, pseudo, sizeof(pseudo)), segment, len));
+}
+
+static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void *udp, size_t len) {
+    return net_transport_checksum(IP_PROTO_UDP, src_ip, dst_ip, udp, len);
 }
 
 // --- ARP -----------------------------------------------------------------------
@@ -311,7 +321,7 @@ static int ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t
     ip->ttl = 64;
     ip->protocol = protocol;
     ip->checksum = 0;
-    ip->src = htonl(NET_LOCAL_IP);
+    ip->src = htonl(net_source_for(dst));
     ip->dst = htonl(dst);
     ip->checksum = htons(net_checksum(ip, sizeof(*ip)));
     memcpy(frame + sizeof(*eth) + sizeof(*ip), payload, len);
@@ -331,6 +341,10 @@ static int ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t
     memcpy(eth->src, our_mac, 6);
     eth->ethertype = htons(ETHERTYPE_IPV4);
     return virtio_net_send(frame, sizeof(*eth) + sizeof(*ip) + len) == 0 ? 0 : -ENETDOWN;
+}
+
+int net_ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t len, bool can_block) {
+    return ipv4_send(dst, protocol, payload, len, can_block);
 }
 
 static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
@@ -423,6 +437,7 @@ static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac
 
     if (ip->protocol == IP_PROTO_ICMP) icmp_input(src, payload, payload_len);
     else if (ip->protocol == IP_PROTO_UDP) udp_input(src, ntohl(ip->dst), payload, payload_len);
+    else if (ip->protocol == IP_PROTO_TCP) tcp_input(src, ntohl(ip->dst), payload, payload_len);
     else stats.dropped++;
 }
 
@@ -576,7 +591,7 @@ int64_t udp_sendto(udp_socket_t *sock, uint32_t ip, uint16_t port, const void *d
     udp->checksum = 0;
     memcpy(packet + sizeof(*udp), data, len);
 
-    uint16_t checksum = udp_checksum(NET_LOCAL_IP, ip, packet, sizeof(*udp) + len);
+    uint16_t checksum = udp_checksum(net_source_for(ip), ip, packet, sizeof(*udp) + len);
     udp->checksum = htons(checksum == 0 ? 0xFFFF : checksum); // 0 on the wire means "none"
 
     int err = ipv4_send(ip, IP_PROTO_UDP, packet, sizeof(*udp) + len, true);
@@ -641,5 +656,6 @@ void net_init(void) {
     virtio_net_get_mac(our_mac);
     up = true;
     task_create("netd", netd);
+    tcp_init();
     kprintf("net: 10.0.2.15/24, gateway 10.0.2.2 (static configuration)\n");
 }

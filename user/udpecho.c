@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    long fd = socket();
+    long fd = socket(SOCK_DGRAM);
     long err = fd < 0 ? fd : bind((int)fd, (unsigned)port);
     if (err < 0) {
         fprintf(2, "udpecho: %s\n", strerror(err));

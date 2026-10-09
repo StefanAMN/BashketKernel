@@ -37,8 +37,15 @@ extern int tests_failed;
         tests_run++; \
     } while (0)
 
+// Called before each test. A TCP connection finishes closing in the
+// background, up to a few seconds after the program that used it has gone,
+// and frees its buffers then. A test that counts memory must not start
+// while that is still to come.
+void test_settle(void);
+
 #define RUN_TEST(name) \
     do { \
+        test_settle(); \
         kprintf("  Running %s...\n", #name); \
         test_##name(); \
     } while (0)
@@ -55,5 +62,17 @@ bool run_all_tests(void);
     uint64_t test_wait_deadline = pit_get_ticks() + (max_ticks); \
     while (!(condition) && pit_get_ticks() < test_wait_deadline) sched_yield(); \
 } while (0)
+
+// For "nothing leaked" checks: frames that are free, plus those the kernel
+// heap holds mapped. The heap grows when it must and never shrinks, so a
+// workload can leave fewer free frames behind without having leaked any:
+// they have become heap, available to the next allocation. When that first
+// happens depends on what ran before (and, with several CPUs, in what
+// order), so comparing pmm_get_free_frames() alone fails now and then.
+static inline size_t test_free_frames(void) {
+    extern size_t pmm_get_free_frames(void);
+    extern size_t kheap_get_mapped_bytes(void);
+    return pmm_get_free_frames() + kheap_get_mapped_bytes() / 4096;
+}
 
 #endif // TEST_H

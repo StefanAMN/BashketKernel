@@ -42,11 +42,11 @@ TEST(multitasking_cooperative) {
 
 TEST(zombie_reaping) {
     // dummy1 and dummy2 from the previous test have exited by now
-    size_t free_with_zombies = pmm_get_free_frames();
+    size_t free_with_zombies = test_free_frames();
     size_t reaped = sched_reap();
     EXPECT_TRUE(reaped >= 2);
     // Each reaped task gives back its 4 kernel stack frames
-    EXPECT_TRUE(pmm_get_free_frames() >= free_with_zombies + reaped * 4);
+    EXPECT_TRUE(test_free_frames() >= free_with_zombies + reaped * 4);
     EXPECT_EQ(sched_reap(), (size_t)0);
 }
 

@@ -64,6 +64,21 @@ const net_stats_t *net_stats(void);
  */
 uint16_t net_checksum(const void *data, size_t len);
 
+// --- For the transport protocols (UDP here, TCP in tcp.c) --------------------
+
+#define IP_PROTO_UDP 17
+#define IP_PROTO_TCP 6
+
+// The address our packets to `dst` carry as their source
+uint32_t net_source_for(uint32_t dst);
+
+// Checksum of a UDP or TCP segment, including the pseudo header
+uint16_t net_transport_checksum(uint8_t protocol, uint32_t src_ip, uint32_t dst_ip, const void *segment, size_t len);
+
+// Send `len` bytes as the payload of an IPv4 packet. `can_block`: the caller
+// may sleep waiting for an ARP answer. Never call with a lock held.
+int net_ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t len, bool can_block);
+
 /**
  * @brief Handle one received Ethernet frame. Called by the receive thread;
  *        exposed so that tests can present frames of their own.
