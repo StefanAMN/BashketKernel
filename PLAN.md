@@ -114,7 +114,13 @@ about 1.3 times the time of one (a threefold speed-up).
   finishes close to N times faster on N CPUs; `/proc/tasks` shows which CPU
   each task last ran on.
 
-### A4. Narrow the SMAP windows (S)
+### A4. Narrow the SMAP windows (S) — done
+
+Done differently from the proposal below: instead of passing a descriptor of
+the user buffer down to the final copy, `read` and `write` copy through one
+page of kernel memory that belongs to the task, so nothing below the system
+call ever receives a user pointer. Simpler, at the cost of copying the data
+twice. A test device checks both properties (kernel pointer, window closed).
 
 - The user access window is open for the whole of `file_read`/`file_write`.
   Pass "this is a user buffer" down to the final copy (a small `uio`-style

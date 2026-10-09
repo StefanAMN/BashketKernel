@@ -1,4 +1,7 @@
 #include "test.h"
+#include "kstring.h"
+#include "vmm.h"
+#include "vfs.h"
 #include "syscall.h"
 #include "process.h"
 #include "sched.h"
@@ -64,8 +67,71 @@ TEST(syscalls_from_ring3) {
     EXPECT_TRUE(pmm_get_free_frames() == free_before);
 }
 
+// --- read() and write() keep user memory out of the file layer ---------------
+
+static volatile int probe_reads, probe_writes, probe_bad_pointer, probe_window_open;
+
+static void probe_note(const void *buf) {
+    uint64_t flags;
+    asm volatile("pushfq\n\tpop %0" : "=r"(flags));
+    if (flags & (1ULL << 18)) probe_window_open++;           // RFLAGS.AC: user access allowed
+    if ((uint64_t)buf < KERNEL_SPACE_START) probe_bad_pointer++;
+}
+
+static int64_t probe_read(vnode_t *node, size_t offset, void *buf, size_t count) {
+    (void)node;
+    probe_reads++;
+    probe_note(buf);
+    if (offset >= 10000) return 0;                           // More than one buffer's worth in all
+    size_t n = count < 10000 - offset ? count : 10000 - offset;
+    memset(buf, 'x', n);
+    return (int64_t)n;
+}
+
+static int64_t probe_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
+    (void)node; (void)offset;
+    probe_writes++;
+    probe_note(buf);
+    return (int64_t)count;
+}
+
+static const vnode_ops_t probe_ops = { .read = probe_read, .write = probe_write };
+
+// A device that looks at how it is called. Whatever a program passes to
+// read() or write(), the code below the system call must get a kernel
+// buffer, and must run with the user access window closed.
+TEST(file_layer_never_sees_user_buffers) {
+    vnode_t *dev = vfs_find(NULL, "/dev");
+    EXPECT_TRUE(dev != NULL);
+    vnode_t *probe = vfs_create_device(dev, "probe", &probe_ops);
+    EXPECT_TRUE(probe != NULL);
+    probe->mode = 0666;
+    probe_reads = probe_writes = probe_bad_pointer = probe_window_open = 0;
+
+    // wc reads it to the end; the shell's redirection writes to it
+    char *reader[] = { "/bin/wc", "/dev/probe", NULL };
+    char *writer[] = { "/bin/sh", "-c", "echo hello > /dev/probe", NULL };
+    int status = -1;
+    pid_t pid = process_spawn("/bin/wc", reader);
+    EXPECT_TRUE(pid > 0);
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    EXPECT_EQ(status, 0);
+    pid = process_spawn("/bin/sh", writer);
+    EXPECT_TRUE(pid > 0);
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    EXPECT_EQ(status, 0);
+
+    EXPECT_TRUE(probe_reads >= 3);        // 10000 bytes do not fit one page-sized buffer
+    EXPECT_TRUE(probe_writes >= 1);
+    EXPECT_EQ(probe_bad_pointer, 0);
+    EXPECT_EQ(probe_window_open, 0);
+
+    EXPECT_EQ(vfs_unlink(dev, "probe"), 0);
+}
+
 void test_suite_syscall(void) {
     kprintf("Suite: System Calls\n");
     RUN_TEST(syscall_rejects_kernel_pointers);
     RUN_TEST(syscalls_from_ring3);
+    RUN_TEST(file_layer_never_sees_user_buffers);
 }

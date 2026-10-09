@@ -278,6 +278,7 @@ void task_free(task_t *t) {
     if (t->kernel_stack) {
         kstack_free(t->kernel_stack);
     }
+    kfree(t->io_buffer);
     kfree(t);
 }
 

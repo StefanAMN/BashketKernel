@@ -111,18 +111,50 @@ static file_t *fd_to_file(int fd) {
     return task->fds[fd];
 }
 
+// read() and write() do not hand the user's buffer to the file layer. The
+// data goes through a page of kernel memory, and the user access window
+// (see cpu.h) is open only for the copy between the two. Everything below
+// the system call (pipes, the terminal, filesystems, drivers) therefore
+// only ever sees kernel pointers and runs with the window closed, however
+// long it sleeps: a stray use of a user pointer down there faults instead of
+// working.
+//
+// The page belongs to the task and lives as long as it does, so a process
+// killed in the middle of a read (it may be asleep in one for hours) leaks
+// nothing.
+#define IO_BUFFER_SIZE PAGE_SIZE
+
+static uint8_t *io_buffer(task_t *task) {
+    if (!task->io_buffer) task->io_buffer = kmalloc(IO_BUFFER_SIZE);
+    return task->io_buffer;
+}
+
 static int64_t sys_read(int fd, uint64_t buf, size_t count) {
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
     if (count == 0) return 0;
     if (!user_range_ok(buf, count, true)) return -EFAULT;
 
-    // May sleep (console, pipe). The caller's address space is loaded again
-    // whenever it runs, so writing to its buffer afterwards is fine.
-    user_access_begin();
-    int64_t result = file_read(file, (void *)buf, count);
-    user_access_end();
-    return result;
+    uint8_t *kernel_buf = io_buffer(sched_get_current_task());
+    if (!kernel_buf) return -ENOMEM;
+
+    size_t done = 0;
+    while (done < count) {
+        size_t want = count - done < IO_BUFFER_SIZE ? count - done : IO_BUFFER_SIZE;
+        int64_t n = file_read(file, kernel_buf, want); // May sleep (console, pipe)
+        if (n < 0) return done > 0 ? (int64_t)done : n;
+
+        user_access_begin();
+        memcpy((void *)(buf + done), kernel_buf, (size_t)n);
+        user_access_end();
+        done += (size_t)n;
+
+        // A terminal or a pipe gives what it has and the caller comes back
+        // for more: asking again here could wait for ever with data in
+        // hand. A file is read until the request is met or it ends.
+        if ((size_t)n < want || file->kind != FILE_VNODE) break;
+    }
+    return (int64_t)done;
 }
 
 static int64_t sys_write(int fd, uint64_t buf, size_t count) {
@@ -131,10 +163,22 @@ static int64_t sys_write(int fd, uint64_t buf, size_t count) {
     if (count == 0) return 0;
     if (!user_range_ok(buf, count, false)) return -EFAULT;
 
-    user_access_begin();
-    int64_t result = file_write(file, (const void *)buf, count);
-    user_access_end();
-    return result;
+    uint8_t *kernel_buf = io_buffer(sched_get_current_task());
+    if (!kernel_buf) return -ENOMEM;
+
+    size_t done = 0;
+    while (done < count) {
+        size_t chunk = count - done < IO_BUFFER_SIZE ? count - done : IO_BUFFER_SIZE;
+        user_access_begin();
+        memcpy(kernel_buf, (const void *)(buf + done), chunk);
+        user_access_end();
+
+        int64_t n = file_write(file, kernel_buf, chunk);
+        if (n < 0) return done > 0 ? (int64_t)done : n; // Report what did go through
+        done += (size_t)n;
+        if ((size_t)n < chunk) break;
+    }
+    return (int64_t)done;
 }
 
 static int64_t sys_open(uint64_t user_path, int flags) {
