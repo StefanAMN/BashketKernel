@@ -27,8 +27,9 @@ int user_unmap_range(uint64_t *pml4, uint64_t addr, size_t length) {
     for (uint64_t page = addr; page < end; page += PAGE_SIZE) {
         uint64_t phys = vmm_get_phys(pml4, page);
         if (phys) {
+            bool device = (vmm_get_pte(pml4, page) & VMM_DEVICE) != 0;
             vmm_unmap_page(pml4, page);
-            pmm_unref_frame((void *)phys);
+            if (!device) pmm_unref_frame((void *)phys);   // (A device's memory is not the allocator's)
         } else {
             vmm_swap_discard(pml4, page); // On the swap disk: give the slot back
         }

@@ -1604,6 +1604,47 @@ static int root_on_disk(void) {
     return 0;
 }
 
+/* The screen mapped into memory (/dev/fb0, S1): only through a descriptor
+ * that may write it, shared, within its size; what is written through the
+ * mapping is the screen (read back through the file) */
+static void check_screen_mapping(void) {
+    struct fb_info screen;
+    if (fb_info(&screen) != 0) return;                     /* No screen on this machine */
+    size_t bytes = (size_t)screen.pitch * screen.height;
+    long fd = open("/dev/fb0", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    CHECK(mmap_file_shared((int)fd, 4096, 0, PROT_READ | PROT_WRITE) == NULL);   /* Opened to read only */
+    close((int)fd);
+    fd = open("/dev/fb0", O_RDWR);                         /* The screen is ours from here */
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    CHECK(syscall6(SYS_MMAP, 0, bytes + 2 * 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) == -EINVAL);   /* Past its end */
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, fd, 0) == -EINVAL);  /* A device's own pages, not a copy */
+    unsigned *pixels = mmap_file_shared((int)fd, bytes, 0, PROT_READ | PROT_WRITE);
+    CHECK(pixels != NULL);
+    if (pixels) {
+        *(unsigned *)((char *)pixels + screen.pitch + 5 * 4) = 0x00ABCDEFu;   /* Row 1, column 5 (rows are pitch bytes apart) */
+        unsigned seen = 0;
+        CHECK(lseek((int)fd, (long)screen.pitch + 5 * 4, SEEK_SET) == (long)screen.pitch + 20);
+        CHECK(read((int)fd, &seen, 4) == 4 && seen == 0x00ABCDEFu);
+        /* The mapping holds the screen as the descriptor does: with only the
+         * mapping left, the console does not take it back and paint over
+         * the pixel (it would within a refresh, 1/50 s; 0.3 s is given) */
+        close((int)fd);
+        *(unsigned *)((char *)pixels + screen.pitch + 5 * 4) = 0x00FEDCBAu;
+        sleep_ms(300);
+        long reader = open("/dev/fb0", O_RDONLY);
+        seen = 0;
+        CHECK(reader >= 0 && lseek((int)reader, (long)screen.pitch + 5 * 4, SEEK_SET) > 0 &&
+              read((int)reader, &seen, 4) == 4 && seen == 0x00FEDCBAu);
+        if (reader >= 0) close((int)reader);
+        CHECK(munmap(pixels, bytes) == 0);                 /* Now the console has it back */
+    } else {
+        close((int)fd);
+    }
+}
+
 /* Shared file mappings, in memory and (with a system disk) on ext2, and
  * what cannot be mapped shared */
 static void check_shared_mappings(void) {
@@ -4351,6 +4392,7 @@ int main(void) {
     check_running_program_file();
     check_shell_words();
     check_shared_mappings();
+    check_screen_mapping();
     check_sessions_and_terminal();
     check_shell_control();
     check_shell_options();

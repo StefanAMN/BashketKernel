@@ -124,8 +124,8 @@ static void free_table(uint64_t *table, int level) {
         if (level > 1 && !(entry & VMM_HUGE)) {
             free_table((uint64_t *)((uint64_t)frame + hhdm), level - 1);
             pmm_free_frame(frame);
-        } else if (level == 1) {
-            pmm_unref_frame(frame); // Frees it unless another space shares it
+        } else if (level == 1 && !(entry & VMM_DEVICE)) {
+            pmm_unref_frame(frame); // Frees it unless another space shares it (a device's is not ours)
         }
     }
 }
@@ -342,13 +342,15 @@ bool vmm_clone_user_space(uint64_t *dst, uint64_t *src) {
                     uint64_t virt = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
                                     ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
                     uint64_t phys = pte & PTE_ADDR_MASK;
-                    uint64_t flags = pte & (VMM_USER | VMM_COW | VMM_NO_EXECUTE | VMM_SHARED | VMM_WRITABLE);
+                    uint64_t flags = pte & (VMM_USER | VMM_COW | VMM_NO_EXECUTE | VMM_SHARED | VMM_WRITABLE | VMM_DEVICE);
 
                     // Count the new owner before it exists, so a failure
                     // below is undone by destroying dst like any other space.
-                    pmm_ref_frame((void *)phys);
+                    // (A device's memory has no owners to count.)
+                    bool device = (pte & VMM_DEVICE) != 0;
+                    if (!device) pmm_ref_frame((void *)phys);
                     if (!vmm_map_page(dst, virt, phys, flags | VMM_PRESENT)) {
-                        pmm_unref_frame((void *)phys);
+                        if (!device) pmm_unref_frame((void *)phys);
                         ok = false;
                         break;
                     }

@@ -28,6 +28,12 @@
 // those): the page is on the swap disk, in the slot whose number is where a
 // frame address would be. The permission bits are kept, for when it returns.
 #define VMM_SWAPPED     (1ULL << 11)
+// Ours, in a bit the CPU ignores (52..62 are free for software): the frame
+// is a device's memory (the screen), not one the frame allocator owns or
+// counts. Unmapping, destroying, fork and swap leave it alone: they must
+// not give it back as free memory, nor count owners of it. Always set with
+// VMM_SHARED, which swap and fork already treat as "not this process's".
+#define VMM_DEVICE      (1ULL << 52)
 #define VMM_NO_EXECUTE  (1ULL << 63) // NX bit (No Instruction Execution)
 
 #define PTE_ADDR_MASK   0x000FFFFFFFFFF000ULL
