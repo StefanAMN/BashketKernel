@@ -1889,9 +1889,14 @@ static void check_network(void) {
 
     /* Timeouts, limits and bad arguments */
     CHECK(recvfrom((int)client, buf, sizeof(buf), NULL, 30) == -ETIMEDOUT);
-    static char big[1500];
-    CHECK(sendto((int)client, big, 1472, OUR_IP, 9000) == 1472);   /* The largest datagram */
-    CHECK(sendto((int)client, big, 1473, OUR_IP, 9000) == -EMSGSIZE);
+    /* One larger than a frame travels in fragments and arrives whole */
+    static char big[65508], big_back[65508];
+    for (size_t i = 0; i < sizeof(big); i++) big[i] = (char)(i * 7 + i / 251);
+    CHECK(sendto((int)client, big, 8000, OUR_IP, 9000) == 8000);
+    CHECK(recvfrom((int)server, big_back, sizeof(big_back), NULL, 500) == 8000);
+    CHECK(memcmp(big, big_back, 8000) == 0);
+    CHECK(sendto((int)client, big, 65507, OUR_IP, 9000) == 65507);  /* The largest datagram */
+    CHECK(sendto((int)client, big, 65508, OUR_IP, 9000) == -EMSGSIZE);
     CHECK(sendto((int)client, big, 10, OUR_IP, 0) == -EINVAL);     /* Port 0 */
     CHECK(sendto((int)client, (void *)0xffffffff80000000, 10, OUR_IP, 9000) == -EFAULT);
     CHECK(recvfrom((int)server, (void *)0xffffffff80000000, 10, NULL, 30) == -EFAULT);
