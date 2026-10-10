@@ -145,6 +145,21 @@ static uint8_t *io_buffer(task_t *task) {
     return task->io_buffer;
 }
 
+// A buffer of at least `size` bytes owned by the calling task, for a
+// datagram on its way to or from the program: the I/O page when that is
+// enough, otherwise one kept for the purpose and replaced by a larger one
+// when it is too small. Owned by the task for the same reason as the page
+// (sendto and recvfrom can sleep). NULL if memory runs out.
+static uint8_t *datagram_buffer(task_t *task, size_t size) {
+    if (size <= IO_BUFFER_SIZE) return io_buffer(task);
+    if (task->datagram_buffer_size < size) {
+        kfree(task->datagram_buffer);
+        task->datagram_buffer = kmalloc(size);
+        task->datagram_buffer_size = task->datagram_buffer ? size : 0;
+    }
+    return task->datagram_buffer;
+}
+
 // read(fd, buf, count): read up to `count` bytes into buf. A file is read
 // until the request is met or the file ends; a terminal, pipe or socket
 // gives what it has (waiting for something first). Returns the number of
@@ -698,8 +713,9 @@ static int64_t sys_brk(uint64_t new_brk) {
 // touched; shared: given frames at once and shared with forked children),
 // or part of a file opened for reading: a private copy, or (MAP_SHARED)
 // the file itself, whose changes reach the file (region.h), writable only
-// if the file was opened for writing too. Returns the address or a
-// negative error.
+// if the file was opened for writing too; or a device whose contents are
+// memory (/dev/fb0: the screen itself), shared only. Returns the address
+// or a negative error.
 static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
     // Always at an address the kernel chooses
     if (addr != 0 || (flags & MAP_FIXED) || length == 0) return -EINVAL;
@@ -730,7 +746,18 @@ static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int f
     if (file->kind != FILE_VNODE || file->node->type != VFS_FILE || !file->readable) return -EACCES;
     if (offset & (PAGE_SIZE - 1)) return -EINVAL;
     if (shared && (prot & PROT_WRITE) && !file->writable) return -EACCES;
-    if (shared && !pcache_cacheable(file->node)) return -ENODEV;
+
+    // A device whose contents are memory (the screen): its own pages, shared
+    // only, and no further than its end
+    vnode_t *node = file->node;
+    if (node->ops && node->ops->map_page) {
+        if (!shared) return -EINVAL;
+        if (length > page_align_up(node->size) || offset > page_align_up(node->size) - length) return -EINVAL;
+        int error = 0;
+        uint64_t mapped = region_map(task, length, prot, node, offset, false, &error);
+        return mapped ? (int64_t)mapped : error;
+    }
+    if (shared && !pcache_cacheable(node)) return -ENODEV;
 
     int error = 0;
     uint64_t mapped = region_map(task, length, prot, file->node, offset, shared, &error);
@@ -1007,7 +1034,8 @@ static int64_t sys_sendto(int fd, uint64_t user_buf, size_t len, uint32_t ip, ui
 
     // Sending can sleep (waiting for an ARP answer), so the datagram is
     // copied into kernel memory first and the user's buffer is left alone
-    uint8_t data[UDP_PAYLOAD_MAX];
+    uint8_t *data = datagram_buffer(sched_get_current_task(), len);
+    if (!data) return -ENOMEM;
     user_access_begin();
     memcpy(data, (const void *)user_buf, len);
     user_access_end();
@@ -1048,7 +1076,8 @@ static int64_t sys_recvfrom(int fd, uint64_t user_buf, size_t len, uint64_t user
     if (len > 0 && !user_range_ok(user_buf, len, true)) return -EFAULT;
     if (user_from != 0 && !user_range_ok(user_from, sizeof(struct net_address), true)) return -EFAULT;
 
-    uint8_t data[UDP_PAYLOAD_MAX];
+    uint8_t *data = datagram_buffer(sched_get_current_task(), len);
+    if (!data) return -ENOMEM;
     struct net_address from = {0};
     int64_t n = udp_recvfrom(socket, data, len, &from.ip, &from.port, ms_to_ticks(timeout_ms));
     if (n < 0) return n;

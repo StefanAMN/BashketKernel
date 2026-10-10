@@ -11,7 +11,8 @@ Two directions, both without any network beyond the machine itself:
 
   host -> guest   QEMU forwards a host UDP port to port 7 in the guest, where
                   /bin/udpecho runs. Datagrams sent here must come back
-                  unchanged.
+                  unchanged, one of them 8 KiB: fragmented in both
+                  directions.
 
 The same two directions over TCP:
 
@@ -304,7 +305,10 @@ def main():
 
     # The host -> guest direction: keep sending until the echo server (which
     # takes a moment to start) has answered each message
-    messages = [b"hello-guest-1", b"x" * 1400]
+    # The last is larger than a frame: QEMU's network (BSD's IP code, which
+    # we did not write) cuts it into fragments on the way in and reassembles
+    # the guest's fragments on the way out
+    messages = [b"hello-guest-1", b"x" * 1400, os.urandom(8192)]
     echoed = []
 
     def talk_to_guest():
@@ -316,7 +320,7 @@ def main():
             while time.monotonic() < deadline and not stop.is_set():
                 sender.sendto(message, ("127.0.0.1", forward_port))
                 try:
-                    data, _ = sender.recvfrom(2048)
+                    data, _ = sender.recvfrom(65536)
                 except socket.timeout:
                     continue
                 echoed.append(data)
@@ -330,8 +334,8 @@ def main():
                "--net-forward", f"tcp:127.0.0.1:{tcp_forward_port}-:7"] + extra + [
         f"exec /bin/udpsend 10.0.2.2 {host_port} ping-from-guest",
         # A retried datagram may reach the server twice, so let it handle a
-        # few more than the two messages
-        "!exec /bin/udpecho 7 6",
+        # few more than the three messages
+        "!exec /bin/udpecho 7 8",
         "@wait:9",
         "^C",
         "exec /bin/ping 10.0.2.2 1",

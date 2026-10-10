@@ -2,15 +2,17 @@
  *
  *   paint
  *
- * The program has the screen to itself (/dev/fb0) and reads the mouse
- * (/dev/mouse). Hold the left button to draw; click a colour along the top
- * to draw with it; the right button, or a click on the box in the top right
- * corner, ends the program, and the text screen comes back.
+ * The program has the screen to itself (/dev/fb0, mapped into its memory)
+ * and reads the mouse (/dev/mouse). Hold the left button to draw; click a
+ * colour along the top to draw with it; the right button, a click on the
+ * box in the top right corner, or a line typed starting with q, ends the
+ * program, and the text screen comes back.
  *
- * What it shows about the system: the screen is a file of pixels that a
- * program writes to, the mouse is a file of movements that it reads, and
- * the pointer is something the program itself draws. A window system is
- * this, with more programs.
+ * What it shows about the system: the screen is memory a program writes
+ * to (the same pixels /dev/fb0 reads and writes as a file), the mouse is a
+ * file of movements that it reads, poll() waits for the mouse and the
+ * keyboard at once, and the pointer is something the program itself draws.
+ * A window system is this, with more programs.
  */
 #include "ulib.h"
 
@@ -24,6 +26,7 @@ static const unsigned palette[] = { 0x00FFFFFFu, 0x00E04040u, 0x0040C060u, 0x004
 
 static struct fb_info screen;
 static int fb = -1;
+static unsigned char *pixels;    /* The screen itself, mapped (pitch bytes per row) */
 static unsigned *canvas;         /* What is on the screen, less the pointer: needed to take the pointer off again */
 
 /* Send one row segment of the canvas to the screen */
@@ -32,8 +35,7 @@ static void show(int x, int y, int width) {
     if (x < 0) { width += x; x = 0; }
     if (x + width > (int)screen.width) width = (int)screen.width - x;
     if (width <= 0) return;
-    lseek(fb, (long)y * screen.pitch + (long)x * 4, SEEK_SET);
-    write(fb, canvas + (long)y * screen.width + x, (unsigned long)width * 4);
+    memcpy(pixels + (long)y * screen.pitch + (long)x * 4, canvas + (long)y * screen.width + x, (unsigned long)width * 4);
 }
 
 /* Fill a rectangle of the canvas with `colour` and put it on the screen */
@@ -89,8 +91,7 @@ static void pointer(int x, int y, int visible) {
         if (from + count > (int)screen.width) count = (int)screen.width - from;
         if (count <= 0) continue;
         for (int k = 0; k < count; k++) row[k] = ((i + k) & 1) ? 0x00000000u : 0x00FFFFFFu;
-        lseek(fb, (long)py * screen.pitch + (long)from * 4, SEEK_SET);
-        write(fb, row, (unsigned long)count * 4);
+        memcpy(pixels + (long)py * screen.pitch + (long)from * 4, row, (unsigned long)count * 4);
     }
 }
 
@@ -130,6 +131,13 @@ int main(void) {
         fprintf(2, "paint: cannot open /dev/fb0\n");
         return 1;
     }
+    /* The screen as memory: the mapping holds it too, until it is unmapped */
+    size_t screen_bytes = (size_t)screen.pitch * screen.height;
+    pixels = mmap_file_shared(fb, screen_bytes, 0, PROT_READ | PROT_WRITE);
+    if (!pixels) {
+        fprintf(2, "paint: cannot map /dev/fb0\n");
+        return 1;
+    }
 
     int chosen = 0;
     fill(0, BAR_HEIGHT, (int)screen.width, (int)screen.height, BACKGROUND);
@@ -141,6 +149,15 @@ int main(void) {
     printf("paint: %ux%u, pointer at %d,%d\n", screen.width, screen.height, x, y); /* (To the serial port: the screen is ours) */
 
     for (;;) {
+        /* The mouse and the keyboard at once: whichever has something */
+        struct pollfd ready[2] = { { mouse, POLLIN, 0 }, { 0, POLLIN, 0 } };
+        if (poll(ready, 2, -1) < 0) continue;
+        if (ready[1].revents & POLLIN) {
+            char typed[64];
+            long n = read(0, typed, sizeof(typed));
+            if (n <= 0 || typed[0] == 'q') goto done;    /* A line starting with q, or the end of input */
+        }
+        if (!(ready[0].revents & POLLIN)) continue;
         unsigned char events[3 * 16];
         long got = read(mouse, events, sizeof(events));
         if (got < 3) break;
@@ -179,7 +196,8 @@ int main(void) {
         }
     }
 done:
-    close(fb);   /* The console repaints its text */
+    munmap(pixels, screen_bytes);
+    close(fb);   /* Neither holds the screen now: the console repaints its text */
     close(mouse);
     printf("paint: %d strokes; pointer last at %d,%d\n", strokes, x, y);
     return 0;

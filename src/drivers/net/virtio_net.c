@@ -13,6 +13,7 @@
 #include "kstring.h"
 #include "sched.h"
 #include "spinlock.h"
+#include "timer.h"
 #include "ioapic.h"
 #include "smp.h"
 #include "interrupts.h"
@@ -61,6 +62,7 @@ static uint8_t rx_buffer_of[MAX_QUEUE_SIZE], tx_buffer_of[MAX_QUEUE_SIZE];
 static bool tx_in_use[TX_BUFFERS];
 
 static uint64_t rx_count = 0, tx_count = 0;
+static bool rx_woken = false; // virtio_net_wake_rx was called: the waiter returns even with nothing received
 
 // Protects both virtqueues and the buffer tables above
 static spinlock_t card_lock = SPINLOCK_RANKED("virtio-net", LOCK_RANK_DEVICE);
@@ -180,11 +182,20 @@ void virtio_net_get_mac(uint8_t mac[6]) { memcpy(mac, mac_address, 6); }
 uint64_t virtio_net_rx_count(void) { return rx_count; }
 uint64_t virtio_net_tx_count(void) { return tx_count; }
 
-void virtio_net_wait_rx(void) {
+void virtio_net_wait_rx(uint64_t deadline) {
     uint64_t flags = spinlock_acquire_irqsave(&card_lock);
-    while (present && !virtqueue_has_used(&rx_queue)) {
-        sched_sleep_uninterruptible(&rx_queue, &card_lock, 0);
+    while (present && !virtqueue_has_used(&rx_queue) && !rx_woken &&
+           (deadline == 0 || timer_ticks() < deadline)) {
+        sched_sleep_uninterruptible(&rx_queue, &card_lock, deadline);
     }
+    rx_woken = false;
+    spinlock_release_irqrestore(&card_lock, flags);
+}
+
+void virtio_net_wake_rx(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&card_lock);
+    rx_woken = true;
+    sched_wakeup(&rx_queue);
     spinlock_release_irqrestore(&card_lock, flags);
 }
 

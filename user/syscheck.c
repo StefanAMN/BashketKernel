@@ -1604,6 +1604,47 @@ static int root_on_disk(void) {
     return 0;
 }
 
+/* The screen mapped into memory (/dev/fb0, S1): only through a descriptor
+ * that may write it, shared, within its size; what is written through the
+ * mapping is the screen (read back through the file) */
+static void check_screen_mapping(void) {
+    struct fb_info screen;
+    if (fb_info(&screen) != 0) return;                     /* No screen on this machine */
+    size_t bytes = (size_t)screen.pitch * screen.height;
+    long fd = open("/dev/fb0", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    CHECK(mmap_file_shared((int)fd, 4096, 0, PROT_READ | PROT_WRITE) == NULL);   /* Opened to read only */
+    close((int)fd);
+    fd = open("/dev/fb0", O_RDWR);                         /* The screen is ours from here */
+    CHECK(fd >= 0);
+    if (fd < 0) return;
+    CHECK(syscall6(SYS_MMAP, 0, bytes + 2 * 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) == -EINVAL);   /* Past its end */
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, fd, 0) == -EINVAL);  /* A device's own pages, not a copy */
+    unsigned *pixels = mmap_file_shared((int)fd, bytes, 0, PROT_READ | PROT_WRITE);
+    CHECK(pixels != NULL);
+    if (pixels) {
+        *(unsigned *)((char *)pixels + screen.pitch + 5 * 4) = 0x00ABCDEFu;   /* Row 1, column 5 (rows are pitch bytes apart) */
+        unsigned seen = 0;
+        CHECK(lseek((int)fd, (long)screen.pitch + 5 * 4, SEEK_SET) == (long)screen.pitch + 20);
+        CHECK(read((int)fd, &seen, 4) == 4 && seen == 0x00ABCDEFu);
+        /* The mapping holds the screen as the descriptor does: with only the
+         * mapping left, the console does not take it back and paint over
+         * the pixel (it would within a refresh, 1/50 s; 0.3 s is given) */
+        close((int)fd);
+        *(unsigned *)((char *)pixels + screen.pitch + 5 * 4) = 0x00FEDCBAu;
+        sleep_ms(300);
+        long reader = open("/dev/fb0", O_RDONLY);
+        seen = 0;
+        CHECK(reader >= 0 && lseek((int)reader, (long)screen.pitch + 5 * 4, SEEK_SET) > 0 &&
+              read((int)reader, &seen, 4) == 4 && seen == 0x00FEDCBAu);
+        if (reader >= 0) close((int)reader);
+        CHECK(munmap(pixels, bytes) == 0);                 /* Now the console has it back */
+    } else {
+        close((int)fd);
+    }
+}
+
 /* Shared file mappings, in memory and (with a system disk) on ext2, and
  * what cannot be mapped shared */
 static void check_shared_mappings(void) {
@@ -1848,9 +1889,14 @@ static void check_network(void) {
 
     /* Timeouts, limits and bad arguments */
     CHECK(recvfrom((int)client, buf, sizeof(buf), NULL, 30) == -ETIMEDOUT);
-    static char big[1500];
-    CHECK(sendto((int)client, big, 1472, OUR_IP, 9000) == 1472);   /* The largest datagram */
-    CHECK(sendto((int)client, big, 1473, OUR_IP, 9000) == -EMSGSIZE);
+    /* One larger than a frame travels in fragments and arrives whole */
+    static char big[65508], big_back[65508];
+    for (size_t i = 0; i < sizeof(big); i++) big[i] = (char)(i * 7 + i / 251);
+    CHECK(sendto((int)client, big, 8000, OUR_IP, 9000) == 8000);
+    CHECK(recvfrom((int)server, big_back, sizeof(big_back), NULL, 500) == 8000);
+    CHECK(memcmp(big, big_back, 8000) == 0);
+    CHECK(sendto((int)client, big, 65507, OUR_IP, 9000) == 65507);  /* The largest datagram */
+    CHECK(sendto((int)client, big, 65508, OUR_IP, 9000) == -EMSGSIZE);
     CHECK(sendto((int)client, big, 10, OUR_IP, 0) == -EINVAL);     /* Port 0 */
     CHECK(sendto((int)client, (void *)0xffffffff80000000, 10, OUR_IP, 9000) == -EFAULT);
     CHECK(recvfrom((int)server, (void *)0xffffffff80000000, 10, NULL, 30) == -EFAULT);
@@ -4346,6 +4392,7 @@ int main(void) {
     check_running_program_file();
     check_shell_words();
     check_shared_mappings();
+    check_screen_mapping();
     check_sessions_and_terminal();
     check_shell_control();
     check_shell_options();

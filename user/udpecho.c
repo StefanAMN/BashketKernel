@@ -21,7 +21,7 @@ int main(int argc, char **argv) {
     }
     printf("udpecho: listening on port %ld\n", port);
 
-    static char data[1472];
+    static char data[65507];                 /* The largest datagram */
     for (long handled = 0; limit < 0 || handled < limit; handled++) {
         struct net_address from;
         long n = recvfrom((int)fd, data, sizeof(data), &from, 0);
