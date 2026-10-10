@@ -69,6 +69,14 @@ bool process_grow_stack(uint64_t addr);
  */
 pid_t process_wait(pid_t pid, int *status);
 
+// The same, with options. PROCESS_WNOHANG: do not wait; return 0 if there
+// are children to wait for but none has exited yet.
+#define PROCESS_WNOHANG 1
+
+// fork fails rather than leave fewer free frames than this (256 KiB)
+#define PROCESS_FORK_RESERVE_FRAMES 64
+pid_t process_wait_options(pid_t pid, int *status, int options);
+
 /**
  * @brief Send a signal to a process. What happens depends on the target's
  *        disposition for it (see signal.h); with the default, the process

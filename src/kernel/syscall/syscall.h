@@ -29,7 +29,10 @@
 #define SYS_MUNMAP      11
 #define SYS_BRK         12
 #define SYS_PIPE        22
+#define SYS_DUP         32   // (fd): a second descriptor for the same open file, the lowest free one
 #define SYS_DUP2        33
+#define SYS_FCNTL       72   // (fd, F_GETFD | F_SETFD, flags): read or set the descriptor's close-on-exec flag
+#define SYS_PIPE2       293  // (int fds[2], flags): like pipe; O_CLOEXEC sets close-on-exec on both ends
 #define SYS_SLEEP       35   // Argument: milliseconds
 #define SYS_GETPID_ALT  39
 #define SYS_FORK        57
@@ -51,6 +54,8 @@
 #define SYS_TIME        201  // Timer ticks since boot
 #define SYS_SETPRIORITY 301 // (priority): 0 high, 1 normal, 2 low; for the caller itself
 #define SYS_SIGNAL      300  // (sig, handler, restorer): returns the previous handler
+#define SYS_SIGACTION   13   // (sig, const struct signal_action *new, struct signal_action *old, restorer); new or old may be NULL
+#define SYS_SIGPROCMASK 14   // (how, const uint32_t *set, uint32_t *old); set or old may be NULL
 #define SYS_SIGRETURN   302  // Only for the C library's handler-return stub
 #define SYS_TTY_RAW     303  // (flag): 1 delivers every key at once without echo; 0 goes back to lines
 #define SYS_SHMGET      29   // (key, size): id of the segment with that key, created if new

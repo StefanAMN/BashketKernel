@@ -226,7 +226,7 @@ static int run_pipeline(stage_t *stages, int count) {
     int last_status = 1;
     for (int i = 0; i < count; i++) {
         int status = 0;
-        while (waitpid(pids[i], &status) == -EINTR) { } /* Interrupted is not finished */
+        while (waitpid(pids[i], &status, 0) == -EINTR) { } /* Interrupted is not finished */
         if (i == count - 1) last_status = status;
     }
     return last_status;

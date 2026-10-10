@@ -17,7 +17,7 @@ long execv(const char *path, char *const argv[]);    /* Passes on our own enviro
 extern char **environ;
 const char *getenv(const char *name);
 int setenv(const char *name, const char *value);     /* 0, or -1 if out of memory */
-long waitpid(long pid, int *status);
+long waitpid(long pid, int *status, int options);  /* pid -1: any child. options: 0, or WNOHANG */
 long getpid(void);
 long getppid(void);
 long kill(long pid, int sig);
@@ -36,6 +36,7 @@ void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 #define SIGSEGV 11
 #define SIGUSR2 12
 #define SIGTERM 15
+#define SIGCHLD 17                  /* A child has exited; ignored unless a handler is set */
 typedef void (*sighandler_t)(int);
 #define SIG_DFL ((sighandler_t)0)   /* End the process */
 #define SIG_IGN ((sighandler_t)1)   /* Do nothing */
@@ -45,6 +46,26 @@ typedef void (*sighandler_t)(int);
  * that call returns -EINTR after the handler has run; call it again if the
  * work still needs doing. */
 sighandler_t signal(int sig, sighandler_t handler);
+
+/* The full form. While a handler runs, its own signal and those in `mask`
+ * are held back. With SA_RESTART, a read, write, waitpid or accept that the
+ * signal interrupts is made again after the handler instead of failing with
+ * -EINTR. Either pointer may be NULL. */
+struct sigaction {
+    sighandler_t handler;
+    uint32_t mask;                  /* A set of signals: sigbit(SIGUSR1) | sigbit(SIGUSR2) */
+    uint32_t flags;                 /* 0 or SA_RESTART */
+};
+#define SA_RESTART 1
+#define sigbit(sig) (1u << (sig))
+long sigaction(int sig, const struct sigaction *action, struct sigaction *old);
+
+/* Hold signals back: a blocked signal waits until it is unblocked. SIGKILL
+ * can not be blocked. Either pointer may be NULL (old alone reads the set). */
+#define SIG_BLOCK   0               /* Add `set` to the blocked signals */
+#define SIG_UNBLOCK 1               /* Remove it */
+#define SIG_SETMASK 2               /* Replace them with it */
+long sigprocmask(int how, const uint32_t *set, uint32_t *old);
 
 /* Users and permissions. uid 0 is root and may do anything. */
 long getuid(void);
@@ -73,6 +94,9 @@ long write(int fd, const void *buf, size_t count);
 long lseek(int fd, long offset, int whence);
 long pipe(int fds[2]);
 long dup2(int old_fd, int new_fd);
+long dup(int fd);                            /* The same open file under the lowest free descriptor */
+long pipe2(int fds[2], int flags);           /* flags: 0 or O_CLOEXEC */
+long fcntl(int fd, int command, long arg);   /* F_GETFD, or F_SETFD with FD_CLOEXEC or 0 */
 long readdir(int fd, struct dirent *entry);   /* 1 = entry filled, 0 = end */
 long mkdir(const char *path);
 long chdir(const char *path);

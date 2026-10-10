@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
     /* The other end is done. Input may still be waiting at the keyboard. */
     kill((int)writer, 9);
     int status;
-    waitpid(writer, &status);
+    waitpid(writer, &status, 0);
     close((int)fd);
     if (n < 0) {
         fprintf(2, "nc: %s\n", strerror(n));

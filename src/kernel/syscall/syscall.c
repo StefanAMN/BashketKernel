@@ -191,21 +191,24 @@ static int64_t sys_open(uint64_t user_path, int flags) {
     int err = file_open_as(task->uid, task->cwd, path, flags, &file);
     if (err != 0) return err;
 
-    int fd = fd_install(sched_get_current_task()->fds, file);
+    int fd = fd_install(task->fds, file);
     if (fd < 0) file_close(file);
+    else if (flags & O_CLOEXEC) task->fd_cloexec |= 1u << fd;
     return fd;
 }
 
 static int64_t sys_close(int fd) {
+    task_t *task = sched_get_current_task();
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
-
-    sched_get_current_task()->fds[fd] = NULL;
+    task->fds[fd] = NULL;
+    task->fd_cloexec &= ~(1u << fd);
     file_close(file);
     return 0;
 }
 
-static int64_t sys_pipe(uint64_t user_fds) {
+static int64_t sys_pipe(uint64_t user_fds, uint64_t flags) {
+    if (flags & ~(uint64_t)O_CLOEXEC) return -EINVAL;
     if (!user_range_ok(user_fds, 2 * sizeof(int), true)) return -EFAULT;
 
     file_t *reader = NULL, *writer = NULL;
@@ -221,6 +224,7 @@ static int64_t sys_pipe(uint64_t user_fds) {
         file_close(writer);
         return -EMFILE;
     }
+    if (flags & O_CLOEXEC) task->fd_cloexec |= (1u << read_fd) | (1u << write_fd);
 
     int *out = (int *)user_fds;
     user_access_begin();
@@ -238,8 +242,36 @@ static int64_t sys_dup2(int old_fd, int new_fd) {
     task_t *task = sched_get_current_task();
     file_t *replaced = task->fds[new_fd];
     task->fds[new_fd] = file_dup(file);
+    task->fd_cloexec &= ~(1u << new_fd); // The flag belongs to the descriptor, not the file: a copy starts without it
     file_close(replaced);
     return new_fd;
+}
+
+static int64_t sys_dup(int old_fd) {
+    file_t *file = fd_to_file(old_fd);
+    if (!file) return -EBADF;
+
+    int fd = fd_install(sched_get_current_task()->fds, file);
+    if (fd < 0) return fd;
+    file_dup(file); // Now two descriptors refer to it
+    return fd;
+}
+
+#define F_GETFD 1
+#define F_SETFD 2
+#define FD_CLOEXEC 1
+
+// The one thing fcntl is for here: reading and setting close-on-exec
+static int64_t sys_fcntl(int fd, uint64_t command, uint64_t arg) {
+    task_t *task = sched_get_current_task();
+    if (!fd_to_file(fd)) return -EBADF;
+    if (command == F_GETFD) return (task->fd_cloexec >> fd) & 1;
+    if (command == F_SETFD) {
+        if (arg & FD_CLOEXEC) task->fd_cloexec |= 1u << fd;
+        else task->fd_cloexec &= ~(1u << fd);
+        return 0;
+    }
+    return -EINVAL;
 }
 
 static int64_t sys_readdir(int fd, uint64_t user_entry) {
@@ -428,13 +460,15 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
     return result;
 }
 
-static int64_t sys_waitpid(int pid, uint64_t user_status) {
+static int64_t sys_waitpid(int pid, uint64_t user_status, uint64_t options) {
+    if (options & ~(uint64_t)PROCESS_WNOHANG) return -EINVAL;
     if (user_status != 0 && !user_range_ok(user_status, sizeof(int), true)) return -EFAULT;
 
     int status = 0;
-    pid_t child = process_wait(pid, &status);
+    pid_t child = process_wait_options(pid, &status, (int)options);
     if (child == PROCESS_WAIT_INTERRUPTED) return -EINTR;
     if (child < 0) return -ECHILD;
+    if (child == 0) return 0; // WNOHANG: nobody has exited yet
 
     if (user_status != 0) {
         user_access_begin();
@@ -636,8 +670,61 @@ static int64_t sys_ping(uint32_t ip, uint64_t timeout_ms) {
 
 static int64_t dispatch(struct registers *regs);
 
+// The calls that can simply be made again if a signal interrupts them
+// before they have done anything
+static bool restartable(uint64_t number) {
+    return number == SYS_READ || number == SYS_WRITE || number == SYS_WAITPID || number == SYS_ACCEPT;
+}
+
+static int64_t sys_sigaction(int sig, uint64_t user_new, uint64_t user_old, uint64_t restorer) {
+    if (user_new != 0 && !user_range_ok(user_new, sizeof(struct signal_action), false)) return -EFAULT;
+    if (user_old != 0 && !user_range_ok(user_old, sizeof(struct signal_action), true)) return -EFAULT;
+
+    struct signal_action new_action, old_action;
+    if (user_new != 0) {
+        user_access_begin();
+        memcpy(&new_action, (const void *)user_new, sizeof(new_action));
+        user_access_end();
+    }
+    int err = signal_set_action(sched_get_current_task(), sig, user_new ? &new_action : NULL, restorer, &old_action);
+    if (err == 0 && user_old != 0) {
+        user_access_begin();
+        memcpy((void *)user_old, &old_action, sizeof(old_action));
+        user_access_end();
+    }
+    return err;
+}
+
+static int64_t sys_sigprocmask(int how, uint64_t user_set, uint64_t user_old) {
+    if (user_set != 0 && !user_range_ok(user_set, sizeof(uint32_t), false)) return -EFAULT;
+    if (user_old != 0 && !user_range_ok(user_old, sizeof(uint32_t), true)) return -EFAULT;
+
+    task_t *task = sched_get_current_task();
+    uint32_t set = 0, old = task->sig_blocked;
+    int err = 0;
+    if (user_set != 0) {
+        user_access_begin();
+        memcpy(&set, (const void *)user_set, sizeof(set));
+        user_access_end();
+        err = signal_change_mask(task, how, set, &old);
+    }
+    if (err == 0 && user_old != 0) {
+        user_access_begin();
+        memcpy((void *)user_old, &old, sizeof(old));
+        user_access_end();
+    }
+    return err;
+}
+
 int64_t syscall_handler(struct registers *regs) {
+    uint64_t number = regs->rax;
     int64_t result = dispatch(regs);
+
+    // If a signal handler is about to run instead of this call's result
+    // being looked at, the handler's settings may ask for the call to be
+    // made again (see signal_deliver)
+    task_t *caller = sched_get_current_task();
+    if (caller) caller->restart_syscall = (result == -EINTR && restartable(number)) ? (uint32_t)number + 1 : 0;
 
     // About to return to user code: the system call is complete and nothing
     // is held, so a pending kill can take effect here.
@@ -659,7 +746,12 @@ int64_t syscall_handler(struct registers *regs) {
 
     // sigreturn replaced the whole frame, RAX included: leave it alone. The
     // entry stub sees int_no and restores the frame with iretq.
-    if (regs->int_no == SYSCALL_RETURN_FULL_FRAME) return (int64_t)regs->rax;
+    // A signal that was held back while the handler ran is due now: its
+    // handler is entered straight from here, on top of the restored state.
+    if (regs->int_no == SYSCALL_RETURN_FULL_FRAME) {
+        signal_deliver(regs);
+        return (int64_t)regs->rax;
+    }
 
     // If a signal handler has to run, the frame saved for it must show this
     // system call as finished, with its result in RAX.
@@ -704,7 +796,7 @@ static int64_t dispatch(struct registers *regs) {
             return child < 0 ? -ENOMEM : child;
         }
         case SYS_EXECVE:  return sys_execve(regs, regs->rdi, regs->rsi, regs->rdx);
-        case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi);
+        case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi, regs->rdx);
         case SYS_KILL:    return sys_kill((int)regs->rdi, (int)regs->rsi);
 
         case SYS_GETUID:  return (int64_t)task->uid;
@@ -768,6 +860,8 @@ static int64_t dispatch(struct registers *regs) {
 
         case SYS_SIGNAL:
             return signal_set_handler(task, (int)regs->rdi, regs->rsi, regs->rdx);
+        case SYS_SIGACTION:   return sys_sigaction((int)regs->rdi, regs->rsi, regs->rdx, regs->r10);
+        case SYS_SIGPROCMASK: return sys_sigprocmask((int)regs->rdi, regs->rsi, regs->rdx);
         case SYS_SIGRETURN:
             signal_return(regs);
             return 0; // Ignored: the frame's own RAX is what the program gets
@@ -786,8 +880,11 @@ static int64_t dispatch(struct registers *regs) {
             file_t *file = fd_to_file((int)regs->rdi);
             return file ? file_seek(file, (int64_t)regs->rsi, (int)regs->rdx) : -EBADF;
         }
-        case SYS_PIPE:    return sys_pipe(regs->rdi);
+        case SYS_PIPE:    return sys_pipe(regs->rdi, 0);
+        case SYS_PIPE2:   return sys_pipe(regs->rdi, regs->rsi);
+        case SYS_DUP:     return sys_dup((int)regs->rdi);
         case SYS_DUP2:    return sys_dup2((int)regs->rdi, (int)regs->rsi);
+        case SYS_FCNTL:   return sys_fcntl((int)regs->rdi, regs->rsi, regs->rdx);
         case SYS_READDIR: return sys_readdir((int)regs->rdi, regs->rsi);
         case SYS_MKDIR: { vfs_lock(); int64_t r = sys_mkdir(regs->rdi); vfs_unlock(); return r; } // Look up, then act: one step
         case SYS_UNLINK: { vfs_lock(); int64_t r = sys_unlink(regs->rdi); vfs_unlock(); return r; } // Look up, then act: one step

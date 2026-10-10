@@ -69,7 +69,7 @@ int main(void) {
 
     for (int w = 0; w < WORKERS; w++) {
         int status = -1;
-        waitpid(pids[w], &status);
+        waitpid(pids[w], &status, 0);
         if (status != 0) {
             printf("fptest: FAIL worker %d got a wrong result (status %d)\n", w, status);
             failures++;

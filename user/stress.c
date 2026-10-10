@@ -21,7 +21,7 @@ static int still_alive(void) {
     if (pid < 0) return 0;
     if (pid == 0) exit(33);
     int status = 0;
-    return waitpid(pid, &status) == pid && status == 33;
+    return waitpid(pid, &status, 0) == pid && status == 33;
 }
 
 static int stress_mem(void) {
@@ -80,7 +80,7 @@ static int stress_fork(void) {
     for (int i = 0; i < count; i++) kill(pids[i], 9);
     for (int i = 0; i < count; i++) {
         int status = 0;
-        if (waitpid(pids[i], &status) != pids[i] || status != 128 + 9) return 1;
+        if (waitpid(pids[i], &status, 0) != pids[i] || status != 128 + 9) return 1;
     }
     return still_alive() ? 0 : 1;
 }
@@ -128,7 +128,7 @@ static int stress_cow_common(int via_syscall) {
     }
 
     int status = -1;
-    if (waitpid(pid, &status) != pid) return 1;
+    if (waitpid(pid, &status, 0) != pid) return 1;
     printf("stress cow: child ended with status %d\n", status);
 
     /* The parent's data is intact whatever happened to the child */

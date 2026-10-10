@@ -22,7 +22,7 @@ static void check_direction_flag(void) {
         exit(0);
     }
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
 }
 
 /* GS belongs to the program in ring 3: the kernel switches to its own base
@@ -42,7 +42,7 @@ static void check_gs_is_ours(void) {
         exit(leaked ? 1 : 2);
     }
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 128 + 11);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + 11);
 
     /* Many crossings by every route (system call, timer interrupt, signal,
      * fork) and the kernel still finds its data: the rest of syscheck
@@ -57,7 +57,7 @@ static void check_bad_pointers(void) {
     CHECK(write(1, (void *)0, 1) == -EFAULT);
     CHECK(read(0, (void *)0xffff800000000000, 1) == -EFAULT);
     CHECK(syscall1(SYS_UNAME, 0xffffffff80000000) == -EFAULT);
-    CHECK(waitpid(-1, (int *)0xffffffff80000000) == -EFAULT);
+    CHECK(waitpid(-1, (int *)0xffffffff80000000, 0) == -EFAULT);
     /* ... a range that starts valid and runs off the end of the stack ... */
     char local = 'x';
     CHECK(write(1, &local, 1UL << 40) == -EFAULT);
@@ -110,7 +110,7 @@ static void check_basics(void) {
     CHECK(sleep_ns(0) == 0);
     CHECK(sleep_ns(~0UL) == -EINVAL);
     CHECK(execv("/bin/does-not-exist", NULL) == -ENOENT);
-    CHECK(waitpid(-1, NULL) == -ECHILD);
+    CHECK(waitpid(-1, NULL, 0) == -ECHILD);
 
     CHECK(set_priority(2) == 0 && set_priority(0) == 0 && set_priority(1) == 0);
     CHECK(set_priority(3) == -EINVAL && set_priority(-1) == -EINVAL);
@@ -168,11 +168,11 @@ static void check_fork(void) {
     }
 
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 42);
     CHECK(global_counter == 100);   /* The child's writes did not reach us */
     CHECK(stack_value == 7);
-    CHECK(waitpid(pid, &status) == -ECHILD); /* Already collected */
+    CHECK(waitpid(pid, &status, 0) == -ECHILD); /* Already collected */
 
     /* fork + exec + wait: run another program and get its exit status */
     pid = fork();
@@ -182,7 +182,7 @@ static void check_fork(void) {
         exit(99); /* Only reached if exec failed */
     }
     status = -1;
-    CHECK(waitpid(-1, &status) == pid);
+    CHECK(waitpid(-1, &status, 0) == pid);
     CHECK(status == 0);
 
     /* A child that crashes is killed; the parent sees a signal-style status */
@@ -193,7 +193,7 @@ static void check_fork(void) {
         exit(0);
     }
     status = -1;
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 128 + 11);
 
     /* kill() ends a child that would otherwise run forever */
@@ -204,7 +204,7 @@ static void check_fork(void) {
     CHECK(kill(pid, 9) == 0);
     CHECK(kill(pid, 9) == 0);                 /* Asking twice is harmless */
     status = -1;
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 128 + 9);
     CHECK(kill(pid, 9) == -ESRCH);
     CHECK(kill(pid, 0) == -ESRCH && kill(getpid(), -1) == -ESRCH); /* Bad signal numbers */
@@ -219,7 +219,7 @@ static void check_fork(void) {
     sleep_ms(30);
     CHECK(kill(pid, 15) == 0);
     status = -1;
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 128 + 15);
 
     /* So can one that is asleep */
@@ -230,7 +230,7 @@ static void check_fork(void) {
     sleep_ms(30);
     CHECK(kill(pid, 9) == 0);
     status = -1;
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 128 + 9);
 }
 
@@ -350,7 +350,7 @@ static void check_directories(void) {
         exit(ok ? 0 : 1);
     }
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
     CHECK(getcwd(cwd, sizeof(cwd)) > 0 && strcmp(cwd, "/tmp/cwd-test/sub") == 0);
 
     /* A directory someone is standing in can not be removed */
@@ -372,7 +372,7 @@ static int shell_status(const char *command, char *const envp[]) {
         exit(99);
     }
     int status = -1;
-    waitpid(pid, &status);
+    waitpid(pid, &status, 0);
     return status;
 }
 
@@ -483,7 +483,7 @@ static void check_signals(void) {
     long pid = fork();
     if (pid == 0) { for (;;) yield(); }
     CHECK(kill(pid, SIGTERM) == 0);
-    CHECK(waitpid(pid, &status) == pid && status == 128 + SIGTERM);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGTERM);
 
     /* SIGKILL ends a process even if it ignores everything else */
     pid = fork();
@@ -496,7 +496,7 @@ static void check_signals(void) {
     CHECK(kill(pid, SIGINT) == 0);
     sleep_ms(20);
     CHECK(kill(pid, SIGKILL) == 0);
-    CHECK(waitpid(pid, &status) == pid && status == 128 + SIGKILL);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
 
     /* Handlers are inherited by fork; exec goes back to the default, because
      * the handler's code is gone with the old program */
@@ -507,7 +507,7 @@ static void check_signals(void) {
         kill(getpid(), SIGUSR2);
         exit(handler_calls == 1 ? 0 : 1);
     }
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
     pid = fork();
     if (pid == 0) {
         char *args[] = { "/bin/spin", "sleep", NULL };
@@ -516,7 +516,7 @@ static void check_signals(void) {
     }
     sleep_ms(30);
     CHECK(kill(pid, SIGUSR2) == 0);
-    CHECK(waitpid(pid, &status) == pid && status == 128 + SIGUSR2);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGUSR2);
     signal(SIGUSR2, SIG_DFL);
 
     /* The hard part: a handler may run between any two instructions. Send a
@@ -550,7 +550,7 @@ static void check_signals(void) {
         if (kill(pid, SIGUSR1) != 0) break;              /* It has finished */
         sleep_ms(10);
     }
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     if (status != 0) printf("syscheck: signal flood child ended with status %d\n", status);
     CHECK(status == 0);
 }
@@ -579,9 +579,9 @@ static int interrupted_child(int what) {
         } else {
             long grandchild = fork();
             if (grandchild == 0) { for (;;) sleep_ms(60000); }
-            result = waitpid(grandchild, NULL);  /* The grandchild never exits */
+            result = waitpid(grandchild, NULL, 0);  /* The grandchild never exits */
             kill(grandchild, SIGKILL);
-            while (waitpid(grandchild, NULL) == -EINTR) { }
+            while (waitpid(grandchild, NULL, 0) == -EINTR) { }
         }
         exit(result == -EINTR && handler_calls == 1 ? 0 : 1);
     }
@@ -595,11 +595,156 @@ static int interrupted_child(int what) {
     kill(pid, SIGUSR1);
 
     int status = -1;
-    waitpid(pid, &status);
+    waitpid(pid, &status, 0);
     long waited = uptime_ticks() - start;
     close(ends[0]);
     close(ends[1]);
     return (status == 0 && waited < 300) ? 0 : (status == 0 ? 100 : status); /* 100: it only woke by itself */
+}
+
+/* --- Signal masks, sigaction, SIGCHLD, restarted calls --------------------- */
+
+static volatile int mask_calls, mask_depth, mask_deepest;
+static volatile int order[8], order_count;
+
+static void count_mask_calls(int sig) {
+    (void)sig;
+    mask_calls++;
+}
+
+/* Sends itself the same signal again, twice, while running */
+static void reentrant_handler(int sig) {
+    int depth = ++mask_depth;
+    if (depth > mask_deepest) mask_deepest = depth;
+    if (mask_calls++ < 2) kill(getpid(), sig);
+    mask_depth--;
+}
+
+static void usr1_then_usr2(int sig) {
+    order[order_count++] = sig;
+    if (sig == SIGUSR1) {
+        kill(getpid(), SIGUSR2);                  /* Held back by this handler's mask... */
+        order[order_count++] = 100;               /* ...so this is recorded first */
+    }
+}
+
+static void check_signal_masks(void) {
+    uint32_t set, old = 0xFFFFFFFF;
+    struct sigaction action, previous;
+
+    /* The set of blocked signals: read, add, remove, replace */
+    CHECK(sigprocmask(SIG_BLOCK, NULL, &old) == 0 && old == 0);
+    set = sigbit(SIGUSR1) | sigbit(SIGKILL);
+    CHECK(sigprocmask(SIG_BLOCK, &set, &old) == 0 && old == 0);
+    CHECK(sigprocmask(SIG_BLOCK, NULL, &old) == 0 && old == sigbit(SIGUSR1)); /* SIGKILL can not be blocked */
+    CHECK(sigprocmask(7, &set, NULL) == -EINVAL);
+    CHECK(sigprocmask(SIG_BLOCK, (uint32_t *)0xffffffff80000000UL, NULL) == -EFAULT);
+    CHECK(sigprocmask(SIG_BLOCK, NULL, (uint32_t *)8) == -EFAULT);
+
+    /* A blocked signal waits; it is delivered the moment it is unblocked */
+    mask_calls = 0;
+    CHECK(signal(SIGUSR1, count_mask_calls) != SIG_ERR);
+    CHECK(kill(getpid(), SIGUSR1) == 0);
+    CHECK(kill(getpid(), SIGUSR1) == 0);          /* Twice: still one pending signal */
+    sleep_ms(30);
+    CHECK(mask_calls == 0);
+    set = sigbit(SIGUSR1);
+    CHECK(sigprocmask(SIG_UNBLOCK, &set, &old) == 0 && old == sigbit(SIGUSR1));
+    CHECK(mask_calls == 1);
+    CHECK(sigprocmask(SIG_BLOCK, NULL, &old) == 0 && old == 0);
+
+    /* While a handler runs, its own signal is held back: it can not
+     * interrupt itself, and runs again only after it has returned */
+    mask_calls = 0; mask_depth = 0; mask_deepest = 0;
+    signal(SIGUSR1, reentrant_handler);
+    kill(getpid(), SIGUSR1);
+    CHECK(mask_calls == 3 && mask_deepest == 1);
+    CHECK(sigprocmask(SIG_BLOCK, NULL, &old) == 0 && old == 0);  /* And the mask is as it was before */
+
+    /* sigaction: a handler that also holds back another signal */
+    order_count = 0;
+    action.handler = usr1_then_usr2;
+    action.mask = sigbit(SIGUSR2);
+    action.flags = 0;
+    CHECK(sigaction(SIGUSR1, &action, &previous) == 0);
+    CHECK(previous.handler == reentrant_handler && previous.mask == 0 && previous.flags == 0);
+    action.mask = 0;
+    CHECK(sigaction(SIGUSR2, &action, NULL) == 0);
+    kill(getpid(), SIGUSR1);
+    CHECK(order_count == 3 && order[0] == SIGUSR1 && order[1] == 100 && order[2] == SIGUSR2);
+
+    CHECK(sigaction(SIGUSR1, NULL, &previous) == 0 && previous.handler == usr1_then_usr2 && previous.mask == sigbit(SIGUSR2));
+    CHECK(sigaction(SIGKILL, &action, NULL) == -EINVAL);          /* Not negotiable */
+    CHECK(sigaction(0, &action, NULL) == -EINVAL && sigaction(32, &action, NULL) == -EINVAL);
+    action.flags = 0x80;
+    CHECK(sigaction(SIGUSR1, &action, NULL) == -EINVAL);
+    CHECK(sigaction(SIGUSR1, (struct sigaction *)8, NULL) == -EFAULT);
+    CHECK(sigaction(SIGUSR1, NULL, (struct sigaction *)0xffffffff80000000UL) == -EFAULT);
+    signal(SIGUSR1, SIG_DFL);
+    signal(SIGUSR2, SIG_DFL);
+
+    /* A blocked signal whose effect is to end the process waits too, and a
+     * child starts with its parent's mask */
+    set = sigbit(SIGTERM);
+    sigprocmask(SIG_BLOCK, &set, NULL);
+    long pid = fork();
+    if (pid == 0) {
+        uint32_t mine = 0;
+        sigprocmask(SIG_BLOCK, NULL, &mine);
+        if (mine != sigbit(SIGTERM)) exit(1);
+        sleep_ms(200);                            /* The signal arrives during this, and must wait */
+        sigprocmask(SIG_UNBLOCK, &set, NULL);     /* Here it takes effect */
+        exit(2);
+    }
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+    sleep_ms(50);
+    CHECK(kill(pid, SIGTERM) == 0);
+    int status = -1;
+    unsigned long start = clock_ns();
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGTERM);
+    CHECK((clock_ns() - start) / 1000000UL >= 100);   /* Not at once: only when it unblocked */
+
+    /* SIGCHLD: nothing by default, a handler call if one is set */
+    mask_calls = 0;
+    pid = fork();
+    if (pid == 0) exit(0);
+    CHECK(waitpid(pid, &status, 0) == pid && mask_calls == 0);
+    CHECK(signal(SIGCHLD, count_mask_calls) != SIG_ERR);
+    pid = fork();
+    if (pid == 0) exit(0);
+    while (waitpid(pid, &status, 0) == -EINTR) { }
+    CHECK(status == 0 && mask_calls == 1);
+    signal(SIGCHLD, SIG_DFL);
+
+    /* SA_RESTART: the interrupted read is made again and gets the data that
+     * arrives later, instead of failing with EINTR */
+    for (int restart = 0; restart <= 1; restart++) {
+        int p[2];
+        char byte = 0;
+        CHECK(pipe(p) == 0);
+        mask_calls = 0;
+        action.handler = count_mask_calls;
+        action.mask = 0;
+        action.flags = restart ? SA_RESTART : 0;
+        CHECK(sigaction(SIGUSR1, &action, NULL) == 0);
+        long parent = getpid();
+        pid = fork();
+        if (pid == 0) {
+            sleep_ms(80);
+            kill((int)parent, SIGUSR1);
+            sleep_ms(80);
+            write(p[1], "r", 1);
+            exit(0);
+        }
+        long n = read(p[0], &byte, 1);
+        CHECK(mask_calls == 1);
+        if (restart) CHECK(n == 1 && byte == 'r');
+        else CHECK(n == -EINTR);
+        while (waitpid(pid, &status, 0) == -EINTR) { }
+        close(p[0]);
+        close(p[1]);
+    }
+    signal(SIGUSR1, SIG_DFL);
 }
 
 static void check_interrupted_calls(void) {
@@ -616,7 +761,7 @@ static void check_interrupted_calls(void) {
     sleep_ms(30);
     kill(pid, SIGUSR1);
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
 }
 
 #define OUR_IP 0x0A00020FUL    /* 10.0.2.15 */
@@ -697,7 +842,7 @@ static void check_tcp(void) {
     CHECK(close((int)client) == 0);
 
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
     CHECK(close((int)server) == 0);
 }
 
@@ -818,7 +963,7 @@ static void check_network(void) {
     CHECK(memcmp(buf, "SHOUT", 5) == 0);
     CHECK(from.ip == OUR_IP && from.port == 9000);
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
 
     /* Timeouts, limits and bad arguments */
     CHECK(recvfrom((int)client, buf, sizeof(buf), NULL, 30) == -ETIMEDOUT);
@@ -855,7 +1000,7 @@ static void check_network(void) {
     }
     sleep_ms(50);
     kill(waiting, SIGUSR1);
-    CHECK(waitpid(waiting, &status) == waiting && status == 0);
+    CHECK(waitpid(waiting, &status, 0) == waiting && status == 0);
 }
 
 static void check_shared_memory(void) {
@@ -875,7 +1020,7 @@ static void check_shared_memory(void) {
         private[0] = 42;
         exit(0);
     }
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
     CHECK(shared[0] == 42 && shared[1] == (int)pid);      /* The child's writes arrived */
     CHECK(private[0] == 1);                               /* ... but not in private memory */
     shared[0] = 7;                                        /* And we can still write it */
@@ -903,7 +1048,7 @@ static void check_shared_memory(void) {
         if (ok) theirs[8191] = 'c';
         exit(ok ? 0 : 1);
     }
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
     CHECK(mine[8191] == 'c');
 
     /* Removing the key does not pull the memory out from under us */
@@ -936,7 +1081,7 @@ static int as_user(unsigned uid, void (*checks)(void)) {
         exit(failures);
     }
     int status = -1;
-    waitpid(pid, &status);
+    waitpid(pid, &status, 0);
     return status;
 }
 
@@ -976,7 +1121,7 @@ static void checks_as_alice(void) {
         exit(1);
     }
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
 
     /* Our own file in the shared directory */
     long fd = open("/tmp/alice.txt", O_WRONLY | O_CREAT);
@@ -994,7 +1139,7 @@ static void checks_as_alice(void) {
     pid = fork();
     if (pid == 0) { for (;;) sleep_ms(1000); }
     CHECK(kill(pid, SIGKILL) == 0);
-    waitpid(pid, &status);
+    waitpid(pid, &status, 0);
 
     /* Low port numbers are reserved for root */
     long sock = socket(SOCK_DGRAM);
@@ -1062,7 +1207,7 @@ static void check_pipes(void) {
     CHECK(write(fds[1], "+five", 5) == 5);
     close(fds[1]);                                     /* End of file for the child */
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 17);
 
     /* A pipe nobody can read from any more refuses writes */
@@ -1087,7 +1232,7 @@ static void check_pipes(void) {
     while ((n = read(fds[0], buf + got, sizeof(buf) - 1 - (size_t)got)) > 0) got += n;
     CHECK(strcmp(buf, "via stdout") == 0);
     close(fds[0]);
-    waitpid(pid, &status);
+    waitpid(pid, &status, 0);
     CHECK(dup2(99, 1) == -EBADF);
     CHECK(dup2(1, 99) == -EBADF);
 
@@ -1102,7 +1247,7 @@ static void check_pipes(void) {
     close(fds[0]);
     sleep_ms(20);
     CHECK(kill(pid, 9) == 0);
-    CHECK(waitpid(pid, &status) == pid && status == 128 + 9);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + 9);
     CHECK(write(fds[1], "x", 1) == -EPIPE);            /* Its read end went with it */
     close(fds[1]);
 }
@@ -1116,6 +1261,102 @@ __attribute__((noinline)) static unsigned long recurse(int depth) {
     return recurse(depth - 1) + (unsigned long)page[0] + (unsigned long)page[4095] - (unsigned long)(char)depth;
 }
 
+/* How long until read() on `fd` reports end-of-file, in milliseconds */
+static unsigned long ms_until_eof(int fd) {
+    char byte;
+    unsigned long start = clock_ns();
+    while (read(fd, &byte, 1) > 0) { }
+    return (clock_ns() - start) / 1000000UL;
+}
+
+/* A child that execs a program which runs for a second, holding whatever
+ * descriptors survived the exec. Returns how long the read end of a pipe
+ * takes to see end-of-file: at once if the child's copy of the write end
+ * was closed by the exec, a second if it was not. */
+static unsigned long exec_holding_pipe(int flags) {
+    int p[2];
+    if (pipe2(p, flags) != 0) return 0;
+    long pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/bin/sleep", "1", NULL };
+        execve("/bin/sleep", args, NULL);
+        exit(99);
+    }
+    close(p[1]);
+    unsigned long ms = ms_until_eof(p[0]);
+    close(p[0]);
+    int status = -1;
+    waitpid(pid, &status, 0);
+    return status == 0 ? ms : 0;
+}
+
+static void check_descriptors_and_wait(void) {
+    char buf[8];
+    int p[2], status;
+
+    /* dup: a second descriptor for the same open file */
+    CHECK(pipe(p) == 0);
+    long copy = dup(p[1]);
+    CHECK(copy > p[1]);
+    CHECK(close(p[1]) == 0);
+    CHECK(write((int)copy, "ab", 2) == 2);                /* Still open through the copy */
+    CHECK(read(p[0], buf, sizeof(buf)) == 2 && buf[0] == 'a' && buf[1] == 'b');
+    CHECK(close((int)copy) == 0);
+    CHECK(read(p[0], buf, sizeof(buf)) == 0);             /* Now every writer has gone */
+    CHECK(dup(99) == -EBADF && dup((int)copy) == -EBADF);
+
+    /* The close-on-exec flag belongs to a descriptor, not to the file */
+    CHECK(fcntl(p[0], F_GETFD, 0) == 0);
+    CHECK(fcntl(p[0], F_SETFD, FD_CLOEXEC) == 0 && fcntl(p[0], F_GETFD, 0) == FD_CLOEXEC);
+    copy = dup(p[0]);
+    CHECK(copy >= 0 && fcntl((int)copy, F_GETFD, 0) == 0);
+    CHECK(fcntl(p[0], F_SETFD, 0) == 0 && fcntl(p[0], F_GETFD, 0) == 0);
+    CHECK(fcntl(p[0], 77, 0) == -EINVAL && fcntl(99, F_GETFD, 0) == -EBADF);
+    close((int)copy);
+    close(p[0]);
+
+    CHECK(pipe2(p, O_CLOEXEC) == 0);
+    CHECK(fcntl(p[0], F_GETFD, 0) == FD_CLOEXEC && fcntl(p[1], F_GETFD, 0) == FD_CLOEXEC);
+    close(p[0]);
+    close(p[1]);
+    CHECK(pipe2(p, 0x1234) == -EINVAL);
+    CHECK(pipe2((int *)0xffffffff80000000UL, 0) == -EFAULT);
+
+    long fd = open("/bin/hello", O_RDONLY | O_CLOEXEC);
+    CHECK(fd >= 0 && fcntl((int)fd, F_GETFD, 0) == FD_CLOEXEC);
+    CHECK(close((int)fd) == 0);
+    fd = open("/bin/hello", O_RDONLY);                    /* The slot is reused: the flag was not left behind */
+    CHECK(fd >= 0 && fcntl((int)fd, F_GETFD, 0) == 0);
+    close((int)fd);
+
+    /* What the flag does: the descriptor does not survive an exec */
+    unsigned long kept = exec_holding_pipe(0);
+    unsigned long closed = exec_holding_pipe(O_CLOEXEC);
+    CHECK(kept >= 800);                                   /* Held open by the new program for its whole second */
+    CHECK(closed < 500);                                  /* Gone as soon as it started */
+
+    /* waitpid that does not wait */
+    while (waitpid(-1, &status, WNOHANG) > 0) { }
+    CHECK(waitpid(-1, &status, WNOHANG) == -ECHILD);      /* Nobody to wait for */
+    long pid = fork();
+    if (pid == 0) {
+        sleep_ms(300);
+        exit(7);
+    }
+    status = -1;
+    CHECK(waitpid(pid, &status, WNOHANG) == 0 && status == -1); /* Alive: 0, and status untouched */
+    CHECK(waitpid(-1, &status, WNOHANG) == 0);
+    CHECK(waitpid(pid, &status, 0x40) == -EINVAL);
+    int polls = 0;
+    long got = 0;
+    while ((got = waitpid(pid, &status, WNOHANG)) == 0 && polls < 100) {
+        sleep_ms(20);
+        polls++;
+    }
+    CHECK(got == pid && status == 7 && polls >= 5);
+    CHECK(waitpid(pid, &status, WNOHANG) == -ECHILD);
+}
+
 static void check_stack_growth(void) {
     /* The stack starts at 16 KiB and grows as it is used: 2 MiB works */
     CHECK(recurse(500) == 500);
@@ -1124,13 +1365,13 @@ static void check_stack_growth(void) {
     long pid = fork();
     if (pid == 0) exit(recurse(1000) == 1000 ? 0 : 1);
     int status = -1;
-    CHECK(waitpid(pid, &status) == pid && status == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
 
     /* Runaway recursion hits the limit (8 MiB) and is killed, not the system */
     pid = fork();
     if (pid == 0) exit((int)recurse(1 << 20));
     status = -1;
-    CHECK(waitpid(pid, &status) == pid);
+    CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 128 + 11);
 
     /* The kernel does not grow the stack on a program's behalf: a buffer
@@ -1167,7 +1408,7 @@ static void check_copy_on_write(void) {
 
     /* The parent has not touched shared_status since the fork, so the page is
      * still shared when the kernel stores the exit status through it. */
-    CHECK(waitpid(pid, shared_status) == pid);
+    CHECK(waitpid(pid, shared_status, 0) == pid);
     CHECK(*shared_status == 7);
 
     for (int i = 0; i < PAGES; i++) {
@@ -1190,11 +1431,11 @@ static void check_copy_on_write(void) {
             exit(depth_value);
         }
         int status = -1;
-        waitpid(second, &status);
+        waitpid(second, &status, 0);
         exit(status == 2 && depth_value == 1 ? 3 : 1);
     }
     int status = -1;
-    CHECK(waitpid(first, &status) == first);
+    CHECK(waitpid(first, &status, 0) == first);
     CHECK(status == 3);
     CHECK(depth_value == 0);
 
@@ -1210,6 +1451,8 @@ int main(void) {
     check_memory();
     check_fork();
     check_copy_on_write();
+    check_descriptors_and_wait();
+    check_signal_masks();
     check_stack_growth();
     check_files();
     check_directories();
