@@ -224,6 +224,7 @@ void file_close(file_t *file) {
     } else if (file->kind == FILE_TCP) {
         tcp_close(file->tcp);
     }
+    kfree(file->snapshot);
     file_free(file);
 }
 
@@ -276,6 +277,49 @@ int fd_install(file_t *fds[TASK_MAX_FDS], file_t *file) {
     return -EMFILE;
 }
 
+// Guards every open file's snapshot and snapshot_len, and its offset while
+// a snapshot is read: two holders of one open file (fork shares them) may
+// read at once, and one may replace the text the other is copying from.
+// Nothing is taken under it and nothing is freed under it.
+static spinlock_t snapshot_lock = SPINLOCK_RANKED("file-snapshot", LOCK_RANK_FILE_SNAPSHOT);
+
+// file_read for a node with a snapshot operation (/proc): copy up to
+// `count` bytes at the position from the text kept with the open file,
+// taking a new text first if there is none or the position is 0, and move
+// the position. Returns the bytes copied (0 at the end) or the snapshot's
+// error. The new text stays in a local variable until it is stored, which
+// is safe because the snapshot cannot be cut short by a kill (vnode_ops_t).
+static int64_t read_snapshot(file_t *file, void *buf, size_t count) {
+    uint64_t flags = spinlock_acquire_irqsave(&snapshot_lock);
+    bool take = !file->snapshot || file->offset == 0;
+    spinlock_release_irqrestore(&snapshot_lock, flags);
+
+    char *fresh = NULL;
+    int64_t fresh_len = 0;
+    if (take) {
+        fresh_len = file->node->ops->snapshot(file->node, &fresh);
+        if (fresh_len < 0) return fresh_len;
+    }
+
+    flags = spinlock_acquire_irqsave(&snapshot_lock);
+    char *old = NULL;
+    if (fresh) {
+        old = file->snapshot;
+        file->snapshot = fresh;
+        file->snapshot_len = (size_t)fresh_len;
+    }
+    size_t n = 0;
+    if (file->offset < file->snapshot_len) {
+        n = file->snapshot_len - file->offset;
+        if (n > count) n = count;
+        memcpy(buf, file->snapshot + file->offset, n);
+        file->offset += n;
+    }
+    spinlock_release_irqrestore(&snapshot_lock, flags);
+    kfree(old);
+    return (int64_t)n;
+}
+
 int64_t file_read(file_t *file, void *buf, size_t count) {
     if (!file || !file->readable) return -EBADF;
     if (count == 0) return 0;
@@ -294,6 +338,7 @@ int64_t file_read(file_t *file, void *buf, size_t count) {
             return tcp_read(file->tcp, buf, count);
         case FILE_VNODE: {
             if (file->node->type == VFS_DIRECTORY) return -EISDIR;
+            if (file->node->ops && file->node->ops->snapshot) return read_snapshot(file, buf, count);
             if (file->node->ops) {
                 if (!file->node->ops->read) return 0;
                 int64_t n = file->node->ops->read(file->node, file->offset, buf, count);

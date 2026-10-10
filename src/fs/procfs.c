@@ -3,8 +3,10 @@
  * @brief /proc: kernel state presented as text files
  *
  * Nothing under /proc is stored. Each file has a generator function that
- * writes the current state as text; a read runs the generator and returns
- * the requested slice of what it produced.
+ * writes the current state as text, and gives it as its node's snapshot
+ * operation: the open file keeps that text from its first read until it is
+ * closed (file_read), so a reader taking it in small pieces gets one moment
+ * of it, not pieces of several.
  *
  * /proc/<pid>/ has a directory per task, with `status`, `cmdline`, `maps`
  * (what its address space holds) and `fd/` (a file per open descriptor,
@@ -22,7 +24,7 @@
  * `maps` and `fd/` name files, so only the task's owner (and root) may
  * read them. Reading them looks at another task's memory regions and
  * descriptors, which that task changes without the scheduler lock; see
- * read_maps and read_fd for what makes that safe.
+ * snapshot_maps and snapshot_fd for what makes that safe.
  */
 
 #include "procfs.h"
@@ -55,23 +57,13 @@
 // spinlocks while they format.
 typedef size_t (*proc_generator_t)(char *buf, size_t size);
 
-// Run `generate` into a temporary buffer and copy out `count` bytes from
-// `offset` into the kernel buffer `buf`. Returns the bytes copied (0 past
-// the end) or -ENOMEM. Text beyond PROC_TEXT_MAX is cut off.
-static int64_t serve_text(proc_generator_t generate, size_t offset, void *buf, size_t count) {
-    char *text = kmalloc(PROC_TEXT_MAX);
-    if (!text) return -ENOMEM;
-
-    size_t len = generate(text, PROC_TEXT_MAX);
-    size_t n = 0;
-    if (offset < len) {
-        n = len - offset;
-        if (n > count) n = count;
-        memcpy(buf, text + offset, n);
-    }
-
-    kfree(text);
-    return (int64_t)n;
+// Run `generate` into a new buffer and give it to the caller through
+// *text (vnode_ops_t.snapshot). Returns the text's length or -ENOMEM.
+// Text beyond PROC_TEXT_MAX is cut off.
+static int64_t snapshot_text(proc_generator_t generate, char **text) {
+    *text = kmalloc(PROC_TEXT_MAX);
+    if (!*text) return -ENOMEM;
+    return (int64_t)generate(*text, PROC_TEXT_MAX);
 }
 
 // The generators: one per file, each named after it
@@ -210,14 +202,14 @@ static size_t gen_tcp(char *buf, size_t size) {
     return tcp_describe(buf, size);
 }
 
-// One read function and one ops table per file: read_<name> serves
+// One snapshot function and one ops table per file: snapshot_<name> gives
 // gen_<name>'s text, ops_<name> is what the node is created with
 #define PROC_FILE(name) \
-    static int64_t read_##name(vnode_t *node, size_t offset, void *buf, size_t count) { \
+    static int64_t snapshot_##name(vnode_t *node, char **text) { \
         (void)node; \
-        return serve_text(gen_##name, offset, buf, count); \
+        return snapshot_text(gen_##name, text); \
     } \
-    static const vnode_ops_t ops_##name = { .read = read_##name, .write = NULL }
+    static const vnode_ops_t ops_##name = { .snapshot = snapshot_##name }
 
 PROC_FILE(version);
 PROC_FILE(uptime);
@@ -243,13 +235,16 @@ static const vnode_ops_t pid_dir_ops;
 // The pid a /proc/<pid> node (the directory or a file in it) describes
 static uint32_t pid_of(const vnode_t *node) { return (uint32_t)node->private_data; }
 
-// Copy the slice [offset, offset + count) of text[0..len) into `buf`.
-// Returns the bytes copied (0 past the end).
-static int64_t serve_slice(const char *text, size_t len, size_t offset, void *buf, size_t count) {
-    if (offset >= len) return 0;
-    size_t n = len - offset < count ? len - offset : count;
-    memcpy(buf, text + offset, n);
-    return (int64_t)n;
+// End of a /proc/<pid> snapshot operation: hand `text` (kmalloc, `len`
+// bytes) to the caller through *out if the task was `found`, else free it.
+// Returns the length or -ENOENT.
+static int64_t give_text(char *text, size_t len, bool found, char **out) {
+    if (!found) {
+        kfree(text);
+        return -ENOENT;
+    }
+    *out = text;
+    return (int64_t)len;
 }
 
 // /proc/<pid>/status: who the task is and what it is doing, "Key:\tvalue"
@@ -257,8 +252,10 @@ static int64_t serve_slice(const char *text, size_t len, size_t offset, void *bu
 // how much of those has not been touched yet (no frames behind it),
 // "Size", all of that plus the program, and "Resident", the pages it holds
 // in memory now, "Shared" of them with another owner too. "Syscall" is the number of the system call the task is in, or "-".
-// -ENOENT once the task is gone.
-static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count) {
+// -ENOENT once the task is gone. (A snapshot operation: the text is given
+// to the caller through *text, as for every file here.)
+static int64_t snapshot_status(vnode_t *node, char **out) {
+    *out = NULL;
     char *text = kmalloc(PROC_TEXT_MAX);
     if (!text) return -ENOMEM;
     size_t len = 0;
@@ -305,16 +302,14 @@ static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count
                         (program + heap + mapped) / 1024, (uint64_t)resident * 4, (uint64_t)shared * 4, syscall_text);
     }
     sched_unlock_irqrestore(flags);
-
-    int64_t result = found ? serve_slice(text, len, offset, buf, count) : -ENOENT;
-    kfree(text);
-    return result;
+    return give_text(text, len, found, out);
 }
 
 // /proc/<pid>/cmdline: the program's arguments, each followed by a NUL, as
 // execve was given them (cut to TASK_CMDLINE_MAX bytes); empty for a
 // kernel task. -ENOENT once the task is gone.
-static int64_t read_cmdline(vnode_t *node, size_t offset, void *buf, size_t count) {
+static int64_t snapshot_cmdline(vnode_t *node, char **out) {
+    *out = NULL;
     char *text = kmalloc(TASK_CMDLINE_MAX);
     if (!text) return -ENOMEM;
     size_t len = 0;
@@ -327,9 +322,7 @@ static int64_t read_cmdline(vnode_t *node, size_t offset, void *buf, size_t coun
         memcpy(text, t->cmdline, len);
     }
     sched_unlock_irqrestore(flags);
-    int64_t result = found ? serve_slice(text, len, offset, buf, count) : -ENOENT;
-    kfree(text);
-    return result;
+    return give_text(text, len, found, out);
 }
 
 // One line of /proc/<pid>/maps, as copied from the task
@@ -337,7 +330,7 @@ typedef struct {
     uint64_t start, end;
     int prot;
     const char *kind;          // "program", "heap", "stack", "anonymous", "file"
-    vnode_t *node;             // "file": the file (alive while the tree lock is held: see read_maps)
+    vnode_t *node;             // "file": the file (alive while the tree lock is held: see snapshot_maps)
     uint64_t offset;           // "file": where in it `start` is
 } map_line_t;
 
@@ -383,7 +376,8 @@ static size_t copy_maps(const task_t *t, map_line_t *lines, char name[32]) {
 // across the copy and the formatting: a region's file is unpinned (under
 // the tree lock) only after its entry is cleared (region.c), and a pinned
 // node cannot be removed, so every node seen here is alive until the end.
-static int64_t read_maps(vnode_t *node, size_t offset, void *buf, size_t count) {
+static int64_t snapshot_maps(vnode_t *node, char **out) {
+    *out = NULL;
     map_line_t *lines = kmalloc(MAPS_MAX_LINES * sizeof(map_line_t));
     char *text = kmalloc(MAPS_TEXT_MAX);
     char *path = kmalloc(VFS_PATH_MAX);
@@ -431,11 +425,9 @@ static int64_t read_maps(vnode_t *node, size_t offset, void *buf, size_t count) 
     vfs_unlock();
     if (len > MAPS_TEXT_MAX - 1) len = MAPS_TEXT_MAX - 1;
 
-    int64_t result = found ? serve_slice(text, len, offset, buf, count) : -ENOENT;
     kfree(lines);
-    kfree(text);
     kfree(path);
-    return result;
+    return give_text(text, len, found, out);
 }
 
 // The descriptor number a /proc/<pid>/fd/N node stands for
@@ -465,8 +457,10 @@ static size_t describe_file(const file_t *file, char *text, size_t size) {
 // close it at any moment; the file is taken with a reference of our own
 // under the slot lock (fd_slot_dup), so it cannot be freed while it is
 // described, and that reference is dropped after (the last one, if the
-// task closed it meanwhile: then the file is closed here).
-static int64_t read_fd(vnode_t *node, size_t offset, void *buf, size_t count) {
+// task closed it meanwhile: then the file is closed here, before the text
+// is allocated, so nothing is held if that close sleeps).
+static int64_t snapshot_fd(vnode_t *node, char **out) {
+    *out = NULL;
     uint64_t flags = sched_lock_irqsave();
     task_t *t = sched_find_task_locked(pid_of(node));
     file_t *file = t ? fd_slot_dup(t->fds, fd_of(node)) : NULL;
@@ -476,13 +470,17 @@ static int64_t read_fd(vnode_t *node, size_t offset, void *buf, size_t count) {
     char text[VFS_PATH_MAX + 2];
     size_t len = describe_file(file, text, sizeof(text));
     file_close(file);
-    return serve_slice(text, len, offset, buf, count);
+    char *copy = kmalloc(len + 1);
+    if (!copy) return -ENOMEM;
+    memcpy(copy, text, len + 1);
+    *out = copy;
+    return (int64_t)len;
 }
 
-static const vnode_ops_t ops_status = { .read = read_status };
-static const vnode_ops_t ops_cmdline = { .read = read_cmdline };
-static const vnode_ops_t ops_maps = { .read = read_maps };
-static const vnode_ops_t ops_fd = { .read = read_fd };
+static const vnode_ops_t ops_status = { .snapshot = snapshot_status };
+static const vnode_ops_t ops_cmdline = { .snapshot = snapshot_cmdline };
+static const vnode_ops_t ops_maps = { .snapshot = snapshot_maps };
+static const vnode_ops_t ops_fd = { .snapshot = snapshot_fd };
 
 // vnode_ops_t.remove for /proc and its pid directories: nothing there is
 // anyone's to remove (EPERM, root included), except procfs's own clearing
@@ -683,13 +681,17 @@ static const vnode_ops_t proc_dir_ops = { .refresh = proc_refresh, .remove = ref
 static const vnode_ops_t pid_dir_ops = { .remove = refuse_remove };
 static const vnode_ops_t fd_dir_ops = { .refresh = fd_dir_refresh, .remove = refuse_remove };
 
-// /proc/kmsg: the kernel message log. Too large for serve_text's buffer, and
-// already stored as text, so it is read straight from the log.
-static int64_t read_kmsg(vnode_t *node, size_t offset, void *buf, size_t count) {
+// /proc/kmsg: the kernel message log (a ring that overwrites its oldest
+// text when full, so offsets into it move; a snapshot keeps them still).
+// Copied as it is held now, up to KLOG_SIZE bytes. Returns the length or
+// -ENOMEM.
+static int64_t snapshot_kmsg(vnode_t *node, char **text) {
     (void)node;
-    return (int64_t)klog_read(offset, buf, count);
+    *text = kmalloc(KLOG_SIZE);
+    if (!*text) return -ENOMEM;
+    return (int64_t)klog_read(0, *text, KLOG_SIZE);
 }
-static const vnode_ops_t ops_kmsg = { .read = read_kmsg, .write = NULL };
+static const vnode_ops_t ops_kmsg = { .snapshot = snapshot_kmsg };
 
 void procfs_init(void) {
     vfs_init();

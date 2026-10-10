@@ -3894,6 +3894,33 @@ static void check_proc(void) {
     CHECK(read_small("/proc/self/status", text, sizeof(text)) > 0);
     CHECK(status_number(text, "Size") == size_before);
 
+    /* Read in 7-byte pieces, a status is one moment: a mapping made after
+     * the first piece is not in it, and its longer numbers do not shift
+     * the lines after them; read again from the start, it is */
+    long fd = open("/proc/self/status", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) {
+        long total = read((int)fd, text, 7), n7;
+        CHECK(total == 7);
+        void *big = mmap_anon(8 * 1024 * 1024);               /* Untouched: costs no frames */
+        CHECK(big != NULL);
+        while (total > 0 && total < (long)sizeof(text) - 1 &&
+               (n7 = read((int)fd, text + total, (size_t)total + 7 < sizeof(text) ? 7 : sizeof(text) - 1 - (size_t)total)) > 0) {
+            total += n7;
+        }
+        text[total > 0 ? total : 0] = '\0';
+        int lines = 0;
+        for (const char *c = text; *c; c++) lines += *c == '\n';
+        CHECK(status_number(text, "Size") == size_before && status_number(text, "Pid") == getpid());
+        CHECK(lines == 21);
+        CHECK(lseek((int)fd, 0, SEEK_SET) == 0);
+        total = read((int)fd, text, sizeof(text) - 1);
+        text[total > 0 ? total : 0] = '\0';
+        CHECK(status_number(text, "Size") == size_before + 8192);
+        close((int)fd);
+        CHECK(big && munmap(big, 8 * 1024 * 1024) == 0);
+    }
+
     /* Resident: what is present. 64 pages touched add exactly 256 kB and go
      * again with munmap (the second round counts: in the first, code pages
      * of the calls themselves are read in too, page by page) */
