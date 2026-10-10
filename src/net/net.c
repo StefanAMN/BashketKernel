@@ -94,6 +94,14 @@ static uint32_t swap32(uint32_t v) {
 
 static bool up = false;
 static uint8_t our_mac[6];
+
+// Read far more often than written, and each field on its own: a reader
+// that sees one field from before a change and one from after sends a
+// packet that goes nowhere, which the network does anyway
+static uint32_t local_ip = NET_LOCAL_IP;
+static uint32_t local_netmask = NET_NETMASK;
+static uint32_t local_gateway = NET_GATEWAY;
+static uint32_t local_dns = NET_DNS;
 static net_stats_t stats;
 static const uint8_t broadcast_mac[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
@@ -129,6 +137,16 @@ static struct udp_socket sockets[UDP_MAX_SOCKETS];
 static uint16_t next_ephemeral = EPHEMERAL_PORT_FIRST;
 
 bool net_up(void) { return up; }
+
+void net_get_config(net_config_t *out) {
+    memset(out, 0, sizeof(*out));
+    if (!up) return;
+    out->ip = local_ip;
+    out->netmask = local_netmask;
+    out->gateway = local_gateway;
+    out->dns = local_dns;
+    memcpy(out->mac, our_mac, 6);
+}
 const net_stats_t *net_stats(void) { return &stats; }
 
 // The Internet checksum (RFC 1071): add the data up as 16-bit big-endian
@@ -157,7 +175,7 @@ uint16_t net_checksum(const void *data, size_t len) {
 uint32_t net_source_for(uint32_t dst) {
     // A packet to a loopback address comes from that address: the answer
     // then goes back to the name the other end was reached by
-    return (dst >> 24) == 127 ? dst : NET_LOCAL_IP;
+    return (dst >> 24) == 127 ? dst : local_ip;
 }
 
 // The UDP and TCP checksums also cover a "pseudo header" of fields from the
@@ -186,7 +204,7 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dst_ip, const void *udp, 
 static spinlock_t net_lock = SPINLOCK_RANKED("net", LOCK_RANK_NET);
 
 static void arp_learn(uint32_t ip, const uint8_t mac[6]) {
-    if (ip == 0 || ip == NET_LOCAL_IP) return;
+    if (ip == 0 || ip == local_ip) return;
 
     uint64_t flags = spinlock_acquire_irqsave(&net_lock);
     arp_entry_t *slot = NULL, *oldest = &arp_cache[0];
@@ -245,7 +263,7 @@ static void arp_send(uint16_t operation, const uint8_t dst_mac[6], const uint8_t
     arp->protocol_len = 4;
     arp->operation = htons(operation);
     memcpy(arp->sender_mac, our_mac, 6);
-    arp->sender_ip = htonl(NET_LOCAL_IP);
+    arp->sender_ip = htonl(local_ip);
     memcpy(arp->target_mac, target_mac, 6);
     arp->target_ip = htonl(target_ip);
 
@@ -264,9 +282,10 @@ static void arp_input(const uint8_t *payload, size_t len) {
 
     // Whoever is talking to us is worth remembering
     uint32_t sender_ip = ntohl(arp->sender_ip);
-    if (ntohl(arp->target_ip) == NET_LOCAL_IP) arp_learn(sender_ip, arp->sender_mac);
+    if (local_ip == 0) return; // No address yet: we are nobody's target
+    if (ntohl(arp->target_ip) == local_ip) arp_learn(sender_ip, arp->sender_mac);
 
-    if (ntohs(arp->operation) == ARP_REQUEST && ntohl(arp->target_ip) == NET_LOCAL_IP) {
+    if (ntohs(arp->operation) == ARP_REQUEST && ntohl(arp->target_ip) == local_ip) {
         arp_send(ARP_REPLY, arp->sender_mac, arp->sender_mac, sender_ip);
         stats.arp_replies_sent++;
     }
@@ -295,6 +314,31 @@ static int arp_resolve(uint32_t ip, uint8_t mac[6], bool can_block) {
         if (arp_lookup(ip, mac)) return 0;
     }
     return -EHOSTUNREACH;
+}
+
+int net_set_config(const net_config_t *config) {
+    if (!config) return -EINVAL;
+    if (!up) return -ENETDOWN;
+
+    if (config->ip != 0) {
+        // A netmask is ones followed by zeros: its complement plus one is
+        // then a power of two
+        uint32_t host_bits = ~config->netmask;
+        if ((host_bits & (host_bits + 1)) != 0 || config->netmask == 0) return -EINVAL;
+        if ((config->ip >> 24) == 127 || (config->ip >> 28) >= 14) return -EINVAL;      // Loopback, multicast, reserved
+        if ((config->ip & host_bits) == 0 || (config->ip & host_bits) == host_bits) return -EINVAL; // The network itself, or its broadcast address
+        if (config->gateway != 0 && (config->gateway & config->netmask) != (config->ip & config->netmask)) return -EINVAL;
+    }
+
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
+    local_ip = config->ip;
+    local_netmask = config->ip ? config->netmask : 0;
+    local_gateway = config->ip ? config->gateway : 0;
+    local_dns = config->dns;
+    memset(arp_cache, 0, sizeof(arp_cache)); // Neighbours of the old network
+    spinlock_release_irqrestore(&net_lock, flags);
+    sched_wakeup(arp_cache);
+    return 0;
 }
 
 // --- IPv4 ----------------------------------------------------------------------
@@ -326,17 +370,28 @@ static int ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t
     ip->checksum = htons(net_checksum(ip, sizeof(*ip)));
     memcpy(frame + sizeof(*eth) + sizeof(*ip), payload, len);
 
+    uint32_t our_ip = local_ip, netmask = local_netmask;
+
     // To ourselves: no need to involve the card
-    if (dst == NET_LOCAL_IP || (dst >> 24) == 127) {
+    if ((our_ip != 0 && dst == our_ip) || (dst >> 24) == 127) {
         ipv4_input(frame + sizeof(*eth), sizeof(*ip) + len, our_mac);
         return 0;
     }
 
-    // On our network the frame goes to the machine itself; anything else
-    // goes to the gateway, which forwards it
-    uint32_t next_hop = ((dst & NET_NETMASK) == (NET_LOCAL_IP & NET_NETMASK)) ? dst : NET_GATEWAY;
-    int err = arp_resolve(next_hop, eth->dst, can_block);
-    if (err != 0) return err;
+    bool broadcast = dst == NET_BROADCAST || (our_ip != 0 && dst == (our_ip | ~netmask));
+    if (broadcast) {
+        // To everyone on the wire: no address to look up
+        memcpy(eth->dst, broadcast_mac, 6);
+    } else if (our_ip == 0) {
+        return -ENETDOWN; // Without an address of our own, nobody could answer
+    } else {
+        // On our network the frame goes to the machine itself; anything
+        // else goes to the gateway, which forwards it
+        uint32_t next_hop = ((dst & netmask) == (our_ip & netmask)) ? dst : local_gateway;
+        if (next_hop == 0) return -EHOSTUNREACH; // Off our network, and no gateway
+        int err = arp_resolve(next_hop, eth->dst, can_block);
+        if (err != 0) return err;
+    }
 
     memcpy(eth->src, our_mac, 6);
     eth->ethertype = htons(ETHERTYPE_IPV4);
@@ -426,7 +481,13 @@ static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac
         return;
     }
     if (ntohs(ip->flags_fragment) & 0x3FFF) { stats.dropped++; return; } // A fragment: not supported
-    if (ntohl(ip->dst) != NET_LOCAL_IP && (ntohl(ip->dst) >> 24) != 127) { stats.dropped++; return; }
+    // For us? Our address, a loopback address, or a broadcast. While we
+    // have no address, whatever reached our card is for us: a DHCP server
+    // answers to the address it is about to give out.
+    uint32_t to = ntohl(ip->dst), our_ip = local_ip;
+    bool for_us = our_ip == 0 || to == our_ip || (to >> 24) == 127 || to == NET_BROADCAST ||
+                  to == (our_ip | ~local_netmask);
+    if (!for_us) { stats.dropped++; return; }
 
     uint32_t src = ntohl(ip->src);
     // Remember how to reach the sender, so that a reply needs no ARP exchange
@@ -657,5 +718,5 @@ void net_init(void) {
     up = true;
     task_create("netd", netd);
     tcp_init();
-    kprintf("net: 10.0.2.15/24, gateway 10.0.2.2 (static configuration)\n");
+    kprintf("net: 10.0.2.15/24, gateway 10.0.2.2 (the default; /bin/dhcp asks the network)\n");
 }

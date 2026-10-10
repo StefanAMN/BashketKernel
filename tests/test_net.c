@@ -271,6 +271,116 @@ TEST(net_drops_malformed_frames) {
     EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
 }
 
+// The address is a setting, not a constant
+TEST(net_configuration_can_be_changed) {
+    net_config_t original, config;
+    net_get_config(&original);
+    EXPECT_TRUE(original.ip == NET_LOCAL_IP && original.netmask == NET_NETMASK);
+    EXPECT_TRUE(original.gateway == NET_GATEWAY && original.dns == NET_DNS);
+    uint8_t mac[6];
+    virtio_net_get_mac(mac);
+    EXPECT_EQ(memcmp(original.mac, mac, 6), 0);
+
+    // Settings that could not work are refused, and nothing changes
+    config = original; config.netmask = NET_IP(255, 0, 255, 0);            // A netmask with a hole
+    EXPECT_EQ(net_set_config(&config), -EINVAL);
+    config = original; config.netmask = 0;
+    EXPECT_EQ(net_set_config(&config), -EINVAL);
+    config = original; config.gateway = NET_IP(192, 168, 1, 1);            // Not on our network
+    EXPECT_EQ(net_set_config(&config), -EINVAL);
+    config = original; config.ip = NET_IP(127, 0, 0, 5);
+    EXPECT_EQ(net_set_config(&config), -EINVAL);
+    config = original; config.ip = NET_IP(10, 0, 2, 255);                  // The broadcast address
+    EXPECT_EQ(net_set_config(&config), -EINVAL);
+    config = original; config.ip = NET_IP(10, 0, 2, 0);                    // The network itself
+    EXPECT_EQ(net_set_config(&config), -EINVAL);
+    EXPECT_EQ(net_set_config(NULL), -EINVAL);
+    net_get_config(&config);
+    EXPECT_EQ(memcmp(&config, &original, sizeof(config)), 0);
+
+    // Another address on the same network: we answer to it, the gateway
+    // still answers us, and packets carry the new address as their source
+    config = original;
+    config.ip = NET_IP(10, 0, 2, 77);
+    config.mac[0] ^= 0xFF;                                                 // Ignored: the card's address is what it is
+    EXPECT_EQ(net_set_config(&config), 0);
+    EXPECT_TRUE(net_source_for(NET_GATEWAY) == NET_IP(10, 0, 2, 77));
+    EXPECT_TRUE(!net_arp_known(NET_GATEWAY));                              // Neighbours were forgotten
+    EXPECT_EQ(net_ping(NET_IP(10, 0, 2, 77), 100, NULL), 0);
+    EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+    net_get_config(&config);
+    EXPECT_EQ(memcmp(config.mac, mac, 6), 0);
+
+    EXPECT_EQ(net_set_config(&original), 0);
+    EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+}
+
+// A UDP datagram for port 6800 in an Ethernet frame for our card, from
+// 10.0.2.2 to the IPv4 address `to`
+static size_t build_udp_frame(uint8_t *frame, uint32_t to) {
+    uint8_t mac[6];
+    virtio_net_get_mac(mac);
+    memset(frame, 0, 64);
+    memcpy(frame, mac, 6);
+    frame[6] = 0x52; frame[11] = 0x01;
+    frame[12] = 0x08; frame[13] = 0x00;                                    // IPv4
+    uint8_t *ip = frame + 14;
+    ip[0] = 0x45; ip[3] = 20 + 8 + 4; ip[8] = 64; ip[9] = 17;              // 4 bytes of UDP payload
+    ip[12] = 10; ip[13] = 0; ip[14] = 2; ip[15] = 2;
+    ip[16] = (uint8_t)(to >> 24); ip[17] = (uint8_t)(to >> 16); ip[18] = (uint8_t)(to >> 8); ip[19] = (uint8_t)to;
+    uint16_t sum = net_checksum(ip, 20);
+    ip[10] = (uint8_t)(sum >> 8); ip[11] = (uint8_t)sum;
+    uint8_t *udp = ip + 20;
+    udp[0] = 0x1A; udp[1] = 0x90; udp[2] = 0x1A; udp[3] = 0x90;            // Ports 6800
+    udp[5] = 12;                                                           // Length; checksum 0 = none
+    memcpy(udp + 8, "dhcp", 4);
+    return 14 + 20 + 12;
+}
+
+// Without an address the machine can broadcast and can be answered at any
+// address (which is how DHCP hands one out), and nothing else
+TEST(net_unconfigured_broadcasts_and_listens) {
+    net_config_t original, none;
+    net_get_config(&original);
+    memset(&none, 0, sizeof(none));
+
+    udp_socket_t *sock = udp_open();
+    EXPECT_TRUE(sock != NULL);
+    EXPECT_EQ(udp_bind(sock, 6800), 0);
+    uint8_t frame[64], buf[16];
+    size_t len;
+
+    // Configured: a datagram for someone else's address is not ours, one to
+    // the broadcast address is
+    len = build_udp_frame(frame, NET_IP(10, 0, 2, 99));
+    net_handle_frame(frame, len);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);
+    len = build_udp_frame(frame, NET_BROADCAST);
+    net_handle_frame(frame, len);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), 4);
+    len = build_udp_frame(frame, NET_IP(10, 0, 2, 255));                   // Our network's broadcast address
+    net_handle_frame(frame, len);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), 4);
+
+    EXPECT_EQ(net_set_config(&none), 0);
+    EXPECT_TRUE(net_source_for(NET_BROADCAST) == 0);
+
+    // Unconfigured: the same datagram for "someone else" is taken
+    len = build_udp_frame(frame, NET_IP(10, 0, 2, 99));
+    net_handle_frame(frame, len);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), 4);
+    EXPECT_EQ(memcmp(buf, "dhcp", 4), 0);
+
+    // Only broadcasts can be sent
+    EXPECT_EQ(udp_sendto(sock, NET_GATEWAY, 6800, "x", 1), -ENETDOWN);
+    EXPECT_EQ(net_ping(NET_GATEWAY, 20, NULL), -ENETDOWN);
+    EXPECT_EQ(udp_sendto(sock, NET_BROADCAST, 6800, "x", 1), 1);
+
+    udp_close(sock);
+    EXPECT_EQ(net_set_config(&original), 0);
+    EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+}
+
 void test_suite_net(void) {
     kprintf("Suite: Network (virtio-net, ARP, IPv4, ICMP, UDP)\n");
     RUN_TEST(pci_finds_the_devices_qemu_provides);
@@ -280,4 +390,6 @@ void test_suite_net(void) {
     RUN_TEST(net_ping_ourselves_and_nobody);
     RUN_TEST(udp_sockets_over_loopback);
     RUN_TEST(net_drops_malformed_frames);
+    RUN_TEST(net_configuration_can_be_changed);
+    RUN_TEST(net_unconfigured_broadcasts_and_listens);
 }

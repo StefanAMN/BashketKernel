@@ -601,6 +601,30 @@ static int64_t sys_recvfrom(int fd, uint64_t user_buf, size_t len, uint64_t user
     return n;
 }
 
+static int64_t sys_netconfig(uint64_t user_get, uint64_t user_set) {
+    if (user_get != 0 && !user_range_ok(user_get, sizeof(net_config_t), true)) return -EFAULT;
+    if (user_set != 0 && !user_range_ok(user_set, sizeof(net_config_t), false)) return -EFAULT;
+    if (!net_up()) return -ENETDOWN;
+
+    // Changing the machine's address is the administrator's business
+    if (user_set != 0 && sched_get_current_task()->uid != UID_ROOT) return -EPERM;
+
+    net_config_t config;
+    if (user_get != 0) {
+        net_get_config(&config);
+        user_access_begin();
+        memcpy((void *)user_get, &config, sizeof(config));
+        user_access_end();
+    }
+    if (user_set != 0) {
+        user_access_begin();
+        memcpy(&config, (const void *)user_set, sizeof(config));
+        user_access_end();
+        return net_set_config(&config);
+    }
+    return 0;
+}
+
 // Returns the round-trip time in microseconds
 static int64_t sys_ping(uint32_t ip, uint64_t timeout_ms) {
     uint64_t start = clock_ns();
@@ -727,6 +751,7 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_SENDTO:   return sys_sendto((int)regs->rdi, regs->rsi, (size_t)regs->rdx, (uint32_t)regs->r10, regs->r8);
         case SYS_RECVFROM: return sys_recvfrom((int)regs->rdi, regs->rsi, (size_t)regs->rdx, regs->r10, regs->r8);
         case SYS_PING:     return sys_ping((uint32_t)regs->rdi, regs->rsi);
+        case SYS_NETCONFIG: return sys_netconfig(regs->rdi, regs->rsi);
 
         case SYS_TTY_RAW:
             tty_set_raw(regs->rdi != 0, task->pid);

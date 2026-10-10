@@ -1,14 +1,20 @@
 /* ping: send echo requests to a machine and report the round-trip times.
  *
- *   ping ADDRESS [COUNT]      for example: ping 10.0.2.2
+ *   ping ADDRESS|NAME [COUNT]      for example: ping 10.0.2.2
  */
 #include "ulib.h"
 
 int main(int argc, char **argv) {
-    uint32_t ip = argc > 1 ? parse_ip(argv[1]) : 0;
     long count = argc > 2 ? atoi(argv[2]) : 4;
-    if (ip == 0 || count <= 0) {
-        fprintf(2, "usage: ping ADDRESS [COUNT]   (an address looks like 10.0.2.2)\n");
+    if (argc < 2 || argc > 3 || count <= 0) {
+        fprintf(2, "usage: ping ADDRESS|NAME [COUNT]   (an address looks like 10.0.2.2)\n");
+        return 2;
+    }
+
+    uint32_t ip = 0;
+    long err = resolve(argv[1], &ip);
+    if (err < 0) {
+        fprintf(2, "ping: %s: %s\n", argv[1], err == -ENOENT ? "no such name" : strerror(err));
         return 2;
     }
 

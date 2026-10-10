@@ -243,6 +243,159 @@ long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned 
     return syscall5(SYS_RECVFROM, fd, buf, len, from, timeout_ms);
 }
 
+long netconfig(struct net_config *get, const struct net_config *set) {
+    return syscall2(SYS_NETCONFIG, get, set);
+}
+
+/* --- DNS (RFC 1035) -----------------------------------------------------------
+ *
+ * A question and its answer are one UDP datagram each, in the same format:
+ * a 12-byte header, the question, then resource records. A name is written
+ * as a list of labels, each a length byte followed by that many characters,
+ * ended by a zero length: "www.example.com" is 3 www 7 example 3 com 0. In
+ * an answer, a name may instead end with a two-byte pointer (top two bits
+ * set) to where the rest of it already appears in the message.
+ */
+
+#define DNS_TYPE_A 1
+#define DNS_CLASS_IN 1
+
+long dns_build_query(uint8_t *buf, size_t size, unsigned id, const char *name) {
+    size_t name_len = strlen(name);
+    if (name_len == 0 || name_len > 253 || size < 12 + name_len + 2 + 4) return -EINVAL;
+
+    memset(buf, 0, 12);
+    buf[0] = (uint8_t)(id >> 8);
+    buf[1] = (uint8_t)id;
+    buf[2] = 0x01;              /* Flags: a query, recursion desired */
+    buf[5] = 1;                 /* One question */
+
+    size_t pos = 12;
+    while (*name) {
+        size_t label = 0;
+        while (name[label] && name[label] != '.') label++;
+        if (label == 0 || label > 63) return -EINVAL;   /* Empty label ("a..b"), or too long */
+        buf[pos++] = (uint8_t)label;
+        memcpy(buf + pos, name, label);
+        pos += label;
+        name += label;
+        if (*name == '.') {
+            name++;
+            if (*name == '\0') break;                   /* A trailing dot is allowed */
+        }
+    }
+    buf[pos++] = 0;
+    buf[pos++] = 0; buf[pos++] = DNS_TYPE_A;
+    buf[pos++] = 0; buf[pos++] = DNS_CLASS_IN;
+    return (long)pos;
+}
+
+/* Step over a name. Returns the position after it, or 0 if it runs off the
+ * end of the message. (A pointer ends the name: what it points to is not
+ * followed, so a message whose pointers go round in circles is harmless.) */
+static size_t dns_skip_name(const uint8_t *buf, size_t len, size_t pos) {
+    while (pos < len) {
+        uint8_t n = buf[pos];
+        if (n == 0) return pos + 1;
+        if ((n & 0xC0) == 0xC0) return pos + 2 <= len ? pos + 2 : 0;
+        if (n & 0xC0) return 0;                         /* Reserved label types */
+        pos += 1 + (size_t)n;
+    }
+    return 0;
+}
+
+long dns_parse_reply(const uint8_t *buf, size_t len, unsigned id, uint32_t *ip) {
+    if (len < 12) return -EINVAL;
+    if ((unsigned)((buf[0] << 8) | buf[1]) != (id & 0xFFFF)) return -EINVAL; /* Not the answer to our question */
+    if (!(buf[2] & 0x80)) return -EINVAL;               /* A question, not an answer */
+
+    unsigned rcode = buf[3] & 0x0F;
+    if (rcode == 3) return -ENOENT;                     /* "No such name" */
+    if (rcode != 0) return -EINVAL;
+
+    unsigned questions = (unsigned)((buf[4] << 8) | buf[5]);
+    unsigned answers = (unsigned)((buf[6] << 8) | buf[7]);
+
+    size_t pos = 12;
+    for (unsigned i = 0; i < questions; i++) {
+        pos = dns_skip_name(buf, len, pos);
+        if (pos == 0 || pos + 4 > len) return -EINVAL;
+        pos += 4;                                       /* Type and class */
+    }
+
+    /* The answers may start with aliases (CNAME records) for the name
+     * asked about; the address record of the real name follows them */
+    for (unsigned i = 0; i < answers; i++) {
+        pos = dns_skip_name(buf, len, pos);
+        if (pos == 0 || pos + 10 > len) return -EINVAL;
+        unsigned type = (unsigned)((buf[pos] << 8) | buf[pos + 1]);
+        unsigned class = (unsigned)((buf[pos + 2] << 8) | buf[pos + 3]);
+        size_t data_len = (size_t)((buf[pos + 8] << 8) | buf[pos + 9]);
+        pos += 10;                                      /* Type, class, time to live, data length */
+        if (pos + data_len > len) return -EINVAL;
+
+        if (type == DNS_TYPE_A && class == DNS_CLASS_IN && data_len == 4) {
+            *ip = ((uint32_t)buf[pos] << 24) | ((uint32_t)buf[pos + 1] << 16) | ((uint32_t)buf[pos + 2] << 8) | buf[pos + 3];
+            return 0;
+        }
+        pos += data_len;
+    }
+    return -ENOENT;                                     /* The name exists but has no address */
+}
+
+long dns_lookup(uint32_t server, unsigned port, const char *name, uint32_t *ip) {
+    static uint8_t query[300], reply[512];
+    if (server == 0) return -EHOSTUNREACH;              /* No server configured */
+
+    /* The id lets the answer be matched to the question. It should not be
+     * guessable, or anyone could answer first with a lie. */
+    unsigned id = 0;
+    long fd = open("/dev/random", O_RDONLY);
+    if (fd >= 0) {
+        read((int)fd, &id, 2);
+        close((int)fd);
+    }
+
+    long query_len = dns_build_query(query, sizeof(query), id, name);
+    if (query_len < 0) return query_len;
+
+    long sock = socket(SOCK_DGRAM);
+    if (sock < 0) return sock;
+
+    long result = -ETIMEDOUT;
+    for (int attempt = 0; attempt < 3 && result == -ETIMEDOUT; attempt++) {
+        long sent = sendto((int)sock, query, (size_t)query_len, server, port);
+        if (sent < 0) { result = sent; break; }
+
+        /* Take answers until one is ours or two seconds have passed */
+        unsigned long deadline = clock_ns() + 2000000000UL;
+        while (clock_ns() < deadline) {
+            struct net_address from;
+            unsigned long left_ms = (deadline - clock_ns()) / 1000000UL + 1;
+            long n = recvfrom((int)sock, reply, sizeof(reply), &from, left_ms);
+            if (n == -ETIMEDOUT) break;
+            if (n < 0) { result = n; break; }
+            if (from.ip != server || from.port != port) continue; /* Not from whom we asked */
+            long parsed = dns_parse_reply(reply, (size_t)n, id, ip);
+            if (parsed == 0 || parsed == -ENOENT) { result = parsed; break; }
+        }
+    }
+    close((int)sock);
+    return result;
+}
+
+long resolve(const char *name, uint32_t *ip) {
+    uint32_t literal = parse_ip(name);
+    if (literal != 0) {
+        *ip = literal;
+        return 0;
+    }
+    struct net_config config;
+    long err = netconfig(&config, NULL);
+    if (err < 0) return err;
+    return dns_lookup(config.dns, 53, name, ip);
+}
+
 uint32_t parse_ip(const char *text) {
     uint32_t ip = 0;
     for (int part = 0; part < 4; part++) {

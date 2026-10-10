@@ -59,6 +59,7 @@
 #define SYS_PING        305  // (ip, timeout_ms): round-trip time in microseconds, or a negative error
 #define SYS_CLOCK_NS    228  // (): nanoseconds since boot
 #define SYS_NANOSLEEP   230  // (nanoseconds): sleep with sub-tick precision
+#define SYS_NETCONFIG   306  // (struct net_config *get, const struct net_config *set): read the interface settings, then (root only) replace them; either may be NULL
 #define SYS_SOCKET      41   // (type): a new socket, as a file descriptor; SOCK_STREAM (TCP) or SOCK_DGRAM (UDP)
 #define SYS_CONNECT     42   // (fd, ip, port): open a TCP connection
 #define SYS_ACCEPT      43   // (fd, struct net_address *from): the next connection to a listening socket, as a new descriptor

@@ -363,8 +363,8 @@ so the numbering has gaps.
 
 ---
 
-### 29. UDP and TCP Sockets over IPv4 (Phase 29)
-**Status: partial.** Ethernet, ARP, IPv4, ICMP echo, UDP and TCP, with sockets as file descriptors (`socket`, `bind`, `sendto`, `recvfrom`; `connect`, `listen`, `accept`, `shutdown`, and `read`/`write` on a connection) and a `ping` call. TCP has the handshake, retransmission with back-off, flow control by the receiver's window, orderly close and reset; it has no congestion control, does not keep out-of-order segments, and uses a fixed initial retransmission time (see `src/net/tcp.h`). Static configuration for QEMU's user-mode network (10.0.2.15, gateway 10.0.2.2). No DHCP, no DNS, no IPv6, no fragmentation. See `src/net/net.c`, `src/net/tcp.h` and `tcp.c`, `user/nc.c`, `user/tcpecho.c`.
+### 29. UDP and TCP Sockets over IPv4, DHCP, DNS (Phase 29)
+**Status: partial.** Ethernet, ARP, IPv4, ICMP echo, UDP and TCP, with sockets as file descriptors (`socket`, `bind`, `sendto`, `recvfrom`; `connect`, `listen`, `accept`, `shutdown`, and `read`/`write` on a connection) and a `ping` call. TCP has the handshake, retransmission with back-off, flow control by the receiver's window, orderly close and reset; it has no congestion control, does not keep out-of-order segments, and uses a fixed initial retransmission time (see `src/net/tcp.h`). The interface starts with the addresses QEMU's user-mode network expects (10.0.2.15, gateway 10.0.2.2); `/bin/dhcp` replaces them with what a DHCP server offers (the lease is not renewed), and names are resolved by a DNS client in the C library (`host`, `ping NAME`; A records only, no cache). No IPv6, no fragmentation. See `src/net/net.c`, `src/net/tcp.h` and `tcp.c`, `user/nc.c`, `user/tcpecho.c`, `user/dhcp.c`, `user/host.c`, and the DNS functions in `user/lib/ulib.c`.
 
 **Goal:** Network socket layer (`socket`, `bind`, `sendto`, `recvfrom`), IPv4/UDP packet handling.
 
