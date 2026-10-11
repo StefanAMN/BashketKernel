@@ -50,8 +50,8 @@
  *    above 14 is taken as 14, 2.3), so a window can exceed 64 KiB. The
  *    send and receive rings start at TCP_BUFFER_SIZE and double, up to
  *    TCP_BUFFER_MAX (64 KiB without scaling), when they are what holds the
- *    connection back: the receive ring when it filled up and the reader
- *    then emptied it, the send ring when it is full and both windows would
+ *    connection back: the receive ring when the other end sent all the
+ *    window offered and the reader then emptied the ring, the send ring when it is full and both windows would
  *    let more be in flight. No timestamps, no selective acknowledgement.
  *  - No simultaneous open, no urgent data, no keep-alive.
  */

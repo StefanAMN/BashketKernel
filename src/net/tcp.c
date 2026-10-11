@@ -138,7 +138,8 @@ struct tcp_socket {
     uint8_t *rx;
     size_t rx_head, rx_len;
     size_t rx_size;                 // The ring's size (grow_ring)
-    bool rx_filled;                 // It ran out of room since it last grew: maybe it is too small
+    bool rx_filled;                 // The other end used all the window offered since the ring last grew
+    uint32_t rcv_adv;               // The right edge of the window last offered: rcv_nxt + window
     tcp_ooo_t ooo;                  // What is kept beyond rcv_nxt
     bool fin_known;                 // The other end's FIN has arrived, at fin_seq,
     uint32_t fin_seq;               // ... perhaps ahead of data still missing
@@ -746,8 +747,9 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
         // otherwise in our units, rounded down so that it never offers
         // room we do not have
         size_t room = rx_free(sock);
-        if (!(flags & TCP_SYN)) room >>= sock->rcv_shift;
-        uint16_t window = (uint16_t)(room > 0xFFFF ? 0xFFFF : room);
+        uint8_t shift = (flags & TCP_SYN) ? 0 : sock->rcv_shift;
+        uint16_t window = (uint16_t)((room >> shift) > 0xFFFF ? 0xFFFF : (room >> shift));
+        sock->rcv_adv = sock->rcv_nxt + ((uint32_t)window << shift);
         // Our SYN offers scaling; our SYN+ACK only accepts it if offered
         int wscale = -1;
         if ((flags & TCP_SYN) && (sock->state == TCP_SYN_SENT || sock->scaling)) wscale = TCP_WSCALE_OURS;
@@ -1121,7 +1123,6 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
             accepted = data_len;                    // Its owner has closed it: take it and drop it
         } else {
             accepted = data_len < rx_free(sock) ? data_len : rx_free(sock);
-            if (rx_free(sock) - accepted < TCP_OUR_MSS) sock->rx_filled = true;   // The window held the sender back
             size_t tail = (sock->rx_head + sock->rx_len) % sock->rx_size;
             for (size_t i = 0; i < accepted; i++) sock->rx[(tail + i) % sock->rx_size] = data[i];
         }
@@ -1137,6 +1138,10 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
             sock->dup_acks_owed = 0;                // The gap has moved: those would not be duplicates
         }
         if (keeping) sock->rx_len += sock->rcv_nxt - before;
+        // Less than a segment short of the edge we offered: the other end
+        // sent all the window allowed, so the window is what holds it back
+        // (whether or not the reader keeps the ring empty)
+        if (keeping && SEQ_LT(sock->rcv_adv, sock->rcv_nxt + TCP_OUR_MSS)) sock->rx_filled = true;
     }
 
     // The FIN comes after the data: it only counts once all of that is in
@@ -1388,9 +1393,10 @@ int64_t tcp_read(tcp_socket_t *sock, void *buf, size_t len) {
     sock->rx_head = (sock->rx_head + n) % sock->rx_size;
     sock->rx_len -= n;
 
-    // The ring filled up, and the reader has now taken everything: the
-    // reader keeps up and it was the window that held the sender back, so
-    // offer a larger one (the acknowledgement below says so at once)
+    // The other end used all the window offered, and the reader has now
+    // taken everything: the reader keeps up and it was the window that held
+    // the sender back, so offer a larger one (the acknowledgement below
+    // says so at once)
     if (sock->rx_filled && sock->rx_len == 0) {
         sock->rx_filled = false;
         if (grow_ring(sock, &sock->rx, &sock->rx_size, &sock->rx_head)) room_before = 0;

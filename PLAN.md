@@ -1994,7 +1994,7 @@ if the SYN did, and scaling is used only when both carried it. Windows in
 SYNs are never scaled; the one we advertise is rounded down so it never
 offers room we lack; ssthresh starts at 65535 in the other end's units.
 The rings start at 8 KiB and double up to 256 KiB (64 KiB unscaled): the
-receive ring when it filled and the reader then emptied it, the send ring
+receive ring when the other end used all the window offered and the reader then emptied the ring, the send ring
 when it is full while both windows allow more in flight. `/proc/tcp` shows
 the shifts and ring sizes.
 
@@ -2007,10 +2007,20 @@ not write. Times, 2 MiB echoed through `tcpecho` (`make test-net`, three
 runs each): before 0.09, 0.10, 0.11 s; after 0.12 s each. Over loopback,
 4 MiB with both rings grown to 256 KiB took 140 ms, and 149 ms with the
 rings held at 8 KiB. Neither path has latency to speak of, so a larger
-window buys almost nothing here; the gain needs a network with a real
-round trip. Sabotage: rings that never grow, the other end's windows or
-ours left unscaled, and scaling assumed without the option each failed
-the new checks.
+window buys almost nothing there. With a reader that takes what has
+arrived once a tick (standing in for a round trip), 4 MiB took 5,127 ms
+with the receive ring held at 8 KiB and 677 ms with it grown to 256 KiB.
+
+The first trigger for the receive ring ("it filled up") passed on one CPU
+and failed on four: there the reader empties the ring as data arrives, so
+it never fills even while the sender is held to a window per round trip.
+The trigger is now the one BSD uses: data reaching (within a segment) the
+right edge of the window last offered. Over loopback the send ring is
+never what holds a connection back (acknowledgements return at once), so
+its test plays the receiver by hand, offering 8192 << 5 bytes and
+acknowledging once a tick. Sabotage: rings that never grow (each trigger
+removed in turn), the other end's windows or ours left unscaled, and
+scaling assumed without the option each failed the new checks.
 
 ### S3. IPv4 fragments (M) — done
 
