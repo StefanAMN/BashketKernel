@@ -9,6 +9,8 @@
 #include "sched.h"
 #include "serial.h"
 #include "spinlock.h"
+#include "signal.h"
+#include "tty.h"
 #include "process.h"
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
@@ -22,14 +24,18 @@ static bool ctrl_pressed = false;
 static bool extended = false;   // The previous scancode was the 0xE0 prefix
 
 #define CTRL_C 0x03
+#define CTRL_Z 0x1A
 
 // Store one input character. Ctrl-C is not data: it interrupts the running
-// programs instead. Caller must hold kbd_lock.
+// programs instead. Ctrl-Z stops the foreground job, if a shell has set one
+// up and the terminal is not in raw mode (a full-screen program asked for
+// every key). Caller must hold kbd_lock.
 static void kbd_buffer_push(char c) {
     if (c == CTRL_C) {
         process_interrupt_all();
         return;
     }
+    if (c == CTRL_Z && !tty_is_raw() && process_signal_foreground(SIGTSTP)) return;
 
     size_t next_head = (kbd_head + 1) % KEYBOARD_BUFFER_SIZE;
     if (next_head != kbd_tail) {

@@ -36,7 +36,10 @@ void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 #define SIGSEGV 11
 #define SIGUSR2 12
 #define SIGTERM 15
-#define SIGCHLD 17                  /* A child has exited; ignored unless a handler is set */
+#define SIGCHLD 17                  /* A child has exited or stopped; ignored unless a handler is set */
+#define SIGCONT 18                  /* Continue a stopped process */
+#define SIGSTOP 19                  /* Stop (suspend) a process; it has no say */
+#define SIGTSTP 20                  /* Stop, from the terminal (Ctrl-Z); may be caught or ignored */
 typedef void (*sighandler_t)(int);
 #define SIG_DFL ((sighandler_t)0)   /* End the process */
 #define SIG_IGN ((sighandler_t)1)   /* Do nothing */
@@ -66,6 +69,14 @@ long sigaction(int sig, const struct sigaction *action, struct sigaction *old);
 #define SIG_UNBLOCK 1               /* Remove it */
 #define SIG_SETMASK 2               /* Replace them with it */
 long sigprocmask(int how, const uint32_t *set, uint32_t *old);
+
+/* Jobs. A process group is the set of processes a shell started for one
+ * command; kill() with a negative number signals a whole group. The
+ * terminal's foreground group is the one Ctrl-C and Ctrl-Z act on. */
+long setpgid(long pid, long pgid);           /* pid 0: the caller; pgid 0: a group of its own */
+long getpgid(long pid);
+long tcsetpgrp(long pgid);                   /* 0: no job control (Ctrl-C reaches every process) */
+long tcgetpgrp(void);
 
 /* Users and permissions. uid 0 is root and may do anything. */
 long getuid(void);

@@ -36,6 +36,11 @@ long sigaction(int sig, const struct sigaction *action, struct sigaction *old) {
     return syscall4(SYS_SIGACTION, sig, action, old, __sigreturn);
 }
 
+long setpgid(long pid, long pgid) { return syscall2(SYS_SETPGID, pid, pgid); }
+long getpgid(long pid)            { return syscall1(SYS_GETPGID, pid); }
+long tcsetpgrp(long pgid)         { return syscall1(SYS_TCSETPGRP, pgid); }
+long tcgetpgrp(void)              { return syscall0(SYS_TCGETPGRP); }
+
 long sigprocmask(int how, const uint32_t *set, uint32_t *old) {
     return syscall3(SYS_SIGPROCMASK, how, set, old);
 }

@@ -36,6 +36,10 @@
 #define SYS_SETUID   105
 #define SYS_GETPPID  110
 #define SYS_TIME     201
+#define SYS_SETPGID  109
+#define SYS_GETPGID  121
+#define SYS_TCSETPGRP 307
+#define SYS_TCGETPGRP 308
 #define SYS_SIGACTION 13
 #define SYS_SIGPROCMASK 14
 #define SYS_SIGNAL   300
@@ -108,6 +112,9 @@
 #define O_CLOEXEC 0x80000  /* Close the descriptor when the process execs a new program */
 
 #define WNOHANG 1          /* waitpid: do not wait; 0 if no child has exited yet */
+#define WUNTRACED 2        /* waitpid: also report a child that has been stopped */
+#define WIFSTOPPED(status) (((status) & 0x10000) != 0)   /* The child is stopped, not dead... */
+#define WSTOPSIG(status)   ((status) & 0xFF)             /* ...by this signal */
 
 #define F_GETFD 1          /* fcntl: read the descriptor's flags */
 #define F_SETFD 2          /* fcntl: set them */

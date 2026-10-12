@@ -18,6 +18,7 @@
 #include "tty.h"
 #include "percpu.h"
 #include "signal.h"
+#include "process.h"
 #include "smp.h"
 #include "lapic.h"
 
@@ -31,6 +32,10 @@ static task_t *task_queue_head = NULL;
 static task_t *task_queue_tail = NULL;
 static uint32_t next_pid = 0;
 static bool scheduler_active = false;
+
+// The process that inherits children whose parent has died, and waits for
+// them (see sched_set_init). NULL: there is none, and orphans are detached.
+static task_t *init_task = NULL;
 
 // One task list and one lock for all CPUs. Each CPU, when it schedules,
 // takes the next runnable task from the list that is allowed to run on it,
@@ -302,6 +307,20 @@ uint32_t sched_running_count(void) {
     return running;
 }
 
+void sched_set_init(task_t *task) {
+    uint64_t flags = sched_lock_irqsave();
+    init_task = task;
+    if (task) task->detached = true; // It has no parent to wait for it
+    sched_unlock_irqrestore(flags);
+}
+
+uint32_t sched_init_pid(void) {
+    uint64_t flags = sched_lock_irqsave();
+    uint32_t pid = init_task ? init_task->pid : 0;
+    sched_unlock_irqrestore(flags);
+    return pid;
+}
+
 task_t *sched_first_task(void) {
     return task_queue_head;
 }
@@ -424,6 +443,9 @@ void sched_yield(void) {
 // caller's lock, so the waker can not get in between.
 
 // Caller holds the scheduler lock
+static void wakeup_locked(void *channel);
+static void stop_current(task_t *self);
+
 static void wake_task(task_t *t) {
     t->wait_channel = NULL;
     t->wake_tick = 0;
@@ -451,6 +473,21 @@ static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, bool i
             spinlock_release(&sched_lock);
             if (lock && !caller_has_sched_lock) spinlock_release(lock);
             task_exit_status(128 + sig);
+        }
+
+        // Asked to stop: do it here instead of sleeping. When the process is
+        // continued it returns to its caller, which finds its condition
+        // unchanged and comes back to sleep: being stopped and continued is
+        // not an interruption.
+        if (self->stop_pending) {
+            if (lock && !caller_has_sched_lock) spinlock_release(lock);
+            stop_current(self);
+            if (!caller_has_sched_lock) {
+                spinlock_release(&sched_lock);
+                if (lock) spinlock_acquire(lock);
+                irq_restore(flags);
+            }
+            return;
         }
 
         // A signal with a handler is waiting: do not sleep on it. The caller
@@ -506,14 +543,57 @@ void sched_interrupt_sleep(task_t *task) {
 void sched_request_kill(task_t *task, int sig) {
     if (task->state != TASK_ZOMBIE && !task->exiting && task->kill_pending == 0) {
         task->kill_pending = sig;
-        // A sleeper would otherwise not notice until its event happens
-        if (task->state == TASK_BLOCKED) wake_task(task);
+        task->stop_pending = 0;
+        // A sleeper would otherwise not notice until its event happens, and
+        // a stopped process never would
+        if (task->state == TASK_BLOCKED || task->state == TASK_STOPPED) wake_task(task);
     }
+}
+
+void sched_request_stop(task_t *task, int sig) {
+    if (task->state == TASK_ZOMBIE || task->state == TASK_STOPPED || task->exiting || task->kill_pending) return;
+    task->stop_pending = sig;
+    // A sleeper is woken so that it can stop (it goes back to its sleep
+    // when it is continued: see sleep_on)
+    if (task->state == TASK_BLOCKED) wake_task(task);
+}
+
+void sched_continue(task_t *task) {
+    task->stop_pending = 0;
+    if (task->state == TASK_STOPPED) wake_task(task);
+}
+
+// Suspend the current task. Caller holds the scheduler lock and nothing
+// else; returns, still holding it, when the task has been continued.
+static void stop_current(task_t *self) {
+    self->stop_signal = self->stop_pending;
+    self->stop_pending = 0;
+    self->stop_reported = false;
+    self->state = TASK_STOPPED;
+
+    // The parent may be waiting to hear of this (waitpid with WUNTRACED)
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->pid == self->parent_pid && t != self) {
+            wakeup_locked(t);
+            signal_send_locked(t, SIGCHLD);
+            break;
+        }
+    }
+    schedule();
 }
 
 void sched_check_kill(void) {
     task_t *self = current_task;
-    if (self && self->kill_pending) task_exit_status(128 + self->kill_pending);
+    if (!self) return;
+    if (self->kill_pending) task_exit_status(128 + self->kill_pending);
+
+    // The same safe point serves for being stopped: the task holds nothing
+    if (self->stop_pending) {
+        uint64_t flags = sched_lock_irqsave();
+        if (self->stop_pending && !self->kill_pending) stop_current(self);
+        sched_unlock_irqrestore(flags);
+        if (self->kill_pending) task_exit_status(128 + self->kill_pending); // Killed while stopped
+    }
 }
 
 // Caller holds the scheduler lock
@@ -630,16 +710,32 @@ void task_exit_status(int status) {
     file_close_all(self->fds);
     task_set_cwd(self, NULL);
     tty_process_exited(self->pid);
+    process_foreground_owner_exited(self->pid);
 
     sched_lock_irqsave(); // Never released by this task: see sched_lock
     self->exit_status = status;
     self->state = TASK_ZOMBIE;
 
-    // Children of a dead task have nobody left to wait for them
+    // Children of a dead task have nobody left to wait for them: the init
+    // process takes them over, and will wait for them in its turn. (If there
+    // is none, they are marked for the kernel's own reaper.)
+    if (init_task == self) init_task = NULL;
     task_t *parent = NULL;
+    bool adopted = false;
     for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->parent_pid == self->pid && t != self) t->detached = true;
+        if (t->parent_pid == self->pid && t != self) {
+            if (init_task) {
+                t->parent_pid = init_task->pid;
+                adopted = true;
+            } else {
+                t->detached = true;
+            }
+        }
         if (t->pid == self->parent_pid && t != self) parent = t;
+    }
+    if (adopted) {
+        wakeup_locked(init_task);
+        signal_send_locked(init_task, SIGCHLD);
     }
 
     // A parent blocked in process_wait sleeps on its own task struct; one
@@ -667,6 +763,7 @@ void sched_print_tasks(void) {
             case TASK_RUNNING: state_str = "RUNNING"; break;
             case TASK_BLOCKED: state_str = "BLOCKED"; break;
             case TASK_ZOMBIE:  state_str = "ZOMBIE "; break;
+            case TASK_STOPPED: state_str = "STOPPED"; break;
         }
         kprintf("%d\t%s\t%s\n", curr->pid, state_str, curr->name);
         curr = curr->next;

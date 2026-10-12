@@ -49,7 +49,10 @@
 #define SIGSEGV 11
 #define SIGUSR2 12
 #define SIGTERM 15
-#define SIGCHLD 17   // A child of this process has exited; ignored unless a handler is set
+#define SIGCHLD 17   // A child of this process has exited or stopped; ignored unless a handler is set
+#define SIGCONT 18   // Continue if stopped
+#define SIGSTOP 19   // Stop (suspend) the process; cannot be caught, ignored or blocked
+#define SIGTSTP 20   // Stop, asked for from the terminal (Ctrl-Z); a program may catch or ignore it
 
 #define SIG_DFL 0ULL // Terminate the process
 #define SIG_IGN 1ULL // Do nothing

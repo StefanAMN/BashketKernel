@@ -90,7 +90,7 @@ NET_FLAGS = -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 
 QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
-.PHONY: all clean iso run run-gdb test test-smp test-lowmem test-disk test-edit test-login test-net fuzz check
+.PHONY: all clean iso run run-gdb test test-smp test-lowmem test-disk test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -294,6 +294,19 @@ test-smp:
 			|| { echo "$$n CPUs: FAILED (see $(BUILD)/smp-$$n.log)"; exit 1; }; \
 	done
 
+# Jobs in the user shell: a command in the background, another stopped with
+# Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
+# which init must adopt and collect.
+test-jobs: iso
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect '\[1\] [0-9]+\n' --expect '\[2\] Stopped   spin' --expect '[0-9]+\t[0-9]+\t0\tstopped\tuser\t[0-9]\t[0-9]+\t[0-9]+\tspin' \
+		--expect '\[2\] spin &' --expect '\[1\] Running   sleep 30\n\[2\] Running   spin' \
+		--expect 'jobs-left:\n\$$ ' --expect 'orphan [0-9]+: parent was [0-9]+, is now 3\n' \
+		--forbid 'zombie' --forbid '\tspin\n.*\n.*after-exit' \
+		'exec /bin/sh' 'sleep 30 &' 'jobs' '!spin' '^Z' 'jobs' 'ps' 'bg 2' 'jobs' '!fg 2' '^C' '!fg' '^C' \
+		'echo jobs-left:' 'jobs' 'orphan 200' 'sleep 1' 'ps' 'exit' 'echo after-exit' 'ps' > $(BUILD)/jobs.log 2>&1 \
+		&& echo "jobs and orphans: ok" || { echo "jobs and orphans: FAILED (see $(BUILD)/jobs.log)"; exit 1; }
+
 check:
 	@$(MAKE) --no-print-directory test
 	@$(MAKE) --no-print-directory test CPU=max
@@ -304,6 +317,8 @@ check:
 	@$(MAKE) --no-print-directory test-disk
 	@$(MAKE) --no-print-directory test-edit
 	@$(MAKE) --no-print-directory test-login
+	@$(MAKE) --no-print-directory test-jobs
+	@$(MAKE) --no-print-directory test-jobs SMP=4
 	@$(MAKE) --no-print-directory test-net
 	@$(MAKE) --no-print-directory test-net CPU=max
 	@$(MAKE) --no-print-directory fuzz FUZZ_SEEDS="1 2 3"

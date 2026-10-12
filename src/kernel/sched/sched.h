@@ -163,6 +163,27 @@ bool sched_sleep_ticks(uint64_t ticks);
 void sched_request_kill(task_t *task, int sig);
 
 /**
+ * @brief Ask for a process to be suspended (a stop signal). Like a kill, it
+ *        takes effect at the target's next safe point. Caller holds the
+ *        scheduler lock.
+ */
+void sched_request_stop(task_t *task, int sig);
+
+/**
+ * @brief Let a stopped process run again, and cancel a stop it has not yet
+ *        acted on. Caller holds the scheduler lock.
+ */
+void sched_continue(task_t *task);
+
+/**
+ * @brief Name the process that adopts orphans: a child whose parent dies
+ *        becomes its child. NULL: nobody (orphans are reaped by the kernel).
+ *        Cleared automatically if that process exits.
+ */
+void sched_set_init(task_t *task);
+uint32_t sched_init_pid(void);
+
+/**
  * @brief Safe point: end the current task now if a kill was requested.
  */
 void sched_check_kill(void);

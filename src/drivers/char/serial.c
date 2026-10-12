@@ -4,6 +4,8 @@
  */
 
 #include "serial.h"
+#include "signal.h"
+#include "tty.h"
 #include "io.h"
 #include "interrupts.h"
 #include <stddef.h>
@@ -32,6 +34,8 @@ static void serial_drain_uart(void) {
         if (c == 127) c = '\b';
         if (c == 0x03) {
             process_interrupt_all(); // Ctrl-C: not data, interrupts running programs
+        } else if (c == 0x1A && !tty_is_raw() && process_signal_foreground(SIGTSTP)) {
+            // Ctrl-Z: stopped the foreground job (see keyboard.c)
         } else if (c != 0) {
             size_t next_head = (serial_head + 1) % SERIAL_BUFFER_SIZE;
             if (next_head != serial_tail) {

@@ -72,6 +72,10 @@ pid_t process_wait(pid_t pid, int *status);
 // The same, with options. PROCESS_WNOHANG: do not wait; return 0 if there
 // are children to wait for but none has exited yet.
 #define PROCESS_WNOHANG 1
+// PROCESS_WUNTRACED: also return for a child that has been stopped; its
+// status is then PROCESS_STATUS_STOPPED | the stop signal.
+#define PROCESS_WUNTRACED 2
+#define PROCESS_STATUS_STOPPED 0x10000
 
 // fork fails rather than leave fewer free frames than this (256 KiB)
 #define PROCESS_FORK_RESERVE_FRAMES 64
@@ -90,5 +94,44 @@ int process_kill(pid_t pid, int sig);
  *        interrupt handler.
  */
 void process_interrupt_all(void);
+
+// --- Jobs --------------------------------------------------------------------
+//
+// A process group is a set of processes that a shell started for one command
+// (a pipeline). One group at a time is in the foreground of the terminal:
+// Ctrl-C and Ctrl-Z act on it and on nobody else.
+
+/**
+ * @brief Move process `pid` (0: the caller) into group `pgid` (0: a new group
+ *        named after the process). Only the caller itself or its children.
+ */
+int process_set_group(pid_t pid, uint32_t pgid);
+
+/**
+ * @brief Send a signal to every process of a group that `sender_uid` may
+ *        signal. -1 if that was none.
+ */
+int process_kill_group(uint32_t pgid, int sig, uint32_t sender_uid);
+
+/**
+ * @brief Make a group the terminal's foreground group (0: no job control).
+ *        Reverts to 0 when the calling process exits.
+ */
+int process_set_foreground(uint32_t pgid);
+uint32_t process_get_foreground(void);
+void process_foreground_owner_exited(uint32_t pid);
+
+/**
+ * @brief A signal typed at the keyboard: to the foreground group. Without
+ *        one, SIGINT goes to every user process and other signals nowhere.
+ * @return false if the key had no meaning and should be treated as input.
+ */
+bool process_signal_foreground(int sig);
+
+/**
+ * @brief Start the program that adopts orphaned processes (see
+ *        sched_set_init). Returns its PID or a negative value.
+ */
+pid_t process_start_init(const char *path);
 
 #endif // PROCESS_H

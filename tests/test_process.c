@@ -199,6 +199,59 @@ TEST(kill_takes_effect_at_a_safe_point) {
     EXPECT_TRUE(test_free_frames() == free_before);
 }
 
+static bool task_named_exists(const char *name) {
+    bool found = false;
+    uint64_t flags = sched_lock_irqsave();
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (strcmp(t->name, name) == 0) found = true;
+    }
+    sched_unlock_irqrestore(flags);
+    return found;
+}
+
+// A process whose parent has died is handed to init, which waits for it.
+// Without init such a process is marked for the kernel's reaper; with it,
+// the kernel does not have to do anything.
+TEST(orphans_are_adopted_and_collected_by_init) {
+    sched_reap();
+    size_t free_before = test_free_frames();
+    EXPECT_TRUE(sched_init_pid() == 0);                    // The test kernel starts none
+
+    pid_t init = process_start_init("/bin/init");
+    EXPECT_TRUE(init > 0);
+    EXPECT_TRUE(sched_init_pid() == (uint32_t)init);
+
+    // The parent exits at once; its child lives another 200 ms
+    char *argv[] = { "/bin/orphan", "200", NULL };
+    EXPECT_EQ(run("/bin/orphan", argv), 0);
+    TEST_WAIT(false, 5);                                   // Half way through the child's life
+    pid_t child_parent = -1;
+    bool child_detached = true;
+    uint64_t flags = sched_lock_irqsave();
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (strcmp(t->name, "/bin/orphan") == 0 || strcmp(t->name, "orphan") == 0) {
+            child_parent = (pid_t)t->parent_pid;
+            child_detached = t->detached;
+        }
+    }
+    sched_unlock_irqrestore(flags);
+    EXPECT_EQ(child_parent, init);                         // Init is its parent now
+    EXPECT_TRUE(!child_detached);                          // ...and the one who will collect it
+
+    // It dies, and is gone from the task list without the kernel's reaper
+    // being called: init waited for it
+    TEST_WAIT(!task_named_exists("/bin/orphan") && !task_named_exists("orphan"), 200);
+    EXPECT_TRUE(!task_named_exists("/bin/orphan") && !task_named_exists("orphan"));
+
+    // Init itself has no parent: when it is killed, the kernel reaps it
+    EXPECT_EQ(process_kill(init, SIGKILL), 0);
+    size_t reaped = 0;
+    TEST_WAIT((reaped += sched_reap()) >= 1, 200);
+    EXPECT_EQ(reaped, (size_t)1);
+    EXPECT_TRUE(sched_init_pid() == 0);                    // And is no longer anyone's heir
+    EXPECT_TRUE(test_free_frames() == free_before);
+}
+
 // Ctrl-C ends the programs a shell is running but not the shell, which has
 // asked to be left alone.
 TEST(interrupt_spares_processes_that_ignore_it) {
@@ -305,6 +358,7 @@ void test_suite_process(void) {
     RUN_TEST(processes_leave_nothing_behind);
     RUN_TEST(shell_pipelines_and_redirection);
     RUN_TEST(kill_takes_effect_at_a_safe_point);
+    RUN_TEST(orphans_are_adopted_and_collected_by_init);
     RUN_TEST(interrupt_spares_processes_that_ignore_it);
     RUN_TEST(syscall_at_the_top_of_user_space_is_survived);
     RUN_TEST(address_space_layout_is_randomised);

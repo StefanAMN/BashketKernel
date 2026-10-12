@@ -747,6 +747,132 @@ static void check_signal_masks(void) {
     signal(SIGUSR1, SIG_DFL);
 }
 
+/* --- Stopping, continuing, process groups ----------------------------------- */
+
+static volatile int tstp_calls;
+static void count_tstp(int sig) { (void)sig; tstp_calls++; }
+
+static void check_jobs(void) {
+    int status;
+    long me = getpid();
+
+    /* Groups: a child starts in its parent's, and may be given its own */
+    long my_group = getpgid(0);
+    CHECK(my_group > 0 && getpgid(me) == my_group);
+    CHECK(getpgid(99999) == -ESRCH);
+    long pid = fork();
+    if (pid == 0) {
+        for (;;) sleep_ms(1000);
+    }
+    CHECK(getpgid(pid) == my_group);
+    CHECK(setpgid(pid, 0) == 0 && getpgid(pid) == pid);
+    CHECK(setpgid(pid, 77777) == -EPERM);                  /* No such group among our own */
+    CHECK(setpgid(1, 0) == -EPERM || setpgid(1, 0) == 0);  /* Someone else's process: refused (unless it is ours) */
+    CHECK(setpgid(99999, 0) == -EPERM);
+
+    /* A second child joins the first one's group; a signal to the group
+     * reaches both and nobody else */
+    long second = fork();
+    if (second == 0) {
+        for (;;) sleep_ms(1000);
+    }
+    CHECK(setpgid(second, pid) == 0 && getpgid(second) == pid);
+    CHECK(kill(-(int)pid, SIGTERM) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGTERM);
+    CHECK(waitpid(second, &status, 0) == second && status == 128 + SIGTERM);
+    CHECK(kill(-(int)pid, SIGTERM) == -ESRCH);             /* Nobody left in it */
+    CHECK(kill(-77777, SIGTERM) == -ESRCH);
+
+    /* SIGSTOP suspends, whatever the process is doing; waitpid can be told.
+     * The child counts in memory it shares with us, so we can see whether
+     * it is running. */
+    volatile unsigned long *counter = mmap_shared(4096);
+    CHECK(counter != NULL);
+    if (!counter) return;
+    *counter = 0;
+    pid = fork();
+    if (pid == 0) {
+        for (;;) (*counter)++;
+    }
+    while (*counter == 0) yield();                         /* It runs */
+    CHECK(waitpid(pid, &status, WNOHANG | WUNTRACED) == 0);
+    CHECK(kill(pid, SIGSTOP) == 0);
+    status = 0;
+    CHECK(waitpid(pid, &status, WUNTRACED) == pid);
+    CHECK(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
+    CHECK(waitpid(pid, &status, WNOHANG | WUNTRACED) == 0); /* Reported once */
+
+    /* Stopped means not running */
+    unsigned long frozen = *counter;
+    sleep_ms(100);
+    CHECK(*counter == frozen);
+
+    /* SIGCONT lets it go on */
+    CHECK(kill(pid, SIGCONT) == 0);
+    sleep_ms(50);
+    CHECK(*counter > frozen);
+
+    /* A stop that has been asked for and cancelled before it took effect,
+     * or taken back at once, leaves it running */
+    CHECK(kill(pid, SIGSTOP) == 0 && kill(pid, SIGCONT) == 0);
+    sleep_ms(50);
+    frozen = *counter;
+    sleep_ms(50);
+    CHECK(*counter > frozen);
+
+    /* A stopped process can still be killed */
+    CHECK(kill(pid, SIGSTOP) == 0);
+    CHECK(waitpid(pid, &status, WUNTRACED) == pid && WIFSTOPPED(status));
+    CHECK(kill(pid, SIGKILL) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
+    munmap((void *)counter, 4096);
+
+    /* A process stopped while asleep goes back to its sleep when continued:
+     * the sleep is neither cut short nor reported as interrupted */
+    pid = fork();
+    if (pid == 0) {
+        unsigned long start = clock_ns();
+        long r = syscall1(SYS_SLEEP, 300);
+        unsigned long ms = (clock_ns() - start) / 1000000UL;
+        exit(r == 0 && ms >= 290 ? 0 : 1);
+    }
+    sleep_ms(50);
+    CHECK(kill(pid, SIGSTOP) == 0);
+    CHECK(waitpid(pid, &status, WUNTRACED) == pid && WIFSTOPPED(status));
+    sleep_ms(50);
+    CHECK(kill(pid, SIGCONT) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+
+    /* SIGTSTP is the polite form: it stops by default, but a program may
+     * ignore it or handle it. SIGSTOP may not be touched. */
+    CHECK(signal(SIGSTOP, SIG_IGN) == SIG_ERR);
+    uint32_t set = sigbit(SIGSTOP), old = 0;
+    CHECK(sigprocmask(SIG_BLOCK, &set, NULL) == 0);
+    CHECK(sigprocmask(SIG_BLOCK, NULL, &old) == 0 && old == 0);  /* Nor blocked */
+    tstp_calls = 0;
+    CHECK(signal(SIGTSTP, count_tstp) != SIG_ERR);
+    CHECK(kill(me, SIGTSTP) == 0 && tstp_calls == 1);            /* Handled: we are still here */
+    CHECK(signal(SIGTSTP, SIG_IGN) != SIG_ERR);
+    CHECK(kill(me, SIGTSTP) == 0);
+    signal(SIGTSTP, SIG_DFL);
+    pid = fork();
+    if (pid == 0) {
+        for (;;) sleep_ms(1000);
+    }
+    sleep_ms(20);
+    CHECK(kill(pid, SIGTSTP) == 0);
+    CHECK(waitpid(pid, &status, WUNTRACED) == pid && WIFSTOPPED(status) && WSTOPSIG(status) == SIGTSTP);
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+
+    /* The terminal's foreground group: set, read, put back */
+    long previous = tcgetpgrp();
+    CHECK(previous >= 0);
+    CHECK(tcsetpgrp(my_group) == 0 && tcgetpgrp() == my_group);
+    CHECK(tcsetpgrp(previous) == 0 && tcgetpgrp() == previous);
+    CHECK(waitpid(-1, &status, 0x80) == -EINVAL);
+}
+
 static void check_interrupted_calls(void) {
     CHECK(interrupted_child(0) == 0);            /* read on a pipe */
     CHECK(interrupted_child(1) == 0);            /* sleep */
@@ -1453,6 +1579,7 @@ int main(void) {
     check_copy_on_write();
     check_descriptors_and_wait();
     check_signal_masks();
+    check_jobs();
     check_stack_growth();
     check_files();
     check_directories();
