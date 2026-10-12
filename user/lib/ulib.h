@@ -79,10 +79,15 @@ long tcsetpgrp(long pgid);                   /* 0: no job control (Ctrl-C reache
 long tcgetpgrp(void);
 
 /* Users and permissions. uid 0 is root and may do anything. */
-long getuid(void);
-long setuid(unsigned uid);                   /* Root may become anyone; nobody else may change */
-long chmod(const char *path, unsigned mode); /* For example 0644: owner reads and writes, others read */
-long chown(const char *path, unsigned uid);  /* Root only */
+long getuid(void);                           /* The real user: who started this process */
+long geteuid(void);                          /* The effective user: whose rights it has (differs in a set-uid program) */
+long getgid(void);
+long setuid(unsigned uid);                   /* Root may become anyone; anyone else may only go back to their real user */
+long setgid(unsigned gid);                   /* Root only */
+long umask(unsigned mask);                   /* Bits removed from the mode of files this process creates; returns the old mask */
+long chmod(const char *path, unsigned mode); /* Octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid */
+long chown(const char *path, unsigned uid, unsigned gid); /* Root only (an owner may set their own group); KEEP_ID leaves one as it is */
+#define KEEP_ID 0xFFFFFFFFu
 
 /* Memory */
 void *sbrk(long increment);

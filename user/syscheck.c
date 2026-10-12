@@ -1411,7 +1411,7 @@ static void checks_as_alice(void) {
     CHECK(unlink("/etc/motd") == -EACCES);
     CHECK(mkdir("/evil") == -EACCES);
     CHECK(chmod("/etc/passwd", 0666) == -EPERM);
-    CHECK(chown("/etc/motd", 1000) == -EPERM);
+    CHECK(chown("/etc/motd", 1000, KEEP_ID) == -EPERM);
 
     /* Programs can still be run, and devices meant for everyone used */
     long pid = fork();
@@ -1430,7 +1430,7 @@ static void checks_as_alice(void) {
     CHECK(write((int)fd, "hers", 4) == 4);
     close((int)fd);
     CHECK(chmod("/tmp/alice.txt", 0600) == 0);          /* The owner may */
-    CHECK(chown("/tmp/alice.txt", 1001) == -EPERM);     /* ... but may not give it away */
+    CHECK(chown("/tmp/alice.txt", 1001, KEEP_ID) == -EPERM);     /* ... but may not give it away */
     fd = open("/tmp/alice.txt", O_RDONLY);
     CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 4);
     close((int)fd);
@@ -1464,6 +1464,178 @@ static void checks_as_bob(void) {
     CHECK(unlink("/tmp/bob.txt") == 0);
 }
 
+/* --- Groups, the execute bit, set-uid, umask -------------------------------- */
+
+/* The mode of an entry of /tmp, or -1 */
+static long tmp_mode(const char *name) {
+    struct dirent entry;
+    long mode = -1;
+    long fd = open("/tmp", O_RDONLY);
+    if (fd < 0) return -1;
+    while (readdir((int)fd, &entry) == 1) {
+        if (strcmp(entry.name, name) == 0) mode = (long)entry.mode;
+    }
+    close((int)fd);
+    return mode;
+}
+
+static int copy_file(const char *from, const char *to) {
+    static char buf[4096];
+    long in = open(from, O_RDONLY);
+    long out = open(to, O_WRONLY | O_CREAT | O_TRUNC);
+    long n = -1;
+    if (in >= 0 && out >= 0) {
+        while ((n = read((int)in, buf, sizeof(buf))) > 0) {
+            if (write((int)out, buf, (size_t)n) != n) { n = -1; break; }
+        }
+    }
+    if (in >= 0) close((int)in);
+    if (out >= 0) close((int)out);
+    return n == 0 ? 0 : -1;
+}
+
+/* Run a program and collect what it prints; returns its exit status */
+static int run_capture(const char *path, char *out, size_t size) {
+    int p[2];
+    if (pipe(p) != 0) return -1;
+    long pid = fork();
+    if (pid == 0) {
+        dup2(p[1], 1);
+        close(p[0]);
+        close(p[1]);
+        char *args[] = { (char *)path, NULL };
+        exit(execve(path, args, NULL) == -EACCES ? 126 : 127);
+    }
+    close(p[1]);
+    size_t used = 0;
+    long n;
+    while (used < size - 1 && (n = read(p[0], out + used, size - 1 - used)) > 0) used += (size_t)n;
+    out[used] = '\0';
+    close(p[0]);
+    int status = -1;
+    waitpid(pid, &status, 0);
+    return status;
+}
+
+static int contains(const char *text, const char *what) {
+    size_t len = strlen(what);
+    for (; *text; text++) if (strncmp(text, what, len) == 0) return 1;
+    return 0;
+}
+
+static long shared_key_id;      /* A segment root made, for the others to be refused */
+
+/* As alice, in group 100 */
+static void permission_checks_as_alice(void) {
+    static char out[256];
+    CHECK(getuid() == 1000 && geteuid() == 1000 && getgid() == 100);
+    CHECK(setgid(0) == -EPERM && setgid(100) == 0);
+
+    /* The group's digit applies to us: read, not write */
+    long fd = open("/tmp/group.txt", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(open("/tmp/group.txt", O_WRONLY) == -EACCES);
+
+    /* A set-uid program runs with its owner's rights and knows who we are */
+    CHECK(run_capture("/tmp/suid-id", out, sizeof(out)) == 0);
+    CHECK(contains(out, "uid 1000\n") && contains(out, "effective uid 0 (root)"));
+    CHECK(run_capture("/bin/id", out, sizeof(out)) == 0);
+    CHECK(contains(out, "uid 1000\n") && !contains(out, "effective"));
+    CHECK(getuid() == 1000 && geteuid() == 1000);            /* Nothing rubbed off on us */
+
+    /* We may not make our own: the bit can be set only on our own files,
+     * and then it lends out our rights, not root's */
+    CHECK(chmod("/tmp/suid-id", 04777) == -EPERM);
+    CHECK(open("/tmp/suid-id", O_WRONLY) == -EACCES);
+    CHECK(copy_file("/bin/id", "/tmp/alice-id") == 0);
+    CHECK(tmp_mode("alice-id") == 0644);
+    CHECK(run_capture("/tmp/alice-id", out, sizeof(out)) == 126);   /* Not marked executable: refused */
+    CHECK(chmod("/tmp/alice-id", 04755) == 0 && tmp_mode("alice-id") == 04755);
+    CHECK(run_capture("/tmp/alice-id", out, sizeof(out)) == 0 && !contains(out, "effective"));
+    fd = open("/tmp/alice-id", O_WRONLY | O_APPEND);          /* Writing to it takes the bit away */
+    CHECK(fd >= 0 && tmp_mode("alice-id") == 0755);
+    if (fd >= 0) close((int)fd);
+
+    /* Group and owner of our files: our own group, yes; anything else, no */
+    CHECK(chown("/tmp/alice-id", KEEP_ID, 100) == 0);
+    CHECK(chown("/tmp/alice-id", KEEP_ID, 0) == -EPERM);
+    CHECK(chown("/tmp/alice-id", 0, KEEP_ID) == -EPERM);
+    CHECK(unlink("/tmp/alice-id") == 0);
+
+    /* umask is ours to choose and shapes what we create */
+    CHECK(umask(077) == 022);
+    fd = open("/tmp/private.txt", O_WRONLY | O_CREAT);
+    CHECK(fd >= 0 && close((int)fd) == 0 && tmp_mode("private.txt") == 0600);
+    CHECK(mkdir("/tmp/private-dir") == 0 && tmp_mode("private-dir") == 0700);
+    CHECK(umask(022) == 077);
+    CHECK(unlink("/tmp/private.txt") == 0 && unlink("/tmp/private-dir") == 0);
+
+    /* Shared memory belongs to whoever made it */
+    CHECK(shmget(0x5EC0DE, 4096) == -EACCES);                 /* Root's: not found by its key */
+    CHECK(shmat(shared_key_id) == NULL);
+    CHECK(shmrm(shared_key_id) == -EACCES);
+    long mine = shmget(0xA11CE, 4096);
+    CHECK(mine >= 0);
+    char *mapped = shmat(mine);
+    CHECK(mapped != NULL);
+    if (mapped) mapped[0] = 'a';
+    CHECK(shmrm(mine) == 0);
+}
+
+/* As bob, in a group that owns nothing */
+static void permission_checks_as_bob(void) {
+    static char out[64];
+    CHECK(getuid() == 1001 && getgid() == 200);
+    CHECK(open("/tmp/group.txt", O_RDONLY) == -EACCES);       /* Not the owner, not in the group */
+    CHECK(run_capture("/tmp/root-only", out, sizeof(out)) == 126);
+}
+
+static int as_user_in_group(unsigned uid, unsigned gid, void (*checks)(void)) {
+    long pid = fork();
+    if (pid == 0) {
+        failures = 0;
+        if (setgid(gid) != 0 || setuid(uid) != 0) exit(100);
+        checks();
+        exit(failures);
+    }
+    int status = -1;
+    waitpid(pid, &status, 0);
+    return status;
+}
+
+static void check_groups_and_setuid(void) {
+    static char out[128];
+    CHECK(getuid() == 0 && geteuid() == 0 && getgid() == 0);
+
+    /* The mask a new file's mode is cut down by */
+    CHECK(umask(022) == 022);
+    long fd = open("/tmp/group.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "g", 1) == 1 && close((int)fd) == 0);
+    CHECK(tmp_mode("group.txt") == 0644);
+    CHECK(chmod("/tmp/group.txt", 0640) == 0 && chown("/tmp/group.txt", KEEP_ID, 100) == 0);
+    CHECK(chmod("/tmp/group.txt", 010000) == -EINVAL);        /* No such bit */
+
+    /* A copy of a program is not a program until it is marked as one */
+    CHECK(copy_file("/bin/id", "/tmp/suid-id") == 0);
+    CHECK(run_capture("/tmp/suid-id", out, sizeof(out)) == 126);
+    CHECK(chmod("/tmp/suid-id", 04755) == 0);
+    CHECK(run_capture("/tmp/suid-id", out, sizeof(out)) == 0 && contains(out, "uid 0 (root)"));
+    CHECK(copy_file("/bin/hello", "/tmp/root-only") == 0 && chmod("/tmp/root-only", 0700) == 0);
+
+    shared_key_id = shmget(0x5EC0DE, 4096);
+    CHECK(shared_key_id >= 0);
+
+    CHECK(as_user_in_group(1000, 100, permission_checks_as_alice) == 0);
+    CHECK(as_user_in_group(1001, 200, permission_checks_as_bob) == 0);
+
+    /* Root giving a set-uid file away does not hand out a set-uid program */
+    CHECK(chown("/tmp/suid-id", 1001, KEEP_ID) == 0 && tmp_mode("suid-id") == 0755);
+
+    CHECK(shmrm(shared_key_id) == 0);
+    CHECK(unlink("/tmp/group.txt") == 0 && unlink("/tmp/suid-id") == 0 && unlink("/tmp/root-only") == 0);
+}
+
 static void check_users(void) {
     CHECK(getuid() == 0);                               /* The checks themselves run as root */
     root_pid = getpid();
@@ -1478,8 +1650,8 @@ static void check_users(void) {
     long fd = open("/tmp/alice.txt", O_RDONLY);
     CHECK(fd >= 0);
     close((int)fd);
-    CHECK(chown("/tmp/alice.txt", 1001) == 0);
-    CHECK(chown("/tmp/no-such-file", 1001) == -ENOENT);
+    CHECK(chown("/tmp/alice.txt", 1001, KEEP_ID) == 0);
+    CHECK(chown("/tmp/no-such-file", 1001, KEEP_ID) == -ENOENT);
     CHECK(chmod((const char *)0xffffffff80000000, 0600) == -EFAULT);
     CHECK(unlink("/tmp/alice.txt") == 0);
 }
@@ -1776,6 +1948,7 @@ int main(void) {
     check_netconfig_and_dns();
     check_shared_memory();
     check_users();
+    check_groups_and_setuid();
     check_pipes();
 
     if (failures == 0) {

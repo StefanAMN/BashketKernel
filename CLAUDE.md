@@ -88,6 +88,7 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
+make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
 make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
 make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one; SMP=4
@@ -386,6 +387,12 @@ code comments and commit messages; `git log` is the full history.
   listed it, so `make check` went on "running" it and reporting success for
   eight commits. After editing the Makefile, list its targets
   (`grep -n '^[a-z-]*:' Makefile`) and compare with what `check` calls.
+- **A set-uid program is the kernel lending rights; the program decides
+  what they are used for.** The kernel's part is small: run the file as its
+  owner, keep the real user id so the program can tell who called, and take
+  the bit away when the file is written by anyone but root or changes
+  owner. Everything else (`passwd` changing only the caller's line) is user
+  code, and is where the mistakes would be.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

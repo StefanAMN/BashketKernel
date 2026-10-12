@@ -32,7 +32,11 @@
 #define SYS_UNLINK   87
 #define SYS_CHMOD    90
 #define SYS_CHOWN    92
+#define SYS_UMASK    95
 #define SYS_GETUID   102
+#define SYS_GETGID   104
+#define SYS_SETGID   106
+#define SYS_GETEUID  107
 #define SYS_SETUID   105
 #define SYS_GETPPID  110
 #define SYS_TIME     201
@@ -148,10 +152,10 @@ struct net_config {
 /* One directory entry, filled in by readdir() */
 struct dirent {
     uint32_t type;      /* DT_FILE or DT_DIR */
-    uint32_t mode;      /* Permission bits: 0400 owner reads, 0200 owner writes, 0004 and 0002 for everyone else */
+    uint32_t mode;      /* Permission bits, in octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid */
     uint64_t size;
     uint32_t uid;       /* Owner */
-    uint32_t reserved;
+    uint32_t gid;       /* Group */
     char name[128];
 };
 

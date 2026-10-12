@@ -75,7 +75,9 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
         if (!auth_may_access(uid, parent, true)) return -EACCES; // Creating changes the directory
         int err = vfs_create(parent, leaf, VFS_FILE, &node);
         if (err != 0) return err;
-        node->uid = uid; // The new file belongs to whoever made it
+        node->uid = uid; // The new file belongs to whoever made it,
+        node->gid = (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT; // ...and to their group
+        node->mode = (uint16_t)(PERM_NEW_FILE & ~auth_current_umask());
     }
     if (!node) return -ENOENT;
     if (node->type == VFS_DIRECTORY && writable) return -EISDIR;
@@ -87,6 +89,9 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     if (!file) return -ENOMEM;
 
     if (writable && (flags & O_TRUNC)) vfs_truncate(node, 0);
+    // A set-uid program that anyone but root can rewrite would be a way to
+    // become its owner: opening it for writing takes the bit away
+    if (writable && uid != UID_ROOT) node->mode &= (uint16_t)~PERM_SETUID;
     file->append = (flags & O_APPEND) != 0;
     file->node = node;
     node->open_count++;
@@ -287,6 +292,7 @@ static int readdir_locked(file_t *file, struct dirent_info *out) {
     out->type = child->type;
     out->mode = child->mode;
     out->uid = child->uid;
+    out->gid = child->gid;
     out->size = child->size;
     strncpy(out->name, child->name, sizeof(out->name) - 1);
     file->offset++;

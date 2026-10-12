@@ -50,6 +50,15 @@ uint64_t shm_attach(int id, uint64_t *pml4, uint64_t *mmap_next);
 int shm_remove(int id);
 
 /**
+ * @brief Whether user `uid` may attach or remove the segment: its creator
+ *        and root may. (false also if there is no such segment.)
+ */
+bool shm_may_use(int id, uint32_t uid);
+
+// Whether a segment with this number exists
+bool shm_count_valid(int id);
+
+/**
  * @brief Number of segments that currently exist.
  */
 size_t shm_count(void);

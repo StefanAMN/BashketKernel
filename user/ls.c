@@ -21,14 +21,13 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        /* rw for the owner, rw for everyone else, then the owner's uid */
-        char perms[5];
-        perms[0] = (entry.mode & 0400) ? 'r' : '-';
-        perms[1] = (entry.mode & 0200) ? 'w' : '-';
-        perms[2] = (entry.mode & 0004) ? 'r' : '-';
-        perms[3] = (entry.mode & 0002) ? 'w' : '-';
-        perms[4] = '\0';
-        printf("%c%s %5u %8lu %s\n", entry.type == DT_DIR ? 'd' : '-', perms, entry.uid,
+        /* rwx for the owner, the group and everyone else ('s' in the
+         * owner's x place: set-uid), then the owner and the group */
+        char perms[10];
+        for (int i = 0; i < 9; i++) perms[i] = (entry.mode & (0400u >> i)) ? "rwx"[i % 3] : '-';
+        if (entry.mode & 04000) perms[2] = (entry.mode & 0100) ? 's' : 'S';
+        perms[9] = '\0';
+        printf("%c%s %5u %5u %8lu %s\n", entry.type == DT_DIR ? 'd' : '-', perms, entry.uid, entry.gid,
                (unsigned long)entry.size, entry.name);
     }
 

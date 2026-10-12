@@ -376,7 +376,7 @@ so the numbering has gaps.
 ---
 
 ### 31. User Account Authentication (Phase 31)
-**Status: real.** Processes run as a numeric user (0 is root). Files and directories have an owner and read/write bits for the owner and for everyone else, checked on open, create, remove, `exec`, `chmod`/`chown`, `kill` and binding low ports. `/bin/login` checks a SHA-256 password hash from a root-only `/etc/passwd` and drops to the user. No groups, no execute bit, no set-uid programs (so no way back up to root), unsalted hashes. See `src/kernel/proc/auth.h` and `user/login.c`.
+**Status: partial.** Processes run as a user and a group (numbers; root is 0). Files have an owner, a group and Unix permission bits (read, write and execute for owner, group and others), checked on open, create, remove, `execve` and `chmod`; new files get 0666 less the process's `umask`. A set-uid file runs with its owner's rights while the process keeps its real user id (`getuid` / `geteuid`); the bit is dropped when a non-root user writes to the file or the file changes owner. `/bin/login`, `/bin/su` and `/bin/passwd` (the last two set-uid root) check passwords stored in `/etc/passwd` as salted PBKDF2-HMAC-SHA256 hashes. Shared memory segments belong to their creator. Not done: supplementary groups, the execute bit on directories, set-gid and sticky bits; files on the FAT volume all belong to root (FAT cannot store owners); `/etc/passwd` lives in the initrd, so a changed password lasts until reboot. See `src/kernel/proc/auth.h` and `auth.c`, `user/lib/password.h` and `password.c`, `user/login.c`, `user/su.c`, `user/passwd.c`, `tools/mkpasswd.py`.
 
 **Goal:** User account authentication (`auth_login`), UID/GID context management.
 

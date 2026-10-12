@@ -75,7 +75,10 @@ typedef struct task {
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
     uint32_t fd_cloexec;     // Bit n set: descriptor n is closed when the process execs a new program
     void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
-    uint32_t uid;            // The user this process runs as (0: root, may do anything)
+    uint32_t uid;            // Effective user: whose rights this process has (0: root, may do anything)
+    uint32_t ruid;           // Real user: who started it (differs from uid only in a set-uid program)
+    uint32_t gid;            // Its group
+    uint16_t umask;          // Permission bits removed from every file it creates
     struct vnode *cwd;       // Working directory for relative paths (NULL: the root)
     uint32_t pgid;           // Process group: the job it belongs to (signals from the terminal go to a whole group)
     int stop_pending;        // Stop signal that will suspend this process at its next safe point (0: none)

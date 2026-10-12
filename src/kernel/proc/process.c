@@ -32,6 +32,8 @@ typedef struct {
     uint64_t image_end;
     uint64_t stack_top;    // Randomised per program
     char name[32];
+    bool setuid;          // The file has the set-uid bit...
+    uint32_t owner;       // ...and this owner
 } user_image_t;
 
 static uint64_t page_align_up(uint64_t value) {
@@ -127,7 +129,10 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
     task_t *caller = sched_get_current_task();
     vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
     if (!file || file->type != VFS_FILE || file->size == 0) return false;
+    if (!auth_may_execute(auth_current_uid(), file)) return false;       // Marked as a program, for this user?
     if (!auth_may_access(auth_current_uid(), file, false)) return false; // Running a program means reading it
+    image->setuid = (file->mode & PERM_SETUID) != 0;
+    image->owner = file->uid;
 
     // A file in memory (the initrd) can be loaded from where it is. One whose
     // contents come from elsewhere (the disk) is read into a buffer first.
@@ -245,6 +250,7 @@ pid_t process_spawn(const char *path, char *const argv[]) {
     apply_image(task, &image);
     task->detached = false; // The creator is expected to process_wait() for it
     task->pgid = task->pid; // A process group of its own
+    task->umask = UMASK_DEFAULT;
 
     // Standard input, output and error all start as the console
     file_t *console = file_open_console();
@@ -273,6 +279,10 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
     region_release_all(self); // The old program's mappings are not the new one's
     apply_image(self, &image);
+
+    // A set-uid program runs as the file's owner, whoever started it. The
+    // real user id stays: it is how the program knows who that was.
+    if (image.setuid) self->uid = image.owner;
 
     signal_reset_on_exec(self);
 
@@ -338,6 +348,9 @@ pid_t process_fork(struct registers *regs) {
     child->brk_start = parent->brk_start;
     child->brk_end = parent->brk_end;
     child->uid = parent->uid;
+    child->ruid = parent->ruid;
+    child->gid = parent->gid;
+    child->umask = parent->umask;
     child->mmap_next = parent->mmap_next;
     region_fork(child, parent);
     child->stack_top = parent->stack_top;
