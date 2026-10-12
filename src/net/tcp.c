@@ -102,6 +102,7 @@ struct tcp_socket {
     bool user_open;                 // Someone still holds it (a file descriptor)
     tcp_state_t state;
     int error;                      // Why the connection died (positive errno), 0 if it has not
+    int soft_error;                 // What an ICMP error said may be wrong, reported if it then times out
 
     uint16_t local_port;
     uint16_t remote_port;
@@ -927,6 +928,26 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
     wake(sock); // A writer may be waiting for room
 }
 
+void tcp_icmp_error(uint32_t remote_ip, uint16_t local_port, uint16_t remote_port, uint32_t seq,
+                    uint8_t type, uint8_t code) {
+    uint64_t irq = spinlock_acquire_irqsave(&tcp_lock);
+    struct tcp_socket *sock = find_connection(local_port, remote_ip, remote_port);
+    // Something we sent and the other end has not acknowledged: from
+    // snd_una (the SYN itself while connecting) up to snd_max
+    bool believed = sock && !SEQ_LT(seq, sock->snd_una) && SEQ_LT(seq, sock->snd_max);
+    if (!believed) {
+        stats.icmp_ignored++;
+    } else {
+        stats.icmp_errors++;
+        if (type == 3 && (code == 2 || code == 3 || code == 4)) {
+            abort_connection(sock, code == 4 ? EMSGSIZE : ECONNREFUSED);    // Hard: it will not get better
+        } else if (type == 3) {
+            sock->soft_error = (code == 0 || code == 6 || code == 9) ? ENETUNREACH : EHOSTUNREACH;
+        }
+    }
+    spinlock_release_irqrestore(&tcp_lock, irq);
+}
+
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
     uint64_t irq = spinlock_acquire_irqsave(&tcp_lock);
     stats.segments_in++;
@@ -1193,7 +1214,7 @@ static void run_timers(struct tcp_socket *sock, uint64_t now) {
             return;
         }
         if (++sock->retries > TCP_MAX_RETRIES) {
-            abort_connection(sock, ETIMEDOUT);
+            abort_connection(sock, sock->soft_error ? sock->soft_error : ETIMEDOUT);
             return;
         }
 

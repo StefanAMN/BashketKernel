@@ -976,6 +976,56 @@ TEST(tcp_send_ring_grows_past_64k) {
     EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
 }
 
+static tcp_socket_t *icmp_client;
+static volatile int icmp_connect_result, icmp_connect_done;
+
+// Connects icmp_client to port 40130 at our own address and records how it went
+static void icmp_connector_entry(void) {
+    icmp_connect_result = tcp_connect(icmp_client, NET_LOCAL_IP, 40130);
+    icmp_connect_done = 1;
+}
+
+// An ICMP error ends a connection only if it quotes the connection and a
+// sequence number it has in flight, and only for the hard codes; a soft
+// one is remembered. Everything the client sends is dropped, so its SYN
+// stays unanswered and it stays connecting.
+TEST(tcp_icmp_errors_end_a_connection) {
+    size_t sockets_before = tcp_sockets_in_use();
+    const tcp_stats_t *st = tcp_stats();
+    tcp_test_drop_every(1);
+    icmp_client = tcp_open();
+    EXPECT_EQ(tcp_bind(icmp_client, 7130), 0);
+    icmp_connect_done = 0;
+    icmp_connect_result = 1;
+    EXPECT_TRUE(task_create("tcp_icmp", icmp_connector_entry) != NULL);
+    uint32_t rcv_nxt = 0, sent = 0, iss = 0;
+    TEST_WAIT(tcp_test_sequences(7130, 40130, &rcv_nxt, &sent, &iss) && sent == iss + 1, 100);
+    EXPECT_EQ(sent, iss + 1);                                       // The SYN is out
+
+    // Forged: the wrong sequence number, the wrong port, the wrong address
+    uint64_t ignored = st->icmp_ignored, acted = st->icmp_errors;
+    tcp_icmp_error(NET_LOCAL_IP, 7130, 40130, iss + 5000, 3, 3);
+    tcp_icmp_error(NET_LOCAL_IP, 7130, 40131, iss, 3, 3);
+    tcp_icmp_error(NET_IP(10, 0, 2, 9), 7130, 40130, iss, 3, 3);
+    EXPECT_TRUE(st->icmp_ignored == ignored + 3 && st->icmp_errors == acted);
+    // Soft: host unreachable is remembered, the connection goes on. (Ended,
+    // it would still be found, closed and held by its owner, and connect
+    // would return a moment later: so look for that return a while.)
+    tcp_icmp_error(NET_LOCAL_IP, 7130, 40130, iss, 3, 1);
+    EXPECT_TRUE(st->icmp_errors == acted + 1);
+    TEST_WAIT(icmp_connect_done, 30);
+    EXPECT_EQ(icmp_connect_done, 0);
+    // Hard: port unreachable, quoting the SYN, ends it at once
+    tcp_icmp_error(NET_LOCAL_IP, 7130, 40130, iss, 3, 3);
+    TEST_WAIT(icmp_connect_done, 100);
+    EXPECT_EQ(icmp_connect_done, 1);
+    EXPECT_EQ(icmp_connect_result, -ECONNREFUSED);
+    tcp_test_drop_every(0);
+    tcp_close(icmp_client);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
 void test_suite_tcp(void) {
     kprintf("Suite: TCP\n");
     if (!net_up()) {
@@ -999,4 +1049,5 @@ void test_suite_tcp(void) {
     RUN_TEST(tcp_window_scaling_is_negotiated);
     RUN_TEST(tcp_receive_ring_grows_past_64k);
     RUN_TEST(tcp_send_ring_grows_past_64k);
+    RUN_TEST(tcp_icmp_errors_end_a_connection);
 }
