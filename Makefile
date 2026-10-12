@@ -294,6 +294,23 @@ test-smp:
 			|| { echo "$$n CPUs: FAILED (see $(BUILD)/smp-$$n.log)"; exit 1; }; \
 	done
 
+# A scripted login: wrong password refused, then a shell as an ordinary user
+# who can use the system but not change it, then back to root.
+test-login: iso
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'incorrect name or password' --expect 'uid 1000\n' \
+		--expect 'passwd: permission denied' --expect 'hello: permission denied' \
+		--expect 'motd: permission denied' --expect 'vda: permission denied' \
+		--expect 'Hello from ring 3' --expect 'uid 0 \(root\)' --forbid 'alice:1000' \
+		'!exec /bin/login alice' '~wrong\r' '@wait:1' '!exec /bin/login alice' '~alice\r' \
+		'id' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
+		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' 'exit' 'exec /bin/id' \
+		> $(BUILD)/login.log 2>&1 \
+		&& echo "login and permissions: ok" || { echo "login: FAILED (see $(BUILD)/login.log)"; exit 1; }
+
+# Everything, on both CPU models: what to run before calling a change done.
+# Takes about three minutes.
+
 # Jobs in the user shell: a command in the background, another stopped with
 # Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
 # which init must adopt and collect.

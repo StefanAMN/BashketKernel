@@ -193,6 +193,25 @@ static void user_task_start(void) {
 // what it has. The page fault handler calls this for "page not present"
 // faults. The lowest page of the region is never mapped: running into it is
 // how unbounded recursion ends (with a fault) instead of reaching other memory.
+bool process_populate(uint64_t addr, size_t len) {
+    task_t *self = sched_get_current_task();
+    if (!self || !self->is_user || len == 0) return true;
+    if (addr >= USER_SPACE_END || len > USER_SPACE_END - addr) return false;
+
+    uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
+    for (uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1); page < addr + len; page += PAGE_SIZE) {
+        if (vmm_get_pte(space, page) & VMM_PRESENT) continue;
+        if (process_grow_stack(page)) continue;
+        int given = region_fault(self, page);
+        if (given < 0) return false;  // Promised, and no memory to keep the promise
+        // Never promised: the range is bad, and the check that follows will
+        // say so. Stop here: the length is the caller's word, and walking
+        // terabytes of nothing one page at a time is not a way to say no.
+        if (given == 0) break;
+    }
+    return true;
+}
+
 bool process_grow_stack(uint64_t addr) {
     task_t *self = sched_get_current_task();
     if (!self || !self->is_user) return false;
@@ -252,6 +271,7 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     if (!load_user_image(path, argv, envp, &image)) return -1;
 
     uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
+    region_release_all(self); // The old program's mappings are not the new one's
     apply_image(self, &image);
 
     signal_reset_on_exec(self);
@@ -319,6 +339,7 @@ pid_t process_fork(struct registers *regs) {
     child->brk_end = parent->brk_end;
     child->uid = parent->uid;
     child->mmap_next = parent->mmap_next;
+    region_fork(child, parent);
     child->stack_top = parent->stack_top;
     memcpy(child->sig_handlers, parent->sig_handlers, sizeof(child->sig_handlers));
     memcpy(child->sig_masks, parent->sig_masks, sizeof(child->sig_masks));

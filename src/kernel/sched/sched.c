@@ -709,6 +709,7 @@ void task_exit_status(int status) {
     // and may sleep.)
     file_close_all(self->fds);
     task_set_cwd(self, NULL);
+    region_release_all(self); // Mapped files are free to be removed again
     tty_process_exited(self->pid);
     process_foreground_owner_exited(self->pid);
 

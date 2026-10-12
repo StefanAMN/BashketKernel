@@ -139,7 +139,7 @@ so the numbering has gaps.
 ---
 
 ### 8. Advanced Memory Management (Phase 8)
-**Status: partial.** The slab allocator is used for open-file objects; `mmap`/`brk` work per process; `fork` shares pages copy-on-write (`vmm_clone_user_space`, `vmm_handle_cow_fault`). The user stack grows on demand (`process_grow_stack`).
+**Status: partial.** The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects. `fork` shares pages copy-on-write. `mmap` and `brk` only promise memory: a page gets its frame when it is first touched (so does the user stack, up to 8 MiB), and the calls fail when more would be promised than is free. A file can be mapped privately (`mmap` with a descriptor): each page is read from the file when first touched, and writes stay in the process. `munmap` can remove part of a mapping. Not done: shared file mappings and writing changes back, a page cache (two processes mapping one file each read their own copy), and loading executables this way. See `src/mm/region.h` and `region.c`, `src/mm/mmap.c`, `src/mm/cow.c`, and `try_promised_page` in `src/arch/x86_64/isr.c`.
 
 **Goal:** Slab object allocator, Copy-On-Write (COW), Anonymous memory mapping (`mmap`).
 

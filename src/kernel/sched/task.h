@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "region.h"
 
 #define KERNEL_STACK_SIZE (16 * 1024) // 16 KiB kernel stack per task
 #define TASK_MAX_FDS 16               // Open file descriptors per process
@@ -68,6 +69,8 @@ typedef struct task {
     uint64_t brk_start;      // First address after the loaded program image
     uint64_t brk_end;        // Current program break (heap end)
     uint64_t mmap_next;      // Next free address in the mmap region
+    mem_region_t regions[TASK_MAX_REGIONS]; // Memory promised by mmap, given page by page on first touch (region.h)
+    size_t promised_pages;   // Pages of those regions, and of the heap, not yet touched
     uint64_t stack_top;      // Highest address of the user stack (randomised per program)
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
     uint32_t fd_cloexec;     // Bit n set: descriptor n is closed when the process execs a new program

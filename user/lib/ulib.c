@@ -116,6 +116,11 @@ void *mmap_shared(size_t length) {
     return ret < 0 ? NULL : (void *)ret;
 }
 
+void *mmap_file(int fd, size_t length, size_t offset, int prot) {
+    long ret = syscall6(SYS_MMAP, 0, length, prot, MAP_PRIVATE, fd, offset);
+    return ret < 0 ? NULL : (void *)ret;
+}
+
 long munmap(void *addr, size_t length) { return syscall2(SYS_MUNMAP, addr, length); }
 
 long shmget(unsigned key, size_t size)  { return syscall2(SYS_SHMGET, key, size); }

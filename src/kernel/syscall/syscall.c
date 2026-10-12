@@ -84,6 +84,9 @@ static uint64_t *current_space(void) {
 }
 
 static bool user_range_ok(uint64_t addr, size_t len, bool write) {
+    // Memory the program has been promised but has not touched yet is
+    // given its frames now: see process_populate
+    if (!process_populate(addr, len)) return false;
     return vmm_user_range_ok(current_space(), addr, len, write);
 }
 
@@ -379,24 +382,46 @@ static int64_t sys_kill(int pid, int sig) {
 static int64_t sys_brk(uint64_t new_brk) {
     task_t *task = sched_get_current_task();
     if (new_brk == 0) return (int64_t)task->brk_end;
-    return (int64_t)user_set_brk(current_space(), task->brk_start, &task->brk_end, new_brk);
+    return (int64_t)region_set_brk(task, new_brk);
 }
 
-static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags) {
-    // Only private anonymous memory at a kernel-chosen address is supported
-    if (addr != 0 || !(flags & MAP_ANONYMOUS) || (flags & MAP_FIXED)) return -EINVAL;
-    if (length == 0) return -EINVAL;
+static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
+    // Always at an address the kernel chooses
+    if (addr != 0 || (flags & MAP_FIXED) || length == 0) return -EINVAL;
+    if (prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) return -EINVAL;
 
     task_t *task = sched_get_current_task();
     bool shared = (flags & MAP_SHARED) != 0;
-    if (shared && (flags & MAP_PRIVATE)) return -EINVAL; // One or the other
-    uint64_t mapped = user_mmap_anon_flags(current_space(), &task->mmap_next, length, prot, shared);
-    return mapped ? (int64_t)mapped : -ENOMEM;
+    if (shared == ((flags & MAP_PRIVATE) != 0)) return -EINVAL; // One or the other
+
+    if (flags & MAP_ANONYMOUS) {
+        if (shared) {
+            // Shared with children: given its frames at once, so that parent
+            // and child are certain to get the same ones
+            uint64_t mapped = user_mmap_anon_flags(current_space(), &task->mmap_next, length, prot, true);
+            return mapped ? (int64_t)mapped : -ENOMEM;
+        }
+        int error = 0;
+        uint64_t mapped = region_map(task, length, prot, NULL, 0, &error);
+        return mapped ? (int64_t)mapped : error;
+    }
+
+    // A file: private only (changes stay in this process), and the file must
+    // have been opened for reading, which is what its pages will be
+    if (shared) return -EINVAL;
+    file_t *file = fd_to_file(fd);
+    if (!file) return -EBADF;
+    if (file->kind != FILE_VNODE || file->node->type != VFS_FILE || !file->readable) return -EACCES;
+    if (offset & (PAGE_SIZE - 1)) return -EINVAL;
+
+    int error = 0;
+    uint64_t mapped = region_map(task, length, prot, file->node, offset, &error);
+    return mapped ? (int64_t)mapped : error;
 }
 
 static int64_t sys_munmap(uint64_t addr, size_t length) {
     if (addr < USER_MMAP_BASE) return -EINVAL; // Not something mmap handed out
-    return user_unmap_range(current_space(), addr, length) == 0 ? 0 : -EINVAL;
+    return region_unmap(sched_get_current_task(), addr, length);
 }
 
 static int64_t sys_sleep(uint64_t milliseconds) {
@@ -805,7 +830,7 @@ static int64_t dispatch(struct registers *regs) {
             return (int64_t)process_get_foreground();
 
         case SYS_BRK:     return sys_brk(regs->rdi);
-        case SYS_MMAP:    return sys_mmap(regs->rdi, (size_t)regs->rsi, (int)regs->rdx, (int)regs->r10);
+        case SYS_MMAP:    return sys_mmap(regs->rdi, (size_t)regs->rsi, (int)regs->rdx, (int)regs->r10, (int)regs->r8, regs->r9);
         case SYS_MUNMAP:  return sys_munmap(regs->rdi, (size_t)regs->rsi);
         case SYS_SLEEP:   return sys_sleep(regs->rdi);
         case SYS_TIME:    return (int64_t)pit_get_ticks();

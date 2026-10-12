@@ -86,7 +86,8 @@ long chown(const char *path, unsigned uid);  /* Root only */
 
 /* Memory */
 void *sbrk(long increment);
-void *mmap_anon(size_t length);
+void *mmap_anon(size_t length);             /* Zero-filled memory. A page costs nothing until it is first touched. */
+void *mmap_file(int fd, size_t length, size_t offset, int prot); /* The file's contents as memory, read when first touched; a private copy: writing to it does not change the file */
 void *mmap_shared(size_t length);            /* Stays shared with children created by fork */
 
 /* Shared memory between any processes that agree on a key */

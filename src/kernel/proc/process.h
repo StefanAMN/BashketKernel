@@ -95,6 +95,17 @@ int process_kill(pid_t pid, int sig);
  */
 void process_interrupt_all(void);
 
+/**
+ * @brief Give frames to whatever part of [addr, addr + len) the calling
+ *        process has been promised and has not touched yet (stack growth,
+ *        lazy mmap and heap). The kernel calls this before using a buffer a
+ *        program passed in: its own access must not fault, since it may be
+ *        holding a lock. Addresses that were never promised are left alone
+ *        (the range check that follows rejects them).
+ * @return false only if memory ran out.
+ */
+bool process_populate(uint64_t addr, size_t len);
+
 // --- Jobs --------------------------------------------------------------------
 //
 // A process group is a set of processes that a shell started for one command

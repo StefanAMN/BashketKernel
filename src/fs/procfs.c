@@ -8,6 +8,7 @@
  */
 
 #include "procfs.h"
+#include "region.h"
 #include "vfs.h"
 #include "kprintf.h"
 #include "kstring.h"
@@ -58,10 +59,12 @@ static size_t gen_meminfo(char *buf, size_t size) {
     return ksnprintf(buf, size,
                      "MemTotal:   %lu kB\n"
                      "MemFree:    %lu kB\n"
+                     "Promised:   %lu kB\n"
                      "KernelHeap: %lu bytes in use, %lu kB mapped\n"
                      "Refused:    %lu frame requests, %lu kernel heap requests\n",
                      (uint64_t)pmm_get_total_frames() * 4,
                      (uint64_t)pmm_get_free_frames() * 4,
+                     (uint64_t)region_promised_pages() * 4,
                      (uint64_t)kheap_get_allocated_bytes(),
                      (uint64_t)kheap_get_mapped_bytes() / 1024,
                      (uint64_t)pmm_get_failed_allocations(),

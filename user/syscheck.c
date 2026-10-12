@@ -873,6 +873,181 @@ static void check_jobs(void) {
     CHECK(waitpid(-1, &status, 0x80) == -EINVAL);
 }
 
+/* --- Memory that is promised first and given later -------------------------- */
+
+/* A number from /proc/meminfo, in kB (-1 if it is not there) */
+static long meminfo(const char *label) {
+    static char text[512];
+    long fd = open("/proc/meminfo", O_RDONLY);
+    if (fd < 0) return -1;
+    long n = read((int)fd, text, sizeof(text) - 1);
+    close((int)fd);
+    if (n <= 0) return -1;
+    text[n] = '\0';
+    size_t label_len = strlen(label);
+    char *at = NULL;
+    for (char *c = text; *c && !at; c++) {
+        if (strncmp(c, label, label_len) == 0) at = c;
+    }
+    if (!at) return -1;
+    at += label_len;
+    while (*at == ' ') at++;
+    return atoi(at);
+}
+
+static void check_lazy_memory(void) {
+    const size_t big = 64UL << 20;                         /* 64 MiB */
+    long free_before = meminfo("MemFree:");
+    long promised_before = meminfo("Promised:");
+    CHECK(free_before > 0 && promised_before >= 0);
+
+    /* A large mapping costs (nearly) nothing until it is used */
+    unsigned char *map = mmap_anon(big);
+    CHECK(map != NULL);
+    if (!map) return;
+    CHECK(free_before - meminfo("MemFree:") < 1024);       /* Not 65536 kB */
+    CHECK(meminfo("Promised:") - promised_before == (long)(big >> 10));
+
+    /* Touched pages appear, zero-filled, and only those are paid for */
+    int nonzero = 0;
+    for (size_t i = 0; i < 16; i++) {
+        unsigned char *page = map + i * (4UL << 20) + 123;
+        if (*page != 0) nonzero++;
+        *page = (unsigned char)(i + 1);
+    }
+    CHECK(nonzero == 0);
+    for (size_t i = 0; i < 16; i++) CHECK(map[i * (4UL << 20) + 123] == i + 1);
+    long used = free_before - meminfo("MemFree:");
+    CHECK(used >= 16 * 4 && used < 2048);                  /* 16 pages, plus page tables */
+    CHECK(meminfo("Promised:") - promised_before == (long)(big >> 10) - 16 * 4);
+
+    /* The kernel may be handed an untouched part as a buffer */
+    int p[2];
+    CHECK(pipe(p) == 0);
+    CHECK(write(p[1], "lazy", 4) == 4);
+    CHECK(read(p[0], map + (40UL << 20), 4) == 4 && memcmp(map + (40UL << 20), "lazy", 4) == 0);
+    CHECK(write(p[1], map + (50UL << 20), 3) == 3);        /* Reading untouched memory: zeros */
+    char three[3] = { 1, 1, 1 };
+    CHECK(read(p[0], three, 3) == 3 && three[0] == 0 && three[2] == 0);
+    close(p[0]);
+    close(p[1]);
+
+    /* A child gets the same promise and its own pages */
+    long pid = fork();
+    if (pid == 0) {
+        if (map[123] != 1) exit(1);                        /* What the parent wrote */
+        map[123] = 99;
+        map[(60UL << 20)] = 7;                             /* A page neither had touched */
+        exit(map[(60UL << 20)] == 7 ? 0 : 2);
+    }
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    CHECK(map[123] == 1 && map[(60UL << 20)] == 0);        /* Ours are untouched by it */
+
+    /* Unmapping part of it: the rest stays, the hole is a bad address */
+    CHECK(munmap(map + (8UL << 20), 4UL << 20) == 0);
+    CHECK(map[123] == 1 && map[(12UL << 20) + 123] == 4);  /* Before and after the hole */
+    CHECK(write(1, map + (8UL << 20), 1) == -EFAULT);
+    pid = fork();
+    if (pid == 0) {
+        map[(8UL << 20) + 5] = 1;                          /* Must fault */
+        exit(0);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGSEGV);
+
+    /* Everything given back: frames and promises */
+    CHECK(munmap(map, big) == 0);
+    CHECK(meminfo("Promised:") == promised_before);
+    long back = meminfo("MemFree:");
+    CHECK(free_before - back < 256 && back - free_before < 256);
+
+    /* More than the machine has is refused at once, not at first touch */
+    CHECK(syscall4(SYS_MMAP, 0, 1UL << 40, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS) == -ENOMEM);
+    CHECK(meminfo("Promised:") == promised_before);
+
+    /* The heap works the same way */
+    char *heap = sbrk(32L << 20);
+    CHECK(heap != (void *)-1);
+    if (heap != (void *)-1) {
+        CHECK(free_before - meminfo("MemFree:") < 1024);
+        heap[0] = 1;
+        heap[(32UL << 20) - 1] = 2;
+        CHECK(heap[0] == 1 && heap[(32UL << 20) - 1] == 2 && heap[16UL << 20] == 0);
+        CHECK(sbrk(-(32L << 20)) != (void *)-1);
+        CHECK(meminfo("Promised:") == promised_before);
+    }
+    CHECK(sbrk(1L << 29) == (void *)-1 || sbrk(-(1L << 29)) != (void *)-1); /* Half a GiB: refused, or taken back */
+
+    /* A file as memory: its contents, read when first touched */
+    static char by_read[9000];
+    long fd = open("/bin/hello", O_RDONLY);
+    CHECK(fd >= 0);
+    long size = lseek((int)fd, 0, SEEK_END);
+    CHECK(size > 8192 && lseek((int)fd, 0, SEEK_SET) == 0);
+    CHECK(read((int)fd, by_read, sizeof(by_read)) == (long)sizeof(by_read));
+    unsigned char *file = mmap_file((int)fd, (size_t)size, 0, PROT_READ | PROT_WRITE);
+    CHECK(file != NULL);
+    if (file) {
+        CHECK(memcmp(file, by_read, sizeof(by_read)) == 0);
+        CHECK(file[0] == 0x7F && file[1] == 'E');          /* It is an ELF file */
+
+        /* Past the end of the file, up to the end of the page: zeros */
+        size_t tail = ((size_t)size + 4095) & ~4095UL;
+        int tail_nonzero = 0;
+        for (size_t i = (size_t)size; i < tail; i++) if (file[i] != 0) tail_nonzero++;
+        CHECK(tail_nonzero == 0);
+
+        /* Private: our changes are ours, the file is as it was */
+        file[0] = 'X';
+        CHECK(lseek((int)fd, 0, SEEK_SET) == 0 && read((int)fd, by_read, 4) == 4 && by_read[0] == 0x7F);
+        CHECK(munmap(file, (size_t)size) == 0);
+    }
+
+    /* From an offset; and the mapping outlives the descriptor */
+    unsigned char *second = mmap_file((int)fd, 4096, 4096, PROT_READ);
+    CHECK(second != NULL);
+    CHECK(close((int)fd) == 0);
+    if (second) {
+        fd = open("/bin/hello", O_RDONLY);
+        CHECK(lseek((int)fd, 4096, SEEK_SET) == 4096 && read((int)fd, by_read, 4096) == 4096);
+        close((int)fd);
+        CHECK(memcmp(second, by_read, 4096) == 0);
+        pid = fork();
+        if (pid == 0) {
+            second[0] = 1;                                 /* Mapped read-only: must fault */
+            exit(0);
+        }
+        CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGSEGV);
+        CHECK(munmap(second, 4096) == 0);
+    }
+
+    /* A mapped file is in use: it can not be removed until it is unmapped */
+    fd = open("/tmp/mapped.txt", O_RDWR | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "mapped text", 11) == 11);
+    char *text = mmap_file((int)fd, 11, 0, PROT_READ);
+    CHECK(text != NULL && close((int)fd) == 0);
+    if (text) {
+        CHECK(memcmp(text, "mapped text", 11) == 0);
+        CHECK(unlink("/tmp/mapped.txt") == -EBUSY);
+        CHECK(munmap(text, 11) == 0);
+    }
+    CHECK(unlink("/tmp/mapped.txt") == 0);
+
+    /* What can not be mapped */
+    fd = open("/bin/hello", O_RDONLY);
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, fd, 100) == -EINVAL);       /* Offset not on a page boundary */
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_SHARED, fd, 0) == -EINVAL);          /* Shared file mappings: not offered */
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, 99, 0) == -EBADF);
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, 1, 0) == -EACCES);          /* The console is not a file */
+    CHECK(syscall6(SYS_MMAP, 0, 4096, 0x80, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == -EINVAL);
+    CHECK(syscall6(SYS_MMAP, 0, 0, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == -EINVAL);
+    close((int)fd);
+    fd = open("/tmp", O_RDONLY);
+    CHECK(syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_PRIVATE, fd, 0) == -EACCES);         /* Nor is a directory */
+    close((int)fd);
+    CHECK(meminfo("Promised:") == promised_before);
+}
+
 static void check_interrupted_calls(void) {
     CHECK(interrupted_child(0) == 0);            /* read on a pipe */
     CHECK(interrupted_child(1) == 0);            /* sleep */
@@ -1500,11 +1675,20 @@ static void check_stack_growth(void) {
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(status == 128 + 11);
 
-    /* The kernel does not grow the stack on a program's behalf: a buffer
-     * below the mapped part is simply a bad address */
+    /* The kernel grows the stack for itself too: a buffer in a part of it
+     * that has never been touched is as good as any other */
     char here;
-    unsigned long far_below = (unsigned long)&here - (4UL << 20);
-    CHECK(read(0, (void *)far_below, 1) == -EFAULT);
+    char *far_below = (char *)((unsigned long)&here - (4UL << 20));
+    int p[2];
+    CHECK(pipe(p) == 0);
+    CHECK(write(p[1], "s", 1) == 1);
+    CHECK(read(p[0], far_below, 1) == 1 && *far_below == 's');
+    close(p[0]);
+    close(p[1]);
+
+    /* ...but not beyond the limit: that is simply a bad address */
+    unsigned long beyond = (unsigned long)&here - (16UL << 20);
+    CHECK(read(0, (void *)beyond, 1) == -EFAULT);
 }
 
 /* Copy-on-write: after fork both processes share every page until one writes. */
@@ -1581,6 +1765,7 @@ int main(void) {
     check_signal_masks();
     check_jobs();
     check_stack_growth();
+    check_lazy_memory();
     check_files();
     check_directories();
     check_environment();
