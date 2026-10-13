@@ -40,6 +40,7 @@
 #include "heap.h"
 #include "sched.h"
 #include "mount.h"
+#include "rtc.h"
 
 #define SECTOR VIRTIO_BLK_SECTOR_SIZE
 
@@ -60,7 +61,6 @@
 #define MAX_DEPTH 8                  // Directory nesting followed
 #define MAX_DIR_ENTRIES 4096         // Entries read from one directory
 #define MAX_WRITE_BYTES (64 * 1024)  // Most that one write call transfers
-#define FAT_DATE_FIXED (((2026 - 1980) << 9) | (1 << 5) | 1) // 2026-01-01: no clock is consulted
 
 struct dir_entry {
     uint8_t  name[11];               // 8 characters of name, 3 of extension, space padded
@@ -78,8 +78,11 @@ struct dir_entry {
 // (vnode->private_data points to one of these)
 typedef struct {
     uint32_t first_cluster;    // 0 for an empty file
-    uint64_t entry_lba;        // Sector holding its directory entry (0 for the root, which has none)
+    uint64_t entry_lba;        // Sector holding its (short) directory entry (0 for the root, which has none)
     uint32_t entry_offset;     // Byte offset of the entry in that sector
+    uint32_t dir_index;        // The same place as a slot number in its directory
+    uint8_t lfn_count;         // Long-name entries directly in front of it
+    uint8_t short_name[11];    // Its 8.3 name as stored, to keep aliases unique
 } fat_node_t;
 
 static const vnode_ops_t fat_file_ops;
@@ -325,6 +328,9 @@ static void free_chain(uint32_t cluster) {
 
 // --- Directory entries on disk ------------------------------------------------
 
+static void fat_now(uint16_t *date, uint16_t *time);
+static uint32_t fat_now_packed(void);
+
 // Change the first cluster and size recorded in a node's directory entry.
 static bool update_entry(const fat_node_t *info, uint32_t first_cluster, uint32_t size) {
     if (info->entry_lba == 0) return true; // The root directory has no entry
@@ -336,13 +342,61 @@ static bool update_entry(const fat_node_t *info, uint32_t first_cluster, uint32_
     entry->cluster_high = (uint16_t)(first_cluster >> 16);
     entry->cluster_low = (uint16_t)first_cluster;
     entry->size = size;
+    uint16_t date, time;
+    fat_now(&date, &time);                           // The contents have just changed
+    entry->write_date = entry->access_date = date;
+    entry->write_time = time;
     return virtio_blk_write(info->entry_lba, sector, 1) == 0;
+}
+
+// --- Names --------------------------------------------------------------------
+//
+// Every file has a short name: eight characters and three of extension, upper
+// case, stored in its 32-byte directory entry. A name that does not fit that
+// (too long, mixed case, a space, two dots) is stored as well, in "long file
+// name" entries placed directly before the short one: 13 UTF-16 characters
+// each, the last part first, each carrying a checksum of the short name so
+// that software which knows nothing of long names, and deletes or renames
+// the short entry, leaves long entries behind that can be recognised as
+// orphans. The short name is then an invented alias ("A LONG~1.TXT").
+
+#define LFN_CHARS 13                 // Characters per long-name entry
+#define LFN_LAST  0x40               // Flag in the ordinal of the final part (which comes first on disk)
+#define NAME_MAX_LEN 127             // A vnode's name holds this many
+
+// The checksum of a short name that its long-name entries carry
+// (Microsoft's FAT specification, "Long Directory Entries")
+static uint8_t lfn_checksum(const uint8_t short_name[11]) {
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; i++) sum = (uint8_t)(((sum & 1) << 7) + (sum >> 1) + short_name[i]);
+    return sum;
+}
+
+static char upper(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
+
+// FAT names keep their case but are compared without it
+static bool names_equal_nocase(const char *a, const char *b) {
+    while (*a && *b && upper(*a) == upper(*b)) { a++; b++; }
+    return *a == '\0' && *b == '\0';
+}
+
+// May this be a (long) file name? Printable ASCII without the characters
+// that mean something in a path or to DOS, not ending in a space or a dot.
+static bool valid_long_name(const char *name) {
+    size_t len = strlen(name);
+    if (len == 0 || len > NAME_MAX_LEN) return false;
+    if (name[0] == ' ' || name[len - 1] == ' ' || name[len - 1] == '.') return false;
+    for (size_t i = 0; i < len; i++) {
+        char c = name[i];
+        if (c < 0x20 || c > 0x7E || strchr("\"*/:<>?\\|", c)) return false;
+    }
+    return true;
 }
 
 // "notes.txt" -> "NOTES   TXT" plus the lower-case flags. FAT short names are
 // upper case; a name that is all lower case is stored upper case with a flag
-// saying "show it in lower case". Mixed case would need a long file name
-// entry, which this driver does not write.
+// saying "show it in lower case". Returns false for a name that does not fit
+// a short entry exactly: it then needs long-name entries.
 static bool encode_name(const char *name, uint8_t out[11], uint8_t *nt_flags) {
     static const char allowed[] = "0123456789_-~!#$%&'()@^`{}";
     size_t base_len = 0, ext_len = 0;
@@ -359,75 +413,220 @@ static bool encode_name(const char *name, uint8_t out[11], uint8_t *nt_flags) {
         }
 
         bool lower = (c >= 'a' && c <= 'z');
-        bool upper = (c >= 'A' && c <= 'Z');
-        if (!lower && !upper && !strchr(allowed, c)) return false;
+        bool is_upper = (c >= 'A' && c <= 'Z');
+        if (!lower && !is_upper && !strchr(allowed, c)) return false;
         if (lower) c = (char)(c - 32);
 
         if (in_ext) {
             if (ext_len >= 3) return false;
             out[8 + ext_len++] = (uint8_t)c;
             ext_lower |= lower;
-            ext_upper |= upper;
+            ext_upper |= is_upper;
         } else {
             if (base_len >= 8) return false;
             out[base_len++] = (uint8_t)c;
             base_lower |= lower;
-            base_upper |= upper;
+            base_upper |= is_upper;
         }
     }
 
-    if (base_len == 0) return false;
+    if (base_len == 0 || (in_ext && ext_len == 0)) return false;
     if ((base_lower && base_upper) || (ext_lower && ext_upper)) return false; // Mixed case
     *nt_flags = (uint8_t)((base_lower ? NT_LOWER_BASE : 0) | (ext_lower ? NT_LOWER_EXT : 0));
     return true;
 }
 
-// Find an unused 32-byte slot in a directory, extending the directory by a
-// cluster if it is full. Returns where the slot is.
-static bool find_free_slot(fat_node_t *dir, uint64_t *out_lba, uint32_t *out_offset) {
-    uint32_t cluster = dir->first_cluster;
-    uint32_t last = 0;
-    uint32_t steps = 0;
+// The short alias number `n` for a long name: up to six characters of the
+// name, "~n", and up to three of what follows its last dot
+static void make_alias(const char *name, unsigned n, uint8_t out[11]) {
+    static const char allowed[] = "0123456789_-!#$%&'()@^`{}";
+    char tail[8];
+    size_t tail_len = 0;
+    tail[tail_len++] = '~';
+    char digits[6];
+    int count = 0;
+    do { digits[count++] = (char)('0' + n % 10); n /= 10; } while (n && count < 6);
+    while (count > 0) tail[tail_len++] = digits[--count];
+
+    const char *dot = NULL;
+    for (const char *p = name; *p; p++) if (*p == '.') dot = p;
+    if (dot == name) dot = NULL; // A leading dot starts the name; it does not introduce an extension
+
+    memset(out, ' ', 11);
+    size_t base_len = 0, base_max = 8 - tail_len;
+    for (const char *p = name; *p && p != dot && base_len < base_max; p++) {
+        char c = upper(*p);
+        if ((c >= 'A' && c <= 'Z') || strchr(allowed, c)) out[base_len++] = (uint8_t)c;
+    }
+    if (base_len == 0) out[base_len++] = '_';
+    memcpy(out + base_len, tail, tail_len);
+
+    size_t ext_len = 0;
+    for (const char *p = dot ? dot + 1 : ""; *p && ext_len < 3; p++) {
+        char c = upper(*p);
+        if ((c >= 'A' && c <= 'Z') || strchr(allowed, c)) out[8 + ext_len++] = (uint8_t)c;
+    }
+}
+
+// "README  TXT" + flags -> "readme.txt". Returns false for names that cannot
+// be shown (control characters, or characters that mean something in a path).
+static bool decode_name(const struct dir_entry *entry, char *out) {
+    size_t len = 0;
+
+    for (int i = 0; i < 11; i++) {
+        uint8_t c = entry->name[i];
+        if (i == 0 && c == 0x05) c = 0xE5;          // 0x05 stands for a real 0xE5 first byte
+        if (c == ' ') continue;                     // Padding
+        if (c < 0x21 || c > 0x7E || c == '/' || c == '\\') return false;
+
+        if (i == 8) out[len++] = '.';               // The extension starts here
+        bool lower = (i < 8) ? (entry->nt_flags & NT_LOWER_BASE) : (entry->nt_flags & NT_LOWER_EXT);
+        if (lower && c >= 'A' && c <= 'Z') c = (uint8_t)(c + 32);
+        out[len++] = (char)c;
+    }
+
+    out[len] = '\0';
+    return len > 0;
+}
+
+// Where the 13 characters of a long-name entry are kept: around the fields
+// an old program expects to find in a 32-byte entry
+static const uint8_t lfn_char_offset[LFN_CHARS] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
+
+// Build long-name entry number `ordinal` (1 is the first 13 characters) of
+// `total` for `name`
+static void fill_lfn_entry(uint8_t entry[32], const char *name, unsigned ordinal, unsigned total, uint8_t checksum) {
+    size_t len = strlen(name);
+    memset(entry, 0, 32);
+    entry[0] = (uint8_t)(ordinal | (ordinal == total ? LFN_LAST : 0));
+    entry[11] = ATTR_LONG_NAME;
+    entry[13] = checksum;
+    for (unsigned k = 0; k < LFN_CHARS; k++) {
+        size_t at = (size_t)(ordinal - 1) * LFN_CHARS + k;
+        // The name, a zero after it if there is room, then 0xFFFF padding
+        uint16_t unit = at < len ? (uint8_t)name[at] : at == len ? 0x0000 : 0xFFFF;
+        entry[lfn_char_offset[k]] = (uint8_t)unit;
+        entry[lfn_char_offset[k] + 1] = (uint8_t)(unit >> 8);
+    }
+}
+
+// --- Dates --------------------------------------------------------------------
+
+// The date and time now, as FAT packs them: years since 1980 in 7 bits,
+// month in 4, day in 5; hours in 5, minutes in 6, seconds/2 in 5
+static void fat_now(uint16_t *date, uint16_t *time) {
+    struct rtc_time now;
+    rtc_read_time(&now);
+    unsigned year = now.year >= 1980 && now.year < 2108 ? now.year - 1980u : 0;
+    unsigned month = now.month >= 1 && now.month <= 12 ? now.month : 1;
+    unsigned day = now.day >= 1 && now.day <= 31 ? now.day : 1;
+    *date = (uint16_t)((year << 9) | (month << 5) | day);
+    *time = (uint16_t)(((now.hour % 24u) << 11) | ((now.minute % 60u) << 5) | ((now.second % 60u) / 2));
+}
+
+static void fill_entry(struct dir_entry *entry, const uint8_t name[11], uint8_t nt_flags, uint8_t attr, uint32_t cluster) {
+    uint16_t date, time;
+    fat_now(&date, &time);
+    memset(entry, 0, sizeof(*entry));
+    memcpy(entry->name, name, 11);
+    entry->attr = attr;
+    entry->nt_flags = nt_flags;
+    entry->create_date = entry->access_date = entry->write_date = date;
+    entry->create_time = entry->write_time = time;
+    entry->cluster_high = (uint16_t)(cluster >> 16);
+    entry->cluster_low = (uint16_t)cluster;
+}
+
+// --- Directory slots -----------------------------------------------------------
+//
+// A directory is an array of 32-byte slots spread over its cluster chain.
+// Slots are named here by their index in that array.
+
+#define SLOTS_PER_SECTOR (SECTOR / sizeof(struct dir_entry))
+
+// Where slot `index` of the directory starting at `first_cluster` is on disk
+static bool slot_location(uint32_t first_cluster, uint32_t index, uint64_t *lba, uint32_t *offset) {
+    uint32_t per_cluster = volume.sectors_per_cluster * SLOTS_PER_SECTOR;
+    uint32_t cluster = first_cluster;
+    for (uint32_t skip = index / per_cluster; skip > 0; skip--) {
+        cluster = next_cluster(cluster);
+        if (!cluster) return false; // Past the end of the directory
+    }
+    if (!valid_cluster(cluster)) return false;
+    uint32_t in_cluster = index % per_cluster;
+    *lba = cluster_to_sector(cluster) + in_cluster / SLOTS_PER_SECTOR;
+    *offset = (uint32_t)((in_cluster % SLOTS_PER_SECTOR) * sizeof(struct dir_entry));
+    return true;
+}
+
+static bool write_slot(uint32_t first_cluster, uint32_t index, const uint8_t entry[32]) {
+    uint8_t sector[SECTOR];
+    uint64_t lba;
+    uint32_t offset;
+    if (!slot_location(first_cluster, index, &lba, &offset)) return false;
+    if (virtio_blk_read(lba, sector, 1) != 0) return false;
+    memcpy(sector + offset, entry, 32);
+    return virtio_blk_write(lba, sector, 1) == 0;
+}
+
+// Mark `count` slots from `first_index` as deleted
+static bool delete_slots(uint32_t first_cluster, uint32_t first_index, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t sector[SECTOR];
+        uint64_t lba;
+        uint32_t offset;
+        if (!slot_location(first_cluster, first_index + i, &lba, &offset)) return false;
+        if (virtio_blk_read(lba, sector, 1) != 0) return false;
+        sector[offset] = 0xE5;
+        if (virtio_blk_write(lba, sector, 1) != 0) return false;
+    }
+    return true;
+}
+
+// Find `count` unused slots in a row (a name's long entries and its short
+// entry must be together), extending the directory by a cluster at a time
+// if it has no such run. Returns the index of the first.
+static bool find_free_run(const fat_node_t *dir, uint32_t count, uint32_t *first_index) {
+    uint32_t per_cluster = volume.sectors_per_cluster * SLOTS_PER_SECTOR;
+    uint32_t cluster = dir->first_cluster, last = 0;
+    uint32_t index = 0, run_start = 0, run = 0;
     uint8_t sector[SECTOR];
 
-    while (valid_cluster(cluster) && steps++ <= volume.cluster_count) {
+    for (uint32_t steps = 0; valid_cluster(cluster) && steps <= volume.cluster_count && index < MAX_DIR_ENTRIES; steps++) {
         for (uint32_t s = 0; s < volume.sectors_per_cluster; s++) {
-            uint64_t lba = cluster_to_sector(cluster) + s;
-            if (virtio_blk_read(lba, sector, 1) != 0) return false;
-            for (uint32_t offset = 0; offset < SECTOR; offset += sizeof(struct dir_entry)) {
+            if (virtio_blk_read(cluster_to_sector(cluster) + s, sector, 1) != 0) return false;
+            for (uint32_t offset = 0; offset < SECTOR; offset += sizeof(struct dir_entry), index++) {
                 // 0x00: never used (and nothing follows); 0xE5: deleted
                 if (sector[offset] == 0x00 || sector[offset] == 0xE5) {
-                    *out_lba = lba;
-                    *out_offset = offset;
-                    return true;
+                    if (run == 0) run_start = index;
+                    if (++run == count) {
+                        *first_index = run_start;
+                        return true;
+                    }
+                } else {
+                    run = 0;
                 }
             }
         }
         last = cluster;
         cluster = next_cluster(cluster);
     }
-    if (!last) return false;
+    if (!last || index + count > MAX_DIR_ENTRIES) return false;
 
-    // Every slot is taken: add a cluster of empty slots to the directory
-    uint32_t added = allocate_cluster();
-    if (!added) return false;
-    if (!zero_cluster(added) || !set_fat_entry(last, added)) {
-        set_fat_entry(added, FAT_FREE);
-        return false;
+    // No such run: the free slots at the end (if any) plus new clusters
+    if (run == 0) run_start = index;
+    while (run < count) {
+        uint32_t added = allocate_cluster();
+        if (!added) return false;
+        if (!zero_cluster(added) || !set_fat_entry(last, added)) {
+            set_fat_entry(added, FAT_FREE);
+            return false;
+        }
+        last = added;
+        run += per_cluster;
     }
-    *out_lba = cluster_to_sector(added);
-    *out_offset = 0;
+    *first_index = run_start;
     return true;
-}
-
-static void fill_entry(struct dir_entry *entry, const uint8_t name[11], uint8_t nt_flags, uint8_t attr, uint32_t cluster) {
-    memset(entry, 0, sizeof(*entry));
-    memcpy(entry->name, name, 11);
-    entry->attr = attr;
-    entry->nt_flags = nt_flags;
-    entry->create_date = entry->access_date = entry->write_date = FAT_DATE_FIXED;
-    entry->cluster_high = (uint16_t)(cluster >> 16);
-    entry->cluster_low = (uint16_t)cluster;
 }
 
 // --- File operations ----------------------------------------------------------
@@ -497,10 +696,14 @@ static int64_t write_locked(vnode_t *node, size_t offset, const uint8_t *data, s
 
     // Record the new size (and first cluster) in the directory entry last
     size_t reached = (done > 0) ? offset + done : 0;
-    if (reached > node->size || first_cluster_changed) {
+    // The entry is rewritten after every write that wrote anything, even
+    // if neither size nor first cluster changed: it also records when the
+    // file was last written
+    if (done > 0 || first_cluster_changed) {
         size_t new_size = reached > node->size ? reached : node->size;
         if (!update_entry(info, info->first_cluster, (uint32_t)new_size)) return -EIO;
         node->size = new_size;
+        node->mtime = fat_now_packed();
     }
 
     if (done == 0 && count > 0) return -ENOSPC;
@@ -545,11 +748,223 @@ static int fat_file_truncate(vnode_t *node) {
 
 // --- Directory operations -----------------------------------------------------
 
+// --- Reading directories ---------------------------------------------------------
+
+static uint32_t fat_now_packed(void) {
+    uint16_t date, time;
+    fat_now(&date, &time);
+    return ((uint32_t)date << 16) | time;
+}
+
+static bool name_taken_nocase(const vnode_t *dir, const char *name, const vnode_t *except);
+
+// Attach a node for one directory entry. Returns NULL if memory ran out.
+static vnode_t *attach_entry(vnode_t *dir, const char *name, const struct dir_entry *entry,
+                             uint64_t entry_lba, uint32_t entry_offset, uint32_t dir_index, unsigned lfn_count) {
+    if (name_taken_nocase(dir, name, NULL)) return NULL; // Two entries with one name: keep the first
+    bool directory = (entry->attr & ATTR_DIRECTORY) != 0;
+    uint32_t first = ((uint32_t)entry->cluster_high << 16) | entry->cluster_low;
+
+    fat_node_t *info = kmalloc(sizeof(fat_node_t));
+    if (!info) return NULL;
+    memset(info, 0, sizeof(*info));
+    info->first_cluster = (directory || entry->size) ? first : 0; // An empty file has no cluster
+    info->entry_lba = entry_lba;
+    info->entry_offset = entry_offset;
+    info->dir_index = dir_index;
+    info->lfn_count = (uint8_t)lfn_count;
+    memcpy(info->short_name, entry->name, 11);
+
+    vnode_t *node = vfs_attach(dir, name, directory ? VFS_DIRECTORY : VFS_FILE);
+    if (!node) {
+        kfree(info);
+        return NULL;
+    }
+    // FAT has nowhere to keep an owner or permission bits. Everything on the
+    // volume belongs to root; everyone may read it and run it.
+    node->mode = 0755;
+    node->ops = directory ? &fat_dir_ops : &fat_file_ops;
+    node->private_data = (uint64_t)info;
+    node->size = directory ? 0 : entry->size;
+    node->mtime = ((uint32_t)entry->write_date << 16) | entry->write_time;
+    // A directory's own entries are read when someone first looks inside
+    node->unloaded = directory;
+    return node;
+}
+
+// How many directories of this volume are above `dir`
+static int depth_of(const vnode_t *dir) {
+    int depth = 0;
+    for (const vnode_t *d = dir; d && d->ops == &fat_dir_ops && depth <= MAX_DEPTH; d = d->parent) depth++;
+    return depth;
+}
+
+// Read a directory's entries from the disk and attach a node for each: the
+// VFS calls this the first time something looks inside the directory. Long
+// names are put together from the entries in front of each short one.
+static int fat_dir_load(vnode_t *dir) {
+    const fat_node_t *dir_info = (const fat_node_t *)dir->private_data;
+    if (!dir_info) return -EIO;
+    // A damaged volume can have a directory that contains itself: each
+    // level would load the next for as long as someone keeps descending
+    if (depth_of(dir) > MAX_DEPTH) return 0;
+
+    uint32_t cluster = dir_info->first_cluster;
+    uint32_t index = 0;
+
+    // The long name being collected: its parts arrive last first
+    char long_name[NAME_MAX_LEN + LFN_CHARS + 1];
+    unsigned expected = 0, total = 0;   // Next ordinal wanted (0: none in progress), and the number of parts
+    uint8_t checksum = 0;
+    bool usable = false;                // Every character so far is one we can show
+
+    for (uint32_t steps = 0; valid_cluster(cluster) && steps <= volume.cluster_count; steps++) {
+        for (uint32_t s = 0; s < volume.sectors_per_cluster; s++) {
+            uint8_t sector[SECTOR];
+            uint64_t lba = cluster_to_sector(cluster) + s;
+            if (virtio_blk_read(lba, sector, 1) != 0) return -EIO;
+
+            for (uint32_t offset = 0; offset < SECTOR; offset += sizeof(struct dir_entry), index++) {
+                const struct dir_entry *entry = (const struct dir_entry *)(sector + offset);
+                const uint8_t *raw = sector + offset;
+
+                if (raw[0] == 0x00) return 0;                          // No entries after this one
+                if (index >= MAX_DIR_ENTRIES) return 0;
+                if (raw[0] == 0xE5) { expected = 0; continue; }        // Deleted
+
+                if ((entry->attr & ATTR_LONG_NAME) == ATTR_LONG_NAME) {
+                    unsigned ordinal = raw[0] & 0x1F;
+                    if (raw[0] & LFN_LAST) {
+                        // The start of a name (its last 13 characters)
+                        total = ordinal;
+                        expected = (ordinal >= 1 && (ordinal - 1) * LFN_CHARS < NAME_MAX_LEN + 1) ? ordinal : 0;
+                        checksum = raw[13];
+                        usable = expected != 0;
+                        memset(long_name, 0, sizeof(long_name));
+                    } else if (expected == 0 || ordinal != expected || raw[13] != checksum) {
+                        expected = 0;                                  // Out of sequence: an orphan
+                    }
+                    if (expected != 0) {
+                        for (unsigned k = 0; k < LFN_CHARS; k++) {
+                            uint16_t unit = (uint16_t)(raw[lfn_char_offset[k]] | (raw[lfn_char_offset[k] + 1] << 8));
+                            if (unit == 0x0000 || unit == 0xFFFF) continue; // The end of the name, and padding
+                            if (unit < 0x20 || unit > 0x7E) usable = false; // Not ASCII: shown by its short name
+                            long_name[(expected - 1) * LFN_CHARS + k] = (char)unit;
+                        }
+                        expected--;                                    // 0 once part 1 has been seen... (see below)
+                        if (expected == 0) expected = 0xFF;            // ...marked as "complete, short entry next"
+                    }
+                    continue;
+                }
+
+                // A short entry. It takes the long name collected just before
+                // it, if that is complete and was made for this very entry.
+                bool has_long = expected == 0xFF && usable && checksum == lfn_checksum(entry->name) &&
+                                valid_long_name(long_name);
+                unsigned lfn_count = has_long ? total : 0;
+                expected = 0;
+
+                if (entry->attr & ATTR_VOLUME_ID) continue;             // The volume's label
+                if (entry->name[0] == '.') continue;                    // "." and ".."
+
+                char short_text[13];
+                const char *name = long_name;
+                if (!has_long) {
+                    if (!decode_name(entry, short_text)) continue;
+                    name = short_text;
+                }
+
+                uint32_t first = ((uint32_t)entry->cluster_high << 16) | entry->cluster_low;
+                if (entry->attr & ATTR_DIRECTORY) {
+                    if (!valid_cluster(first)) continue;
+                } else if (entry->size > 0 && !valid_cluster(first)) {
+                    continue;                                           // Anything but an empty file needs a cluster
+                }
+                attach_entry(dir, name, entry, lba, offset, index, lfn_count);
+            }
+        }
+        cluster = next_cluster(cluster);
+    }
+    return 0;
+}
+
+// Write the directory entries for `name` into `dir`: long-name entries if it
+// needs them, then the short entry, in slots next to each other. The short
+// entry is a copy of `like` under the new name if that is given (a rename),
+// else a new one with these attributes and first cluster. Fills in where
+// the entries went. `except` is a child of `dir` whose short name need not
+// be avoided (the file being renamed). Caller holds the volume lock.
+static int store_name(vnode_t *dir, const char *name, const struct dir_entry *like, uint8_t attr,
+                      uint32_t cluster, fat_node_t *info, const vnode_t *except) {
+    const fat_node_t *dir_info = (const fat_node_t *)dir->private_data;
+    uint8_t short_name[11], nt_flags = 0;
+    unsigned lfn_count = 0;
+    bool fits = encode_name(name, short_name, &nt_flags);
+
+    // A long name gets an invented short one; try numbers until one is free.
+    // (A name that is short already must not collide with someone's alias.)
+    for (unsigned n = 1; ; n++) {
+        if (!fits) {
+            make_alias(name, n, short_name);
+            lfn_count = (unsigned)((strlen(name) + LFN_CHARS - 1) / LFN_CHARS);
+        }
+        bool taken = false;
+        for (const vnode_t *c = dir->children; c && !taken; c = c->next) {
+            const fat_node_t *other = (const fat_node_t *)c->private_data;
+            taken = c != except && other && memcmp(other->short_name, short_name, 11) == 0;
+        }
+        if (!taken) break;
+        if (fits) return -EEXIST;
+        if (n >= 99999) return -ENOSPC;
+    }
+
+    uint32_t first;
+    if (!find_free_run(dir_info, lfn_count + 1, &first)) return -ENOSPC;
+
+    // On disk the last part of the long name comes first, the short entry last
+    uint8_t checksum = lfn_checksum(short_name);
+    for (unsigned i = 0; i < lfn_count; i++) {
+        uint8_t entry[32];
+        fill_lfn_entry(entry, name, lfn_count - i, lfn_count, checksum);
+        if (!write_slot(dir_info->first_cluster, first + i, entry)) {
+            delete_slots(dir_info->first_cluster, first, i);
+            return -EIO;
+        }
+    }
+
+    struct dir_entry entry;
+    if (like) {
+        entry = *like;
+        memcpy(entry.name, short_name, 11);
+        entry.nt_flags = nt_flags;
+    } else {
+        fill_entry(&entry, short_name, nt_flags, attr, cluster);
+    }
+    uint32_t short_index = first + lfn_count;
+    if (!write_slot(dir_info->first_cluster, short_index, (const uint8_t *)&entry) ||
+        !slot_location(dir_info->first_cluster, short_index, &info->entry_lba, &info->entry_offset)) {
+        delete_slots(dir_info->first_cluster, first, lfn_count); // No long name without its file
+        return -EIO;
+    }
+
+    info->dir_index = short_index;
+    info->lfn_count = (uint8_t)lfn_count;
+    memcpy(info->short_name, short_name, 11);
+    return 0;
+}
+
+static bool name_taken_nocase(const vnode_t *dir, const char *name, const vnode_t *except) {
+    for (const vnode_t *c = dir->children; c; c = c->next) {
+        if (c != except && names_equal_nocase(c->name, name)) return true;
+    }
+    return false;
+}
+
 static int fat_dir_create(vnode_t *dir, const char *name, bool directory, vnode_t **out) {
     fat_node_t *dir_info = (fat_node_t *)dir->private_data;
-    uint8_t short_name[11];
-    uint8_t nt_flags;
-    if (!encode_name(name, short_name, &nt_flags)) return -EINVAL; // Not an 8.3 name
+    if (!valid_long_name(name)) return -EINVAL;
+    // "Notes.txt" and "notes.txt" are one name to FAT
+    if (name_taken_nocase(dir, name, NULL)) return -EEXIST;
 
     fat_node_t *info = kmalloc(sizeof(fat_node_t));
     if (!info) return -ENOMEM;
@@ -581,50 +996,37 @@ static int fat_dir_create(vnode_t *dir, const char *name, bool directory, vnode_
         }
     }
 
-    // Then the entry in the parent
+    // Then the entry (or entries) in the parent
     if (err == 0) {
-        uint8_t sector[SECTOR];
-        if (!find_free_slot(dir_info, &info->entry_lba, &info->entry_offset)) {
-            err = -ENOSPC;
-        } else if (virtio_blk_read(info->entry_lba, sector, 1) != 0) {
-            err = -EIO;
-        } else {
-            fill_entry((struct dir_entry *)(sector + info->entry_offset), short_name, nt_flags,
-                       directory ? ATTR_DIRECTORY : ATTR_ARCHIVE, info->first_cluster);
-            if (virtio_blk_write(info->entry_lba, sector, 1) != 0) err = -EIO;
-        }
+        err = store_name(dir, name, NULL, directory ? ATTR_DIRECTORY : ATTR_ARCHIVE, info->first_cluster, info, NULL);
         if (err != 0 && info->first_cluster) free_chain(info->first_cluster);
     }
 
     volume_unlock();
 
     vnode_t *node = (err == 0) ? vfs_attach(dir, name, directory ? VFS_DIRECTORY : VFS_FILE) : NULL;
-    if (node) node->mode = 0755; // FAT stores no permissions: see the mount
     if (!node) {
         // (If only the attach failed, the entry exists on disk and will show
         // up at the next mount; that needs the kernel to be out of memory.)
         kfree(info);
         return err ? err : -ENOMEM;
     }
+    node->mode = 0755; // FAT stores no permissions: see attach_entry
     node->ops = directory ? &fat_dir_ops : &fat_file_ops;
     node->private_data = (uint64_t)info;
+    node->mtime = fat_now_packed();
     *out = node;
     return 0;
 }
 
 static int fat_dir_remove(vnode_t *dir, vnode_t *child) {
-    (void)dir;
+    const fat_node_t *dir_info = (const fat_node_t *)dir->private_data;
     fat_node_t *info = (fat_node_t *)child->private_data;
-    uint8_t sector[SECTOR];
     int err = 0;
 
     volume_lock();
-    if (virtio_blk_read(info->entry_lba, sector, 1) != 0) {
-        err = -EIO;
-    } else {
-        sector[info->entry_offset] = 0xE5; // The mark for a deleted entry
-        if (virtio_blk_write(info->entry_lba, sector, 1) != 0) err = -EIO;
-    }
+    // The short entry and the long-name entries in front of it
+    if (!delete_slots(dir_info->first_cluster, info->dir_index - info->lfn_count, (uint32_t)info->lfn_count + 1)) err = -EIO;
     if (err == 0) free_chain(info->first_cluster);
     volume_unlock();
 
@@ -635,100 +1037,58 @@ static int fat_dir_remove(vnode_t *dir, vnode_t *child) {
     return err;
 }
 
-static const vnode_ops_t fat_file_ops = { .read = fat_file_read, .write = fat_file_write, .truncate = fat_file_truncate };
-static const vnode_ops_t fat_dir_ops = { .create = fat_dir_create, .remove = fat_dir_remove };
+// Give a file or directory a new name, in the same directory or another one
+// of this volume. The new entries are written before the old ones are
+// removed: a crash in between leaves the file under both names (which
+// fsck.fat reports and repairs), never under none.
+static int fat_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, const char *new_name) {
+    const fat_node_t *old_dir_info = (const fat_node_t *)old_dir->private_data;
+    const fat_node_t *new_dir_info = (const fat_node_t *)new_dir->private_data;
+    fat_node_t *info = (fat_node_t *)node->private_data;
+    if (!info || !valid_long_name(new_name)) return -EINVAL;
+    if (name_taken_nocase(new_dir, new_name, node)) return -EEXIST;
 
-// --- Mounting -----------------------------------------------------------------
+    uint8_t sector[SECTOR];
+    struct dir_entry old_entry;
+    fat_node_t moved = *info;
+    int err = 0;
 
-// "README  TXT" + flags -> "readme.txt". Returns false for names that cannot
-// be shown (control characters, or characters that mean something in a path).
-static bool decode_name(const struct dir_entry *entry, char *out) {
-    size_t len = 0;
-
-    for (int i = 0; i < 11; i++) {
-        uint8_t c = entry->name[i];
-        if (i == 0 && c == 0x05) c = 0xE5;          // 0x05 stands for a real 0xE5 first byte
-        if (c == ' ') continue;                     // Padding
-        if (c < 0x21 || c > 0x7E || c == '/' || c == '\\') return false;
-
-        if (i == 8) out[len++] = '.';               // The extension starts here
-        bool lower = (i < 8) ? (entry->nt_flags & NT_LOWER_BASE) : (entry->nt_flags & NT_LOWER_EXT);
-        if (lower && c >= 'A' && c <= 'Z') c = (uint8_t)(c + 32);
-        out[len++] = (char)c;
+    volume_lock();
+    if (virtio_blk_read(info->entry_lba, sector, 1) != 0) {
+        err = -EIO;
+    } else {
+        memcpy(&old_entry, sector + info->entry_offset, sizeof(old_entry));
+        err = store_name(new_dir, new_name, &old_entry, 0, 0, &moved, node);
     }
+    if (err == 0) {
+        // (If this fails the file has two names; better than none.)
+        delete_slots(old_dir_info->first_cluster, info->dir_index - info->lfn_count, (uint32_t)info->lfn_count + 1);
 
-    out[len] = '\0';
-    return len > 0;
-}
-
-// Attach a node for one directory entry. Returns NULL if memory ran out.
-static vnode_t *attach_entry(vnode_t *dir, const char *name, bool directory, uint32_t first_cluster,
-                             uint32_t size, uint64_t entry_lba, uint32_t entry_offset) {
-    if (vfs_find_child(dir, name)) return NULL; // Two entries with one name: keep the first
-
-    fat_node_t *info = kmalloc(sizeof(fat_node_t));
-    if (!info) return NULL;
-    info->first_cluster = first_cluster;
-    info->entry_lba = entry_lba;
-    info->entry_offset = entry_offset;
-
-    vnode_t *node = vfs_attach(dir, name, directory ? VFS_DIRECTORY : VFS_FILE);
-    if (!node) {
-        kfree(info);
-        return NULL;
-    }
-    // FAT has nowhere to keep an owner or permission bits. Everything on the
-    // volume belongs to root; everyone may read it and run it.
-    node->mode = 0755;
-    node->ops = directory ? &fat_dir_ops : &fat_file_ops;
-    node->private_data = (uint64_t)info;
-    node->size = size;
-    return node;
-}
-
-// Add the contents of the directory starting at `cluster` to the VFS
-// directory `dir`, recursively. Returns the number of files added.
-static int read_directory(uint32_t cluster, vnode_t *dir, int depth) {
-    int files = 0;
-    int entries_seen = 0;
-    uint32_t steps = 0;
-
-    while (valid_cluster(cluster) && steps++ <= volume.cluster_count) {
-        for (uint32_t s = 0; s < volume.sectors_per_cluster; s++) {
-            uint8_t sector[SECTOR];
-            uint64_t lba = cluster_to_sector(cluster) + s;
-            if (virtio_blk_read(lba, sector, 1) != 0) return files;
-
-            for (uint32_t offset = 0; offset < SECTOR; offset += sizeof(struct dir_entry)) {
-                const struct dir_entry *entry = (const struct dir_entry *)(sector + offset);
-
-                if (entry->name[0] == 0x00) return files;               // No entries after this one
-                if (++entries_seen > MAX_DIR_ENTRIES) return files;
-                if (entry->name[0] == 0xE5) continue;                   // Deleted
-                if ((entry->attr & ATTR_LONG_NAME) == ATTR_LONG_NAME) continue; // Part of a long name
-                if (entry->attr & ATTR_VOLUME_ID) continue;             // The volume's label
-                if (entry->name[0] == '.') continue;                    // "." and ".."
-
-                char name[13];
-                if (!decode_name(entry, name)) continue;
-
-                uint32_t first = ((uint32_t)entry->cluster_high << 16) | entry->cluster_low;
-
-                if (entry->attr & ATTR_DIRECTORY) {
-                    if (depth >= MAX_DEPTH || !valid_cluster(first)) continue;
-                    vnode_t *child = attach_entry(dir, name, true, first, 0, lba, offset);
-                    if (child) files += read_directory(first, child, depth + 1);
-                } else {
-                    // An empty file has no cluster; anything else needs a valid one
-                    if (entry->size > 0 && !valid_cluster(first)) continue;
-                    if (attach_entry(dir, name, false, entry->size ? first : 0, entry->size, lba, offset)) files++;
-                }
+        // A directory that has moved must say who its new parent is: its
+        // second entry, "..", holds the parent's first cluster (0: the root)
+        if (node->type == VFS_DIRECTORY && old_dir != new_dir && valid_cluster(info->first_cluster)) {
+            uint64_t lba = cluster_to_sector(info->first_cluster);
+            if (virtio_blk_read(lba, sector, 1) == 0) {
+                struct dir_entry *dotdot = (struct dir_entry *)(sector + sizeof(struct dir_entry));
+                uint32_t parent = (new_dir_info->entry_lba == 0) ? 0 : new_dir_info->first_cluster;
+                dotdot->cluster_high = (uint16_t)(parent >> 16);
+                dotdot->cluster_low = (uint16_t)parent;
+                virtio_blk_write(lba, sector, 1);
             }
         }
-        cluster = next_cluster(cluster);
+        *info = moved;
     }
-    return files;
+    volume_unlock();
+    return err;
 }
+
+static int fat_dir_load(vnode_t *dir);
+
+static const vnode_ops_t fat_file_ops = { .read = fat_file_read, .write = fat_file_write, .truncate = fat_file_truncate };
+static const vnode_ops_t fat_dir_ops = { .create = fat_dir_create, .remove = fat_dir_remove,
+                                         .rename = fat_dir_rename, .load = fat_dir_load };
+
+// --- Mounting -----------------------------------------------------------------
 
 int fat32_mount(const char *mount_point) {
     if (mounted || !mount_point) return -1;
@@ -748,20 +1108,44 @@ int fat32_mount(const char *mount_point) {
 
     fat_node_t *root_info = kmalloc(sizeof(fat_node_t));
     if (!root_info) return -1;
+    memset(root_info, 0, sizeof(*root_info));
     root_info->first_cluster = volume.root_cluster;
     root_info->entry_lba = 0; // The root directory has no entry of its own
-    root_info->entry_offset = 0;
     root->ops = &fat_dir_ops;
     root->private_data = (uint64_t)root_info;
+    root->unloaded = true;    // Nothing is read until someone looks
 
     mounted = true;
     mount_register(mount_point, "fat32", "/dev/vda");
-    int files = read_directory(volume.root_cluster, root, 0);
-
-    kprintf("fat32: mounted at %s: %d files, %u clusters of %u bytes\n",
-            mount_point, files, volume.cluster_count, volume.sectors_per_cluster * SECTOR);
-    return files;
+    kprintf("fat32: mounted at %s: %u clusters of %u bytes; directories are read when first used\n",
+            mount_point, volume.cluster_count, volume.sectors_per_cluster * SECTOR);
+    return 0;
 }
+
+#ifdef KERNEL_TESTS
+// For tests: drop what is known about a directory's contents, so that the
+// next look inside reads it from the disk again. Only for a directory none
+// of whose files is open; does nothing otherwise.
+bool fat32_forget_directory(vnode_t *dir) {
+    if (!dir || dir->ops != &fat_dir_ops || dir->unloaded) return false;
+    vfs_lock();
+    for (vnode_t *c = dir->children; c; c = c->next) {
+        if (c->open_count != 0 || c->children) {
+            vfs_unlock();
+            return false;
+        }
+    }
+    while (dir->children) {
+        vnode_t *c = dir->children;
+        dir->children = c->next;
+        kfree((void *)c->private_data);
+        kfree(c);
+    }
+    dir->unloaded = true;
+    vfs_unlock();
+    return true;
+}
+#endif
 
 bool fat32_mounted(void) {
     return mounted;

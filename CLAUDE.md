@@ -399,6 +399,14 @@ code comments and commit messages; `git log` is the full history.
   checked against RFC 8439 and against a second implementation written in
   another language. The same goes for the password hashes: the kernel's
   PBKDF2 is believed because `/bin/login` accepts lines made by Python's.
+- **To test what was written to disk, forget it first.** A filesystem that
+  keeps its tree in memory answers every question from memory: a test that
+  creates a long name and looks it up proves nothing about the entries on
+  disk. The FAT tests drop a directory's nodes (`fat32_forget_directory`)
+  and read it back; `fsck.fat` on the image is the outside opinion.
+- **`make` cannot have prerequisites with spaces in their names** unless
+  each space is escaped; a test file called "Long Names/..." made the disk
+  image rule fail with "No rule to make target 'disk/Long'".
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

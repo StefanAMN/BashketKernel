@@ -23,6 +23,7 @@
 #define EEXIST  17   // File exists
 #define ENODEV  19   // No such device
 #define ENOTDIR 20   // Not a directory
+#define EXDEV   18   // Not the same filesystem
 #define EISDIR  21   // Is a directory
 #define EINVAL  22   // Invalid argument
 #define EMFILE  24   // Too many open files

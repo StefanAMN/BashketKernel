@@ -139,7 +139,7 @@ $(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
 # A FAT32 image holding the files under disk/ plus one program, so that
 # something can be executed straight from the disk. fsck.fat (if installed)
 # checks the image: it is an independent implementation of the format.
-DISK_FILES = $(shell find disk -type f)
+DISK_FILES = $(shell find disk -type f | sed 's/ /\\ /g')
 $(DISK): tools/mkfat.py $(DISK_FILES) $(BUILD)/initrd/bin/hello
 	@mkdir -p $(BUILD)
 	tools/mkfat.py $@ 64 disk $(BUILD)/initrd/bin/hello=bin/hello
@@ -227,7 +227,10 @@ test-disk: iso
 		--forbid 'invalid|no such|error' \
 		'exec /bin/sh' 'cd /disk' 'echo saved in boot one > note.txt' 'echo first > log.txt' \
 		'echo second >> log.txt' 'cat pattern.bin > copy.bin' 'mkdir work' 'echo inside > work/a.txt' \
-		'echo gone > temp.txt' 'rm temp.txt' 'rm notes/empty.txt' 'echo replaced > readme.txt' 'exit' \
+		'echo gone > temp.txt' 'rm temp.txt' 'rm notes/empty.txt' 'echo replaced > readme.txt' \
+		'echo long > "A name too long for eight and three.txt"' 'echo mixed > MixedCase.Txt' \
+		'mkdir "Project Files"' 'mv log.txt "Project Files/Log of events.txt"' 'mv work "Project Files/Work"' \
+		'echo doomed > "Remove me, please.txt"' 'rm "Remove me, please.txt"' 'mv MixedCase.Txt renamed.txt' 'exit' \
 		> $(BUILD)/fs-boot1.log 2>&1 \
 		|| { echo "filesystem: FAILED in the first boot (see $(BUILD)/fs-boot1.log)"; exit 1; }
 	@if command -v fsck.fat >/dev/null; then fsck.fat -n $(BUILD)/fs-persist.img > $(BUILD)/fs-fsck.log 2>&1 \
@@ -235,8 +238,11 @@ test-disk: iso
 	@tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/fs-persist.img $(SHELL_CPU) \
 		--expect 'saved in boot one\nfirst\nsecond\ninside\nreplaced\n' --expect '400 1201 102400' \
 		--expect 'temp.txt: no such file' --forbid 'empty.txt' \
-		'exec /bin/sh' 'cd /disk' 'cat note.txt log.txt work/a.txt readme.txt' 'wc copy.bin' \
-		'ls notes' 'cat temp.txt' 'exit' > $(BUILD)/fs-boot2.log 2>&1 \
+		--expect 'long\nmixed\n' --expect 'Log of events.txt' --expect 'Work/' \
+		--forbid 'Remove me' --forbid 'MixedCase' --forbid '~1' \
+		'exec /bin/sh' 'cd /disk' 'cat note.txt "Project Files/Log of events.txt" "Project Files/Work/a.txt" readme.txt' \
+		'wc copy.bin' 'ls notes' 'cat temp.txt' 'cat "A name too long for eight and three.txt" renamed.txt' \
+		'ls' 'ls "Project Files"' 'exit' > $(BUILD)/fs-boot2.log 2>&1 \
 		|| { echo "filesystem: FAILED, the second boot does not see the files (see $(BUILD)/fs-boot2.log)"; exit 1; }
 	@echo "disk persistence (files, checked by fsck.fat): ok"
 	@for kind in file-loop dir-loop dir-cycle fat-garbage huge-size bad-cluster; do \

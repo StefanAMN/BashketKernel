@@ -30,6 +30,15 @@ typedef struct vnode_ops {
     // error number.
     int (*create)(struct vnode *dir, const char *name, bool directory, struct vnode **out);
     int (*remove)(struct vnode *dir, struct vnode *child);
+
+    // Give `node` (a child of old_dir) the name new_name in new_dir, which
+    // belongs to the same filesystem. The VFS then moves the node itself.
+    int (*rename)(struct vnode *old_dir, struct vnode *node, struct vnode *new_dir, const char *new_name);
+
+    // Read the directory's entries from wherever they are stored and attach
+    // a node for each. Called once, the first time something looks inside a
+    // directory marked `unloaded`.
+    int (*load)(struct vnode *dir);
 } vnode_ops_t;
 
 typedef struct vnode {
@@ -44,6 +53,8 @@ typedef struct vnode {
     const vnode_ops_t *ops;     // Non-NULL for a node whose contents come from functions (/dev, /proc, files on disk)
     uint64_t private_data;      // For whoever provides ops (the FAT driver keeps the first cluster here)
     bool read_only;             // Nothing may be created, removed or opened for writing here
+    bool unloaded;              // A directory whose children have not been read yet (see ops->load)
+    uint32_t mtime;             // When it was last written, packed as FAT does (date << 16 | time); 0: not known
     uint32_t uid;               // Owner (see auth.h)
     uint32_t gid;               // Group
     uint16_t mode;              // Permission bits: who may read, write and execute; set-uid
@@ -166,6 +177,20 @@ size_t vfs_path_of(vnode_t *node, char *buf, size_t size);
 vnode_t *vfs_find_child(vnode_t *dir, const char *name);
 
 int vfs_unlink(vnode_t *parent, const char *name);
+
+/**
+ * @brief Give an entry a new name, in the same directory or another of the
+ *        same filesystem. Nothing is replaced: -EEXIST if the new name is
+ *        taken. -EXDEV across filesystems.
+ */
+int vfs_rename(vnode_t *old_parent, const char *old_name, vnode_t *new_parent, const char *new_name);
+
+/**
+ * @brief Make sure a directory's children have been read from its storage
+ *        (see vnode_ops_t.load). Call, holding the tree lock, before
+ *        walking dir->children directly.
+ */
+void vfs_load_dir(vnode_t *dir);
 
 /**
  * @brief Query metadata statistics for a VFS vnode.

@@ -303,6 +303,52 @@ static void check_files(void) {
     while (count > 0) CHECK(close(opened[--count]) == 0);
 }
 
+static void check_rename(void) {
+    char buf[16];
+    long fd = open("/tmp/first name", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "moved", 5) == 5 && close((int)fd) == 0);
+    CHECK(mkdir("/tmp/a folder") == 0);
+
+    /* A new name; the old one is gone, the contents are not */
+    CHECK(rename("/tmp/first name", "/tmp/second name") == 0);
+    CHECK(open("/tmp/first name", O_RDONLY) == -ENOENT);
+    fd = open("/tmp/second name", O_RDONLY);
+    CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 5 && memcmp(buf, "moved", 5) == 0);
+    close((int)fd);
+
+    /* Into a directory, and relative to the current one */
+    CHECK(rename("/tmp/second name", "/tmp/a folder/third") == 0);
+    CHECK(chdir("/tmp/a folder") == 0);
+    CHECK(rename("third", "../back") == 0);
+    CHECK(chdir("/") == 0);
+    fd = open("/tmp/back", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+
+    /* Refused: nothing is replaced, nothing is invented, nothing leaves its
+     * filesystem, and a directory does not go inside itself */
+    CHECK(rename("/tmp/back", "/tmp/a folder") == -EEXIST);
+    CHECK(rename("/tmp/no such", "/tmp/x") == -ENOENT);
+    CHECK(rename("/tmp/back", "/no such dir/x") == -ENOENT);
+    fd = open("/disk", O_RDONLY);                          /* Another filesystem, if a disk is attached */
+    if (fd >= 0) {
+        close((int)fd);
+        CHECK(rename("/tmp/back", "/disk/back") == -EXDEV);
+    }
+    CHECK(rename("/tmp/a folder", "/tmp/a folder/inside") == -EINVAL);
+    CHECK(rename((const char *)0xffffffff80000000UL, "/tmp/x") == -EFAULT);
+    CHECK(rename("/tmp/back", (const char *)8) == -EFAULT);
+    CHECK(rename("/tmp/back", "/tmp/back") == 0);          /* Onto itself: nothing to do */
+
+    /* A directory moves with what is in it */
+    CHECK(rename("/tmp/back", "/tmp/a folder/kept") == 0);
+    CHECK(rename("/tmp/a folder", "/tmp/another") == 0);
+    fd = open("/tmp/another/kept", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(unlink("/tmp/another/kept") == 0 && unlink("/tmp/another") == 0);
+}
+
 static void check_directories(void) {
     char cwd[64], buf[8];
 
@@ -1940,6 +1986,7 @@ int main(void) {
     check_lazy_memory();
     check_files();
     check_directories();
+    check_rename();
     check_environment();
     check_signals();
     check_interrupted_calls();

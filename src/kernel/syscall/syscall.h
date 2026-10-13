@@ -43,6 +43,7 @@
 #define SYS_READDIR     78   // (fd, struct dirent_info *): next entry of an open directory
 #define SYS_GETCWD      79   // (buf, size): returns the length of the path
 #define SYS_CHDIR       80
+#define SYS_RENAME      82   // (old path, new path): the same filesystem only; refuses to replace an existing entry
 #define SYS_MKDIR       83
 #define SYS_UNLINK      87
 #define SYS_CHMOD       90   // (path, mode): owner or root

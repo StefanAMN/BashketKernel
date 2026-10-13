@@ -32,6 +32,7 @@
 #define SYS_UNLINK   87
 #define SYS_CHMOD    90
 #define SYS_CHOWN    92
+#define SYS_RENAME   82
 #define SYS_UMASK    95
 #define SYS_GETUID   102
 #define SYS_GETGID   104
@@ -88,6 +89,7 @@
 #define EEXIST  17
 #define ENODEV  19
 #define ENOTDIR 20
+#define EXDEV   18
 #define EISDIR  21
 #define EINVAL  22
 #define EMFILE  24
@@ -156,6 +158,8 @@ struct dirent {
     uint64_t size;
     uint32_t uid;       /* Owner */
     uint32_t gid;       /* Group */
+    uint32_t mtime;     /* Last written, or 0 if not known: bits 31-25 year since 1980, 24-21 month, 20-16 day, 15-11 hour, 10-5 minute, 4-0 seconds / 2 */
+    uint32_t reserved;
     char name[128];
 };
 
