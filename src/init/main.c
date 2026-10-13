@@ -29,6 +29,7 @@
 #include "smp.h"
 #include "virtio_blk.h"
 #include "fat32.h"
+#include "ext2.h"
 #include "process.h"
 #include "pci.h"
 #include "virtio_net.h"
@@ -238,7 +239,11 @@ void _start(void) {
     smp_init(mp_request.response);
 
     // Phase 11: Real Block Storage & Persistent Filesystem (VirtIO-Blk & FAT32)
-    if (virtio_blk_init() == 0) fat32_mount("/disk");
+    if (virtio_blk_init() == 0) {
+        fat32_mount("/disk");
+        // A second disk holding an ext2 volume: users' files, with owners
+        if (virtio_blk_count() > 1) ext2_mount("/home", 1);
+    }
 
     // Phase 13: PCI Bus & VirtIO Network Stack
     if (virtio_net_init() == 0) net_init();

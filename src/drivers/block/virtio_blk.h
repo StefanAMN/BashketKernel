@@ -15,6 +15,7 @@
 #include <stdbool.h>
 
 #define VIRTIO_BLK_SECTOR_SIZE 512
+#define VIRTIO_BLK_MAX_DEVICES 2   // Disks the driver will take charge of
 
 /**
  * @brief Find and initialise the disk.
@@ -37,6 +38,15 @@ uint64_t virtio_blk_capacity(void);
  */
 int virtio_blk_read(uint64_t lba, void *buf, size_t count);
 int virtio_blk_write(uint64_t lba, const void *buf, size_t count);
+
+/**
+ * @brief The same for disk number `dev` (0 is the first one found, which
+ *        the functions without a number use).
+ */
+int virtio_blk_read_dev(unsigned dev, uint64_t lba, void *buf, size_t count);
+int virtio_blk_write_dev(unsigned dev, uint64_t lba, const void *buf, size_t count);
+unsigned virtio_blk_count(void);
+uint64_t virtio_blk_capacity_of(unsigned dev);
 
 /**
  * @brief Number of requests completed, and of interrupts taken, since boot.

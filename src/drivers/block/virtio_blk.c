@@ -45,12 +45,7 @@ struct blk_request_header {
     uint64_t sector;
 } __attribute__((packed));
 
-static bool present = false;
-static uint16_t io_base;
-static uint64_t capacity_sectors;
-static virtqueue_t queue;            // The request queue
-
-// Several requests can be with the device at once: each uses a slot, which
+// Several requests can be with a device at once: each uses a slot, which
 // owns the memory the device reads and writes directly (DMA): a page with
 // the request header and the status byte, and a page of data. A task that
 // finds every slot taken sleeps until one is given back.
@@ -66,77 +61,82 @@ typedef struct {
     uint64_t header_phys, status_phys, data_phys;
 } blk_slot_t;
 
-static blk_slot_t slots[BLK_SLOTS];
-static uint8_t slot_of_request[MAX_QUEUE_SIZE]; // Which slot a request (named by its first descriptor) belongs to
-static uint32_t in_flight = 0, peak_in_flight = 0;
-static uint64_t completed_requests = 0;
-static volatile uint64_t interrupt_count = 0;
+// Everything about one disk. There may be more than one: each has its own
+// I/O ports, queue, slots and lock, and nothing below is shared.
+typedef struct {
+    bool present;
+    uint16_t io_base;
+    uint64_t capacity_sectors;
+    virtqueue_t queue;               // The request queue
+    blk_slot_t slots[BLK_SLOTS];
+    uint8_t slot_of_request[MAX_QUEUE_SIZE]; // Which slot a request (named by its first descriptor) belongs to
+    uint32_t in_flight, peak_in_flight;
+    uint64_t completed_requests;
+    volatile uint64_t interrupt_count;
+    spinlock_t lock;                 // Protects the queue, the slots and the counters
+} blk_device_t;
 
-// Protects the queue, the slots and the counters
-static spinlock_t disk_lock = SPINLOCK_RANKED("virtio-blk", LOCK_RANK_DEVICE);
+static blk_device_t devices[VIRTIO_BLK_MAX_DEVICES];
+static unsigned device_count = 0;
 
-// Take every finished request off the queue and wake its owner. Caller
+// Take every finished request off the d->queue and wake its owner. Caller
 // holds disk_lock.
-static void collect_finished(void) {
+static void collect_finished(blk_device_t *d) {
     uint16_t id;
-    while (virtqueue_collect(&queue, &id, NULL)) {
+    while (virtqueue_collect(&d->queue, &id, NULL)) {
         // The id comes from the device: check it before using it
-        if (id >= MAX_QUEUE_SIZE || slot_of_request[id] >= BLK_SLOTS) continue;
-        blk_slot_t *slot = &slots[slot_of_request[id]];
+        if (id >= MAX_QUEUE_SIZE || d->slot_of_request[id] >= BLK_SLOTS) continue;
+        blk_slot_t *slot = &d->slots[d->slot_of_request[id]];
         if (!slot->in_use || slot->done) continue;
         slot->done = true;
-        completed_requests++;
+        d->completed_requests++;
         sched_wakeup(slot);
     }
 }
 
 static void virtio_blk_irq(struct registers *regs) {
     (void)regs;
-    // Reading the ISR register is what makes the device lower its interrupt
-    // line. Bit 0 set means the used ring changed.
-    uint8_t isr = inb(io_base + VIRTIO_REG_ISR_STATUS);
-    if (isr & 1) {
+    // Interrupt lines are shared, and so is this handler: ask every disk.
+    // Reading the ISR register is what makes a device lower its line; bit 0
+    // set means its used ring changed.
+    for (unsigned i = 0; i < device_count; i++) {
+        blk_device_t *d = &devices[i];
+        uint8_t isr = inb(d->io_base + VIRTIO_REG_ISR_STATUS);
+        if (!(isr & 1)) continue;
         // Under the lock, so a requester can not be between "not done yet"
         // and "asleep" when this arrives
-        uint64_t flags = spinlock_acquire_irqsave(&disk_lock);
-        interrupt_count++;
-        random_add_event(interrupt_count);
-        collect_finished();
-        spinlock_release_irqrestore(&disk_lock, flags);
+        uint64_t flags = spinlock_acquire_irqsave(&d->lock);
+        d->interrupt_count++;
+        random_add_event(d->interrupt_count);
+        collect_finished(d);
+        spinlock_release_irqrestore(&d->lock, flags);
     }
 }
 
-int virtio_blk_init(void) {
-    if (present) return 0;
-
-    pci_init();
-
-    pci_device_t dev;
-    if (!pci_find_device(VIRTIO_VENDOR, VIRTIO_BLK_LEGACY_ID, &dev)) {
-        kprintf("virtio-blk: no disk attached\n");
-        return -1;
-    }
+static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number, bool *irq_registered, uint8_t *registered_irq) {
+    pci_device_t dev = *pci;
+    spinlock_init_ranked(&d->lock, "virtio-blk", LOCK_RANK_DEVICE);
 
     uint32_t bar0 = pci_read32(&dev, PCI_BAR0);
     if (!(bar0 & 1)) {
         kprintf("virtio-blk: device has no legacy I/O port interface\n");
         return -1;
     }
-    io_base = (uint16_t)(bar0 & ~3u);
+    d->io_base = (uint16_t)(bar0 & ~3u);
     pci_enable_io_and_bus_master(&dev);
 
     // Handshake: reset, then announce ourselves step by step
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, 0);
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, 0);
+    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
+    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
 
     // Feature negotiation: we use none of the optional features
-    (void)inl(io_base + VIRTIO_REG_DEVICE_FEATURES);
-    outl(io_base + VIRTIO_REG_DRIVER_FEATURES, 0);
+    (void)inl(d->io_base + VIRTIO_REG_DEVICE_FEATURES);
+    outl(d->io_base + VIRTIO_REG_DRIVER_FEATURES, 0);
 
-    // Queue 0 is the request queue; each slot needs three descriptors
+    // Queue 0 is the request d->queue; each slot needs three descriptors
     // (header, data, status)
-    bool ok = virtqueue_setup(&queue, io_base, 0) && queue.size >= 3 && queue.size <= MAX_QUEUE_SIZE;
+    bool ok = virtqueue_setup(&d->queue, d->io_base, 0) && d->queue.size >= 3 && d->queue.size <= MAX_QUEUE_SIZE;
     uint64_t hhdm = pmm_get_hhdm_offset();
     for (int i = 0; ok && i < BLK_SLOTS; i++) {
         void *header_phys = pmm_alloc_frame();
@@ -147,70 +147,109 @@ int virtio_blk_init(void) {
             ok = false;
             break;
         }
-        slots[i].header = (struct blk_request_header *)((uint64_t)header_phys + hhdm);
-        slots[i].header_phys = (uint64_t)header_phys;
-        slots[i].status = (volatile uint8_t *)slots[i].header + 64;   // Same page, away from the header
-        slots[i].status_phys = slots[i].header_phys + 64;
-        slots[i].data = (uint8_t *)((uint64_t)data_phys + hhdm);
-        slots[i].data_phys = (uint64_t)data_phys;
+        d->slots[i].header = (struct blk_request_header *)((uint64_t)header_phys + hhdm);
+        d->slots[i].header_phys = (uint64_t)header_phys;
+        d->slots[i].status = (volatile uint8_t *)d->slots[i].header + 64;   // Same page, away from the header
+        d->slots[i].status_phys = d->slots[i].header_phys + 64;
+        d->slots[i].data = (uint8_t *)((uint64_t)data_phys + hhdm);
+        d->slots[i].data_phys = (uint64_t)data_phys;
     }
     if (!ok) {
-        kprintf("virtio-blk: could not set up the request queue\n");
+        kprintf("virtio-blk: could not set up the request d->queue\n");
         for (int i = 0; i < BLK_SLOTS; i++) {
-            if (slots[i].header_phys) pmm_free_frame((void *)slots[i].header_phys);
-            if (slots[i].data_phys) pmm_free_frame((void *)slots[i].data_phys);
+            if (d->slots[i].header_phys) pmm_free_frame((void *)d->slots[i].header_phys);
+            if (d->slots[i].data_phys) pmm_free_frame((void *)d->slots[i].data_phys);
         }
-        memset(slots, 0, sizeof(slots));
-        outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_FAILED);
+        memset(d->slots, 0, sizeof(d->slots));
+        outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_FAILED);
         return -1;
     }
 
     // The capacity is a 64-bit little-endian value in the device-specific area
-    capacity_sectors = (uint64_t)inl(io_base + REG_CAPACITY) | ((uint64_t)inl(io_base + REG_CAPACITY + 4) << 32);
+    d->capacity_sectors = (uint64_t)inl(d->io_base + REG_CAPACITY) | ((uint64_t)inl(d->io_base + REG_CAPACITY + 4) << 32);
 
     // The device's interrupt arrives on the ISA IRQ named in its
     // configuration space
     uint8_t irq = pci_read8(&dev, PCI_INTERRUPT_LINE);
-    if (irq > 0 && irq < 16) {
-        register_irq_handler(irq, virtio_blk_irq);
+    if (irq > 0 && irq < 16 && !(*irq_registered && *registered_irq == irq)) {
+        register_irq_handler(irq, virtio_blk_irq); // One handler serves every disk on the line
         ioapic_route_isa_irq(irq);
+        *irq_registered = true;
+        *registered_irq = irq;
     }
 
-    outb(io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
-    present = true;
+    outb(d->io_base + VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+    d->present = true;
 
-    kprintf("virtio-blk: disk ready, %lu sectors (%lu MiB), queue size %u, IRQ %u\n",
-            capacity_sectors, capacity_sectors / 2048, queue.size, irq);
+    kprintf("virtio-blk: disk %u ready, %lu sectors (%lu MiB), queue size %u, IRQ %u\n",
+            number, d->capacity_sectors, d->capacity_sectors / 2048, d->queue.size, irq);
     return 0;
 }
 
-bool virtio_blk_present(void) { return present; }
-uint64_t virtio_blk_capacity(void) { return present ? capacity_sectors : 0; }
-uint64_t virtio_blk_requests(void) { return completed_requests; }
-uint64_t virtio_blk_interrupts(void) { return interrupt_count; }
+int virtio_blk_init(void) {
+    if (device_count > 0) return 0;
+    pci_init();
 
-uint32_t virtio_blk_peak_in_flight(void) { return peak_in_flight; }
+    bool irq_registered = false;
+    uint8_t registered_irq = 0;
+    for (unsigned n = 0; device_count < VIRTIO_BLK_MAX_DEVICES; n++) {
+        pci_device_t dev;
+        if (!pci_find_nth_device(VIRTIO_VENDOR, VIRTIO_BLK_LEGACY_ID, n, &dev)) break;
+        // (The handler walks devices[0 .. device_count): count it only once
+        // it is set up, and set it up before its interrupt can be routed.)
+        if (init_device(&devices[device_count], &dev, device_count, &irq_registered, &registered_irq) == 0) device_count++;
+    }
+    if (device_count == 0) {
+        kprintf("virtio-blk: no disk attached\n");
+        return -1;
+    }
+    return 0;
+}
+
+unsigned virtio_blk_count(void) { return device_count; }
+bool virtio_blk_present(void) { return device_count > 0; }
+uint64_t virtio_blk_capacity(void) { return virtio_blk_capacity_of(0); }
+uint64_t virtio_blk_capacity_of(unsigned dev) { return dev < device_count ? devices[dev].capacity_sectors : 0; }
+
+// Totals over every disk
+uint64_t virtio_blk_requests(void) {
+    uint64_t total = 0;
+    for (unsigned i = 0; i < device_count; i++) total += devices[i].completed_requests;
+    return total;
+}
+
+uint64_t virtio_blk_interrupts(void) {
+    uint64_t total = 0;
+    for (unsigned i = 0; i < device_count; i++) total += devices[i].interrupt_count;
+    return total;
+}
+
+uint32_t virtio_blk_peak_in_flight(void) {
+    uint32_t peak = 0;
+    for (unsigned i = 0; i < device_count; i++) if (devices[i].peak_in_flight > peak) peak = devices[i].peak_in_flight;
+    return peak;
+}
 
 // One request of up to SECTORS_PER_REQUEST sectors, from start to finish.
-static int do_request(uint32_t type, uint64_t lba, uint8_t *bytes, size_t count) {
+static int do_request(blk_device_t *d, uint32_t type, uint64_t lba, uint8_t *bytes, size_t count) {
     size_t byte_count = count * VIRTIO_BLK_SECTOR_SIZE;
 
     // A slot of our own. These waits end when a request does, so they need
     // not be interruptible, and the ones below must not be: a task killed
     // while the device still has its request would leave the slot in use
     // for ever.
-    uint64_t flags = spinlock_acquire_irqsave(&disk_lock);
+    uint64_t flags = spinlock_acquire_irqsave(&d->lock);
     blk_slot_t *slot = NULL;
     for (;;) {
         for (int i = 0; i < BLK_SLOTS && !slot; i++) {
-            if (!slots[i].in_use) slot = &slots[i];
+            if (!d->slots[i].in_use) slot = &d->slots[i];
         }
         if (slot) break;
-        sched_sleep_uninterruptible(slots, &disk_lock, 0);
+        sched_sleep_uninterruptible(d->slots, &d->lock, 0);
     }
     slot->in_use = true;
     slot->done = false;
-    spinlock_release_irqrestore(&disk_lock, flags);
+    spinlock_release_irqrestore(&d->lock, flags);
 
     // The slot is ours alone: fill it without the lock
     slot->header->type = type;
@@ -229,12 +268,12 @@ static int do_request(uint32_t type, uint64_t lba, uint8_t *bytes, size_t count)
     unsigned out_count = (type == BLK_T_OUT) ? 2 : 1;
 
     int result = -1;
-    flags = spinlock_acquire_irqsave(&disk_lock);
-    int id = virtqueue_add(&queue, buffers, out_count, 3 - out_count);
+    flags = spinlock_acquire_irqsave(&d->lock);
+    int id = virtqueue_add(&d->queue, buffers, out_count, 3 - out_count);
     if (id >= 0 && id < MAX_QUEUE_SIZE) {
-        slot_of_request[id] = (uint8_t)(slot - slots);
-        if (++in_flight > peak_in_flight) peak_in_flight = in_flight;
-        virtqueue_kick(&queue);
+        d->slot_of_request[id] = (uint8_t)(slot - d->slots);
+        if (++d->in_flight > d->peak_in_flight) d->peak_in_flight = d->in_flight;
+        virtqueue_kick(&d->queue);
 
         // Sleep until the device has answered. The interrupt handler wakes
         // us; the one-tick timeout makes this work even if an interrupt is
@@ -242,39 +281,40 @@ static int do_request(uint32_t type, uint64_t lba, uint8_t *bytes, size_t count)
         // so this loop simply polls.
         uint64_t deadline = pit_get_ticks() + 5 * TIMER_HZ;
         while (!slot->done && pit_get_ticks() <= deadline) {
-            collect_finished();
-            if (!slot->done) sched_sleep_uninterruptible(slot, &disk_lock, pit_get_ticks() + 1);
+            collect_finished(d);
+            if (!slot->done) sched_sleep_uninterruptible(slot, &d->lock, pit_get_ticks() + 1);
         }
-        in_flight--;
+        d->in_flight--;
         if (slot->done) result = (*slot->status == 0) ? 0 : -1;
         else kprintf("virtio-blk: request timed out (sector %lu)\n", lba);
     }
     bool answered = slot->done;
-    spinlock_release_irqrestore(&disk_lock, flags);
+    spinlock_release_irqrestore(&d->lock, flags);
 
     if (result == 0 && type == BLK_T_IN) memcpy(bytes, slot->data, byte_count);
 
     // A slot whose request the device never answered is not handed out
     // again: the device may still write into its pages
-    flags = spinlock_acquire_irqsave(&disk_lock);
+    flags = spinlock_acquire_irqsave(&d->lock);
     if (answered || id < 0) {
         slot->in_use = false;
-        sched_wakeup(slots);
+        sched_wakeup(d->slots);
     }
-    spinlock_release_irqrestore(&disk_lock, flags);
+    spinlock_release_irqrestore(&d->lock, flags);
     return result;
 }
 
-static int transfer(uint32_t type, uint64_t lba, void *buf, size_t count) {
-    if (!present || !buf) return -1;
+static int transfer(unsigned dev, uint32_t type, uint64_t lba, void *buf, size_t count) {
+    if (dev >= device_count || !buf) return -1;
+    blk_device_t *d = &devices[dev];
     if (count == 0) return 0;
-    if (lba >= capacity_sectors || count > capacity_sectors - lba) return -1;
+    if (lba >= d->capacity_sectors || count > d->capacity_sectors - lba) return -1;
 
     uint8_t *bytes = buf;
     int result = 0;
     while (count > 0 && result == 0) {
         size_t chunk = count < SECTORS_PER_REQUEST ? count : SECTORS_PER_REQUEST;
-        result = do_request(type, lba, bytes, chunk);
+        result = do_request(d, type, lba, bytes, chunk);
         bytes += chunk * VIRTIO_BLK_SECTOR_SIZE;
         lba += chunk;
         count -= chunk;
@@ -283,9 +323,17 @@ static int transfer(uint32_t type, uint64_t lba, void *buf, size_t count) {
 }
 
 int virtio_blk_read(uint64_t lba, void *buf, size_t count) {
-    return transfer(BLK_T_IN, lba, buf, count);
+    return transfer(0, BLK_T_IN, lba, buf, count);
 }
 
 int virtio_blk_write(uint64_t lba, const void *buf, size_t count) {
-    return transfer(BLK_T_OUT, lba, (void *)buf, count);
+    return transfer(0, BLK_T_OUT, lba, (void *)buf, count);
+}
+
+int virtio_blk_read_dev(unsigned dev, uint64_t lba, void *buf, size_t count) {
+    return transfer(dev, BLK_T_IN, lba, buf, count);
+}
+
+int virtio_blk_write_dev(unsigned dev, uint64_t lba, const void *buf, size_t count) {
+    return transfer(dev, BLK_T_OUT, lba, (void *)buf, count);
 }

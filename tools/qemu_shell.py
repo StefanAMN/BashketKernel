@@ -76,6 +76,8 @@ def main():
                     help="extra option for QEMU's user-mode network, e.g. net=192.168.76.0/24 (repeatable)")
     ap.add_argument("--disk", help="disk image to attach (default: disk.img next to the ISO)")
     ap.add_argument("--no-disk", action="store_true", help="boot without a disk")
+    ap.add_argument("--home-disk", help="ext2 image to attach as the second disk (default: home.img next to the ISO)")
+    ap.add_argument("--no-home-disk", action="store_true", help="boot without the second disk")
     ap.add_argument("--keep-disk-writes", action="store_true", help="let the guest really modify the disk image")
     ap.add_argument("--quiet", action="store_true", help="print only the output after the first prompt")
     args = ap.parse_args()
@@ -89,6 +91,11 @@ def main():
     if not args.no_disk and os.path.exists(disk):
         snapshot = "" if args.keep_disk_writes else ",snapshot=on"
         cmd += ["-drive", f"file={disk},if=virtio,format=raw{snapshot}"]
+        # The second disk (an ext2 volume, mounted at /home), if it was built.
+        # Only together with the first: the kernel numbers disks as it finds them.
+        home = args.home_disk or os.path.join(os.path.dirname(args.iso), "home.img")
+        if not args.no_home_disk and os.path.exists(home):
+            cmd += ["-drive", f"file={home},if=virtio,format=raw{snapshot}"]
     # A network card on QEMU's user-mode network (guest 10.0.2.15, gateway
     # 10.0.2.2). --net-forward adds host-to-guest port forwards.
     if not args.no_net:

@@ -78,10 +78,11 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
         // The new file belongs to whoever made it, and to their group, on a
         // filesystem that can record that. (One that cannot, like FAT, has
         // set what it shows for every file.)
-        if (!parent->ops || !parent->ops->create) {
+        if (!parent->ops || !parent->ops->create || (node->ops && node->ops->setattr)) {
             node->uid = uid;
             node->gid = (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT;
             node->mode = (uint16_t)(PERM_NEW_FILE & ~auth_current_umask());
+            if (node->ops && node->ops->setattr) node->ops->setattr(node);
         }
     }
     if (!node) return -ENOENT;
@@ -96,7 +97,10 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     if (writable && (flags & O_TRUNC)) vfs_truncate(node, 0);
     // A set-uid program that anyone but root can rewrite would be a way to
     // become its owner: opening it for writing takes the bit away
-    if (writable && uid != UID_ROOT) node->mode &= (uint16_t)~PERM_SETUID;
+    if (writable && uid != UID_ROOT && (node->mode & PERM_SETUID)) {
+        node->mode &= (uint16_t)~PERM_SETUID;
+        if (node->ops && node->ops->setattr) node->ops->setattr(node);
+    }
     file->append = (flags & O_APPEND) != 0;
     file->node = node;
     node->open_count++;

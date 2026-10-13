@@ -27,6 +27,7 @@
 #define EISDIR  21   // Is a directory
 #define EINVAL  22   // Invalid argument
 #define EMFILE  24   // Too many open files
+#define EFBIG   27   // File too large
 #define ENOSPC  28   // No space left
 #define ESPIPE  29
 #define EROFS   30   // Read-only filesystem   // Illegal seek

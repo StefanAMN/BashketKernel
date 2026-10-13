@@ -88,6 +88,7 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
+make test-home                  # ext2 at /home: owners across a reboot, e2fsck, damaged images (~40 s)
 make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
 make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
@@ -407,6 +408,11 @@ code comments and commit messages; `git log` is the full history.
 - **`make` cannot have prerequisites with spaces in their names** unless
   each space is escaped; a test file called "Long Names/..." made the disk
   image rule fail with "No rule to make target 'disk/Long'".
+- **A slow answer to hostile input is not a hang, but check which it is.**
+  Two "damaged image" cases timed out: a file whose block table pointed at
+  itself and claimed 50 MiB, and one claiming 3 GiB of holes. The kernel was
+  faithfully reading them. The driver was right and the test unreasonable;
+  telling the two apart took looking at what the kernel was doing.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

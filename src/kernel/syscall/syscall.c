@@ -307,10 +307,11 @@ static int64_t sys_mkdir(uint64_t user_path) {
 
     vnode_t *dir = NULL;
     int err = vfs_create(parent, name, VFS_DIRECTORY, &dir);
-    if (err == 0 && (!parent->ops || !parent->ops->create)) {
+    if (err == 0 && (!parent->ops || !parent->ops->create || (dir->ops && dir->ops->setattr))) {
         dir->uid = task->uid;
         dir->gid = task->gid;
         dir->mode = (uint16_t)(PERM_NEW_DIR & ~task->umask);
+        if (dir->ops && dir->ops->setattr) dir->ops->setattr(dir);
     }
     return err;
 }
@@ -377,7 +378,7 @@ static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
     if (node->read_only) return -EROFS;
     if (mode & ~(uint64_t)PERM_ALL) return -EINVAL;
     node->mode = (uint16_t)mode;
-    return 0;
+    return (node->ops && node->ops->setattr) ? node->ops->setattr(node) : 0; // Where it is kept, if anywhere
 }
 
 #define CHOWN_KEEP 0xFFFFFFFFULL // "Leave this one as it is"
@@ -399,7 +400,7 @@ static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid)
     if (new_gid != CHOWN_KEEP) node->gid = (uint32_t)new_gid;
     // Whoever the file belongs to now did not ask for it to be set-uid
     if (task->uid != UID_ROOT || new_uid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETUID;
-    return 0;
+    return (node->ops && node->ops->setattr) ? node->ops->setattr(node) : 0;
 }
 
 static int64_t sys_kill(int pid, int sig) {

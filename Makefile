@@ -84,7 +84,20 @@ QEMU = qemu-system-x86_64
 # The disk QEMU presents as a virtio block device. `make run` writes to it
 # for real, so what is stored there survives a reboot.
 DISK = $(BUILD)/disk.img
-DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw
+# A second disk: an ext2 volume, mounted at /home, whose files have owners.
+# Built with mke2fs and debugfs; without them (e2fsprogs) there is simply no
+# second disk, and nothing under /home.
+HOME_IMG = $(BUILD)/home.img
+HOME_FILES = $(shell find home -type f | sed 's/ /\\ /g')
+HAVE_E2FS = $(shell command -v mke2fs >/dev/null && command -v debugfs >/dev/null && command -v e2fsck >/dev/null && echo yes)
+ifeq ($(HAVE_E2FS),yes)
+DISKS = $(DISK) $(HOME_IMG)
+HOME_FLAGS = -drive file=$(HOME_IMG),if=virtio,format=raw
+else
+DISKS = $(DISK)
+HOME_FLAGS =
+endif
+DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw $(HOME_FLAGS)
 
 # A network card on QEMU's built-in user-mode network: the guest is
 # 10.0.2.15 and a simulated gateway answers at 10.0.2.2. Needs nothing
@@ -93,7 +106,9 @@ NET_FLAGS = -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 
 QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
-.PHONY: all clean iso run run-gdb test test-smp test-lowmem test-disk test-edit test-login test-jobs test-net fuzz check
+comma := ,
+
+.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -122,7 +137,7 @@ limine/limine.c:
 limine/limine: limine/limine.c
 	$(CC) -O2 -pipe $< -o $@
 
-iso: $(ISO) $(DISK)
+iso: $(ISO) $(DISKS)
 
 $(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
 	rm -rf $(ISO_ROOT)
@@ -140,12 +155,18 @@ $(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
 # something can be executed straight from the disk. fsck.fat (if installed)
 # checks the image: it is an independent implementation of the format.
 DISK_FILES = $(shell find disk -type f | sed 's/ /\\ /g')
+disks: $(DISKS)
+
+$(HOME_IMG): tools/mkhome.sh $(HOME_FILES)
+	@mkdir -p $(BUILD)
+	tools/mkhome.sh $@ 16M home
+
 $(DISK): tools/mkfat.py $(DISK_FILES) $(BUILD)/initrd/bin/hello
 	@mkdir -p $(BUILD)
 	tools/mkfat.py $@ 64 disk $(BUILD)/initrd/bin/hello=bin/hello
 	@if command -v fsck.fat >/dev/null; then fsck.fat -n $@ >/dev/null || { echo "fsck.fat rejects $@"; rm -f $@; exit 1; }; fi
 
-run: iso $(DISK)
+run: iso $(DISKS)
 	$(QEMU) $(QEMU_FLAGS) -serial mon:stdio
 
 run-gdb: iso
@@ -162,9 +183,9 @@ SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-ar
 # status. The kernel writes to the isa-debug-exit port when the tests finish;
 # QEMU then exits with (value << 1) | 1, so 0x10 (pass) becomes 33.
 test:
-	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso build-test/disk.img
+	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
 	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
-		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(NET_FLAGS) \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
 	status=$$?; \
@@ -282,9 +303,9 @@ test-net: iso
 # programs on 2, 4 and 8 CPUs: the system call checks, floating point state
 # across task switches (and now across CPUs), and a pipeline.
 test-smp:
-	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso build-test/disk.img
+	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
 	@timeout 180 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel.iso -boot d \
-		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(NET_FLAGS) \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
 	status=$$?; \
@@ -330,6 +351,49 @@ test-login: iso
 # Everything, on both CPU models: what to run before calling a change done.
 # Takes about three minutes.
 
+# The ext2 volume at /home: a user's files, with their owner and mode, must
+# survive a reboot, and e2fsck must find nothing wrong with what the kernel
+# wrote. Then images damaged on purpose: the kernel must stay up.
+test-home: iso
+	@if [ -z "$(HOME_FLAGS)" ]; then echo "home: skipped (no mke2fs, debugfs and e2fsck on this machine)"; exit 0; fi; \
+	cp $(DISK) $(BUILD)/home-fat.img && cp $(HOME_IMG) $(BUILD)/home-persist.img && \
+	tools/qemu_shell.py --quiet --timeout 90 --disk $(BUILD)/home-fat.img --home-disk $(BUILD)/home-persist.img \
+		--keep-disk-writes $(SHELL_CPU) \
+		--expect 'intruder.txt: permission denied' --expect 'kept.txt: permission denied' --expect 'Bob was here' \
+		--forbid 'no such|invalid|error' \
+		'!exec /bin/login alice' '~alice\r' 'cd /home/alice' 'echo kept across the reboot > kept.txt' \
+		'chmod 600 kept.txt' 'mkdir projects' 'mv notes.txt projects/notes.txt' 'cat /bin/sh > projects/shell.bin' \
+		'echo gone > temp.txt' 'rm temp.txt' 'rm diary.txt' 'echo no > /home/bob/intruder.txt' 'cat /home/bob/hello.txt' \
+		'exit' '!exec /bin/login bob' '~bob\r' 'cat /home/alice/kept.txt' \
+		'echo from bob > /home/bob/second.txt' 'exit' > $(BUILD)/home-boot1.log 2>&1 \
+		|| { echo "home: FAILED in the first boot (see $(BUILD)/home-boot1.log)"; exit 1; }; \
+	e2fsck -fn $(BUILD)/home-persist.img > $(BUILD)/home-fsck.log 2>&1 \
+		|| { echo "home: FAILED, e2fsck rejects the volume after the kernel wrote to it (see $(BUILD)/home-fsck.log)"; exit 1; }; \
+	tools/qemu_shell.py --quiet --timeout 60 --disk $(BUILD)/home-fat.img --home-disk $(BUILD)/home-persist.img $(SHELL_CPU) \
+		--expect '-rw------- +1000 +100 +23 [0-9-]+ [0-9:]+ kept.txt' \
+		--expect 'drwxr-xr-x +1000 +100 +0 [0-9-]+ [0-9:]+ projects' \
+		--expect '-rw-r--r-- +1001 +100 +9 [0-9-]+ [0-9:]+ second.txt' \
+		--expect 'kept across the reboot\nAlice keeps her notes here' --expect '\n([0-9]+ [0-9]+ [0-9]+)\n\1\n' \
+		--forbid 'diary' --forbid 'temp.txt' --forbid 'intruder' \
+		'exec /bin/ls -l /home/alice' 'exec /bin/ls -l /home/bob' \
+		'exec /bin/cat /home/alice/kept.txt /home/alice/projects/notes.txt' \
+		'exec /bin/sh -c "wc /home/alice/projects/shell.bin > /tmp/a"' 'exec /bin/sh -c "wc /bin/sh > /tmp/b"' \
+		'exec /bin/sh /home/../etc/compare.sh' > $(BUILD)/home-boot2.log 2>&1 \
+		|| { echo "home: FAILED, the second boot does not see the files as they were left (see $(BUILD)/home-boot2.log)"; exit 1; }; \
+	echo "home (ext2: owners and modes across a reboot, checked by e2fsck): ok"
+	@if [ -n "$(HOME_FLAGS)" ]; then for kind in dir-reclen dir-overrun block-outside indirect-loop huge-size inode-table bitmap-full root-not-dir; do \
+		tools/corrupt_ext2.py $(HOME_IMG) $$kind $(BUILD)/home-damaged.img && \
+		tools/qemu_shell.py --quiet --timeout 90 --home-disk $(BUILD)/home-damaged.img $(SHELL_CPU) \
+			--expect 'Hello from ring 3' \
+			'exec /bin/ls -l /home' 'exec /bin/ls -l /home/alice' 'exec /bin/sh -c "cat /home/alice/notes.txt | wc"' \
+			'exec /bin/sh -c "cat /home/readme.txt | wc"' 'exec /bin/sh -c "echo written > /home/alice/w.txt"' \
+			'exec /bin/sh -c "cat /bin/sh > /home/big.bin"' 'exec /bin/mkdir /home/alice/d' \
+			'exec /bin/rm /home/alice/notes.txt' 'exec /bin/mv /home/readme.txt /home/alice/r.txt' \
+			'exec /bin/hello' > $(BUILD)/home-damaged-$$kind.log 2>&1 \
+			&& echo "damaged ext2 ($$kind): survived" \
+			|| { echo "damaged ext2 ($$kind): FAILED (see $(BUILD)/home-damaged-$$kind.log)"; exit 1; }; \
+	done; fi
+
 # Jobs in the user shell: a command in the background, another stopped with
 # Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
 # which init must adopt and collect.
@@ -352,6 +416,7 @@ check:
 	@$(MAKE) --no-print-directory test-lowmem CPU=max
 	@$(MAKE) --no-print-directory test-disk
 	@$(MAKE) --no-print-directory test-edit
+	@$(MAKE) --no-print-directory test-home
 	@$(MAKE) --no-print-directory test-login
 	@$(MAKE) --no-print-directory test-jobs
 	@$(MAKE) --no-print-directory test-jobs SMP=4
