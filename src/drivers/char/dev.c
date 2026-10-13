@@ -7,6 +7,7 @@
  */
 
 #include "dev.h"
+#include "random.h"
 #include "vfs.h"
 #include "tty.h"
 #include "kprintf.h"
@@ -20,40 +21,6 @@ static inline uint64_t rdtsc(void) {
     uint32_t low, high;
     asm volatile("rdtsc" : "=a"(low), "=d"(high));
     return ((uint64_t)high << 32) | low;
-}
-
-// --- Random numbers ---------------------------------------------------------
-
-static uint64_t rng_state = 0x9E3779B97F4A7C15ULL; // Never zero: xorshift would stick there
-
-static spinlock_t rng_lock = SPINLOCK_RANKED("rng", LOCK_RANK_TIME);
-
-static uint64_t rng_next(void) {
-    uint64_t flags = spinlock_acquire_irqsave(&rng_lock);
-    // Stir in the timestamp counter so the stream depends on when it is read
-    uint64_t x = rng_state ^ rdtsc();
-    if (x == 0) x = 0x9E3779B97F4A7C15ULL;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    rng_state = x;
-    spinlock_release_irqrestore(&rng_lock, flags);
-    return x * 0x2545F4914F6CDD1DULL;
-}
-
-uint32_t get_random_u32(void) {
-    return (uint32_t)(rng_next() >> 32);
-}
-
-void get_random_bytes(void *buf, size_t count) {
-    uint8_t *out = buf;
-    while (count > 0) {
-        uint64_t value = rng_next();
-        size_t chunk = count < sizeof(value) ? count : sizeof(value);
-        memcpy(out, &value, chunk);
-        out += chunk;
-        count -= chunk;
-    }
 }
 
 // --- Device operations -------------------------------------------------------
@@ -141,7 +108,6 @@ void dev_init(void) {
     vnode_t *dev_dir = vfs_create_dir(vfs_get_root(), "dev");
     if (!dev_dir) return;
 
-    rng_state ^= rdtsc();
     mount_register("/dev", "dev", "kernel");
 
     // Each call is a no-op if the node already exists. The harmless devices

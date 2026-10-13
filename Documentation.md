@@ -454,13 +454,13 @@ so the numbering has gaps.
 ---
 
 ### 37. Virtual Hardware Devices (/dev) (Phase 37)
-**Status: real.** `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` is a seeded xorshift generator, not cryptographically secure.
+**Status: real.** `/dev/null`, `/dev/zero`, `/dev/random` and `/dev/console` are device nodes with their own read/write functions. `/dev/random` gives output of the kernel's generator: ChaCha20 with the key replaced after every request, seeded from RDSEED or RDRAND where the CPU has them and otherwise only from interrupt timing, which is weak right after boot (the boot log says which). See `src/drivers/char/random.h`.
 
-**Goal:** Virtual character devices (`/dev/null`, `/dev/zero`, `/dev/random`), RDTSC pseudo-random number generator (`get_random_u32`).
+**Goal:** Virtual character devices (`/dev/null`, `/dev/zero`, `/dev/random`), the kernel random number generator (`get_random_bytes`).
 
 - **Order of Learning:**
   1. **Virtual Device Tree:**
-     - **Concepts:** Mount `/dev` nodes (`/dev/null`, `/dev/zero`, `/dev/random`), RDTSC PRNG (`get_random_u32`).
+     - **Concepts:** Mount `/dev` nodes (`/dev/null`, `/dev/zero`, `/dev/random`), entropy and expansion in a random number generator (`src/drivers/char/random.c`).
      - Files to inspect: `src/drivers/char/dev.h`, `src/drivers/char/dev.c`
 
 ---

@@ -243,7 +243,16 @@ reboot for the same reason: `/etc` is in the initrd.
 - **Check:** `make test-login` extended: a user changes their own password
   through a set-uid `passwd`; an unprivileged user cannot.
 
-### B6. A cryptographic random number generator (S)
+### B6. A cryptographic random number generator (S) — done
+
+Done (`src/drivers/char/random.c`): ChaCha20 with the key replaced after
+every request, reseeded through SHA-256 from RDSEED or RDRAND and from the
+timing of keyboard, disk and network interrupts. Known-answer tests for
+ChaCha20 (RFC 8439, which the library's own test had never checked) and for
+the generator step, both agreeing with an independent implementation; a
+small statistical test in the kernel rather than a battery on the host.
+On a CPU without a hardware generator (QEMU's default model) the seed at
+boot is only as unpredictable as the timestamp counter.
 
 - ASLR, ping ids and `/dev/random` use a xorshift generator. Replace it with
   ChaCha20 (already in `lib/crypto`) keyed from `RDSEED`/`RDRAND` where
@@ -323,8 +332,9 @@ plan:
    QEMU, which behaves like AMD CPUs there.
 9. The GitHub Actions workflow has never been run. Pushing this tree is its
    first run: check the result.
-10. `lib/crypto` beyond SHA-256 is unused and unaudited; decide whether it
-    stays as a separate library or goes.
+10. `lib/crypto` beyond SHA-256 and ChaCha20 (which now have known-answer
+    tests and real users) is unused and unaudited; decide whether it stays
+    as a separate library or goes.
 
 ---
 

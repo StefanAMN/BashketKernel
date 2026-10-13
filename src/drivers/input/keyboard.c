@@ -9,6 +9,7 @@
 #include "sched.h"
 #include "serial.h"
 #include "spinlock.h"
+#include "random.h"
 #include "signal.h"
 #include "tty.h"
 #include "process.h"
@@ -150,10 +151,10 @@ static void keyboard_handle_port(void) {
 }
 
 static void keyboard_irq_handler(struct registers *regs) {
-    (void)regs;
     uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
     keyboard_handle_port();
     spinlock_release_irqrestore(&kbd_lock, flags);
+    random_add_event(regs ? regs->rip : 0); // When a key is pressed, and what was running, is nobody's to choose
 
     keyboard_input_arrived();
 }

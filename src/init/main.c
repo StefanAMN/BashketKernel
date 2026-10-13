@@ -13,6 +13,7 @@
 #include "vmm.h"
 #include "heap.h"
 #include "sched.h"
+#include "random.h"
 #include "pit.h"
 #include "syscall.h"
 #include "elf.h"
@@ -263,6 +264,10 @@ void _start(void) {
 
     // Phase 33: High-Resolution Timers
     hrtimer_init();
+
+    // Random numbers: seed the generator before anything asks for them in
+    // earnest (address-space layout, TCP sequence numbers)
+    random_init();
 
     // Phase 37: Virtual Devices (/dev)
     dev_init();
