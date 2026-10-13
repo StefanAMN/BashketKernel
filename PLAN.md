@@ -287,7 +287,20 @@ are not decoded (the short alias is shown), and lookup is case-sensitive.
 - **Check:** images written by `mkfs.fat` and populated on the host with
   long names read correctly; `fsck.fat` accepts what the kernel writes.
 
-### C2. A block cache and a filesystem with owners (L)
+### C2. A block cache and a filesystem with owners (L) — cache and queueing done; the filesystem is not
+
+Done: a cache of disk sectors between the FAT driver and the disk
+(`src/drivers/block/bcache.c`), and up to eight requests with the device at
+once instead of one. Reading a 100 KiB file took 442 disk requests; it now
+takes 203 the first time and none the second (8.8 ms, then 0.6 ms).
+
+The cache is write-through, not write-back as proposed: delaying writes
+means keeping the order "data, FAT, directory entry" by other means, which
+belongs with crash consistency (C3).
+
+Not done: the native filesystem with owners, modes and timestamps as the
+root. That is most of this item, and the reason FAT files all belong to
+root and a changed password does not survive a reboot.
 
 - A buffer cache between filesystems and the disk driver (today every FAT
   access is a disk request), with write-back.

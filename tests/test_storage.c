@@ -1,4 +1,7 @@
 #include "test.h"
+#include "kprintf.h"
+#include "hrtimer.h"
+#include "bcache.h"
 #include "virtio_blk.h"
 #include "file.h"
 #include "sched.h"
@@ -123,6 +126,87 @@ TEST(disk_requests_from_several_tasks) {
     for (int i = 0; i < 2000 && workers_done < 4; i++) sched_sleep_ticks(1);
     EXPECT_EQ(workers_done, 4);
     EXPECT_EQ(workers_ok, 4);
+
+    // The device was given more than one request at a time: a task that is
+    // waiting for its answer does not keep the others from asking
+    EXPECT_TRUE(virtio_blk_peak_in_flight() >= 2 && virtio_blk_peak_in_flight() <= 8);
+    kprintf("    most requests with the device at once: %u\n", virtio_blk_peak_in_flight());
+}
+
+// --- The sector cache ----------------------------------------------------------
+
+TEST(cache_serves_repeated_reads_from_memory) {
+    enum { SECTORS = 64, FIRST = 3000 };
+    static uint8_t first[SECTORS * VIRTIO_BLK_SECTOR_SIZE], second[SECTORS * VIRTIO_BLK_SECTOR_SIZE];
+    static uint8_t raw[VIRTIO_BLK_SECTOR_SIZE], changed[VIRTIO_BLK_SECTOR_SIZE];
+    bcache_stats_t before, after;
+
+    // Cold: every sector comes from the disk
+    bcache_invalidate();
+    bcache_get_stats(&before);
+    uint64_t requests = virtio_blk_requests();
+    EXPECT_EQ(bcache_read(FIRST, first, SECTORS), 0);
+    bcache_get_stats(&after);
+    EXPECT_TRUE(after.misses == before.misses + SECTORS && after.hits == before.hits);
+    EXPECT_TRUE(virtio_blk_requests() == requests + SECTORS);
+
+    // Warm: none does, and the data is the same
+    requests = virtio_blk_requests();
+    EXPECT_EQ(bcache_read(FIRST, second, SECTORS), 0);
+    bcache_get_stats(&before);
+    EXPECT_TRUE(before.hits == after.hits + SECTORS && before.misses == after.misses);
+    EXPECT_TRUE(virtio_blk_requests() == requests);
+    EXPECT_EQ(memcmp(first, second, sizeof(first)), 0);
+
+    // A write goes to the disk at once, and the cache has the new contents
+    for (size_t i = 0; i < sizeof(changed); i++) changed[i] = (uint8_t)(i * 3 + 1);
+    requests = virtio_blk_requests();
+    EXPECT_EQ(bcache_write(FIRST + 5, changed, 1), 0);
+    EXPECT_TRUE(virtio_blk_requests() == requests + 1);
+    EXPECT_EQ(virtio_blk_read(FIRST + 5, raw, 1), 0);                 // Straight from the device
+    EXPECT_EQ(memcmp(raw, changed, sizeof(raw)), 0);
+    requests = virtio_blk_requests();
+    EXPECT_EQ(bcache_read(FIRST + 5, raw, 1), 0);                     // And from the cache
+    EXPECT_EQ(memcmp(raw, changed, sizeof(raw)), 0);
+    EXPECT_TRUE(virtio_blk_requests() == requests);
+    EXPECT_EQ(bcache_write(FIRST + 5, first + 5 * VIRTIO_BLK_SECTOR_SIZE, 1), 0); // Put back what was there
+
+    // Two sectors that share a place in the cache: the newer pushes the
+    // older out, and each still reads correctly
+    requests = virtio_blk_requests();
+    EXPECT_EQ(bcache_read(FIRST + BCACHE_SECTORS, raw, 1), 0);
+    EXPECT_EQ(bcache_read(FIRST, raw, 1), 0);
+    EXPECT_TRUE(virtio_blk_requests() == requests + 2);
+    EXPECT_EQ(memcmp(raw, first, sizeof(raw)), 0);
+
+    // Errors are errors with a cache too, and reach nothing
+    EXPECT_EQ(bcache_read(virtio_blk_capacity(), raw, 1), -1);
+    EXPECT_EQ(bcache_write(virtio_blk_capacity(), raw, 1), -1);
+}
+
+// What the cache is for: the second reading of a file needs no disk at all
+TEST(cache_makes_rereading_a_file_free) {
+    static uint8_t buf[4096];
+    uint64_t requests[2], nanoseconds[2];
+
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 0) bcache_invalidate();
+        file_t *file = NULL;
+        EXPECT_EQ(file_open("/disk/pattern.bin", O_RDONLY, &file), 0);
+        if (!file) return;
+        uint64_t start_requests = virtio_blk_requests(), start = clock_ns();
+        int64_t n, total = 0;
+        while ((n = file_read(file, buf, sizeof(buf))) > 0) total += n;
+        nanoseconds[pass] = clock_ns() - start;
+        requests[pass] = virtio_blk_requests() - start_requests;
+        file_close(file);
+        EXPECT_EQ(total, 100 * 1024);
+    }
+    kprintf("    100 KiB file: %lu disk requests in %lu us, then %lu in %lu us\n",
+            requests[0], nanoseconds[0] / 1000, requests[1], nanoseconds[1] / 1000);
+    EXPECT_TRUE(requests[0] >= 200);          // One per sector of data, at least
+    EXPECT_TRUE(requests[1] == 0);
+    EXPECT_TRUE(nanoseconds[1] < nanoseconds[0]);
 }
 
 // /dev/vda: byte offsets that do not line up with sectors
@@ -173,5 +257,7 @@ void test_suite_storage(void) {
     RUN_TEST(disk_refuses_out_of_range_requests);
     RUN_TEST(disk_completions_arrive_by_interrupt);
     RUN_TEST(disk_requests_from_several_tasks);
+    RUN_TEST(cache_serves_repeated_reads_from_memory);
+    RUN_TEST(cache_makes_rereading_a_file_free);
     RUN_TEST(disk_device_node);
 }

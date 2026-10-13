@@ -31,6 +31,7 @@
 
 #include "fat32.h"
 #include "virtio_blk.h"
+#include "bcache.h"
 #include "vfs.h"
 #include "kprintf.h"
 #include "kstring.h"
@@ -172,7 +173,7 @@ static uint32_t next_cluster(uint32_t cluster) {
         // Read into a private buffer: the disk read sleeps, and another task
         // may use the shared cache meanwhile
         uint8_t fresh[SECTOR];
-        if (virtio_blk_read(sector, fresh, 1) != 0) return 0;
+        if (bcache_read(sector, fresh, 1) != 0) return 0;
         entry = read32(fresh + index * 4);
 
         flags = spinlock_acquire_irqsave(&fat_cache_lock);
@@ -208,7 +209,7 @@ static int64_t read_chain(uint32_t first_cluster, uint64_t limit, size_t offset,
     while (done < count && valid_cluster(cluster)) {
         uint8_t sector[SECTOR];
         uint64_t lba = cluster_to_sector(cluster) + within / SECTOR;
-        if (virtio_blk_read(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
+        if (bcache_read(lba, sector, 1) != 0) return done ? (int64_t)done : -EIO;
 
         size_t in_sector = within % SECTOR;
         size_t chunk = SECTOR - in_sector;
@@ -248,10 +249,10 @@ static void invalidate_fsinfo(void) {
     uint8_t sector[SECTOR];
     uint32_t lba = volume.fsinfo_sector;
     if (lba == 0 || lba >= volume.fat_start) return;
-    if (virtio_blk_read(lba, sector, 1) != 0) return;
+    if (bcache_read(lba, sector, 1) != 0) return;
     if (read32(sector) != 0x41615252 || read32(sector + 484) != 0x61417272) return; // Not an FSInfo sector
     memset(sector + 488, 0xFF, 8); // Free count and next-free hint: unknown
-    virtio_blk_write(lba, sector, 1);
+    bcache_write(lba, sector, 1);
 }
 
 static bool set_fat_entry(uint32_t cluster, uint32_t value) {
@@ -262,7 +263,7 @@ static bool set_fat_entry(uint32_t cluster, uint32_t value) {
     uint32_t index = cluster % (SECTOR / 4);
     uint8_t sector[SECTOR];
 
-    if (virtio_blk_read(volume.fat_start + offset_sector, sector, 1) != 0) return false;
+    if (bcache_read(volume.fat_start + offset_sector, sector, 1) != 0) return false;
 
     // The top four bits of an entry are reserved and must be preserved
     uint32_t entry = (read32(sector + index * 4) & ~FAT_ENTRY_MASK) | (value & FAT_ENTRY_MASK);
@@ -274,7 +275,7 @@ static bool set_fat_entry(uint32_t cluster, uint32_t value) {
     // Every copy of the FAT gets the same change
     for (uint32_t copy = 0; copy < volume.fat_count; copy++) {
         uint32_t lba = volume.fat_start + copy * volume.fat_sectors + offset_sector;
-        if (virtio_blk_write(lba, sector, 1) != 0) return false;
+        if (bcache_write(lba, sector, 1) != 0) return false;
     }
 
     uint64_t flags = spinlock_acquire_irqsave(&fat_cache_lock);
@@ -287,7 +288,7 @@ static bool zero_cluster(uint32_t cluster) {
     uint8_t zeros[SECTOR];
     memset(zeros, 0, SECTOR);
     for (uint32_t s = 0; s < volume.sectors_per_cluster; s++) {
-        if (virtio_blk_write(cluster_to_sector(cluster) + s, zeros, 1) != 0) return false;
+        if (bcache_write(cluster_to_sector(cluster) + s, zeros, 1) != 0) return false;
     }
     return true;
 }
@@ -303,7 +304,7 @@ static uint32_t allocate_cluster(void) {
         uint32_t cluster = 2 + (alloc_hint - 2 + n) % total;
         uint32_t lba = volume.fat_start + cluster / (SECTOR / 4);
         if (lba != loaded) {
-            if (virtio_blk_read(lba, sector, 1) != 0) return 0;
+            if (bcache_read(lba, sector, 1) != 0) return 0;
             loaded = lba;
         }
         if ((read32(sector + (cluster % (SECTOR / 4)) * 4) & FAT_ENTRY_MASK) == FAT_FREE) {
@@ -336,7 +337,7 @@ static bool update_entry(const fat_node_t *info, uint32_t first_cluster, uint32_
     if (info->entry_lba == 0) return true; // The root directory has no entry
 
     uint8_t sector[SECTOR];
-    if (virtio_blk_read(info->entry_lba, sector, 1) != 0) return false;
+    if (bcache_read(info->entry_lba, sector, 1) != 0) return false;
 
     struct dir_entry *entry = (struct dir_entry *)(sector + info->entry_offset);
     entry->cluster_high = (uint16_t)(first_cluster >> 16);
@@ -346,7 +347,7 @@ static bool update_entry(const fat_node_t *info, uint32_t first_cluster, uint32_
     fat_now(&date, &time);                           // The contents have just changed
     entry->write_date = entry->access_date = date;
     entry->write_time = time;
-    return virtio_blk_write(info->entry_lba, sector, 1) == 0;
+    return bcache_write(info->entry_lba, sector, 1) == 0;
 }
 
 // --- Names --------------------------------------------------------------------
@@ -564,9 +565,9 @@ static bool write_slot(uint32_t first_cluster, uint32_t index, const uint8_t ent
     uint64_t lba;
     uint32_t offset;
     if (!slot_location(first_cluster, index, &lba, &offset)) return false;
-    if (virtio_blk_read(lba, sector, 1) != 0) return false;
+    if (bcache_read(lba, sector, 1) != 0) return false;
     memcpy(sector + offset, entry, 32);
-    return virtio_blk_write(lba, sector, 1) == 0;
+    return bcache_write(lba, sector, 1) == 0;
 }
 
 // Mark `count` slots from `first_index` as deleted
@@ -576,9 +577,9 @@ static bool delete_slots(uint32_t first_cluster, uint32_t first_index, uint32_t 
         uint64_t lba;
         uint32_t offset;
         if (!slot_location(first_cluster, first_index + i, &lba, &offset)) return false;
-        if (virtio_blk_read(lba, sector, 1) != 0) return false;
+        if (bcache_read(lba, sector, 1) != 0) return false;
         sector[offset] = 0xE5;
-        if (virtio_blk_write(lba, sector, 1) != 0) return false;
+        if (bcache_write(lba, sector, 1) != 0) return false;
     }
     return true;
 }
@@ -594,7 +595,7 @@ static bool find_free_run(const fat_node_t *dir, uint32_t count, uint32_t *first
 
     for (uint32_t steps = 0; valid_cluster(cluster) && steps <= volume.cluster_count && index < MAX_DIR_ENTRIES; steps++) {
         for (uint32_t s = 0; s < volume.sectors_per_cluster; s++) {
-            if (virtio_blk_read(cluster_to_sector(cluster) + s, sector, 1) != 0) return false;
+            if (bcache_read(cluster_to_sector(cluster) + s, sector, 1) != 0) return false;
             for (uint32_t offset = 0; offset < SECTOR; offset += sizeof(struct dir_entry), index++) {
                 // 0x00: never used (and nothing follows); 0xE5: deleted
                 if (sector[offset] == 0x00 || sector[offset] == 0xE5) {
@@ -681,9 +682,9 @@ static int64_t write_locked(vnode_t *node, size_t offset, const uint8_t *data, s
             if (chunk > to - from) chunk = to - from;
 
             uint8_t sector[SECTOR];
-            if (chunk < SECTOR && virtio_blk_read(lba, sector, 1) != 0) { failed = true; break; } // Keep the rest of the sector
+            if (chunk < SECTOR && bcache_read(lba, sector, 1) != 0) { failed = true; break; } // Keep the rest of the sector
             memcpy(sector + in_sector, data + done, chunk);
-            if (virtio_blk_write(lba, sector, 1) != 0) { failed = true; break; }
+            if (bcache_write(lba, sector, 1) != 0) { failed = true; break; }
 
             done += chunk;
             from += chunk;
@@ -822,7 +823,7 @@ static int fat_dir_load(vnode_t *dir) {
         for (uint32_t s = 0; s < volume.sectors_per_cluster; s++) {
             uint8_t sector[SECTOR];
             uint64_t lba = cluster_to_sector(cluster) + s;
-            if (virtio_blk_read(lba, sector, 1) != 0) return -EIO;
+            if (bcache_read(lba, sector, 1) != 0) return -EIO;
 
             for (uint32_t offset = 0; offset < SECTOR; offset += sizeof(struct dir_entry), index++) {
                 const struct dir_entry *entry = (const struct dir_entry *)(sector + offset);
@@ -988,7 +989,7 @@ static int fat_dir_create(vnode_t *dir, const char *name, bool directory, vnode_
 
         if (!cluster) {
             err = -ENOSPC;
-        } else if (!zero_cluster(cluster) || virtio_blk_write(cluster_to_sector(cluster), sector, 1) != 0) {
+        } else if (!zero_cluster(cluster) || bcache_write(cluster_to_sector(cluster), sector, 1) != 0) {
             set_fat_entry(cluster, FAT_FREE);
             err = -EIO;
         } else {
@@ -1054,7 +1055,7 @@ static int fat_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, con
     int err = 0;
 
     volume_lock();
-    if (virtio_blk_read(info->entry_lba, sector, 1) != 0) {
+    if (bcache_read(info->entry_lba, sector, 1) != 0) {
         err = -EIO;
     } else {
         memcpy(&old_entry, sector + info->entry_offset, sizeof(old_entry));
@@ -1068,12 +1069,12 @@ static int fat_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, con
         // second entry, "..", holds the parent's first cluster (0: the root)
         if (node->type == VFS_DIRECTORY && old_dir != new_dir && valid_cluster(info->first_cluster)) {
             uint64_t lba = cluster_to_sector(info->first_cluster);
-            if (virtio_blk_read(lba, sector, 1) == 0) {
+            if (bcache_read(lba, sector, 1) == 0) {
                 struct dir_entry *dotdot = (struct dir_entry *)(sector + sizeof(struct dir_entry));
                 uint32_t parent = (new_dir_info->entry_lba == 0) ? 0 : new_dir_info->first_cluster;
                 dotdot->cluster_high = (uint16_t)(parent >> 16);
                 dotdot->cluster_low = (uint16_t)parent;
-                virtio_blk_write(lba, sector, 1);
+                bcache_write(lba, sector, 1);
             }
         }
         *info = moved;
@@ -1095,7 +1096,7 @@ int fat32_mount(const char *mount_point) {
     if (!virtio_blk_present()) return -1;
 
     uint8_t boot[SECTOR];
-    if (virtio_blk_read(0, boot, 1) != 0) return -1;
+    if (bcache_read(0, boot, 1) != 0) return -1;
     if (!fat32_parse_boot_sector(boot, virtio_blk_capacity(), &volume)) {
         kprintf("fat32: the disk does not hold a FAT32 volume this driver can read\n");
         return -1;
@@ -1158,7 +1159,7 @@ uint32_t fat32_free_clusters(void) {
     uint8_t sector[SECTOR];
     for (uint32_t cluster = 2; cluster < volume.cluster_count + 2; cluster++) {
         if (cluster == 2 || cluster % (SECTOR / 4) == 0) {
-            if (virtio_blk_read(volume.fat_start + cluster / (SECTOR / 4), sector, 1) != 0) return free_count;
+            if (bcache_read(volume.fat_start + cluster / (SECTOR / 4), sector, 1) != 0) return free_count;
         }
         if ((read32(sector + (cluster % (SECTOR / 4)) * 4) & FAT_ENTRY_MASK) == FAT_FREE) free_count++;
     }

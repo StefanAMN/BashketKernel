@@ -38,6 +38,7 @@ enum {
     LOCK_RANK_SEM      = 58,
     LOCK_RANK_MUTEX    = 59, // The spinlock inside a mutex_t
     LOCK_RANK_DEVICE   = 60, // Driver state: virtqueues and request slots
+    LOCK_RANK_BCACHE   = 61, // The cache of disk sectors
     LOCK_RANK_HEAP     = 70, // kmalloc and the slab caches
     LOCK_RANK_KSTACK   = 72,
     LOCK_RANK_VMM      = 75,

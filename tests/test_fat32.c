@@ -1,4 +1,5 @@
 #include "test.h"
+#include "bcache.h"
 #include "rtc.h"
 #include "fat32.h"
 #include "virtio_blk.h"
@@ -417,7 +418,9 @@ TEST(fat32_directories_are_read_on_demand) {
     EXPECT_TRUE(fat32_forget_directory(notes));
     EXPECT_TRUE(notes->unloaded && notes->children == NULL);
 
-    // Listing the parent does not read the child
+    // Listing the parent does not read the child. (The sector cache is
+    // emptied so that reading shows as requests to the disk.)
+    bcache_invalidate();
     uint64_t requests = virtio_blk_requests();
     EXPECT_TRUE(vfs_find_child(disk, "notes") == notes && vfs_find_child(disk, "pattern.bin") != NULL);
     EXPECT_TRUE(virtio_blk_requests() == requests && notes->unloaded);
