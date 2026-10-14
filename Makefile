@@ -180,9 +180,22 @@ CPU ?=
 # time off the CPU, and has to keep its periodic 100 Hz tick (see
 # src/kernel/time/timer.h). Run so that the fallback stays tested.
 NO_TSC_CPU = qemu64,-tsc
-QEMU_CPU = $(if $(CPU),-cpu $(CPU))
+
+# VIRTIO=legacy or VIRTIO=modern gives the disks and the network card only
+# that one of virtio's two register interfaces (see
+# src/drivers/virtio/virtio_pci.h). By default QEMU's devices offer both and
+# the kernel uses the modern one. Each run also checks that the interface
+# in use is the one intended: a driver that quietly fell back to the other
+# would pass every other test.
+VIRTIO ?=
+VIRTIO_OFF = $(if $(filter legacy,$(VIRTIO)),disable-modern=on,$(if $(filter modern,$(VIRTIO)),disable-legacy=on))
+VIRTIO_GLOBALS = $(if $(VIRTIO_OFF),-global virtio-blk-pci.$(VIRTIO_OFF) -global virtio-net-pci.$(VIRTIO_OFF))
+VIRTIO_UNWANTED = $(if $(filter legacy,$(VIRTIO)),modern,legacy) interface
+
+QEMU_CPU = $(if $(CPU),-cpu $(CPU)) $(VIRTIO_GLOBALS)
 # SMP=n runs any of the scripted targets below on a machine with n CPUs
-SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-arg=-smp --qemu-arg=$(SMP))
+SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-arg=-smp --qemu-arg=$(SMP)) \
+	$(foreach arg,$(VIRTIO_GLOBALS),--qemu-arg=$(arg)) --forbid '$(VIRTIO_UNWANTED)'
 
 # Build the test kernel, boot it headless, and turn its verdict into an exit
 # status. The kernel writes to the isa-debug-exit port when the tests finish;
@@ -196,6 +209,7 @@ test:
 	status=$$?; \
 	grep -E '^\s+\[FAIL\]|CPU EXCEPTION|KERNEL PANIC' build-test/test.log; \
 	sed -n '/--- Test Summary ---/,/^----------/p' build-test/test.log; \
+	if grep -aq '$(VIRTIO_UNWANTED)' build-test/test.log; then echo "TESTS FAILED: a device was driven through its $(VIRTIO_UNWANTED)"; exit 1; fi; \
 	if [ $$status -eq 33 ]; then echo "TESTS PASSED"; \
 	elif [ $$status -eq 124 ]; then echo "TESTS TIMED OUT (see build-test/test.log)"; exit 1; \
 	else echo "TESTS FAILED (qemu exit $$status, see build-test/test.log)"; exit 1; fi
@@ -431,6 +445,11 @@ check:
 	@$(MAKE) --no-print-directory test-lowmem SMP=4
 	@$(MAKE) --no-print-directory test-lowmem CPU=max
 	@$(MAKE) --no-print-directory test-disk
+	@$(MAKE) --no-print-directory test VIRTIO=legacy
+	@$(MAKE) --no-print-directory test VIRTIO=modern
+	@$(MAKE) --no-print-directory test-disk VIRTIO=legacy
+	@$(MAKE) --no-print-directory test-net VIRTIO=legacy
+	@$(MAKE) --no-print-directory test-net VIRTIO=modern SMP=2
 	@$(MAKE) --no-print-directory test-edit
 	@$(MAKE) --no-print-directory test-home
 	@$(MAKE) --no-print-directory test-crash

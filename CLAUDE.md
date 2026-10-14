@@ -93,6 +93,7 @@ make test-crash                 # kill QEMU during ext2 writes, reboot, e2fsck; 
 make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
 make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
 make test CPU=qemu64,-tsc       # no timestamp counter: the periodic-tick fallback
+make test VIRTIO=legacy         # devices with only the legacy virtio interface (VIRTIO=modern: only the modern one)
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
 make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one; SMP=4
 tools/qemu_shell.py --qemu-arg=-smp --qemu-arg=4 'exec /bin/ps'   # any scripted boot on more CPUs
@@ -426,6 +427,17 @@ code comments and commit messages; `git log` is the full history.
   `qemu_shell.py` buffers its output, so the crash test, which kills it,
   never saw the "workload started" line. Evidence that the workload ran is
   taken from the disk at the next boot instead.
+- **When there are two ways and one is a fallback, assert which one ran.**
+  The first build with the modern virtio interface booted, mounted both
+  disks and pinged: on the legacy interface, because mapping the modern
+  registers had failed and the code fell back. Every test would have
+  passed. The boot line names the interface and each test run now refuses
+  the wrong one.
+- **The direct map is not a place to map device memory.** The bootloader's
+  direct map already covered the device's registers with a large page, so
+  `vmm_map_page` at "direct map + physical address" refused. (The local APIC
+  got away with it by luck of where it sits.) Device registers go through
+  `vmm_map_device`, which also maps them uncached.
 - **To stop a periodic interrupt, find everything that leaned on it.** Going
   tickless took three things besides the timer: PID 0 halted in a loop and
   relied on the tick to look for dead tasks, `tcpd` woke every 50 ms whether

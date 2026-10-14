@@ -31,6 +31,7 @@
 // First address above user space. On x86_64 with 4-level paging the lower
 // canonical half ends at 0x00007FFFFFFFFFFF.
 #define USER_SPACE_END 0x0000800000000000ULL
+#define DEVICE_REGION_BASE 0xFFFFC00000000000ULL  // Where device registers are mapped (vmm_map_device)
 #define KERNEL_SPACE_START 0xFFFF800000000000ULL // The half every address space shares
 
 /**
@@ -131,6 +132,21 @@ bool vmm_map_page(uint64_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags);
  * @return true if page was unmapped, false if not mapped.
  */
 bool vmm_unmap_page(uint64_t *pml4, uint64_t virt);
+
+/**
+ * @brief Map a device's registers (memory that is not RAM, at a physical
+ *        address the firmware chose) into the kernel and return where.
+ *
+ * They get a region of their own rather than their place in the direct
+ * map: the bootloader's direct map may already cover the address with a
+ * large page, and it maps everything as ordinary cached memory. Registers
+ * need every access to reach the device, so these pages are mapped
+ * uncached. The mapping is never removed.
+ *
+ * @return The address of `phys` itself (not of the start of its page), or
+ *         NULL if a page table could not be allocated.
+ */
+void *vmm_map_device(uint64_t phys, size_t length);
 
 /**
  * @brief Look up the physical frame a 4 KiB virtual page is mapped to.

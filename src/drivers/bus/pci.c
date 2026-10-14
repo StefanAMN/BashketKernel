@@ -55,6 +55,11 @@ void pci_enable_io_and_bus_master(const pci_device_t *dev) {
     pci_write16(dev, PCI_COMMAND, pci_read16(dev, PCI_COMMAND) | 0x0005);
 }
 
+void pci_enable_memory_and_bus_master(const pci_device_t *dev) {
+    // Bit 1: respond to accesses to its memory regions. Bit 2: DMA.
+    pci_write16(dev, PCI_COMMAND, pci_read16(dev, PCI_COMMAND) | 0x0006);
+}
+
 static uint32_t pci_config_read32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset) {
     pci_device_t where = { .bus = bus, .device = dev, .function = func };
     return pci_read32(&where, offset);

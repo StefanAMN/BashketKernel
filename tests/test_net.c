@@ -6,18 +6,24 @@
 #include "heap.h"
 #include "sched.h"
 #include "kstring.h"
+#include "virtio_pci.h"
 #include "kerrno.h"
 
 TEST(pci_finds_the_devices_qemu_provides) {
+    // By type: a device that offers only the modern interface has another
+    // id (0x1040 + type) than one that still offers the legacy one
     pci_device_t dev;
-    EXPECT_TRUE(pci_find_device(0x1AF4, 0x1001, &dev));     // virtio disk
-    EXPECT_TRUE(pci_find_device(0x1AF4, 0x1000, &dev));     // virtio network card
+    EXPECT_TRUE(virtio_pci_find(VIRTIO_TYPE_BLOCK, 0, &dev));
+    EXPECT_TRUE(dev.device_id == 0x1001 || dev.device_id == 0x1042);
+    EXPECT_TRUE(virtio_pci_find(VIRTIO_TYPE_NET, 0, &dev));
+    EXPECT_TRUE(dev.device_id == 0x1000 || dev.device_id == 0x1041);
+    EXPECT_TRUE(!virtio_pci_find(VIRTIO_TYPE_NET, 1, &dev));    // One card, not two
     EXPECT_TRUE(!pci_find_device(0xDEAD, 0xBEEF, &dev));
 
     // Configuration space reads agree with what the scan recorded
-    EXPECT_TRUE(pci_find_device(0x1AF4, 0x1000, &dev));
+    EXPECT_TRUE(virtio_pci_find(VIRTIO_TYPE_NET, 0, &dev));
     EXPECT_EQ(pci_read16(&dev, 0), 0x1AF4);
-    EXPECT_EQ(pci_read16(&dev, 2), 0x1000);
+    EXPECT_EQ(pci_read16(&dev, 2), dev.device_id);
     EXPECT_TRUE(pci_read16(&dev, PCI_COMMAND) & 0x4);       // Bus mastering was switched on
 }
 
