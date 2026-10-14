@@ -140,16 +140,18 @@ static void ap_entry(struct LIMINE_MP(info) *info) {
     // Become this CPU's idle task and start taking work
     flush_whole_tlb();
     sched_join_this_cpu();
-    lapic_timer_start_on_this_cpu(IPI_VECTOR_TIMER);
+    timer_start_on_this_cpu();
     sched_idle_loop();
 }
 
 void smp_start_scheduling(void) {
     if (cpu_total <= 1 || scheduling_started) return;
 
-    // The other CPUs get their ticks from their own local APIC timers,
-    // which count at a rate that has to be measured first
-    if (!lapic_timer_calibrate(pit_get_ticks, 5)) {
+    // The other CPUs are interrupted by their own local APIC timers, which
+    // count at a rate that has to be measured first (unless the boot CPU
+    // did so already, for its own one-shot timer: measuring again would
+    // stop that one)
+    if (lapic_timer_counts_per_tick() == 0 && !lapic_timer_calibrate(timer_ticks, 5)) {
         kprintf("SMP: local APIC timer did not count; the other CPUs stay idle\n");
         return;
     }
@@ -160,11 +162,11 @@ void smp_start_scheduling(void) {
         cpu_t *cpu = cpu_get(i);
         if (!cpu->active) continue;
         lapic_send_ipi(cpu->lapic_id, IPI_VECTOR_WAKE);
-        uint64_t deadline = pit_get_ticks() + 20;
-        while (!cpu->online && pit_get_ticks() < deadline) asm volatile("pause");
+        uint64_t deadline = timer_ticks() + 20;
+        while (!cpu->online && timer_ticks() < deadline) asm volatile("pause");
         if (cpu->online) online++;
     }
-    kprintf("SMP: %zu CPUs scheduling (local APIC timer: %u counts per tick)\n", online, lapic_timer_counts_per_tick());
+    kprintf("SMP: %zu CPUs scheduling (%s timers)\n", online, timer_is_one_shot() ? "one-shot" : "periodic");
 }
 
 bool smp_call(uint32_t cpu_id, void (*fn)(void *), void *arg, bool wait) {
@@ -236,8 +238,8 @@ void smp_init(struct LIMINE_MP(response) *response) {
     }
 
     // Give them a moment to arrive (they are already running, in parallel)
-    uint64_t deadline = pit_get_ticks() + 20;
-    while (cpus_running < cpu_total && pit_get_ticks() < deadline) asm volatile("pause");
+    uint64_t deadline = timer_ticks() + 20;
+    while (cpus_running < cpu_total && timer_ticks() < deadline) asm volatile("pause");
 
     kprintf("SMP: %zu of %zu CPUs started\n",
             (size_t)cpus_running, cpu_total);

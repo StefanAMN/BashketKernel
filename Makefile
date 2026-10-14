@@ -175,6 +175,11 @@ run-gdb: iso
 # CPU=max runs the test targets on QEMU's fullest CPU model, which has the
 # protections the default model lacks (SMEP, SMAP, UMIP): make test CPU=max
 CPU ?=
+
+# A CPU model without a timestamp counter: the kernel can then not read the
+# time off the CPU, and has to keep its periodic 100 Hz tick (see
+# src/kernel/time/timer.h). Run so that the fallback stays tested.
+NO_TSC_CPU = qemu64,-tsc
 QEMU_CPU = $(if $(CPU),-cpu $(CPU))
 # SMP=n runs any of the scripted targets below on a machine with n CPUs
 SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-arg=-smp --qemu-arg=$(SMP))
@@ -302,6 +307,7 @@ test-net: iso
 # at once, and everything else must work exactly as with one. Then real
 # programs on 2, 4 and 8 CPUs: the system call checks, floating point state
 # across task switches (and now across CPUs), and a pipeline.
+SMP_PROGRAM_CPUS ?= 2 4 8
 test-smp:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
 	@timeout 180 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel.iso -boot d \
@@ -314,7 +320,7 @@ test-smp:
 	else echo "four CPUs: FAILED (qemu exit $$status, see build-test/test-smp.log)"; \
 		grep -aE '^\s+\[FAIL\]|CPU EXCEPTION|SMP:' build-test/test-smp.log | head -5; exit 1; fi
 	@$(MAKE) --no-print-directory iso
-	@for n in 2 4 8; do \
+	@for n in $(SMP_PROGRAM_CPUS); do \
 		tools/qemu_shell.py --quiet --timeout 120 $(SHELL_CPU) --qemu-arg=-smp --qemu-arg=$$n \
 			--expect "SMP: $$n CPUs scheduling" --expect 'syscheck: all checks passed' \
 			--expect 'fptest: all workers computed the right values' --expect '\n$(words $(USER_PROGS)) [0-9]+ [0-9]+\n' \
@@ -419,6 +425,8 @@ check:
 	@$(MAKE) --no-print-directory test
 	@$(MAKE) --no-print-directory test CPU=max
 	@$(MAKE) --no-print-directory test-smp
+	@$(MAKE) --no-print-directory test CPU=$(NO_TSC_CPU)
+	@$(MAKE) --no-print-directory test-smp CPU=$(NO_TSC_CPU) SMP_PROGRAM_CPUS=2
 	@$(MAKE) --no-print-directory test-lowmem
 	@$(MAKE) --no-print-directory test-lowmem SMP=4
 	@$(MAKE) --no-print-directory test-lowmem CPU=max

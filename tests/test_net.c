@@ -76,9 +76,9 @@ TEST(net_ping_ourselves_and_nobody) {
 
     // An address on our network that nobody has: ARP gets no answer. This
     // takes the full ARP timeout (three tries of 0.3 s).
-    uint64_t start = pit_get_ticks();
+    uint64_t start = timer_ticks();
     EXPECT_EQ(net_ping(NET_IP(10, 0, 2, 99), 100, NULL), -EHOSTUNREACH);
-    uint64_t waited = pit_get_ticks() - start;
+    uint64_t waited = timer_ticks() - start;
     EXPECT_TRUE(waited >= 80 && waited <= 110);
     EXPECT_TRUE(!net_arp_known(NET_IP(10, 0, 2, 99)));
 }
@@ -129,9 +129,9 @@ TEST(udp_sockets_over_loopback) {
     EXPECT_EQ(udp_sendto(client, NET_LOCAL_IP, 7000, big, UDP_PAYLOAD_MAX + 1), -EMSGSIZE);
 
     // Nothing waiting: the timeout is honoured
-    uint64_t start = pit_get_ticks();
+    uint64_t start = timer_ticks();
     EXPECT_EQ(udp_recvfrom(server, buf, sizeof(buf), NULL, NULL, 10), -ETIMEDOUT);
-    uint64_t waited = pit_get_ticks() - start;
+    uint64_t waited = timer_ticks() - start;
     EXPECT_TRUE(waited >= 10 && waited <= 13);
 
     // A port nobody listens on, and a queue that fills up: both counted, both harmless

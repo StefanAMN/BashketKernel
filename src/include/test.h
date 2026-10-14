@@ -57,10 +57,10 @@ bool run_all_tests(void);
 // ticks. "Yield N times" is not a wait: with more than one CPU the other
 // tasks run elsewhere, and N yields here can be over before they have begun.
 #define TEST_WAIT(condition, max_ticks) do { \
-    extern uint64_t pit_get_ticks(void); \
+    extern uint64_t timer_ticks(void); \
     extern void sched_yield(void); \
-    uint64_t test_wait_deadline = pit_get_ticks() + (max_ticks); \
-    while (!(condition) && pit_get_ticks() < test_wait_deadline) sched_yield(); \
+    uint64_t test_wait_deadline = timer_ticks() + (max_ticks); \
+    while (!(condition) && timer_ticks() < test_wait_deadline) sched_yield(); \
 } while (0)
 
 // For "nothing leaked" checks: frames that are free, plus those the kernel

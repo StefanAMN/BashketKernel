@@ -279,10 +279,10 @@ static int do_request(blk_device_t *d, uint32_t type, uint64_t lba, uint8_t *byt
         // us; the one-tick timeout makes this work even if an interrupt is
         // lost, and before the scheduler runs sched_sleep returns at once,
         // so this loop simply polls.
-        uint64_t deadline = pit_get_ticks() + 5 * TIMER_HZ;
-        while (!slot->done && pit_get_ticks() <= deadline) {
+        uint64_t deadline = timer_ticks() + 5 * TIMER_HZ;
+        while (!slot->done && timer_ticks() <= deadline) {
             collect_finished(d);
-            if (!slot->done) sched_sleep_uninterruptible(slot, &d->lock, pit_get_ticks() + 1);
+            if (!slot->done) sched_sleep_uninterruptible(slot, &d->lock, timer_ticks() + 1);
         }
         d->in_flight--;
         if (slot->done) result = (*slot->status == 0) ? 0 : -1;

@@ -229,8 +229,8 @@ void _start(void) {
     cow_init();
 
     // Phase 9: Modern Interrupt Architecture (LAPIC & IOAPIC)
-    // The PIT stays the only tick source. The LAPIC timer is left off until
-    // it is calibrated and given its own vector.
+    // The PIT is the tick source for now. The LAPIC timer is left off until
+    // it is calibrated (see timer_start_one_shot below).
     lapic_init();
     acpi_init(rsdp_request.response ? (void *)rsdp_request.response->address : NULL);
     ioapic_init();
@@ -270,6 +270,10 @@ void _start(void) {
     // Phase 33: High-Resolution Timers
     hrtimer_init();
 
+    // The clock can now be read without an interrupt counting for it: stop
+    // the periodic tick and let each CPU's timer fire only when needed
+    timer_start_one_shot();
+
     // Random numbers: seed the generator before anything asks for them in
     // earnest (address-space layout, TCP sequence numbers)
     random_init();
@@ -296,11 +300,10 @@ void _start(void) {
     // Create interactive shell task
     task_create("shell", shell_task_entry);
 
-    // Idle loop: free exited tasks, run whatever is runnable, and halt the
-    // CPU until the next interrupt when nothing is.
+    // What is left for this task: free tasks that have exited and have
+    // nobody to wait for them, sleeping until there is one.
     while (1) {
         sched_reap();
-        sched_yield();
-        asm("hlt");
+        sched_wait_for_reapable();
     }
 }

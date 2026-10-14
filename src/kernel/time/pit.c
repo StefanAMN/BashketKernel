@@ -4,6 +4,7 @@
  */
 
 #include "pit.h"
+#include "timer.h"
 #include "io.h"
 #include "interrupts.h"
 #include "sched.h"
@@ -13,22 +14,9 @@
 
 extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
-static volatile uint64_t ticks = 0;
-
 static void pit_irq_handler(struct registers *regs) {
     (void)regs;
-    ticks++;
-
-    // Nothing is locked here, so this is where a recorded breach of the
-    // locking rules can be reported
-    lock_debug_poll();
-
-    // Show scrolled output at most 50 times a second (see console.c)
-    if (ticks % 2 == 0) console_refresh();
-
-    // Wake tasks whose sleep has ended, then let the scheduler preempt
-    sched_wake_sleepers(ticks);
-    sched_tick();
+    timer_periodic_tick();
 }
 
 void pit_init(uint32_t frequency_hz) {
@@ -53,25 +41,4 @@ void pit_init(uint32_t frequency_hz) {
 
     // From now on something calls console_refresh regularly
     console_set_deferred_refresh(true);
-}
-
-bool sched_sleep_ticks(uint64_t count) {
-    if (count == 0) return true;
-
-    // No lock: the wake-up time is part of the sleep itself, so a tick that
-    // passes the deadline just before we sleep still wakes us at the next
-    uint64_t deadline = ticks + count;
-    bool completed = true;
-    while (ticks < deadline) {
-        if (sched_interrupted()) {
-            completed = false;
-            break;
-        }
-        sched_sleep(NULL, NULL, deadline);
-    }
-    return completed;
-}
-
-uint64_t pit_get_ticks(void) {
-    return ticks;
 }

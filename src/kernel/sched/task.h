@@ -57,6 +57,7 @@ typedef struct task {
 
     // --- Blocking (valid while state is TASK_BLOCKED) ---
     void *wait_channel;      // What it is waiting for; sched_wakeup(channel) wakes it
+    uint64_t wake_ns;        // The same, as a time on the clock_ns scale (one or the other is set)
     uint64_t wake_tick;      // If non-zero, timer tick at which it wakes regardless
 
     // --- Process state (user tasks only) ---

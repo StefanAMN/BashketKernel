@@ -92,6 +92,7 @@ make test-home                  # ext2 at /home: owners across a reboot, e2fsck,
 make test-crash                 # kill QEMU during ext2 writes, reboot, e2fsck; CRASH_ROUNDS=20 for more (~1 min)
 make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
 make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
+make test CPU=qemu64,-tsc       # no timestamp counter: the periodic-tick fallback
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
 make fuzz                       # random hostile syscalls, 8 seeds (~80 s); FUZZ_SEEDS="3" to reproduce one; SMP=4
 tools/qemu_shell.py --qemu-arg=-smp --qemu-arg=4 'exec /bin/ps'   # any scripted boot on more CPUs
@@ -425,6 +426,15 @@ code comments and commit messages; `git log` is the full history.
   `qemu_shell.py` buffers its output, so the crash test, which kills it,
   never saw the "workload started" line. Evidence that the workload ran is
   taken from the disk at the next boot instead.
+- **To stop a periodic interrupt, find everything that leaned on it.** Going
+  tickless took three things besides the timer: PID 0 halted in a loop and
+  relied on the tick to look for dead tasks, `tcpd` woke every 50 ms whether
+  or not a connection existed, and a panic on one CPU stopped the others
+  "at their next tick". Each kept working and kept the CPU awake (or, the
+  last, would have stopped working). `/proc/timers` is how to see it.
+- **A fallback nobody runs is a stub.** "Timestamp counter unusable" had
+  been in the tree untested; the first run on `-cpu qemu64,-tsc` failed five
+  checks. It is in `make check` now.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

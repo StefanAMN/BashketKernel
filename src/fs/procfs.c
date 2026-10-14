@@ -48,7 +48,7 @@ static size_t gen_version(char *buf, size_t size) {
 }
 
 static size_t gen_uptime(char *buf, size_t size) {
-    uint64_t ticks = pit_get_ticks();
+    uint64_t ticks = timer_ticks();
     uint64_t hundredths = (ticks % TIMER_HZ) * 100 / TIMER_HZ;
     return ksnprintf(buf, size, "%lu.%s%lu seconds (%lu ticks at %u Hz)\n",
                      ticks / TIMER_HZ, hundredths < 10 ? "0" : "", hundredths,
@@ -86,6 +86,10 @@ static size_t gen_tasks(char *buf, size_t size) {
     }
     sched_unlock_irqrestore(flags);
     return len;
+}
+
+static size_t gen_timers(char *buf, size_t size) {
+    return timer_describe(buf, size);
 }
 
 static size_t gen_cpuinfo(char *buf, size_t size) {
@@ -141,6 +145,7 @@ static size_t gen_mounts(char *buf, size_t size) {
 
 PROC_FILE(version);
 PROC_FILE(uptime);
+PROC_FILE(timers);
 PROC_FILE(meminfo);
 PROC_FILE(tasks);
 PROC_FILE(cpuinfo);
@@ -162,11 +167,12 @@ void procfs_init(void) {
     // Each call is a no-op if the node already exists
     vfs_create_device(proc_dir, "version", &ops_version);
     vfs_create_device(proc_dir, "uptime", &ops_uptime);
+    vfs_create_device(proc_dir, "timers", &ops_timers);
     vfs_create_device(proc_dir, "meminfo", &ops_meminfo);
     vfs_create_device(proc_dir, "tasks", &ops_tasks);
     vfs_create_device(proc_dir, "cpuinfo", &ops_cpuinfo);
     vfs_create_device(proc_dir, "kmsg", &ops_kmsg);
     vfs_create_device(proc_dir, "mounts", &ops_mounts);
     mount_register("/proc", "proc", "kernel");
-    kprintf("ProcFS Init: /proc/version, uptime, meminfo, tasks, cpuinfo, kmsg, mounts\n");
+    kprintf("ProcFS Init: /proc/version, uptime, timers, meminfo, tasks, cpuinfo, kmsg, mounts\n");
 }

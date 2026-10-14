@@ -196,7 +196,7 @@ void shell_run_cmd(const char *cmdline) {
     } else if (strcmp(cmdline, "ps") == 0) {
         sched_print_tasks();
     } else if (strcmp(cmdline, "uptime") == 0) {
-        uint64_t ticks = pit_get_ticks();
+        uint64_t ticks = timer_ticks();
         uint64_t seconds = ticks / TIMER_HZ;
         kprintf("Uptime: %zu seconds (%zu ticks)\n", seconds, ticks);
     } else if (strcmp(cmdline, "date") == 0) {

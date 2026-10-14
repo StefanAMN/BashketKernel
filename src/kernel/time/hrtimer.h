@@ -32,15 +32,24 @@ void hrtimer_init(void);
 uint64_t clock_ns(void);
 
 /**
+ * @brief The same clock without the guarantee of never stepping back
+ *        between CPUs, and without taking a lock: for the timer code, which
+ *        reads it inside interrupt handlers and under any lock. 0 if the
+ *        timestamp counter is unusable.
+ */
+uint64_t hrtimer_raw_ns(void);
+
+/**
  * @brief Measured TSC frequency in Hz (0 if calibration failed).
  */
 uint64_t hrtimer_tsc_hz(void);
 
 /**
- * @brief Sleep for at least this long. Whole ticks are slept without using
- *        the CPU; the remainder (under one tick) is waited out by watching
- *        the clock, so the sleep ends within microseconds of the request
- *        rather than at the next tick.
+ * @brief Sleep for at least this long. With one-shot timers (timer.h) the
+ *        CPU's timer is set for the moment the sleep ends. With the periodic
+ *        tick, whole ticks are slept and the remainder (under one tick) is
+ *        waited out by watching the clock. Either way the sleep ends within
+ *        microseconds of the request rather than at the next tick.
  * @return true if the full time passed, false if a signal cut it short.
  */
 bool nanosleep(uint64_t nanoseconds);

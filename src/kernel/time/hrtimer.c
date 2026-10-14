@@ -6,6 +6,7 @@
 #include "hrtimer.h"
 #include "spinlock.h"
 #include "pit.h"
+#include "cpu.h"
 #include "sched.h"
 #include "kprintf.h"
 
@@ -26,16 +27,31 @@ static inline uint64_t rdtsc(void) {
 
 // Spin until the tick counter changes, and return the TSC at that moment
 static uint64_t tsc_at_next_tick(void) {
-    uint64_t tick = pit_get_ticks();
-    while (pit_get_ticks() == tick) asm volatile("pause");
+    uint64_t tick = timer_ticks();
+    while (timer_ticks() == tick) asm volatile("pause");
     return rdtsc();
 }
 
+// Is there a timestamp counter at all? (CPUID leaf 1, EDX bit 4: Intel SDM
+// Vol. 2A, CPUID.) Every 64-bit CPU has one, but an emulator can be told to
+// leave it out, which is how the fallbacks here and in timer.c are tested.
+static bool have_tsc(void) {
+    uint32_t r[4];
+    cpuid(1, 0, r);
+    return (r[3] >> 4) & 1;
+}
+
 void hrtimer_init(void) {
+    if (!have_tsc()) {
+        ticks_at_start = timer_ticks();
+        kprintf("hrtimer: this CPU has no timestamp counter; clock resolution is one tick (10 ms)\n");
+        return;
+    }
+
     // From the edge of one tick to the edge of another, CALIBRATION_TICKS later
     uint64_t begin = tsc_at_next_tick();
-    uint64_t begin_tick = pit_get_ticks();
-    while (pit_get_ticks() - begin_tick < CALIBRATION_TICKS) asm volatile("pause");
+    uint64_t begin_tick = timer_ticks();
+    while (timer_ticks() - begin_tick < CALIBRATION_TICKS) asm volatile("pause");
     uint64_t end = rdtsc();
 
     uint64_t counts = end - begin;
@@ -46,7 +62,7 @@ void hrtimer_init(void) {
         tsc_hz = measured;
     }
     tsc_at_start = rdtsc();
-    ticks_at_start = pit_get_ticks();
+    ticks_at_start = timer_ticks();
 
     if (tsc_hz) {
         kprintf("hrtimer: timestamp counter runs at %lu MHz; clock resolution is nanoseconds\n", tsc_hz / 1000000);
@@ -59,6 +75,14 @@ uint64_t hrtimer_tsc_hz(void) {
     return tsc_hz;
 }
 
+uint64_t hrtimer_raw_ns(void) {
+    if (!tsc_hz) return 0;
+    // counts * 1e9 would overflow 64 bits after a few seconds at GHz
+    // rates, so split into whole seconds and the remainder
+    uint64_t counts = rdtsc() - tsc_at_start;
+    return (counts / tsc_hz) * NS_PER_SECOND + (counts % tsc_hz) * NS_PER_SECOND / tsc_hz;
+}
+
 // Protects last_reading, which every CPU reads and advances
 static spinlock_t clock_lock = SPINLOCK_RANKED("clock", LOCK_RANK_TIME);
 
@@ -66,12 +90,9 @@ uint64_t clock_ns(void) {
     uint64_t now;
 
     if (tsc_hz) {
-        // counts * 1e9 would overflow 64 bits after a few seconds at GHz
-        // rates, so split into whole seconds and the remainder
-        uint64_t counts = rdtsc() - tsc_at_start;
-        now = (counts / tsc_hz) * NS_PER_SECOND + (counts % tsc_hz) * NS_PER_SECOND / tsc_hz;
+        now = hrtimer_raw_ns();
     } else {
-        now = (pit_get_ticks() - ticks_at_start) * NS_PER_TICK;
+        now = (timer_ticks() - ticks_at_start) * NS_PER_TICK;
     }
 
     // Never report a time earlier than one already reported
@@ -84,6 +105,17 @@ uint64_t clock_ns(void) {
 
 bool nanosleep(uint64_t nanoseconds) {
     uint64_t deadline = clock_ns() + nanoseconds;
+
+    // With one-shot timers the CPU's timer is simply set for that moment
+    if (timer_is_one_shot()) {
+        while (clock_ns() < deadline) {
+            if (sched_interrupted()) return false;
+            sched_sleep_until_ns(deadline);
+        }
+        return true;
+    }
+
+    // With a periodic tick, a sleep can only end on one:
 
     // Sleep the whole ticks, keeping one in hand: a tick-based sleep ends on
     // a tick boundary, which may be most of a tick late

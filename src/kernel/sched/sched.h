@@ -143,9 +143,26 @@ void sched_interrupt_sleep(task_t *task);
 void sched_wakeup(void *channel);
 
 /**
- * @brief Wake tasks whose wake_tick has passed. Called from the timer interrupt.
+ * @brief Wake tasks whose sleep has run out. Called from the timer interrupt.
+ * @param now_ticks The time in ticks.
+ * @param now_ns    The time on the clock_ns scale, or 0 with a periodic
+ *                  tick (when only deadlines in ticks are looked at).
+ * @return The earliest time (clock_ns scale) at which a task that went to
+ *         sleep on the calling CPU is still to be woken, 0 if there is none.
  */
-void sched_wake_sleepers(uint64_t now);
+uint64_t sched_wake_sleepers(uint64_t now_ticks, uint64_t now_ns);
+
+/**
+ * @brief Sleep until the clock (clock_ns scale) reaches `deadline_ns`, or a
+ *        signal arrives. Needs one-shot timers (see timer.h); callers use
+ *        nanosleep(), which knows what to do without them.
+ */
+void sched_sleep_until_ns(uint64_t deadline_ns);
+
+/**
+ * @brief Sleep until some task has exited that sched_reap() would free.
+ */
+void sched_wait_for_reapable(void);
 
 /**
  * @brief Sleep for at least `ticks` timer ticks without using CPU time.

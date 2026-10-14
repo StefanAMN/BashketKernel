@@ -21,6 +21,7 @@
 #include "process.h"
 #include "smp.h"
 #include "lapic.h"
+#include "timer.h"
 
 extern void ctx_switch(uint64_t **old_rsp_ptr, uint64_t *new_rsp, uint64_t *new_pml4_phys);
 extern void task_start_trampoline(void);
@@ -100,10 +101,18 @@ static void enqueue_task(task_t *t) {
 // whether it made one runnable. Interrupts are off around the check and
 // "sti; hlt" is atomic (an interrupt can not slip in between the two), so a
 // wakeup is never slept through.
+//
+// Just before halting it sets its timer for the next thing this CPU has to
+// wake for by itself (a sleeper's deadline, output to show), or switches the
+// timer off if there is nothing: see timer.h.
 void sched_idle_loop(void) {
     for (;;) {
         asm volatile("cli");
+        // Another CPU has stopped the kernel: stop here too. (A busy CPU
+        // finds out in sched_tick; an idle one has no tick to find out in.)
+        if (kernel_halted) for (;;) asm volatile("cli\n\thlt");
         sched_yield();
+        timer_cpu_idle();
         asm volatile("sti\n\thlt");
     }
 }
@@ -387,6 +396,7 @@ static void schedule(void) {
         old_task->state = TASK_READY;
         if (!may_stay) kick_idle_cpu(old_task); // Its CPU may be asleep
     }
+    if (old_task == cpu->idle) timer_cpu_busy(); // (next_task is not the idle task: it was running already)
     next_task->state = TASK_RUNNING;
     next_task->last_cpu = cpu->cpu_id;
     next_task->slice_left = priority_time_slice(next_task->priority); // A fresh turn
@@ -449,11 +459,14 @@ static void stop_current(task_t *self);
 static void wake_task(task_t *t) {
     t->wait_channel = NULL;
     t->wake_tick = 0;
+    t->wake_ns = 0;
     t->state = TASK_READY;
     kick_idle_cpu(t);
 }
 
-static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, bool interruptible) {
+// `wake_tick` and `wake_ns` are two ways of naming the moment at which the
+// sleep ends whatever happens (0 for both: only a wake-up ends it).
+static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, uint64_t wake_ns, bool interruptible) {
     task_t *self = current_task;
     if (!scheduler_active || !self) return;
 
@@ -500,7 +513,15 @@ static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, bool i
 
     self->wait_channel = channel;
     self->wake_tick = wake_tick;
+    self->wake_ns = wake_ns;
     self->state = TASK_BLOCKED;
+
+    // With one-shot timers nothing looks at sleepers regularly: this CPU's
+    // timer has to be set for this one. (This CPU, because it is the one
+    // that is certain to pass through here: see sched_wake_sleepers.)
+    if (timer_is_one_shot() && (wake_tick || wake_ns)) {
+        timer_sleeper_deadline(wake_ns ? wake_ns : timer_tick_to_ns(wake_tick));
+    }
 
     if (lock && !caller_has_sched_lock) spinlock_release(lock);
     schedule(); // Returns once someone has woken us and we have been chosen to run
@@ -520,15 +541,38 @@ static void sleep_on(void *channel, spinlock_t *lock, uint64_t wake_tick, bool i
 }
 
 void sched_sleep(void *channel, spinlock_t *lock, uint64_t wake_tick) {
-    sleep_on(channel, lock, wake_tick, true);
+    sleep_on(channel, lock, wake_tick, 0, true);
 }
 
 void sched_sleep_uninterruptible(void *channel, spinlock_t *lock, uint64_t wake_tick) {
-    sleep_on(channel, lock, wake_tick, false);
+    sleep_on(channel, lock, wake_tick, 0, false);
 }
 
 void sched_sleep_on_task_list(void *channel) {
-    sleep_on(channel, &sched_lock, 0, true);
+    sleep_on(channel, &sched_lock, 0, 0, true);
+}
+
+void sched_sleep_until_ns(uint64_t deadline_ns) {
+    if (deadline_ns != 0) sleep_on(NULL, NULL, 0, deadline_ns, true);
+}
+
+// The kernel's own reaper (see sched_reap) sleeps here until there is a
+// dead task that nobody else will wait for.
+static int reaper_channel;
+
+static bool reapable_exists(void) {
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->state == TASK_ZOMBIE && t->detached && t != current_task) return true;
+    }
+    return false;
+}
+
+void sched_wait_for_reapable(void) {
+    uint64_t flags = sched_lock_irqsave();
+    // Checked under the lock that the wake-up is sent under, and only once:
+    // the caller reaps and comes back
+    if (!reapable_exists()) sleep_on(&reaper_channel, &sched_lock, 0, 0, false);
+    sched_unlock_irqrestore(flags);
 }
 
 bool sched_interrupted(void) {
@@ -611,14 +655,28 @@ void sched_wakeup(void *channel) {
     sched_unlock_irqrestore(flags);
 }
 
-void sched_wake_sleepers(uint64_t now) {
+// Each CPU is responsible for the deadlines of the tasks that went to sleep
+// on it (a blocked task's last_cpu): it set its timer when they did, and it
+// asks here what to set it to next. Any CPU that looks wakes every task
+// that is due, whoever's it is.
+uint64_t sched_wake_sleepers(uint64_t now_ticks, uint64_t now_ns) {
+    uint64_t earliest = 0;
     uint64_t flags = sched_lock_irqsave();
+    uint32_t here = this_cpu()->cpu_id;
     for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->state == TASK_BLOCKED && t->wake_tick != 0 && now >= t->wake_tick) {
-            wake_task(t);
+        if (t->state != TASK_BLOCKED) continue;
+        if (now_ns == 0) {
+            // Periodic tick: only deadlines given in ticks exist
+            if (t->wake_tick != 0 && now_ticks >= t->wake_tick) wake_task(t);
+            continue;
         }
+        uint64_t at = t->wake_ns ? t->wake_ns : t->wake_tick ? timer_tick_to_ns(t->wake_tick) : 0;
+        if (at == 0) continue;
+        if (now_ns >= at) wake_task(t);
+        else if (t->last_cpu == here && (earliest == 0 || at < earliest)) earliest = at;
     }
     sched_unlock_irqrestore(flags);
+    return earliest;
 }
 
 void sched_unlink_zombie(task_t *task) {
@@ -716,6 +774,7 @@ void task_exit_status(int status) {
     sched_lock_irqsave(); // Never released by this task: see sched_lock
     self->exit_status = status;
     self->state = TASK_ZOMBIE;
+    if (self->detached) wakeup_locked(&reaper_channel);
 
     // Children of a dead task have nobody left to wait for them: the init
     // process takes them over, and will wait for them in its turn. (If there
@@ -730,6 +789,7 @@ void task_exit_status(int status) {
                 adopted = true;
             } else {
                 t->detached = true;
+                if (t->state == TASK_ZOMBIE) wakeup_locked(&reaper_channel); // Dead already, and now nobody's
             }
         }
         if (t->pid == self->parent_pid && t != self) parent = t;

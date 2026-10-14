@@ -223,6 +223,7 @@ static struct tcp_socket *alloc_socket(void) {
             return NULL;
         }
         sock->used = true;
+        kick_tcpd(); // It may be asleep with no timers to run
         sock->state = TCP_CLOSED;
         sock->mss = TCP_DEFAULT_MSS;
         sock->rto = TCP_RTO_INITIAL;
@@ -379,7 +380,7 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
         bool takes_sequence_space = len > 0 || (flags & (TCP_SYN | TCP_FIN));
         if (takes_sequence_space) {
             if (SEQ_GT(sock->snd_nxt, sock->snd_max)) sock->snd_max = sock->snd_nxt;
-            if (sock->rto_deadline == 0) sock->rto_deadline = pit_get_ticks() + sock->rto;
+            if (sock->rto_deadline == 0) sock->rto_deadline = timer_ticks() + sock->rto;
         }
         if (flags & TCP_ACK) sock->ack_pending = false;
 
@@ -494,7 +495,7 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
 
     // Progress: start timing afresh, for whatever is still outstanding
     sock->rto = TCP_RTO_INITIAL;
-    sock->rto_deadline = (sock->snd_una == sock->snd_max) ? 0 : pit_get_ticks() + sock->rto;
+    sock->rto_deadline = (sock->snd_una == sock->snd_max) ? 0 : timer_ticks() + sock->rto;
 
     if (fin_acked) {
         sock->fin_queued = false;
@@ -502,7 +503,7 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
             sock->state = TCP_FIN_WAIT_2;
         } else if (sock->state == TCP_CLOSING) {
             sock->state = TCP_TIME_WAIT;
-            sock->reap_deadline = pit_get_ticks() + TCP_TIME_WAIT_TICKS;
+            sock->reap_deadline = timer_ticks() + TCP_TIME_WAIT_TICKS;
         } else if (sock->state == TCP_LAST_ACK) {
             sock->state = TCP_CLOSED;
             if (!sock->user_open) { free_socket(sock); return; }
@@ -620,7 +621,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         // long) timer runs out.
         sock->snd_nxt = sock->snd_una;
         sock->rto = TCP_RTO_INITIAL;
-        sock->rto_deadline = pit_get_ticks() + sock->rto;
+        sock->rto_deadline = timer_ticks() + sock->rto;
     }
     if (window_opened || sock->tx_len > 0 || sock->fin_queued) kick_tcpd();
 
@@ -678,7 +679,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
                 sock->state = TCP_CLOSING;          // Our FIN is still unacknowledged
             } else {
                 sock->state = TCP_TIME_WAIT;
-                sock->reap_deadline = pit_get_ticks() + TCP_TIME_WAIT_TICKS;
+                sock->reap_deadline = timer_ticks() + TCP_TIME_WAIT_TICKS;
             }
         }
         // (In any later state it is a repeat of a FIN already counted.)
@@ -730,10 +731,16 @@ static void run_timers(struct tcp_socket *sock, uint64_t now) {
 static void tcpd(void) {
     for (;;) {
         uint64_t irq = spinlock_acquire_irqsave(&tcp_lock);
-        if (!work_pending) sched_sleep_uninterruptible(&work_pending, &tcp_lock, pit_get_ticks() + TCP_TIMER_TICKS);
+        if (!work_pending) {
+            // Timers only run while there is a connection to run them for:
+            // with none, sleep until there is one (see alloc_socket)
+            bool any = false;
+            for (int i = 0; i < TCP_MAX_SOCKETS && !any; i++) any = sockets[i].used;
+            sched_sleep_uninterruptible(&work_pending, &tcp_lock, any ? timer_ticks() + TCP_TIMER_TICKS : 0);
+        }
         work_pending = false;
 
-        uint64_t now = pit_get_ticks();
+        uint64_t now = timer_ticks();
         pending_reset_t to_send[sizeof(resets) / sizeof(resets[0])];
         memcpy(to_send, resets, sizeof(resets));
         memset(resets, 0, sizeof(resets));
@@ -959,7 +966,7 @@ void tcp_close(tcp_socket_t *sock) {
                 if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) {
                     s->state = (s->state == TCP_ESTABLISHED) ? TCP_FIN_WAIT_1 : TCP_LAST_ACK;
                     s->fin_queued = true;
-                    s->reap_deadline = pit_get_ticks() + TCP_ORPHAN_TICKS;
+                    s->reap_deadline = timer_ticks() + TCP_ORPHAN_TICKS;
                 } else {
                     free_socket(s);
                 }
@@ -973,7 +980,7 @@ void tcp_close(tcp_socket_t *sock) {
             // close happens in the background, for a limited time
             sock->state = (sock->state == TCP_ESTABLISHED) ? TCP_FIN_WAIT_1 : TCP_LAST_ACK;
             sock->fin_queued = true;
-            sock->reap_deadline = pit_get_ticks() + TCP_ORPHAN_TICKS;
+            sock->reap_deadline = timer_ticks() + TCP_ORPHAN_TICKS;
             break;
 
         case TCP_FIN_WAIT_1:
@@ -981,7 +988,7 @@ void tcp_close(tcp_socket_t *sock) {
         case TCP_CLOSING:
         case TCP_LAST_ACK:
             // Already closing (tcp_shutdown): let it finish, within limits
-            sock->reap_deadline = pit_get_ticks() + TCP_ORPHAN_TICKS;
+            sock->reap_deadline = timer_ticks() + TCP_ORPHAN_TICKS;
             break;
 
         case TCP_TIME_WAIT:

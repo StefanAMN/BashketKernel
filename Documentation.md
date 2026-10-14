@@ -83,7 +83,7 @@ so the numbering has gaps.
   2. **Context Switching:**
      - **Concepts:** Callee-saved register saving/restoring (`rbx`, `rbp`, `r12–r15`), `rsp` swapping, address space (`cr3`) switching.
      - Files to inspect: `src/arch/x86_64/ctx_switch.S`
-  3. **Timer IRQ (PIT) & Interrupt Acknowledgment:**
+  3. **Timer IRQ (PIT) & Interrupt Acknowledgment:** (the PIT is the tick while the kernel boots; section 33 covers what replaces it)
      - **Concepts:** 8254 PIT tick frequency configuration, Local APIC and PIC EOI ordering before preemptive context switch, preventing interrupt starvation.
      - Files to inspect: `src/kernel/time/pit.h`, `src/kernel/time/pit.c`, `src/arch/x86_64/isr.c`
   4. **Round-Robin Scheduler:**
@@ -399,15 +399,24 @@ so the numbering has gaps.
 
 ---
 
-### 33. High-Resolution Timers & Nanosleep (Phase 33)
-**Status: real.** The timestamp counter is calibrated against the timer at boot, giving a nanosecond clock (`clock_ns`) and sleeps accurate to microseconds (`nanosleep` sleeps whole ticks and watches the clock for the remainder). No one-shot hardware timer: wake-ups from sleep are still on tick boundaries.
+### 33. High-Resolution and One-Shot Timers (Phase 33)
+**Status: real.** The timestamp counter is calibrated against the PIT at boot, giving a nanosecond clock (`clock_ns`). The kernel then stops the periodic tick: the tick count is read off the clock, and each CPU's local APIC timer is set to fire once, when that CPU next has something to do (10 ms on while it runs a task, a sleeper's deadline, output to show). An idle CPU is not interrupted at all (four idle CPUs: 7 timer interrupts in three seconds instead of 1200; `/proc/timers` counts them), and `sleep` and `nanosleep` end when asked, not at the next tick. On a CPU without a timestamp counter the kernel keeps the 100 Hz tick; that fallback is run by `make check` (`-cpu qemu64,-tsc`).
 
-**Goal:** Nanosecond precision sleep (`nanosleep`), HRT timer queue.
+**Goal:** understand the two ways a kernel can keep time (count interrupts, or read a counter and ask for an interrupt only when one is needed) and what each costs.
 
 - **Order of Learning:**
-  1. **High-Resolution Timers:**
-     - **Concepts:** Nanosecond deadline queue, APIC timer hardware calibration.
+  1. **A clock that is read, not counted:**
+     - **Concepts:** the timestamp counter, calibrating one clock against another, why 64-bit arithmetic has to be split to avoid overflow.
      - Files to inspect: `src/kernel/time/hrtimer.h`, `src/kernel/time/hrtimer.c`
+  2. **One-shot timers:**
+     - **Concepts:** what a CPU needs a timer interrupt for (sharing the CPU, waking sleepers, showing output) and that an idle CPU needs none; arming for the earliest deadline; why firing early is harmless and firing late is not.
+     - Files to inspect: `src/kernel/time/timer.h`, `src/kernel/time/timer.c`, `lapic_timer_arm` in `src/arch/x86_64/lapic.c`
+  3. **Who owns a deadline:**
+     - **Concepts:** each CPU answers for the tasks that went to sleep on it; the idle loop as the one place every CPU passes on its way to halting.
+     - Files to inspect: `sleep_on`, `sched_wake_sleepers` and `sched_idle_loop` in `src/kernel/sched/sched.c`
+  4. **Nothing may poll:**
+     - **Concepts:** a thread that wakes "every so often, in case" keeps a CPU awake for ever; sleeping until there is work (`sched_wait_for_reapable`, `tcpd` with no connections).
+  5. **The fallback, and testing it:** `make test CPU=qemu64,-tsc`.
 
 ---
 

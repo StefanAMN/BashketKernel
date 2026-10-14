@@ -93,9 +93,8 @@ Done, with these differences from the list below. There is one task list
 and one scheduler lock for all CPUs rather than a run queue per CPU: every
 CPU takes the next runnable task it is allowed to run, so load spreads by
 itself, at the price of a contended lock and no cache affinity. The boot CPU
-keeps the PIT as its tick (and as the system's clock); the other CPUs use
-their local APIC timers, calibrated against it, so wake-ups still have 10 ms
-granularity (that is C4's one-shot timer). TLB shootdown is done for the
+kept the PIT as its tick (and as the system's clock) and the other CPUs used
+periodic local APIC timers, until C4's one-shot timer replaced both. TLB shootdown is done for the
 kernel half only, where it is needed: a process's own mappings are only ever
 live on the one CPU running it. Device interrupts all still arrive on the
 boot CPU. Measured under QEMU: four CPU-bound tasks on four CPUs finish in
@@ -341,9 +340,15 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
 
 ### C4. Devices worth having (S to M each, independent)
 
-- **A one-shot timer** (LAPIC timer calibrated against the TSC): sleeps wake
-  when asked rather than on a 10 ms boundary, and an idle CPU takes no
-  timer interrupts.
+- **A one-shot timer** — done (`src/kernel/time/timer.c`). The periodic tick
+  is stopped once the clock is calibrated; each CPU's local APIC timer fires
+  once, for the earliest of: the running task's 10 ms, the deadline of a
+  task that went to sleep on that CPU, output waiting to be shown. An idle
+  CPU's timer is off. Two threads that used to wake "in case" had to learn
+  to sleep until there was work: the reaper (PID 0) and `tcpd`. Without a
+  timestamp counter the kernel stays periodic, and `make check` runs that
+  too. Not done: device interrupts still all arrive on the boot CPU, and
+  the tick count is still the unit most of the kernel thinks in.
 - **virtio modern (MMIO capability) transport**, so the drivers are not tied
   to the legacy I/O port interface.
 - **PS/2 mouse and a framebuffer device** (`/dev/fb0`, `/dev/mouse`), as real
@@ -364,8 +369,9 @@ plan:
    harmless today, but an NMI handler needs an IST stack first.
 2. A killed process can leak a kernel buffer if it dies inside a system call
    holding one (`/proc` reads, FAT writes).
-3. A few timer ticks are lost under heavy console output, because drawing
-   runs with interrupts off.
+3. With the periodic tick (the fallback for CPUs without a timestamp
+   counter) a few ticks are lost under heavy console output, because drawing
+   runs with interrupts off. One-shot mode reads the count off the clock.
 4. PID 0 runs on the boot stack, which has no guard page.
 5. `kmalloc` and `kfree` are linear in the number of blocks.
 6. The ARP cache never expires entries; a socket's queue holds eight
