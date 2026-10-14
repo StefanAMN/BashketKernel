@@ -108,7 +108,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-crash test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -394,6 +394,14 @@ test-home: iso
 			|| { echo "damaged ext2 ($$kind): FAILED (see $(BUILD)/home-damaged-$$kind.log)"; exit 1; }; \
 	done; fi
 
+# Crash consistency: kill QEMU while a program is rewriting the ext2 volume,
+# boot again (the kernel repairs it at mount) and have e2fsck judge the
+# result, several times over on the same image.
+CRASH_ROUNDS ?= 6
+test-crash: iso
+	@tools/crash_test.py --rounds $(CRASH_ROUNDS) $(SHELL_CPU) > $(BUILD)/crash.log 2>&1 \
+		&& tail -1 $(BUILD)/crash.log || { echo "crash: FAILED (see $(BUILD)/crash.log)"; exit 1; }
+
 # Jobs in the user shell: a command in the background, another stopped with
 # Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
 # which init must adopt and collect.
@@ -417,6 +425,8 @@ check:
 	@$(MAKE) --no-print-directory test-disk
 	@$(MAKE) --no-print-directory test-edit
 	@$(MAKE) --no-print-directory test-home
+	@$(MAKE) --no-print-directory test-crash
+	@$(MAKE) --no-print-directory test-crash SMP=4 CRASH_ROUNDS=3
 	@$(MAKE) --no-print-directory test-login
 	@$(MAKE) --no-print-directory test-jobs
 	@$(MAKE) --no-print-directory test-jobs SMP=4

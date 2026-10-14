@@ -324,6 +324,44 @@ TEST(ext2_rejects_volumes_it_can_not_use) {
     EXPECT_EQ(ext2_mount("/home2", 7), -1);                      // No such disk
 }
 
+// What an interrupted write leaves behind is found and put right
+TEST(ext2_check_repairs_an_interrupted_write) {
+    ext2_check_t report;
+    uint32_t blocks = ext2_free_blocks(), inodes = ext2_free_inodes();
+
+    // A sound volume: nothing to do, nothing changed
+    EXPECT_EQ(ext2_check(&report), 0);
+    EXPECT_TRUE(report.blocks_freed == 0 && report.inodes_freed == 0 && report.links_corrected == 0);
+    EXPECT_TRUE(report.blocks_marked == 0 && report.inodes_marked == 0 && report.counts_corrected == 0);
+    EXPECT_TRUE(report.conflicts == 0);
+    EXPECT_TRUE(ext2_free_blocks() == blocks && ext2_free_inodes() == inodes);
+
+    // As after a crash during a create and during a rename: a block alone,
+    // an inode with a block that no directory names, a link count one high
+    vnode_t *notes = vfs_find(NULL, "/home/alice/notes.txt");
+    EXPECT_TRUE(notes != NULL && ext2_test_damage(notes));
+    EXPECT_TRUE(ext2_free_blocks() == blocks - 2 && ext2_free_inodes() == inodes - 1);
+
+    EXPECT_EQ(ext2_check(&report), 0);
+    EXPECT_EQ(report.blocks_freed, 2u);
+    EXPECT_EQ(report.inodes_freed, 1u);
+    EXPECT_EQ(report.links_corrected, 1u);
+    EXPECT_EQ(report.conflicts, 0u);
+    EXPECT_TRUE(ext2_free_blocks() == blocks && ext2_free_inodes() == inodes);
+
+    // And then it is sound again, with every file as it was
+    EXPECT_EQ(ext2_check(&report), 0);
+    EXPECT_TRUE(report.blocks_freed == 0 && report.inodes_freed == 0 && report.links_corrected == 0 && report.counts_corrected == 0);
+    EXPECT_TRUE(has_text("/home/alice/notes.txt", "Alice keeps her notes here.\n"));
+    EXPECT_TRUE(has_text("/home/bob/hello.txt", "Bob was here.\n"));
+
+    // Files made now land on the space that was recovered, and are found
+    put_text("/home/after.txt", "after the repair");
+    EXPECT_TRUE(has_text("/home/after.txt", "after the repair"));
+    EXPECT_EQ(remove_entry("/home", "after.txt"), 0);
+    EXPECT_TRUE(ext2_free_blocks() == blocks && ext2_free_inodes() == inodes);
+}
+
 void test_suite_ext2(void) {
     kprintf("Suite: ext2\n");
     if (!ext2_mounted()) {
@@ -335,5 +373,6 @@ void test_suite_ext2(void) {
     RUN_TEST(ext2_large_files_and_holes);
     RUN_TEST(ext2_directories);
     RUN_TEST(ext2_rename_and_move);
+    RUN_TEST(ext2_check_repairs_an_interrupted_write);
     RUN_TEST(ext2_rejects_volumes_it_can_not_use);
 }

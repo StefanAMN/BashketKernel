@@ -935,6 +935,282 @@ static const vnode_ops_t ext2_file_ops = { .read = ext2_file_read, .write = ext2
 static const vnode_ops_t ext2_dir_ops = { .create = ext2_dir_create, .remove = ext2_dir_remove,
                                           .rename = ext2_dir_rename, .load = ext2_dir_load, .setattr = ext2_setattr };
 
+// --- Putting right what a crash left behind -----------------------------------------
+//
+// Writes are ordered so that a crash never leaves a name pointing at
+// nothing. What it can leave is the opposite: a block or an inode marked as
+// in use that nothing refers to (allocated, and the power went before it was
+// linked in), a link count one too high (a rename half done), and free
+// counts that no longer add up. None of that harms what is stored, but all
+// of it is space lost until someone looks.
+//
+// So at every mount the whole tree is walked from the root, noting every
+// inode and block that is reachable, and the bitmaps and counts are made to
+// agree with that. It is e2fsck in miniature, for exactly the damage this
+// driver's own interrupted writes can cause. Damage of other kinds (two
+// files claiming one block, a directory that is not one) is reported and
+// left alone.
+
+static uint8_t *reach_blocks;     // One bit per block: something reachable uses it
+static uint8_t *reach_inodes;     // One bit per inode: reachable from the root
+static uint16_t *reach_links;     // Per inode: directory entries found that name it
+static uint32_t check_conflicts;  // Things found that this check does not repair
+
+static bool bit_test(const uint8_t *bits, uint32_t n) { return (bits[n / 8] >> (n % 8)) & 1; }
+static void bit_set(uint8_t *bits, uint32_t n) { bits[n / 8] |= (uint8_t)(1u << (n % 8)); }
+
+static void reach_block(uint32_t block) {
+    if (!valid_block(block) || bit_test(reach_blocks, block)) {
+        check_conflicts++;        // Outside the volume, or already someone else's
+        return;
+    }
+    bit_set(reach_blocks, block);
+}
+
+// While one file's blocks are walked: how many it has (tables of block
+// numbers included), and the position in the file of its last data block
+static uint32_t walk_blocks;
+static int64_t walk_last_index;
+
+// Note a block and, if it is a block of block numbers (`depth` levels above
+// the data), everything below it. `index` is the position in the file of
+// the first data block it leads to.
+static void reach_tree(uint32_t block, int depth, uint64_t index) {
+    if (block == 0) return;
+    reach_block(block);
+    walk_blocks++;
+    if (depth == 0) {
+        if ((int64_t)index > walk_last_index) walk_last_index = (int64_t)index;
+        return;
+    }
+    if (!valid_block(block)) return;
+
+    uint64_t span = 1; // Data blocks under each entry of this table
+    for (int i = 1; i < depth; i++) span *= vol.pointers_per_block;
+    uint32_t *numbers = kmalloc(vol.block_size);
+    if (numbers && read_block(block, numbers)) {
+        for (uint32_t i = 0; i < vol.pointers_per_block; i++) {
+            if (numbers[i]) reach_tree(numbers[i], depth - 1, index + i * span);
+        }
+    }
+    kfree(numbers);
+}
+
+// Does group `g` hold a copy of the superblock and group descriptors? With
+// the "sparse" feature only groups 0, 1 and powers of 3, 5 and 7 do.
+static bool group_has_backup(uint32_t g) {
+    if (!(get32(superblock + 100) & RO_COMPAT_SPARSE)) return true;
+    if (g <= 1) return true;
+    for (uint32_t base = 3; base <= 7; base += 2) {
+        uint32_t power = base;
+        while (power < g) power *= base;
+        if (power == g) return true;
+    }
+    return false;
+}
+
+int ext2_check(ext2_check_t *report) {
+    ext2_check_t result = {0};
+    if (!mounted && !groups) return -1;
+
+    mutex_lock(&ext2_mutex);
+    size_t block_bytes = (vol.blocks_count + 7) / 8, inode_bytes = (vol.inodes_count + 8) / 8;
+    reach_blocks = kmalloc(block_bytes);
+    reach_inodes = kmalloc(inode_bytes);
+    reach_links = kmalloc((size_t)(vol.inodes_count + 1) * sizeof(uint16_t));
+    uint32_t *queue = kmalloc((size_t)vol.inodes_count * sizeof(uint32_t));
+    uint8_t *entries = kmalloc(vol.block_size);
+    if (!reach_blocks || !reach_inodes || !reach_links || !queue || !entries) {
+        kfree(reach_blocks); kfree(reach_inodes); kfree(reach_links); kfree(queue); kfree(entries);
+        mutex_unlock(&ext2_mutex);
+        return -1; // Not enough memory to look: leave the volume as it is
+    }
+    memset(reach_blocks, 0, block_bytes);
+    memset(reach_inodes, 0, inode_bytes);
+    memset(reach_links, 0, (size_t)(vol.inodes_count + 1) * sizeof(uint16_t));
+    check_conflicts = 0;
+
+    // What the filesystem itself occupies: everything before the first
+    // group, and in each group the copies of the superblock and descriptors
+    // (if it has them), the two bitmaps and the inode table
+    uint32_t per_block = vol.block_size / sizeof(struct ext2_group);
+    uint32_t table_blocks = (vol.groups + per_block - 1) / per_block;
+    uint32_t inode_table_blocks = (vol.inodes_per_group * vol.inode_size + vol.block_size - 1) / vol.block_size;
+    for (uint32_t b = 0; b < vol.first_data_block; b++) bit_set(reach_blocks, b);
+    for (uint32_t g = 0; g < vol.groups; g++) {
+        uint32_t start = vol.first_data_block + g * vol.blocks_per_group;
+        if (group_has_backup(g)) {
+            for (uint32_t b = 0; b <= table_blocks && start + b < vol.blocks_count; b++) bit_set(reach_blocks, start + b);
+        }
+        bit_set(reach_blocks, groups[g].block_bitmap);
+        bit_set(reach_blocks, groups[g].inode_bitmap);
+        for (uint32_t b = 0; b < inode_table_blocks; b++) bit_set(reach_blocks, groups[g].inode_table + b);
+    }
+
+    // The tree, from the root, one directory at a time
+    uint32_t head = 0, tail = 0;
+    queue[tail++] = EXT2_ROOT_INO;
+    bit_set(reach_inodes, EXT2_ROOT_INO);
+
+    while (head < tail) {
+        uint32_t ino = queue[head++];
+        struct ext2_inode inode;
+        if (!read_inode(ino, &inode)) { check_conflicts++; continue; }
+        bool directory = (inode.mode & MODE_TYPE_MASK) == MODE_DIRECTORY;
+
+        // Its blocks. (Short symbolic links keep their text where the block
+        // numbers would be: those have no blocks at all.)
+        bool regular = (inode.mode & MODE_TYPE_MASK) == MODE_REGULAR;
+        if (regular || directory) {
+            uint64_t p = vol.pointers_per_block;
+            walk_blocks = 0;
+            walk_last_index = -1;
+            for (int i = 0; i < DIRECT_BLOCKS; i++) reach_tree(inode.block[i], 0, (uint64_t)i);
+            reach_tree(inode.block[12], 1, DIRECT_BLOCKS);
+            reach_tree(inode.block[13], 2, DIRECT_BLOCKS + p);
+            reach_tree(inode.block[14], 3, DIRECT_BLOCKS + p + p * p);
+
+            // A file was growing when the power went: the blocks listed in
+            // a table of block numbers are on the disk already, the inode's
+            // own record of its size and block count is not. The blocks are
+            // the file's (they hold what had been written, or zeros), so the
+            // inode is brought up to date rather than the blocks taken away.
+            uint32_t sectors = walk_blocks * vol.sectors_per_block;
+            uint64_t reaches = (uint64_t)(walk_last_index + 1) * vol.block_size;
+            bool too_short = directory ? inode.size != reaches
+                                       : walk_last_index >= 0 && inode.size <= (uint64_t)walk_last_index * vol.block_size;
+            if (check_conflicts == 0 && (inode.sectors != sectors || (too_short && reaches <= 0xFFFFFFFFu))) {
+                inode.sectors = sectors;
+                if (too_short && reaches <= 0xFFFFFFFFu) inode.size = (uint32_t)reaches;
+                write_inode(ino, &inode);
+                result.sizes_corrected++;
+            }
+        }
+        if (!directory) continue;
+
+        // Its entries: each is one name for the inode it gives
+        uint32_t blocks = inode.size / vol.block_size;
+        for (uint32_t b = 0; b < blocks; b++) {
+            bool error = false;
+            uint32_t block = file_block(&inode, b, false, 0, &error);
+            if (error || block == 0 || !read_block(block, entries)) continue;
+            for (uint32_t offset = 0; offset < vol.block_size; ) {
+                if (!record_ok(entries, offset)) { check_conflicts++; break; }
+                uint32_t length = get16(entries + offset + 4);
+                uint32_t child = get32(entries + offset);
+                bool dots = entries[offset + 6] <= 2 && entries[offset + 8] == '.' &&
+                            (entries[offset + 6] == 1 || entries[offset + 9] == '.');
+                offset += length;
+                if (child == 0) continue;
+                if (!valid_inode(child)) { check_conflicts++; continue; }
+
+                if (reach_links[child] < 0xFFFF) reach_links[child]++;
+                if (dots || bit_test(reach_inodes, child)) continue; // "." and "..", or seen already (another name for it)
+                bit_set(reach_inodes, child);
+                if (tail < vol.inodes_count) queue[tail++] = child; // Files too: their blocks are noted when they come up
+            }
+        }
+    }
+
+    // Inodes: one that is marked as in use and can not be reached was being
+    // created or removed when the power went. One whose link count
+    // disagrees with the names found was being renamed.
+    for (uint32_t g = 0; g < vol.groups; g++) {
+        if (!read_block(groups[g].inode_bitmap, bitmap_block)) continue;
+        bool changed = false;
+        uint16_t free_here = 0, dirs_here = 0;
+        for (uint32_t bit = 0; bit < vol.inodes_per_group; bit++) {
+            uint32_t ino = g * vol.inodes_per_group + bit + 1;
+            if (ino > vol.inodes_count) break;
+            bool in_use = (bitmap_block[bit / 8] >> (bit % 8)) & 1;
+            bool reserved = ino < vol.first_ino && ino != EXT2_ROOT_INO;
+            bool reachable = bit_test(reach_inodes, ino);
+            struct ext2_inode inode;
+
+            if (in_use && !reachable && !reserved && check_conflicts == 0) {
+                // Unreachable: let it go. (Its blocks are not marked as
+                // reachable, so the pass below frees them.)
+                if (read_inode(ino, &inode)) {
+                    inode.links = 0;
+                    inode.dtime = unix_now();
+                    write_inode(ino, &inode); // (Uses its own scratch block: the bitmap here is untouched)
+                }
+                bitmap_block[bit / 8] &= (uint8_t)~(1u << (bit % 8));
+                in_use = false;
+                changed = true;
+                result.inodes_freed++;
+            } else if (reachable && !in_use) {
+                bitmap_block[bit / 8] |= (uint8_t)(1u << (bit % 8));
+                in_use = true;
+                changed = true;
+                result.inodes_marked++;
+            }
+            if (reachable && !reserved && read_inode(ino, &inode)) {
+                if (inode.links != reach_links[ino] && reach_links[ino] != 0) {
+                    inode.links = reach_links[ino];
+                    write_inode(ino, &inode);
+                    result.links_corrected++;
+                }
+                if ((inode.mode & MODE_TYPE_MASK) == MODE_DIRECTORY) dirs_here++;
+            } else if (reachable && ino == EXT2_ROOT_INO) {
+                dirs_here++;
+            }
+            if (!in_use) free_here++;
+        }
+        if (changed) write_block(groups[g].inode_bitmap, bitmap_block);
+        if (groups[g].free_inodes != free_here || groups[g].used_dirs != dirs_here) result.counts_corrected++;
+        groups[g].free_inodes = free_here;
+        groups[g].used_dirs = dirs_here;
+    }
+
+    // Blocks: the same, and simpler
+    for (uint32_t g = 0; g < vol.groups; g++) {
+        if (!read_block(groups[g].block_bitmap, bitmap_block)) continue;
+        uint32_t first = vol.first_data_block + g * vol.blocks_per_group;
+        bool changed = false;
+        uint16_t free_here = 0;
+        for (uint32_t bit = 0; bit < vol.blocks_per_group && first + bit < vol.blocks_count; bit++) {
+            bool in_use = (bitmap_block[bit / 8] >> (bit % 8)) & 1;
+            bool reachable = bit_test(reach_blocks, first + bit);
+            if (in_use && !reachable && check_conflicts == 0) {
+                bitmap_block[bit / 8] &= (uint8_t)~(1u << (bit % 8));
+                in_use = false;
+                changed = true;
+                result.blocks_freed++;
+            } else if (reachable && !in_use) {
+                bitmap_block[bit / 8] |= (uint8_t)(1u << (bit % 8));
+                in_use = true;
+                changed = true;
+                result.blocks_marked++;
+            }
+            if (!in_use) free_here++;
+        }
+        if (changed) write_block(groups[g].block_bitmap, bitmap_block);
+        if (groups[g].free_blocks != free_here) result.counts_corrected++;
+        groups[g].free_blocks = free_here;
+    }
+
+    // The totals, and everything written back
+    uint32_t free_blocks = 0, free_inodes = 0;
+    for (uint32_t g = 0; g < vol.groups; g++) {
+        free_blocks += groups[g].free_blocks;
+        free_inodes += groups[g].free_inodes;
+    }
+    if (free_blocks != vol.free_blocks || free_inodes != vol.free_inodes) result.counts_corrected++;
+    vol.free_blocks = free_blocks;
+    vol.free_inodes = free_inodes;
+    if (result.counts_corrected || result.blocks_freed || result.inodes_freed || result.blocks_marked || result.inodes_marked) {
+        for (uint32_t g = 0; g < vol.groups; g += per_block) write_counts(g);
+    }
+    result.conflicts = check_conflicts;
+
+    kfree(reach_blocks); kfree(reach_inodes); kfree(reach_links); kfree(queue); kfree(entries);
+    reach_blocks = NULL; reach_inodes = NULL; reach_links = NULL;
+    mutex_unlock(&ext2_mutex);
+    if (report) *report = result;
+    return 0;
+}
+
 // --- Mounting ----------------------------------------------------------------------
 
 bool ext2_parse_superblock(const uint8_t *sb, uint64_t disk_sectors, ext2_layout_t *out) {
@@ -1037,6 +1313,21 @@ int ext2_mount(const char *mount_point, unsigned disk) {
     memset(zero_block, 0, sizeof(zero_block));
     mounted = true;
     mount_register(mount_point, "ext2", disk == 0 ? "/dev/vda" : "/dev/vdb");
+
+    // The machine has no orderly shutdown, so every start is "after a
+    // crash": see that the volume is whole before anyone uses it
+    ext2_check_t check;
+    if (ext2_check(&check) == 0) {
+        if (check.blocks_freed || check.inodes_freed || check.links_corrected || check.blocks_marked ||
+            check.inodes_marked || check.sizes_corrected) {
+            kprintf("ext2: repaired after an interrupted write: %u blocks and %u inodes freed, %u link counts and "
+                    "%u sizes corrected, %u blocks and %u inodes marked in use\n", check.blocks_freed, check.inodes_freed,
+                    check.links_corrected, check.sizes_corrected, check.blocks_marked, check.inodes_marked);
+        }
+        if (check.conflicts) {
+            kprintf("ext2: %u inconsistencies this driver does not repair (nothing was freed): run e2fsck\n", check.conflicts);
+        }
+    }
     kprintf("ext2: mounted at %s: %u blocks of %u bytes (%u free), %u inodes (%u free)\n",
             mount_point, vol.blocks_count, vol.block_size, vol.free_blocks, vol.inodes_count, vol.free_inodes);
     return 0;
@@ -1047,6 +1338,33 @@ uint32_t ext2_free_blocks(void) { return mounted ? vol.free_blocks : 0; }
 uint32_t ext2_free_inodes(void) { return mounted ? vol.free_inodes : 0; }
 
 #ifdef KERNEL_TESTS
+// For tests: put the volume in the state an interrupted create and an
+// interrupted rename would leave: a block and an inode marked in use that
+// nothing refers to, and a file with one link too many.
+bool ext2_test_damage(struct vnode *file_with_extra_link) {
+    mutex_lock(&ext2_mutex);
+    uint32_t block = alloc_block(0);
+    uint32_t ino = alloc_inode(0, false);
+    struct ext2_inode inode;
+    bool ok = block != 0 && ino != 0;
+    if (ok) {
+        memset(&inode, 0, sizeof(inode));
+        inode.mode = MODE_REGULAR | 0644;
+        inode.links = 1;
+        inode.block[0] = alloc_block(0); // An inode that got as far as having contents
+        inode.sectors = vol.sectors_per_block;
+        inode.size = 5;
+        ok = inode.block[0] != 0 && write_inode(ino, &inode);
+    }
+    if (ok && file_with_extra_link) {
+        ok = read_inode(ino_of(file_with_extra_link), &inode);
+        inode.links++;
+        ok = ok && write_inode(ino_of(file_with_extra_link), &inode);
+    }
+    mutex_unlock(&ext2_mutex);
+    return ok;
+}
+
 // For tests: drop what is known about a directory's contents, so that the
 // next look inside reads it from the disk again (see fat32_forget_directory)
 bool ext2_forget_directory(vnode_t *dir) {

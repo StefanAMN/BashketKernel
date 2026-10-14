@@ -89,6 +89,7 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
 make test-home                  # ext2 at /home: owners across a reboot, e2fsck, damaged images (~40 s)
+make test-crash                 # kill QEMU during ext2 writes, reboot, e2fsck; CRASH_ROUNDS=20 for more (~1 min)
 make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
 make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
 make test-lowmem                # out-of-memory scenarios on a 64 MB machine (~5 s); SMP=4 for four CPUs
@@ -413,6 +414,17 @@ code comments and commit messages; `git log` is the full history.
   itself and claimed 50 MiB, and one claiming 3 GiB of holes. The kernel was
   faithfully reading them. The driver was right and the test unreasonable;
   telling the two apart took looking at what the kernel was doing.
+- **Reason about crash states, then pull the plug anyway.** The ext2 write
+  order was designed so that a crash could only leak blocks and inodes, and
+  the mount-time check was written for exactly that. The third power cut of
+  the first run produced something else: blocks already listed in an
+  indirect block (written at once) while the inode's size and block count
+  (written last) still described the shorter file. Thirty kills found one
+  class the reasoning missed; `e2fsck` is what noticed.
+- **A tool that prints only at the end cannot be watched from outside.**
+  `qemu_shell.py` buffers its output, so the crash test, which kills it,
+  never saw the "workload started" line. Evidence that the workload ran is
+  taken from the disk at the next boot instead.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

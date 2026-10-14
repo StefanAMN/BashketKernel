@@ -50,6 +50,24 @@ bool ext2_parse_superblock(const uint8_t *superblock, uint64_t disk_sectors, ext
  */
 int ext2_mount(const char *mount_point, unsigned disk);
 
+// What a check found and put right (see ext2_check)
+typedef struct {
+    uint32_t blocks_freed, inodes_freed;     // Marked in use, referred to by nothing
+    uint32_t blocks_marked, inodes_marked;   // In use, and marked free
+    uint32_t links_corrected;                // Inodes whose link count did not match their names
+    uint32_t sizes_corrected;                // Inodes whose size or block count did not match their blocks
+    uint32_t counts_corrected;               // Free counts that did not match the bitmaps
+    uint32_t conflicts;                      // Damage of a kind this check does not repair
+} ext2_check_t;
+
+/**
+ * @brief Walk the whole volume and make its bitmaps, link counts and free
+ *        counts agree with what is reachable from the root. Run at every
+ *        mount: it is what makes an interrupted write harmless. If it finds
+ *        damage it does not understand, it frees nothing.
+ */
+int ext2_check(ext2_check_t *report);
+
 bool ext2_mounted(void);
 uint32_t ext2_free_blocks(void);
 uint32_t ext2_free_inodes(void);
@@ -57,6 +75,7 @@ uint32_t ext2_free_inodes(void);
 #ifdef KERNEL_TESTS
 struct vnode;
 bool ext2_forget_directory(struct vnode *dir);
+bool ext2_test_damage(struct vnode *file_with_extra_link);
 #endif
 
 #endif // EXT2_H
