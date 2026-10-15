@@ -106,16 +106,56 @@ void console_set_deferred_refresh(bool enabled) {
 // prints, on any CPU, and by interrupt handlers: one lock for all of it.
 static spinlock_t console_lock = SPINLOCK_RANKED("console", LOCK_RANK_CONSOLE);
 
+// A program that draws on the screen itself (through /dev/fb0) has it to
+// itself for as long: the console goes on keeping its own copy of the text
+// up to date in RAM, and on serial, but does not touch video memory. When
+// the last such program is gone, the whole picture is put back. Counted,
+// because more than one program may have the device open.
+static uint32_t graphics_owners = 0;
+
+bool console_framebuffer(uint8_t **address, uint32_t *width, uint32_t *height, uint32_t *pitch) {
+    if (!g_fb || g_fb->bpp != 32) return false;
+    if (address) *address = (uint8_t *)g_fb->address;
+    if (width) *width = (uint32_t)g_fb->width;
+    if (height) *height = (uint32_t)g_fb->height;
+    if (pitch) *pitch = (uint32_t)g_fb->pitch;
+    return true;
+}
+
+bool console_graphics_begin(void) {
+    if (!g_fb || !backbuffer) return false; // Without a copy in RAM there would be nothing to put back
+    uint64_t flags = spinlock_acquire_irqsave(&console_lock);
+    graphics_owners++;
+    spinlock_release_irqrestore(&console_lock, flags);
+    return true;
+}
+
+void console_graphics_end(void) {
+    if (!g_fb || !backbuffer) return;
+    uint64_t flags = spinlock_acquire_irqsave(&console_lock);
+    if (graphics_owners > 0 && --graphics_owners == 0) screen_stale = true; // Repaint everything
+    spinlock_release_irqrestore(&console_lock, flags);
+    if (!deferred_refresh) console_refresh();
+}
+
+bool console_graphics_active(void) {
+    return graphics_owners > 0;
+}
+
 // Would console_refresh change anything? (Read without the lock: the timer
 // asks before every halt, and a stale answer only costs one more look.)
 bool console_needs_refresh(void) {
-    return g_fb && backbuffer && deferred_refresh && (screen_stale || !cursor_drawn);
+    return g_fb && backbuffer && deferred_refresh && graphics_owners == 0 && (screen_stale || !cursor_drawn);
 }
 
 void console_refresh(void) {
     if (!g_fb || !backbuffer) return;
 
     uint64_t flags = spinlock_acquire_irqsave(&console_lock);
+    if (graphics_owners > 0) {  // The screen is a program's: leave it alone
+        spinlock_release_irqrestore(&console_lock, flags);
+        return;
+    }
     if (screen_stale) {
         size_t total_pixels = (size_t)(g_fb->pitch / 4) * g_fb->height;
         screen_stale = false; // Cleared first: anything drawn from here on goes to the screen too
@@ -130,7 +170,7 @@ static void putpixel(uint32_t x, uint32_t y, uint32_t color) {
     uint32_t idx = y * (g_fb->pitch / 4) + x;
     if (backbuffer) {
         backbuffer[idx] = color;
-        if (screen_stale) return; // The next refresh will show it
+        if (screen_stale || graphics_owners > 0) return; // The next refresh will show it
     }
     uint32_t *fb_ptr = g_fb->address;
     fb_ptr[idx] = color;
@@ -150,7 +190,7 @@ static void scroll(void) {
             backbuffer[i] = BG_COLOR;
         }
 
-        if (deferred_refresh) {
+        if (deferred_refresh || graphics_owners > 0) {
             screen_stale = true; // Set after the RAM copy is consistent again
         } else {
             // Send the whole picture to video memory. Scrolling inside video

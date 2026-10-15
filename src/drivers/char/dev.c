@@ -17,6 +17,9 @@
 #include "bcache.h"
 #include "kerrno.h"
 #include "mount.h"
+#include "console.h"
+#include "mouse.h"
+#include "kerrno.h"
 
 static inline uint64_t rdtsc(void) {
     uint32_t low, high;
@@ -98,6 +101,51 @@ static int64_t disk_write(vnode_t *node, size_t offset, const void *buf, size_t 
     return disk_transfer(offset, (uint8_t *)buf, count, true);
 }
 
+// /dev/fb0: the screen as a file of pixels, row after row, four bytes each
+// (blue, green, red, unused), `pitch` bytes per row (SYS_FB_INFO gives the
+// numbers). Opening it for writing takes the screen away from the console
+// until it is closed: see console_graphics_begin.
+static int64_t fb_transfer(size_t offset, void *buf, size_t count, bool write) {
+    uint8_t *pixels;
+    uint32_t height, pitch;
+    if (!console_framebuffer(&pixels, NULL, &height, &pitch)) return -ENODEV;
+    size_t size = (size_t)pitch * height;
+    if (offset >= size) return write ? -ENOSPC : 0;
+    if (count > size - offset) count = size - offset;
+    if (write) memcpy(pixels + offset, buf, count);
+    else memcpy(buf, pixels + offset, count);
+    return (int64_t)count;
+}
+
+static int64_t fb_read(vnode_t *node, size_t offset, void *buf, size_t count) {
+    (void)node;
+    return fb_transfer(offset, buf, count, false);
+}
+
+static int64_t fb_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
+    (void)node;
+    return fb_transfer(offset, (void *)buf, count, true);
+}
+
+static int fb_opened(vnode_t *node, bool writable) {
+    (void)node;
+    if (writable && !console_graphics_begin()) return -ENODEV;
+    return 0;
+}
+
+static void fb_closed(vnode_t *node, bool writable) {
+    (void)node;
+    if (writable) console_graphics_end();
+}
+
+// /dev/mouse: movements and button changes, three bytes each (mouse.h)
+static int64_t dev_mouse_read(vnode_t *node, size_t offset, void *buf, size_t count) {
+    (void)node; (void)offset;
+    return mouse_read(buf, count, true);
+}
+
+static const vnode_ops_t fb_ops = { .read = fb_read, .write = fb_write, .opened = fb_opened, .closed = fb_closed };
+static const vnode_ops_t mouse_ops = { .read = dev_mouse_read };
 static const vnode_ops_t disk_ops = { .read = disk_read, .write = disk_write };
 static const vnode_ops_t null_ops    = { .read = NULL,             .write = null_write };
 static const vnode_ops_t zero_ops    = { .read = zero_read,        .write = null_write };
@@ -129,6 +177,21 @@ void dev_init(void) {
             disk->mode = 0600;
         }
     }
-    kprintf("Dev Init: /dev/null, /dev/zero, /dev/random, /dev/console%s\n",
-            virtio_blk_present() ? ", /dev/vda" : "");
+    // The screen and the mouse are for whoever sits at the machine, which
+    // this kernel has no notion of: any user's programs may use them
+    uint32_t height, pitch;
+    bool have_fb = console_framebuffer(NULL, NULL, &height, &pitch);
+    if (have_fb) {
+        vnode_t *fb = vfs_create_device(dev_dir, "fb0", &fb_ops);
+        if (fb) {
+            fb->size = (size_t)pitch * height;
+            fb->mode = 0666;
+        }
+    }
+    if (mouse_present()) {
+        vnode_t *mouse = vfs_create_device(dev_dir, "mouse", &mouse_ops);
+        if (mouse) mouse->mode = 0444;
+    }
+    kprintf("Dev Init: /dev/null, /dev/zero, /dev/random, /dev/console%s%s%s\n",
+            virtio_blk_present() ? ", /dev/vda" : "", have_fb ? ", /dev/fb0" : "", mouse_present() ? ", /dev/mouse" : "");
 }

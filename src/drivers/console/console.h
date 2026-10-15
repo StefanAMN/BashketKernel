@@ -26,6 +26,24 @@ void console_refresh(void);
  * @brief Is there output, or a cursor, that console_refresh would draw?
  */
 bool console_needs_refresh(void);
+
+/**
+ * @brief Give the screen to a program that draws on it directly, and take
+ *        it back (repainting the text). Calls nest. While it is given away
+ *        console output still reaches the serial port and the console's own
+ *        copy of the screen, only not video memory.
+ * @return false if there is no framebuffer to give.
+ */
+bool console_graphics_begin(void);
+void console_graphics_end(void);
+bool console_graphics_active(void);
+
+/**
+ * @brief The framebuffer as the bootloader described it: where it is
+ *        (kernel address), and its geometry. 32 bits per pixel.
+ * @return false if there is none.
+ */
+bool console_framebuffer(uint8_t **address, uint32_t *width, uint32_t *height, uint32_t *pitch);
 void console_write(const char *str);
 
 // For tests and diagnostics: where the next character will go (in character

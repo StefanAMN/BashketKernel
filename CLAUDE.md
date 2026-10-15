@@ -89,6 +89,7 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
 make test-home                  # ext2 at /home: owners across a reboot, e2fsck, damaged images (~40 s)
+make test-paint                 # /bin/paint driven by the mouse, screenshots checked (~10 s)
 make test-crash                 # kill QEMU during ext2 writes, reboot, e2fsck; CRASH_ROUNDS=20 for more (~1 min)
 make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
 make test-jobs                  # user shell job control and orphan adoption, scripted (~5 s)
@@ -101,6 +102,8 @@ tools/qemu_shell.py --quiet 'exec /bin/hello'   # boot headless, type shell comm
 tools/qemu_shell.py --quiet 'exec /bin/sh' 'ls /bin | wc' 'exit'   # drive the user shell
 tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do not wait for a prompt; ^C / ^D keys
 tools/qemu_shell.py --quiet '!exec /bin/edit /tmp/f' '~hi\r^S^Q'   # '~' = raw keys into a full-screen program
+tools/qemu_shell.py '!exec /bin/paint' '@button:1' '@mouse:40,0' '@button:0' '@screendump:/tmp/s.ppm' '@button:2'
+                                          # '@mouse', '@button', '@screendump' go to QEMU's monitor; tools/check_ppm.py checks pixels
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 
 # A virtio network card on QEMU's user-mode network is attached too: the

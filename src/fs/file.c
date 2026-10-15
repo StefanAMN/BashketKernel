@@ -101,6 +101,13 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
         node->mode &= (uint16_t)~PERM_SETUID;
         if (node->ops && node->ops->setattr) node->ops->setattr(node);
     }
+    if (node->ops && node->ops->opened) {
+        int refused = node->ops->opened(node, writable);
+        if (refused < 0) {
+            file_free(file);
+            return refused;
+        }
+    }
     file->append = (flags & O_APPEND) != 0;
     file->node = node;
     node->open_count++;
@@ -170,6 +177,7 @@ void file_close(file_t *file) {
 
     if (file->kind == FILE_VNODE && file->node) {
         file->node->open_count--;
+        if (file->node->ops && file->node->ops->closed) file->node->ops->closed(file->node, file->writable);
     } else if (file->kind == FILE_PIPE) {
         if (file->readable) pipe_close_reader(file->pipe);
         else pipe_close_writer(file->pipe);

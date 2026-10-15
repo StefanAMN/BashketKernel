@@ -20,6 +20,7 @@
 #include "vfs.h"
 #include "initrd.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "shell.h"
 #include "slab.h"
 #include "cow.h"
@@ -277,6 +278,9 @@ void _start(void) {
     // Random numbers: seed the generator before anything asks for them in
     // earnest (address-space layout, TCP sequence numbers)
     random_init();
+
+    // The mouse, on the keyboard controller's second port
+    mouse_init();
 
     // Phase 37: Virtual Devices (/dev)
     dev_init();

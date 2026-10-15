@@ -150,6 +150,110 @@ static void keyboard_handle_port(void) {
     kbd_buffer_push(c);
 }
 
+// --- The controller's second port: the mouse ------------------------------------
+//
+// Keyboard and mouse bytes arrive at the same data port, 0x60, and the
+// status port says whose the waiting byte is (bit 5: the auxiliary device,
+// Intel 8042 data sheet). Whoever reads the port must hold kbd_lock, so that
+// "it is mine" and "I have read it" can not be separated by the other.
+
+#define PS2_STATUS_OUTPUT_FULL 0x01
+#define PS2_STATUS_INPUT_FULL  0x02
+#define PS2_STATUS_AUX         0x20
+#define PS2_ACK                0xFA
+#define PS2_SPINS              200000   // How long to wait for the controller before giving up
+
+bool ps2_read_aux(uint8_t *byte) {
+    uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
+    uint8_t status = inb(0x64);
+    bool mine = (status & PS2_STATUS_OUTPUT_FULL) && (status & PS2_STATUS_AUX);
+    if (mine) *byte = inb(0x60);
+    spinlock_release_irqrestore(&kbd_lock, flags);
+    return mine;
+}
+
+// Wait until the controller will take a byte. Caller holds kbd_lock.
+static bool ps2_can_write(void) {
+    for (int i = 0; i < PS2_SPINS; i++) {
+        if (!(inb(0x64) & PS2_STATUS_INPUT_FULL)) return true;
+        asm volatile("pause");
+    }
+    return false;
+}
+
+// Wait for a byte from the auxiliary device. Keyboard bytes that arrive
+// meanwhile go to the keyboard. Caller holds kbd_lock.
+static bool ps2_wait_aux_byte(uint8_t *byte) {
+    for (int i = 0; i < PS2_SPINS; i++) {
+        uint8_t status = inb(0x64);
+        if (status & PS2_STATUS_OUTPUT_FULL) {
+            if (status & PS2_STATUS_AUX) {
+                *byte = inb(0x60);
+                return true;
+            }
+            keyboard_handle_port();
+        }
+        asm volatile("pause");
+    }
+    return false;
+}
+
+bool ps2_aux_enable(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
+    bool ok = false;
+
+    // Controller command 0xA8: enable the second port. Then, in the
+    // controller's configuration byte (read with 0x20, written with 0x60):
+    // bit 1 makes it raise IRQ 12 for the second port, bit 5 would stop
+    // that port's clock.
+    if (ps2_can_write()) {
+        outb(0x64, 0xA8);
+        if (ps2_can_write()) {
+            outb(0x64, 0x20);
+            uint8_t config = 0;
+            bool got = false;
+            for (int i = 0; i < PS2_SPINS && !got; i++) {
+                uint8_t status = inb(0x64);
+                // The answer to a controller command comes back without the AUX bit
+                if ((status & PS2_STATUS_OUTPUT_FULL) && !(status & PS2_STATUS_AUX)) {
+                    config = inb(0x60);
+                    got = true;
+                }
+            }
+            if (got && ps2_can_write()) {
+                config = (uint8_t)((config | 0x02) & ~0x20);
+                outb(0x64, 0x60);
+                if (ps2_can_write()) {
+                    outb(0x60, config);
+                    ok = true;
+                }
+            }
+        }
+    }
+    spinlock_release_irqrestore(&kbd_lock, flags);
+    return ok;
+}
+
+bool ps2_aux_command(uint8_t command) {
+    uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
+    bool acked = false;
+
+    // Controller command 0xD4: "the next byte written to the data port is
+    // for the second port"
+    if (ps2_can_write()) {
+        outb(0x64, 0xD4);
+        if (ps2_can_write()) {
+            outb(0x60, command);
+            // The device answers ACK. (Anything else it had already sent,
+            // such as a movement, may come first.)
+            uint8_t byte;
+            for (int tries = 0; tries < 8 && !acked && ps2_wait_aux_byte(&byte); tries++) acked = (byte == PS2_ACK);
+        }
+    }
+    spinlock_release_irqrestore(&kbd_lock, flags);
+    return acked;
+}
+
 static void keyboard_irq_handler(struct registers *regs) {
     uint64_t flags = spinlock_acquire_irqsave(&kbd_lock);
     keyboard_handle_port();

@@ -206,7 +206,9 @@ TEST(cache_makes_rereading_a_file_free) {
             requests[0], nanoseconds[0] / 1000, requests[1], nanoseconds[1] / 1000);
     EXPECT_TRUE(requests[0] >= 200);          // One per sector of data, at least
     EXPECT_TRUE(requests[1] == 0);
-    EXPECT_TRUE(nanoseconds[1] < nanoseconds[0]);
+    // (Only where the clock can tell: without a timestamp counter it
+    // counts 10 ms ticks, and both readings can take "one tick")
+    if (hrtimer_tsc_hz() != 0) EXPECT_TRUE(nanoseconds[1] < nanoseconds[0]);
 }
 
 // /dev/vda: byte offsets that do not line up with sectors

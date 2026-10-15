@@ -51,6 +51,7 @@
 #define SYS_SIGRETURN 302
 #define SYS_TTY_RAW  303
 #define SYS_TTY_SIZE 304
+#define SYS_FB_INFO  309
 #define SYS_PING     305
 #define SYS_CLOCK_NS 228
 #define SYS_NANOSLEEP 230
