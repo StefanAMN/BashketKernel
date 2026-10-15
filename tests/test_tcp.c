@@ -231,7 +231,8 @@ static void transfer(uint16_t port) {
     static char text[4096];
     char expected[48];
     tcp_describe(text, sizeof(text));
-    ksnprintf(expected, sizeof(expected), ":%u  established  4380  65535  ", (unsigned)port);
+    // (ssthresh is 65535 in the other end's units: both scale by 2^3)
+    ksnprintf(expected, sizeof(expected), ":%u  established  4380  524280  ", (unsigned)port);
     EXPECT_TRUE(strstr(text, expected) != NULL);
     if (!strstr(text, expected)) kprintf("%s", text);
 
@@ -716,6 +717,265 @@ TEST(tcp_sender_keeps_to_the_congestion_window) {
     EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
 }
 
+// --- Window scaling (RFC 7323, section 2) ---------------------------------------
+
+// The options a SYN can carry, well-formed and not
+TEST(tcp_options_are_read) {
+    tcp_options_t o;
+    static const uint8_t both[] = { 2, 4, 0x05, 0xB4, 1, 3, 3, 7 };      // MSS 1460, NOP, scale 7
+    tcp_parse_options(both, sizeof(both), &o);
+    EXPECT_TRUE(o.has_mss && o.mss == 1460 && o.has_wscale && o.wscale == 7);
+
+    static const uint8_t mss_only[] = { 2, 4, 0x02, 0x18 };             // MSS 536
+    tcp_parse_options(mss_only, sizeof(mss_only), &o);
+    EXPECT_TRUE(o.has_mss && o.mss == 536 && !o.has_wscale);
+
+    tcp_parse_options(NULL, 0, &o);                                     // No options at all
+    EXPECT_TRUE(!o.has_mss && !o.has_wscale);
+
+    static const uint8_t too_big[] = { 3, 3, 15, 0 };                   // Shift 15, then end of list
+    tcp_parse_options(too_big, sizeof(too_big), &o);
+    EXPECT_TRUE(o.has_wscale && o.wscale == TCP_WSCALE_MAX);           // Taken as 14 (2.3)
+    static const uint8_t huge[] = { 3, 3, 255 };
+    tcp_parse_options(huge, sizeof(huge), &o);
+    EXPECT_TRUE(o.has_wscale && o.wscale == 14);
+
+    // Malformed: the wrong length for the kind, an option running past the
+    // end, a length of zero (which would loop for ever), the list's end
+    static const uint8_t wrong_len[] = { 3, 4, 2, 0 };
+    tcp_parse_options(wrong_len, sizeof(wrong_len), &o);
+    EXPECT_TRUE(!o.has_wscale);
+    static const uint8_t truncated[] = { 2, 4, 0x05, 0xB4, 3, 3 };
+    tcp_parse_options(truncated, sizeof(truncated), &o);
+    EXPECT_TRUE(o.has_mss && !o.has_wscale);                          // What came before stands
+    static const uint8_t zero_len[] = { 8, 0, 3, 3, 2 };
+    tcp_parse_options(zero_len, sizeof(zero_len), &o);
+    EXPECT_TRUE(!o.has_wscale);
+    static const uint8_t ended[] = { 0, 3, 3, 2 };
+    tcp_parse_options(ended, sizeof(ended), &o);
+    EXPECT_TRUE(!o.has_wscale);
+    static const uint8_t unknown_first[] = { 8, 10, 1, 2, 3, 4, 5, 6, 7, 8, 3, 3, 4 };  // Timestamps, skipped
+    tcp_parse_options(unknown_first, sizeof(unknown_first), &o);
+    EXPECT_TRUE(o.has_wscale && o.wscale == 4);
+}
+
+// A SYN from port `from_port` with the given options (a multiple of 4 bytes)
+static void inject_syn(uint16_t from_port, uint16_t to_port, uint32_t seq, const uint8_t *options, size_t options_len) {
+    static uint8_t segment[20 + 40];
+    memset(segment, 0, sizeof(segment));
+    *(uint16_t *)(segment + 0) = be16(from_port);
+    *(uint16_t *)(segment + 2) = be16(to_port);
+    *(uint32_t *)(segment + 4) = be32(seq);
+    segment[12] = (uint8_t)(((20 + options_len) / 4) << 4);
+    segment[13] = 0x02;
+    *(uint16_t *)(segment + 14) = be16(8192);
+    memcpy(segment + 20, options, options_len);
+    *(uint16_t *)(segment + 16) = be16(net_transport_checksum(IP_PROTO_TCP, NET_LOCAL_IP, NET_LOCAL_IP, segment, 20 + options_len));
+    tcp_input(NET_LOCAL_IP, NET_LOCAL_IP, segment, 20 + options_len);
+}
+
+// Scaling is used when both SYNs carry the option and not otherwise; a
+// shift above 14 is taken as 14; windows after the SYNs are scaled. The
+// peers by hand are on ports 40110 to 40112, everything sent to them dropped.
+TEST(tcp_window_scaling_is_negotiated) {
+    size_t sockets_before = tcp_sockets_in_use();
+    tcp_socket_t *listener = tcp_open();
+    EXPECT_TRUE(listener != NULL);
+    EXPECT_EQ(tcp_bind(listener, 7110), 0);
+    EXPECT_EQ(tcp_listen(listener, 4), 0);
+
+    // Two ends of ours: both offer, both use it
+    tcp_socket_t *client = tcp_open();
+    EXPECT_EQ(tcp_connect(client, NET_LOCAL_IP, 7110), 0);
+    int error = 0;
+    tcp_socket_t *server = tcp_accept(listener, &error);
+    EXPECT_TRUE(server != NULL);
+    uint32_t ip = 0;
+    uint16_t client_port = 0;
+    tcp_peer(server, &ip, &client_port);
+    tcp_test_windows_t w;
+    EXPECT_TRUE(tcp_test_windows(7110, client_port, &w));
+    EXPECT_TRUE(w.scaling && w.snd_shift == TCP_WSCALE_OURS && w.rcv_shift == TCP_WSCALE_OURS);
+    EXPECT_TRUE(tcp_test_windows(client_port, 7110, &w));
+    EXPECT_TRUE(w.scaling && w.snd_shift == TCP_WSCALE_OURS && w.rcv_shift == TCP_WSCALE_OURS);
+    // The server's window (8 KiB, sent as 1024 units of 8) arrived as 8 KiB
+    EXPECT_EQ(w.snd_wnd, TCP_BUFFER_SIZE);
+    tcp_close(client);
+    tcp_close(server);
+
+    tcp_test_drop_every(1);
+    // A SYN without the option: no scaling either way, and our SYN+ACK
+    // does not carry it (RFC 7323 2.2)
+    static const uint8_t mss_only[] = { 2, 4, 0x05, 0xB4 };
+    inject_syn(40110, 7110, 5000, mss_only, sizeof(mss_only));
+    EXPECT_TRUE(tcp_test_windows(7110, 40110, &w));
+    EXPECT_TRUE(!w.scaling && w.snd_shift == 0 && w.rcv_shift == 0);
+    uint32_t rcv_nxt = 0, sent = 0, iss = 0;
+    TEST_WAIT(tcp_test_sequences(7110, 40110, &rcv_nxt, &sent, &iss) && sent == iss + 1, 100);
+    inject(40110, 7110, 5001, iss + 1, 0x10, NULL, 0);               // ACK, window 8192
+    EXPECT_TRUE(tcp_test_windows(7110, 40110, &w));
+    EXPECT_EQ(w.snd_wnd, 8192);                                       // Taken as it is
+
+    // A shift of 15: taken as 14, and the window after the SYN scaled by it
+    static const uint8_t scale_15[] = { 2, 4, 0x05, 0xB4, 1, 3, 3, 15 };
+    inject_syn(40111, 7110, 6000, scale_15, sizeof(scale_15));
+    EXPECT_TRUE(tcp_test_windows(7110, 40111, &w));
+    EXPECT_TRUE(w.scaling && w.snd_shift == 14 && w.rcv_shift == TCP_WSCALE_OURS);
+    EXPECT_EQ(w.snd_wnd, 8192);                                       // A SYN's window is never scaled
+    TEST_WAIT(tcp_test_sequences(7110, 40111, &rcv_nxt, &sent, &iss) && sent == iss + 1, 100);
+    inject(40111, 7110, 6001, iss + 1, 0x10, NULL, 0);
+    EXPECT_TRUE(tcp_test_windows(7110, 40111, &w));
+    EXPECT_EQ(w.snd_wnd, 8192u << 14);
+
+    // Resets from the peers end both
+    inject(40110, 7110, 5001, 0, 0x04, NULL, 0);
+    inject(40111, 7110, 6001, 0, 0x04, NULL, 0);
+    tcp_test_drop_every(0);
+    tcp_close(listener);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
+#define GROW_BYTES (4 * 1024 * 1024)
+
+static tcp_socket_t *grow_listener;
+static volatile int grow_done;
+static volatile uint64_t grow_bytes, grow_errors;
+static volatile uint16_t grow_peer_port;
+static tcp_test_windows_t grow_server_windows;
+
+// Accepts one connection and reads it to the end, a tick apart, taking
+// everything there is each time; notes the connection's windows before
+// closing it. The tick stands in for a round trip: without it, on several
+// CPUs the acknowledgements come back so fast that the sender never uses
+// even a small window, and rightly nothing grows.
+static void grow_reader_entry(void) {
+    int error = 0;
+    tcp_socket_t *conn = tcp_accept(grow_listener, &error);
+    if (conn) {
+        uint32_t ip;
+        uint16_t port;
+        tcp_peer(conn, &ip, &port);
+        grow_peer_port = port;
+        static uint8_t buf[65536];
+        int64_t n;
+        while (sched_sleep_ticks(1), (n = tcp_read(conn, buf, sizeof(buf))) > 0) {
+            for (int64_t i = 0; i < n; i++) {
+                if (buf[i] != pattern_byte(grow_bytes + (uint64_t)i)) grow_errors++;
+            }
+            grow_bytes += (uint64_t)n;
+        }
+        if (n < 0) grow_errors++;
+        tcp_test_windows(7111, port, &grow_server_windows);
+        tcp_close(conn);
+    }
+    grow_done = 1;
+}
+
+// With scaling, a sender held back by the window and a reader that empties
+// the ring each time, the receive ring grows past what a 16-bit window
+// could describe, up to TCP_BUFFER_MAX
+TEST(tcp_receive_ring_grows_past_64k) {
+    size_t sockets_before = tcp_sockets_in_use();
+    grow_done = 0; grow_bytes = 0; grow_errors = 0; grow_peer_port = 0;
+    grow_listener = tcp_open();
+    EXPECT_EQ(tcp_bind(grow_listener, 7111), 0);
+    EXPECT_EQ(tcp_listen(grow_listener, 1), 0);
+    EXPECT_TRUE(task_create("tcp_grow", grow_reader_entry) != NULL);
+
+    tcp_socket_t *client = tcp_open();
+    EXPECT_EQ(tcp_connect(client, NET_LOCAL_IP, 7111), 0);
+    uint64_t started_ns = clock_ns();
+    static uint8_t chunk[16384];
+    uint64_t sent = 0;
+    while (sent < GROW_BYTES) {
+        for (size_t i = 0; i < sizeof(chunk); i++) chunk[i] = pattern_byte(sent + i);
+        if (tcp_write(client, chunk, sizeof(chunk)) != (int64_t)sizeof(chunk)) break;
+        sent += sizeof(chunk);
+    }
+    EXPECT_TRUE(sent == GROW_BYTES);
+    tcp_close(client);
+
+    TEST_WAIT(grow_done, 6000);
+    uint64_t elapsed_ms = (clock_ns() - started_ns) / 1000000;
+    EXPECT_EQ(grow_done, 1);
+    EXPECT_TRUE(grow_bytes == GROW_BYTES && grow_errors == 0);
+    EXPECT_TRUE(grow_server_windows.rx_size > 65536 && grow_server_windows.rx_size <= TCP_BUFFER_MAX);
+    kprintf("    receiver's ring %u bytes; %lu ms for %u MiB\n", (unsigned)grow_server_windows.rx_size, elapsed_ms,
+            (unsigned)(GROW_BYTES >> 20));
+    tcp_close(grow_listener);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
+static tcp_socket_t *writer_conn;
+static volatile int writer_done;
+static volatile int64_t writer_result;
+
+// Writes GROW_BYTES to writer_conn, then says how it went
+static void ring_writer_entry(void) {
+    static uint8_t chunk[16384];
+    int64_t total = 0;
+    while (total < GROW_BYTES) {
+        int64_t n = tcp_write(writer_conn, chunk, sizeof(chunk));
+        if (n <= 0) { total = n; break; }
+        total += n;
+    }
+    writer_result = total;
+    writer_done = 1;
+}
+
+// The send ring grows when it is full while both windows would let more be
+// in flight. Over loopback the acknowledgements come back at once and the
+// ring never is, so the receiver is played by hand from port 40112: it
+// offers 8192 << 5 = 256 KiB, and once a tick acknowledges everything sent
+// a segment at a time (so that slow start doubles the congestion window
+// each round), while everything sent to it is dropped.
+TEST(tcp_send_ring_grows_past_64k) {
+    size_t sockets_before = tcp_sockets_in_use();
+    tcp_socket_t *listener = tcp_open();
+    EXPECT_TRUE(listener != NULL);
+    EXPECT_EQ(tcp_bind(listener, 7112), 0);
+    EXPECT_EQ(tcp_listen(listener, 1), 0);
+
+    const uint16_t peer = 40112;
+    const uint32_t s = 7000;                     // The peer's first sequence number
+    uint32_t rcv_nxt = 0, sent = 0, una = 0;
+    tcp_test_drop_every(1);
+    static const uint8_t scale_5[] = { 2, 4, 0x05, 0xB4, 1, 3, 3, 5 };
+    inject_syn(peer, 7112, s, scale_5, sizeof(scale_5));
+    TEST_WAIT(tcp_test_sequences(7112, peer, &rcv_nxt, &sent, &una) && sent == una + 1, 100);
+    inject(peer, 7112, s + 1, una + 1, 0x10, NULL, 0);             // ACK of the SYN+ACK
+    int error = 0;
+    writer_conn = tcp_accept(listener, &error);
+    EXPECT_TRUE(writer_conn != NULL);
+    writer_done = 0;
+    writer_result = 0;
+    EXPECT_TRUE(task_create("tcp_writer", ring_writer_entry) != NULL);
+
+    tcp_test_windows_t w = {0};
+    uint64_t deadline = timer_ticks() + 1000;
+    while (!writer_done && timer_ticks() < deadline) {
+        sched_sleep_ticks(1);
+        if (!tcp_test_sequences(7112, peer, &rcv_nxt, &sent, &una)) break;
+        for (uint32_t a = una + 1460; (int32_t)(a - sent) < 0; a += 1460) inject(peer, 7112, s + 1, a, 0x10, NULL, 0);
+        inject(peer, 7112, s + 1, sent, 0x10, NULL, 0);
+        tcp_test_windows(7112, peer, &w);
+    }
+    EXPECT_EQ(writer_done, 1);
+    EXPECT_TRUE(writer_result == GROW_BYTES);
+    EXPECT_TRUE(w.scaling && w.snd_shift == 5);
+    EXPECT_TRUE(w.tx_size > 65536 && w.tx_size <= TCP_BUFFER_MAX);
+    kprintf("    sender's ring %u bytes\n", (unsigned)w.tx_size);
+
+    tcp_close(writer_conn);
+    inject(peer, 7112, s + 1, 0, 0x04, NULL, 0);                    // A reset from the peer ends it
+    tcp_test_drop_every(0);
+    tcp_close(listener);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
 void test_suite_tcp(void) {
     kprintf("Suite: TCP\n");
     if (!net_up()) {
@@ -735,4 +995,8 @@ void test_suite_tcp(void) {
     RUN_TEST(tcp_congestion_window_follows_rfc5681);
     RUN_TEST(tcp_reassembles_out_of_order_segments);
     RUN_TEST(tcp_sender_keeps_to_the_congestion_window);
+    RUN_TEST(tcp_options_are_read);
+    RUN_TEST(tcp_window_scaling_is_negotiated);
+    RUN_TEST(tcp_receive_ring_grows_past_64k);
+    RUN_TEST(tcp_send_ring_grows_past_64k);
 }
