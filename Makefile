@@ -568,6 +568,11 @@ test-paint: iso
 # well, which the kernel shell does not wait for, so the check waits (ten
 # seconds at most) until no swapper is left alive; without that it read
 # the dying child's share as lost about 1 run in 10.
+# The second scenario's two swappers end together, and the shell's prompt
+# can come in the middle of the background one's last line, where
+# qemu_shell.py (which waits for a newline and "$ ") never sees it; one run
+# waited out its five minutes so. `swapper 45; wait` prompts once both
+# are done.
 test-swap: iso
 	@if [ -z "$(MKSWAP)" ]; then echo "swap: skipped (no mkswap on this machine)"; exit 0; fi; \
 	tools/qemu_shell.py --quiet --mem 64M --timeout 120 $(SHELL_CPU) \
@@ -581,7 +586,7 @@ test-swap: iso
 		--expect 'syscheck: all checks passed' \
 		--expect 'SwapFree:   65532 kB' --forbid 'swapper: FAILED|could not be read back|out of memory' \
 		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[\s\S]*){2}' \
-		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' 'fg' 'exit' \
+		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45; wait' 'exit' \
 		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
 		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
 	tools/qemu_shell.py --quiet --mem 64M --timeout 120 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
