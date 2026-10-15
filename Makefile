@@ -488,6 +488,11 @@ test-swap: iso
 		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' '@wait:8' 'exit' \
 		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
 		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
+	tools/qemu_shell.py --quiet --mem 64M --timeout 120 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
+		--expect 'MemFree:    [45][0-9]{4} kB\nPromised:   0 kB\nSwapTotal:  65532 kB\nSwapFree:   65532 kB' \
+		--expect 'Swapped:    [0-9]{4,} pages out' --forbid 'swapper: ' \
+		'!exec /bin/swapper 80' '@wait:6' '^C' 'cat /proc/meminfo' > $(BUILD)/swap-killed.log 2>&1 \
+		|| { echo "swap: FAILED, a program killed while swapping did not give everything back at once (see $(BUILD)/swap-killed.log)"; exit 1; }; \
 	echo "swap (80 MiB used on a 64 MiB machine, then two programs of 45; refused without a swap disk): ok"
 
 # Jobs in the user shell: a command in the background, another stopped with

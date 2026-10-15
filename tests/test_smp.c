@@ -262,8 +262,11 @@ TEST(cpus_share_the_kernel_safely) {
     for (uint32_t i = 1; i <= others; i++) {
         while (smp_call_busy(i)) asm volatile("pause");
     }
-    while (sched_reap() == 0) sched_yield();
-    while (sched_reap() != 0) { }
+    // Both tasks have counted themselves done, which is not yet "exited":
+    // wait until both have been freed, not until something has
+    size_t reaped = 0;
+    TEST_WAIT((reaped += sched_reap()) >= 2, 200);
+    EXPECT_EQ(reaped, (size_t)2);
 
     EXPECT_TRUE(hammer_errors == 0);
     EXPECT_TRUE(hammer_counter == (uint64_t)(others + 3) * HAMMER_ROUNDS);

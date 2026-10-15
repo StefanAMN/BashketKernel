@@ -371,9 +371,10 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   faulting page back whatever kind of fault it was; and a process with
   nothing it may give up (a fresh fork child: every page still shared)
   must not search its whole address space at every fault. Known limits:
-  a fork child cannot free memory until it has pages of its own, a system
-  call that needs a swapped page when no frame is free fails rather than
-  making room, and a zombie keeps its memory until it is reaped.
+  a fork child cannot free memory until it has pages of its own, and a
+  system call that needs a swapped page when no frame is free fails rather
+  than making room. (Testing this showed that a dead process kept its
+  memory until its parent collected it; it now gives it back as it dies.)
   The design, decided before the code:
   - *Where:* a disk of its own carrying the Linux swap signature (made on
     the host by `mkswap`, so the format is checked against someone else's

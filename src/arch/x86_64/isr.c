@@ -188,10 +188,15 @@ void isr_handler(struct registers *regs) {
     // for the handler. iretq restores the interrupted code's own flags.
     user_access_end();
 
-    if (try_swap(regs)) return;
-    if (try_copy_on_write(regs)) return;
-    if (try_grow_stack(regs)) return;
-    if (try_promised_page(regs)) return;
+    if (try_swap(regs) || try_copy_on_write(regs) || try_grow_stack(regs) || try_promised_page(regs)) {
+        // The fault is dealt with and the program is about to carry on. If
+        // that is user code, this is a safe point for a pending kill, as
+        // after an interrupt: a program that does little but fault (one
+        // short of memory) is rarely in user mode when the timer fires, and
+        // would otherwise outlive its kill for a long time.
+        if ((regs->cs & 3) == 3) sched_check_kill();
+        return;
+    }
 
     if (regs->int_no < 32 && (regs->cs & 3) == 3) {
         kill_faulting_process(regs);
