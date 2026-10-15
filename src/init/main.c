@@ -21,6 +21,7 @@
 #include "initrd.h"
 #include "keyboard.h"
 #include "mouse.h"
+#include "swap.h"
 #include "shell.h"
 #include "slab.h"
 #include "cow.h"
@@ -243,7 +244,12 @@ void _start(void) {
     if (virtio_blk_init() == 0) {
         fat32_mount("/disk");
         // A second disk holding an ext2 volume: users' files, with owners
-        if (virtio_blk_count() > 1) ext2_mount("/home", 1);
+        // Further disks: one that carries a swap header is for swapping,
+        // otherwise it is taken to hold the ext2 volume with users' files
+        for (unsigned disk = 1; disk < virtio_blk_count(); disk++) {
+            if (swap_init(disk) == 0) continue;
+            if (!ext2_mounted()) ext2_mount("/home", disk);
+        }
     }
 
     // Phase 13: PCI Bus & VirtIO Network Stack

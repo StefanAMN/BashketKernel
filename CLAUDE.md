@@ -89,6 +89,7 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
 make test-home                  # ext2 at /home: owners across a reboot, e2fsck, damaged images (~40 s)
+make test-swap                  # 80 MiB used on a 64 MiB machine, with and without a swap disk (~30 s)
 make test-paint                 # /bin/paint driven by the mouse, screenshots checked (~10 s)
 make test-crash                 # kill QEMU during ext2 writes, reboot, e2fsck; CRASH_ROUNDS=20 for more (~1 min)
 make test-login                 # login, su, passwd and file permissions, scripted (~15 s)
@@ -104,6 +105,7 @@ tools/qemu_shell.py --quiet '!exec /bin/spin' '^C' 'ps'            # '!' = do no
 tools/qemu_shell.py --quiet '!exec /bin/edit /tmp/f' '~hi\r^S^Q'   # '~' = raw keys into a full-screen program
 tools/qemu_shell.py '!exec /bin/paint' '@button:1' '@mouse:40,0' '@button:0' '@screendump:/tmp/s.ppm' '@button:2'
                                           # '@mouse', '@button', '@screendump' go to QEMU's monitor; tools/check_ppm.py checks pixels
+tools/qemu_shell.py '!exec /bin/spin' '@wait:2' '@monitor:info registers'   # where is the CPU? (any monitor command)
 tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 
 # A virtio network card on QEMU's user-mode network is attached too: the
@@ -430,6 +432,19 @@ code comments and commit messages; `git log` is the full history.
   `qemu_shell.py` buffers its output, so the crash test, which kills it,
   never saw the "workload started" line. Evidence that the workload ran is
   taken from the disk at the next boot instead.
+- **"Out of memory" with memory free means the test before it lied.** A
+  forked child was killed for a copy-on-write copy that "could not be
+  allocated" with 241 frames free: the page-table entry was no longer
+  present, because making room at the start of that same fault had swapped
+  out the page being written. Printing the numbers at the kill took one
+  run; the theories before it were all wrong.
+- **A sampled RIP beats reasoning about a hang.** The swap test "hung" in
+  the victim search, run in full at every fault by a process that had
+  nothing to give. `@monitor:info registers` three times, then
+  `tools/symbolize.sh`, said so at once.
+- **CR2 is per CPU, not per task.** A fault handler that lets interrupts in
+  (to wait for a disk) can be preempted, and another task's fault then
+  overwrites CR2. Read it before `sti`; write it back if later code reads it.
 - **When there are two ways and one is a fallback, assert which one ran.**
   The first build with the modern virtio interface booted, mounted both
   disks and pinged: on the legacy interface, because mapping the modern

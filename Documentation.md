@@ -528,3 +528,23 @@ so the numbering has gaps.
      - Files to inspect: `user/paint.c`
      - Try: `make run`, then `exec /bin/paint` in the QEMU window (click inside it first; right button to leave).
 5. **Testing something you look at:** `make test-paint`, `tools/check_ppm.py`, and the `@mouse`, `@button` and `@screendump` commands of `tools/qemu_shell.py`.
+
+### 41. Swap: More Memory than the Machine Has
+**Status: partial.** With a swap disk attached (one made by the host's `mkswap`; the kernel checks its header), a process that page-faults while memory is short pushes its own least recently used pages out to the disk (the clock algorithm, on the accessed bit) and they are read back when touched; `mmap` and `brk` may then promise more memory than the machine has. A swapped page is a not-present page-table entry holding its slot; `fork` shares the slot and each side reads its own copy. `/bin/swapper 80` runs on a 64 MiB machine (`make test-swap`); `/proc/meminfo` shows swap totals and counts. Limits, by design: a process only gives up its own pages, and only at a fault from user mode (never while it is in a system call, and never another process's); frames still shared after a `fork` stay; a page read back is written again in full when it next goes out; one swap device; swap is attached only where asked (`tools/qemu_shell.py --swap-disk`).
+
+**Goal:** understand what a page-table entry can say besides "here is the frame", and why deciding *whose* page to take is harder than taking it.
+
+1. **A page that is somewhere else.**
+     - **Concepts:** the CPU ignores every bit of a not-present entry but one, so the kernel can keep a note there; the slot number where the frame address was; permissions kept for the return.
+     - Files to inspect: `VMM_SWAPPED`, `vmm_pte_swapped` in `src/mm/vmm.h`; `vmm_swap_pick`, `vmm_swap_install` in `src/mm/vmm.c`
+2. **Choosing the victim: the clock.**
+     - **Concepts:** the accessed bit; a second chance; why clearing the bit needs an `invlpg`; a hand that remembers where it stopped.
+     - Files to inspect: `swap_scan` in `src/mm/vmm.c`, `tests/test_swap.c` (`recently_used_pages_are_spared`)
+3. **Out and back.**
+     - **Concepts:** take the page away first, then write it; one sleeping lock so that a fault on a page in transit waits; what to undo when the disk fails.
+     - Files to inspect: `swap_out`, `swap_in` in `src/mm/swap.c`
+4. **Whose page, and when.**
+     - **Concepts:** the kernel checks a buffer and uses it later; local against global replacement; why a fault from user mode is the one moment a process's own pages are safe to take; pages shared after `fork`.
+     - Files to inspect: the comment at the top of `src/mm/swap.h`, `try_swap` in `src/arch/x86_64/isr.c`, `process_populate` in `src/kernel/proc/process.c`, and the design notes in `PLAN.md` (C4)
+5. **fork, unmap, exit.** Every place an entry is copied or dropped must know the new kind: `vmm_clone_user_space`, `free_table`, `user_unmap_range`, `region_fault`, `process_grow_stack`.
+6. **Try:** `make test-swap`; then `tools/qemu_shell.py --mem 64M --swap-disk build/swap.img 'exec /bin/swapper 80' 'cat /proc/meminfo'`, and the same without `--swap-disk`.

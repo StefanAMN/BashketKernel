@@ -18,6 +18,7 @@
 #include "region.h"
 #include "smp.h"
 #include "timer.h"
+#include "swap.h"
 #include <stddef.h>
 
 typedef void (*irq_handler_t)(struct registers *regs);
@@ -145,6 +146,34 @@ static bool try_promised_page(struct registers *regs) {
     return result > 0;
 }
 
+// With a swap disk: a page fault from user mode is where a process gives up
+// pages when memory is short, and where a page that was swapped out is
+// read back. Both wait for the disk, so interrupts are let in; another
+// task's fault may then overwrite CR2 on this CPU, and the handlers after
+// this one read it, so it is put back.
+static bool try_swap(struct registers *regs) {
+    if (!swap_active() || regs->int_no != 14 || (regs->cs & 3) != 3) return false;
+    task_t *task = sched_get_current_task();
+    if (!task || !task->is_user) return false;
+
+    uint64_t cr2;
+    asm volatile("mov %0, cr2" : "=r"(cr2));
+    asm volatile("sti");
+    swap_relieve_pressure();
+    // Whatever kind of fault this was: making room may just have pushed out
+    // the very page the program was writing to (a "write to a present page"
+    // fault whose page is present no longer)
+    int result = swap_in(vmm_space_from_phys((uint64_t)task->pml4_phys), cr2);
+    asm volatile("cli");
+    asm volatile("mov cr2, %0" : : "r"(cr2));
+
+    if (result < 0) {
+        kprintf("\n[pid %u %s] killed: a swapped-out page at 0x%zx could not be read back\n", task->pid, task->name, cr2);
+        task_exit_status(128 + SIGKILL);
+    }
+    return result > 0;
+}
+
 static bool try_grow_stack(struct registers *regs) {
     if (regs->int_no != 14 || (regs->err_code & 1)) return false; // Not "page not present"
 
@@ -159,6 +188,7 @@ void isr_handler(struct registers *regs) {
     // for the handler. iretq restores the interrupted code's own flags.
     user_access_end();
 
+    if (try_swap(regs)) return;
     if (try_copy_on_write(regs)) return;
     if (try_grow_stack(regs)) return;
     if (try_promised_page(regs)) return;

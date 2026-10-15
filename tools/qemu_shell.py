@@ -12,7 +12,8 @@ fixed sleeps and the run takes as long as the kernel actually needs.
 A command starting with '!' is sent without waiting for a prompt afterwards
 (for programs that do not finish by themselves). '^C' and '^D' send Ctrl-C
 and Ctrl-D. '@mouse:dx,dy', '@button:n' and '@screendump:file' move the mouse,
-press its buttons and save a picture of the screen (through QEMU's monitor).
+press its buttons and save a picture of the screen (through QEMU's monitor);
+'@monitor:info registers' runs any monitor command and prints its answer.
 '@wait:3' lets the
 guest run for 3 seconds. A command starting with '~' is typed as raw keys into a
 full-screen program: '~hello\\r^S^Q' types hello, Enter, Ctrl-S, Ctrl-Q
@@ -73,6 +74,7 @@ def monitor_command(path, command):
         seen = b""
         while b"(qemu) " not in seen:            # The echo and any output, up to the next
             seen += monitor.recv(4096)
+        return seen.decode("utf-8", errors="replace")
 
 
 def main():
@@ -95,6 +97,7 @@ def main():
     ap.add_argument("--disk", help="disk image to attach (default: disk.img next to the ISO)")
     ap.add_argument("--no-disk", action="store_true", help="boot without a disk")
     ap.add_argument("--home-disk", help="ext2 image to attach as the second disk (default: home.img next to the ISO)")
+    ap.add_argument("--swap-disk", help="swap image (made by mkswap) to attach as a further disk; default: none")
     ap.add_argument("--no-home-disk", action="store_true", help="boot without the second disk")
     ap.add_argument("--keep-disk-writes", action="store_true", help="let the guest really modify the disk image")
     ap.add_argument("--quiet", action="store_true", help="print only the output after the first prompt")
@@ -114,6 +117,10 @@ def main():
         home = args.home_disk or os.path.join(os.path.dirname(args.iso), "home.img")
         if not args.no_home_disk and os.path.exists(home):
             cmd += ["-drive", f"file={home},if=virtio,format=raw{snapshot}"]
+        # A swap disk, only when asked for. Never written for keeps: what
+        # is on it means nothing after the machine stops.
+        if args.swap_disk:
+            cmd += ["-drive", f"file={args.swap_disk},if=virtio,format=raw,snapshot=on"]
     # A network card on QEMU's user-mode network (guest 10.0.2.15, gateway
     # 10.0.2.2). --net-forward adds host-to-guest port forwards.
     if not args.no_net:
@@ -129,7 +136,7 @@ def main():
     # '@mouse', '@button' and '@screendump' commands go to QEMU itself, through
     # its monitor on a socket (only set up when one of them is used)
     monitor_path = None
-    if any(c.startswith(("@mouse:", "@button:", "@screendump:")) for c in args.commands):
+    if any(c.startswith(("@mouse:", "@button:", "@screendump:", "@monitor:")) for c in args.commands):
         monitor_path = os.path.join(tempfile.mkdtemp(prefix="qemu-shell-"), "monitor")
         cmd += ["-monitor", f"unix:{monitor_path},server=on,wait=off"]
 
@@ -151,6 +158,11 @@ def main():
                     proc.stdin.write(command[1:].encode() + b"\n")
                     proc.stdin.flush()
                     read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.5)
+                    continue
+                if command.startswith("@monitor:"):
+                    # Any monitor command ('@monitor:info registers'); what it
+                    # prints goes to stderr, apart from the guest's output
+                    sys.stderr.write(monitor_command(monitor_path, command.split(":", 1)[1]))
                     continue
                 if command.startswith(("@mouse:", "@button:", "@screendump:")):
                     kind, value = command[1:].split(":", 1)

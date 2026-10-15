@@ -24,6 +24,10 @@
 #define VMM_GLOBAL      (1ULL << 8)  // Global translation (not invalidated on CR3 write)
 #define VMM_COW         (1ULL << 9)  // Ours (CPU ignores bits 9-11): copy this page on first write
 #define VMM_SHARED      (1ULL << 10) // Ours: shared memory; fork gives the child the same frame, writable
+// In an entry that is NOT present (the CPU ignores every other bit of
+// those): the page is on the swap disk, in the slot whose number is where a
+// frame address would be. The permission bits are kept, for when it returns.
+#define VMM_SWAPPED     (1ULL << 11)
 #define VMM_NO_EXECUTE  (1ULL << 63) // NX bit (No Instruction Execution)
 
 #define PTE_ADDR_MASK   0x000FFFFFFFFFF000ULL
@@ -147,6 +151,42 @@ bool vmm_unmap_page(uint64_t *pml4, uint64_t virt);
  *         NULL if a page table could not be allocated.
  */
 void *vmm_map_device(uint64_t phys, size_t length);
+
+// --- Swapped-out pages (swap.h) ---
+
+static inline bool vmm_pte_swapped(uint64_t pte) {
+    return !(pte & VMM_PRESENT) && (pte & VMM_SWAPPED);
+}
+
+static inline uint32_t vmm_pte_swap_slot(uint64_t pte) {
+    return (uint32_t)((pte & PTE_ADDR_MASK) >> 12);
+}
+
+/**
+ * @brief Choose a page of a user address space to swap out and take it
+ *        away: its entry becomes a swapped entry for `slot`.
+ *
+ * Candidates are present user pages whose frame nobody else shares. The
+ * search starts at `*cursor` and wraps round; a page whose accessed bit is
+ * set has the bit cleared and is passed over this time.
+ *
+ * @param virt, frame Receive the page's address and the frame it had, which
+ *        the caller now holds the only reference to.
+ * @return false if the address space has no page that may go.
+ */
+bool vmm_swap_pick(uint64_t *pml4, uint64_t *cursor, uint32_t slot, uint64_t *virt, uint64_t *frame);
+
+/**
+ * @brief Turn the swapped entry for `virt` back into a present one that
+ *        maps `frame`, with the permissions it had.
+ */
+bool vmm_swap_install(uint64_t *pml4, uint64_t virt, uint64_t frame);
+
+/**
+ * @brief If `virt` is swapped out, forget it: clear the entry and release
+ *        its slot. For unmapping. Returns whether it was.
+ */
+bool vmm_swap_discard(uint64_t *pml4, uint64_t virt);
 
 /**
  * @brief Look up the physical frame a 4 KiB virtual page is mapped to.

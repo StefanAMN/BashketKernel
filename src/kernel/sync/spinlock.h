@@ -43,6 +43,7 @@ enum {
     LOCK_RANK_KSTACK   = 72,
     LOCK_RANK_VMM      = 75,
     LOCK_RANK_COW      = 78,
+    LOCK_RANK_SWAP     = 79, // Which swap slots are in use
     LOCK_RANK_PMM      = 80,
     LOCK_RANK_SCHED    = 90, // Task list and task states
     LOCK_RANK_TIME     = 92,

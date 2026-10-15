@@ -99,6 +99,21 @@ HOME_FLAGS =
 endif
 DISK_FLAGS = -drive file=$(DISK),if=virtio,format=raw $(HOME_FLAGS)
 
+# A swap disk, made by the host's mkswap (so the kernel's reading of the
+# header is checked against the program that defines it). Attached to the
+# unit tests and to `make test-swap` only: with it, a machine can promise
+# more memory than it has, which is not what the other scenarios are about.
+SWAP_IMG = $(BUILD)/swap.img
+MKSWAP = $(shell command -v mkswap || ls /sbin/mkswap /usr/sbin/mkswap 2>/dev/null | head -1)
+ifneq ($(MKSWAP),)
+DISKS += $(SWAP_IMG)
+$(SWAP_IMG):
+	@mkdir -p $(BUILD)
+	truncate -s 64M $@
+	$(MKSWAP) $@ > /dev/null
+SWAP_TEST_FLAGS = -drive file=build-test/swap.img,if=virtio,format=raw,snapshot=on
+endif
+
 # A network card on QEMU's built-in user-mode network: the guest is
 # 10.0.2.15 and a simulated gateway answers at 10.0.2.2. Needs nothing
 # configured on the host.
@@ -108,7 +123,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-crash test-paint test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -203,7 +218,7 @@ SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-ar
 test:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
 	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
-		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(NET_FLAGS) \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
 	status=$$?; \
@@ -325,7 +340,7 @@ SMP_PROGRAM_CPUS ?= 2 4 8
 test-smp:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
 	@timeout 180 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel.iso -boot d \
-		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(NET_FLAGS) \
+		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(HOME_FLAGS),-drive file=build-test/home.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
 	status=$$?; \
@@ -455,6 +470,26 @@ test-paint: iso
 		&& echo "paint (mouse and screen as devices; the text screen returns after exit and after a kill): ok" \
 		|| { echo "paint: FAILED, the screenshots in $(PAINT_SHOTS) are not as expected"; exit 1; }
 
+# Swap: a program that needs 80 MiB on a machine with 64. Without a swap
+# disk the kernel must refuse it the memory; with one, every page must come
+# back as it was written, and nothing may be left on the swap disk after.
+test-swap: iso
+	@if [ -z "$(MKSWAP)" ]; then echo "swap: skipped (no mkswap on this machine)"; exit 0; fi; \
+	tools/qemu_shell.py --quiet --mem 64M --timeout 120 $(SHELL_CPU) \
+		--expect 'swapper: the kernel will not promise 80 MiB' --expect 'Hello from ring 3' --forbid 'swapper: FAILED|out of memory' \
+		'exec /bin/swapper 80' 'exec /bin/hello' > $(BUILD)/swap-without.log 2>&1 \
+		|| { echo "swap: FAILED without a swap disk (see $(BUILD)/swap-without.log)"; exit 1; }; \
+	tools/qemu_shell.py --quiet --mem 64M --timeout 300 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
+		--expect 'swap: disk [0-9], 16383 pages' \
+		--expect 'swapper: 80 MiB written and read back; [0-9]{5,} pages went out to disk, [0-9]{5,} came back' \
+		--expect 'syscheck: all checks passed' \
+		--expect 'SwapFree:   65532 kB' --forbid 'swapper: FAILED|could not be read back|out of memory' \
+		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[^\n]*\n[^\n]*){2}' \
+		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' '@wait:8' 'exit' \
+		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
+		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
+	echo "swap (80 MiB used on a 64 MiB machine, then two programs of 45; refused without a swap disk): ok"
+
 # Jobs in the user shell: a command in the background, another stopped with
 # Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
 # which init must adopt and collect.
@@ -489,6 +524,8 @@ check:
 	@$(MAKE) --no-print-directory test-crash SMP=4 CRASH_ROUNDS=3
 	@$(MAKE) --no-print-directory test-paint
 	@$(MAKE) --no-print-directory test-paint SMP=2
+	@$(MAKE) --no-print-directory test-swap
+	@$(MAKE) --no-print-directory test-swap SMP=4
 	@$(MAKE) --no-print-directory test-login
 	@$(MAKE) --no-print-directory test-jobs
 	@$(MAKE) --no-print-directory test-jobs SMP=4

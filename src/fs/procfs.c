@@ -15,6 +15,7 @@
 #include "heap.h"
 #include "pmm.h"
 #include "pit.h"
+#include "swap.h"
 #include "sched.h"
 #include "spinlock.h"
 #include "kerrno.h"
@@ -60,11 +61,17 @@ static size_t gen_meminfo(char *buf, size_t size) {
                      "MemTotal:   %lu kB\n"
                      "MemFree:    %lu kB\n"
                      "Promised:   %lu kB\n"
+                     "SwapTotal:  %lu kB\n"
+                     "SwapFree:   %lu kB\n"
+                     "Swapped:    %lu pages out, %lu back in\n"
                      "KernelHeap: %lu bytes in use, %lu kB mapped\n"
                      "Refused:    %lu frame requests, %lu kernel heap requests\n",
                      (uint64_t)pmm_get_total_frames() * 4,
                      (uint64_t)pmm_get_free_frames() * 4,
                      (uint64_t)region_promised_pages() * 4,
+                     (uint64_t)swap_total_pages() * 4,
+                     (uint64_t)swap_free_pages() * 4,
+                     swap_pages_out(), swap_pages_in(),
                      (uint64_t)kheap_get_allocated_bytes(),
                      (uint64_t)kheap_get_mapped_bytes() / 1024,
                      (uint64_t)pmm_get_failed_allocations(),
