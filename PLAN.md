@@ -2195,6 +2195,14 @@ plan:
     and `top` do. The fix is a copy made at the first read and kept with
     the open file until it is closed (as Linux's `seq_file` does), which
     needs a place for per-open state that `vnode_ops` reads do not have.
+14. (Done 2026-10-30.) Every CPU started with the kernel's data selector
+    in DS, ES, FS and GS. `iretq` to ring 3 clears such selectors and
+    `sysretq` does not, so a program moved to a CPU that had not yet done an
+    `iretq` could read it: syscheck's "GS is 0" check failed once in a
+    `make check` on four CPUs. No harm to the kernel (the base registers are
+    what count), but kernel state in a program's hands. `gdt_flush` now
+    loads the null selector there. The unit test looks before any program
+    has run, since the first `iretq` hides it afterwards.
 
 ---
 
