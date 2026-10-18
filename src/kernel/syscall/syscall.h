@@ -85,6 +85,7 @@
 #define SYS_SENDTO      44   // (fd, buf, len, ip, port)
 #define SYS_RECVFROM    45   // (fd, buf, len, struct net_address *from, timeout_ms); 0 ms waits for ever
 #define SYS_BIND        49   // (fd, port)
+#define SYS_REBOOT      310  // (int restart): root only; ends every process, marks the disks clean, switches the machine off (0) or restarts it (1); does not return
 #define SYS_FB_INFO     309  // (uint32_t info[4]): receives width, height, bytes per row and bits per pixel of the screen (/dev/fb0)
 #define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen
 

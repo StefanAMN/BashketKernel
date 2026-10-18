@@ -12,7 +12,7 @@ so the numbering has gaps.
 ---
 
 ### 1. Boot to Output & Serial Infrastructure (Phase 1)
-**Status: real.** Limine with two boot entries: the system, which starts `/bin/init` (it runs `/etc/rc`, then keeps a `login` prompt on the console and starts a new one after every session, `make test-boot`), and a developer entry whose command line (`shell`) gives the console to the kernel's own shell instead (`make run-dev`, and every scripted test). Framebuffer console, COM1 serial, `kprintf`.
+**Status: real.** Limine with two boot entries: the system, which starts `/bin/init` (it runs `/etc/rc`, then keeps a `login` prompt on the console and starts a new one after every session, `make test-boot`), and a developer entry whose command line (`shell`) gives the console to the kernel's own shell instead (`make run-dev`, and every scripted test). `shutdown` ends every process, marks the system disk clean and switches the machine off through ACPI (the PM1 control register from the FADT, the sleep type from the `\_S5` object in the DSDT); `shutdown -r` restarts it (the FADT's reset register, or the keyboard controller). `make test-shutdown`. Framebuffer console, COM1 serial, `kprintf`.
 
 **Goal:** Higher-half kernel entry, Limine boot protocol, text console blitter, COM1 serial logging.
 
@@ -28,6 +28,10 @@ so the numbering has gaps.
      - Files to inspect: `src/lib/kprintf.h`, `src/lib/kprintf.c`
 
 ---
+  - **Booting into a system, and shutting it down:**
+     - **Concepts:** a kernel command line; PID 1 and what it is for (orphans, /etc/rc, a login prompt that comes back); switching off through ACPI (the FADT's PM1 control register, the `\_S5` sleep type found in AML bytecode); resetting a PC.
+     - Files to inspect: `boot_option` and the end of `_start` in `src/init/main.c`, `limine.conf`, `user/init.c`, `user/login.c`, `src/kernel/power.c`, the power part of `src/arch/x86_64/acpi.c`, `user/shutdown.c`
+     - Try: `make run` (log in as root/root, then `shutdown`), `make test-boot`, `make test-shutdown`.
 
 ### 2. CPU Tables & Interrupt Handling (Phase 2)
 **Status: real.** Double faults run on their own stack (IST1).
@@ -492,7 +496,7 @@ so the numbering has gaps.
      - Files to inspect: `src/kernel/bench.h`, `src/kernel/bench.c`
 
 ### 39. A Filesystem with Owners: ext2
-**Status: partial.** The system disk: an ext2 volume on the second virtio disk is the root of the file tree, with the programs in `/bin`, `/etc` and the users' home directories; files have owners, groups, permission bits and times that are stored on the disk and survive a reboot (a changed password included). Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkroot.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. At every mount the whole volume is checked and what an interrupted write can leave behind is put right (`make test-crash`). Not done: links, device files, the triply indirect block, a journal.
+**Status: partial.** The system disk: an ext2 volume on the second virtio disk is the root of the file tree, with the programs in `/bin`, `/etc` and the users' home directories; files have owners, groups, permission bits and times that are stored on the disk and survive a reboot (a changed password included). Reading and writing (through the doubly indirect block), create, remove, `mkdir`, rename and move, truncation; `chmod` and `chown` are recorded. Built on the host with `mke2fs` and `debugfs` (`tools/mkroot.sh`); `e2fsck` finds nothing to fix after the kernel has written to it, and images damaged on purpose do not bring the kernel down. The volume carries a clean mark (the superblock's state) only while it is not in use: it is taken away at mount and put back by `shutdown`. When it is missing at mount, the last session ended in a crash, and the whole volume is checked: what an interrupted write can leave behind is put right (`make test-crash`). Not done: links, device files, the triply indirect block, a journal.
 
 **Goal:** see how a Unix filesystem stores what FAT cannot: one record (inode) per file holding owner, mode, times and block numbers, with names kept separately in directories.
 
@@ -510,6 +514,7 @@ so the numbering has gaps.
 5. **After a crash**: what can be wrong, and how the mount-time check puts it right.
      - **Concepts:** reachability from the root; why "allocated but unreferenced" is the only damage ordered writes allow; what a journal would add (nothing half-written at all).
      - Files to inspect: `ext2_check` in `src/fs/ext2.c`, `tools/crash_test.py`, `user/fsstress.c`
+     - **Concepts:** the clean mark: how a volume says "I was put away properly", why it is taken away at mount, and who puts it back (`ext2_mark_clean`, called by `system_shutdown` in `src/kernel/power.c`).
 6. **Checking against other implementations**: `tools/mkroot.sh` (the image is made by `mke2fs`), `make test-home` (what the kernel writes is judged by `e2fsck`), `tools/corrupt_ext2.py`.
 
 ### 40. The Mouse and the Screen as Devices

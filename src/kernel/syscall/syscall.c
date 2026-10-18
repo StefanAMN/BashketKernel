@@ -32,6 +32,7 @@
 #include "tcp.h"
 #include "shm.h"
 #include "hrtimer.h"
+#include "power.h"
 #include "auth.h"
 
 extern void syscall_entry(void);
@@ -976,6 +977,12 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_TTY_RAW:
             tty_set_raw(regs->rdi != 0, task->pid);
             return 0;
+        case SYS_REBOOT:
+            // Only root may stop the system (rdi: 0 switch off, 1 restart)
+            if (task->uid != UID_ROOT) return -EPERM;
+            if (regs->rdi > 1) return -EINVAL;
+            system_shutdown(regs->rdi == 1);
+
         case SYS_FB_INFO: {
             // Width, height, bytes per row, bits per pixel of /dev/fb0
             uint32_t info[4] = { 0, 0, 0, 32 };

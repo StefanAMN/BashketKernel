@@ -158,6 +158,11 @@ void tty_size(unsigned *columns, unsigned *rows);
 struct fb_info { unsigned width, height, pitch, bpp; };
 int fb_info(struct fb_info *info);
 
+/* Shut the system down (root only): every process ends, the disks are left
+ * clean, and the machine switches off (restart 0) or restarts (1). Returns
+ * only on error (-EPERM). */
+long reboot(int restart);
+
 /* Formatted output */
 void puts(const char *s);
 void printf(const char *fmt, ...);               /* To standard output */
