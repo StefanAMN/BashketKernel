@@ -198,18 +198,8 @@ bool virtio_blk_present(void) { return device_count > 0; }
 uint64_t virtio_blk_capacity(void) { return virtio_blk_capacity_of(0); }
 uint64_t virtio_blk_capacity_of(unsigned dev) { return dev < device_count ? devices[dev].capacity_sectors : 0; }
 
-// Totals over every disk
-uint64_t virtio_blk_requests(void) {
-    uint64_t total = 0;
-    for (unsigned i = 0; i < device_count; i++) total += devices[i].completed_requests;
-    return total;
-}
-
-uint64_t virtio_blk_interrupts(void) {
-    uint64_t total = 0;
-    for (unsigned i = 0; i < device_count; i++) total += devices[i].interrupt_count;
-    return total;
-}
+uint64_t virtio_blk_requests(unsigned dev) { return dev < device_count ? devices[dev].completed_requests : 0; }
+uint64_t virtio_blk_interrupts(unsigned dev) { return dev < device_count ? devices[dev].interrupt_count : 0; }
 
 uint32_t virtio_blk_peak_in_flight(void) {
     uint32_t peak = 0;

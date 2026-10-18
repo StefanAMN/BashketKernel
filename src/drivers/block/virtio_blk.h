@@ -49,10 +49,13 @@ unsigned virtio_blk_count(void);
 uint64_t virtio_blk_capacity_of(unsigned dev);
 
 /**
- * @brief Number of requests completed, and of interrupts taken, since boot.
+ * @brief Requests disk `dev` has completed, and interrupts it has raised,
+ *        since boot (0 for a disk that does not exist). Per disk, so that
+ *        a measurement on one is not disturbed by the system disk being
+ *        read at the same time.
  */
-uint64_t virtio_blk_requests(void);
-uint64_t virtio_blk_interrupts(void);
+uint64_t virtio_blk_requests(unsigned dev);
+uint64_t virtio_blk_interrupts(unsigned dev);
 
 /**
  * @brief The most requests the device has had at one time since boot.

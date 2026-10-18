@@ -6,21 +6,26 @@
 #include "heap.h"
 #include "kerrno.h"
 
+// A file kept in memory, given its contents by pointer, found by a relative
+// path and read back. (In /tmp: on the system disk, a directory such as
+// /bin keeps its files on the disk, where contents by pointer make no sense.)
 TEST(vfs_basic_tree) {
-    vfs_init();
-    vnode_t *root = vfs_get_root();
-    EXPECT_TRUE(root != NULL);
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    EXPECT_TRUE(tmp != NULL);
+    if (!tmp) return;
 
-    vnode_t *bin_dir = vfs_create_dir(root, "bin");
-    EXPECT_TRUE(bin_dir != NULL);
+    vnode_t *dir = vfs_create_dir(tmp, "vfs-basic");
+    EXPECT_TRUE(dir != NULL);
+    if (!dir) return;
 
     const char *hello_content = "Hello VFS File System!";
-    vnode_t *file = vfs_create_file(bin_dir, "hello.txt", hello_content, strlen(hello_content));
+    vnode_t *file = vfs_create_file(dir, "hello.txt", hello_content, strlen(hello_content));
     EXPECT_TRUE(file != NULL);
 
     // Test path lookup
-    vnode_t *found = vfs_find(root, "bin/hello.txt");
-    EXPECT_TRUE(found != NULL);
+    vnode_t *found = vfs_find(tmp, "vfs-basic/hello.txt");
+    EXPECT_TRUE(found != NULL && found == file);
+    if (!found) return;
     EXPECT_EQ(found->size, strlen(hello_content));
 
     // Test reading
@@ -28,6 +33,9 @@ TEST(vfs_basic_tree) {
     size_t read_bytes = vfs_read(found, 0, sizeof(buf) - 1, buf);
     EXPECT_EQ(read_bytes, strlen(hello_content));
     EXPECT_EQ(strcmp(buf, hello_content), 0);
+
+    EXPECT_EQ(vfs_unlink(dir, "hello.txt"), 0);
+    EXPECT_EQ(vfs_unlink(tmp, "vfs-basic"), 0);
 }
 
 TEST(vfs_write_semantics) {

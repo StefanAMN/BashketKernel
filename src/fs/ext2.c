@@ -1293,10 +1293,17 @@ int ext2_mount(const char *mount_point, unsigned disk) {
     struct ext2_inode root_inode;
     ok = ok && read_inode(EXT2_ROOT_INO, &root_inode) && (root_inode.mode & MODE_TYPE_MASK) == MODE_DIRECTORY;
 
-    const char *leaf = NULL;
-    vnode_t *parent = ok ? vfs_find_parent(mount_point, &leaf) : NULL;
+    // Mounted as the root of everything, the volume's root directory takes
+    // the place of the empty one the VFS starts with; anywhere else it sits
+    // on a mount point
     vnode_t *root = NULL;
-    if (parent) vfs_mount_dir(parent, leaf, &root);
+    if (ok && strcmp(mount_point, "/") == 0) {
+        root = vfs_get_root();
+    } else if (ok) {
+        const char *leaf = NULL;
+        vnode_t *parent = vfs_find_parent(mount_point, &leaf);
+        if (parent) vfs_mount_dir(parent, leaf, &root);
+    }
     ext2_node_t *info = (root && !root->children && !root->ops) ? kmalloc(sizeof(ext2_node_t)) : NULL;
     if (!info) {
         kprintf("ext2: disk %u holds an ext2 volume this driver can not use\n", disk);
@@ -1313,7 +1320,8 @@ int ext2_mount(const char *mount_point, unsigned disk) {
 
     memset(zero_block, 0, sizeof(zero_block));
     mounted = true;
-    mount_register(mount_point, "ext2", disk == 0 ? "/dev/vda" : "/dev/vdb");
+    static const char *const devices[] = { "/dev/vda", "/dev/vdb", "/dev/vdc" };
+    mount_register(mount_point, "ext2", devices[disk < 3 ? disk : 2]);
 
     // The machine has no orderly shutdown, so every start is "after a
     // crash": see that the volume is whole before anyone uses it

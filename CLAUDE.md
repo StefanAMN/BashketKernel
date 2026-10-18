@@ -97,7 +97,8 @@ make run-gdb      # QEMU halted, gdb stub on :1234
 
 make check                      # everything below, on both CPU models and 1 to 8 CPUs (~9 min); run before committing
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
-make test-home                  # ext2 at /home: owners across a reboot, e2fsck, damaged images (~40 s)
+make test-home                  # the ext2 system disk: owners across a reboot, e2fsck, damaged images (~40 s)
+make test-rescue                # no system disk: the kernel runs the rescue system from its boot module (~10 s)
 make test-swap                  # 80 MiB used on a 64 MiB machine, with and without a swap disk (~30 s)
 make test-paint                 # /bin/paint driven by the mouse, screenshots checked (~10 s)
 make test-crash                 # kill QEMU during ext2 writes, reboot, e2fsck; CRASH_ROUNDS=20 for more (~1 min)
@@ -120,8 +121,11 @@ tools/symbolize.sh 0xffffffff80004007     # address -> function and line
 # A virtio network card on QEMU's user-mode network is attached too: the
 # guest is 10.0.2.15, the gateway 10.0.2.2 answers ping and reaches the host's
 # 127.0.0.1. tools/test_net.py exchanges UDP with the host in both directions.
-# A 64 MiB disk image (build/disk.img) is attached to every run as a virtio
-# disk. Scripted runs and tests discard their writes (snapshot=on);
+# A 64 MiB FAT disk image (build/disk.img, mounted at /disk) and the system
+# disk (build/root.img: ext2, the root, made by tools/mkroot.sh from the
+# programs, user/rootfs and home/) are attached to every run as virtio
+# disks; --no-root-disk boots the rescue system. Scripted runs and tests
+# discard their writes (snapshot=on);
 # `make run` and qemu_shell.py --keep-disk-writes really modify it.
 ```
 

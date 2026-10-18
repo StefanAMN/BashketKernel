@@ -3,10 +3,10 @@
 
     tools/corrupt_ext2.py SOURCE KIND OUTPUT
 
-The image is the one tools/mkhome.sh builds (1 KiB blocks, one block group).
+The image is the one tools/mkroot.sh builds (1 KiB blocks).
 Kinds:
 
-  dir-reclen     the first entry of /alice has a record length of 0
+  dir-reclen     the first entry of /home/alice has a record length of 0
   dir-overrun    ...or one that runs past the end of the block
   block-outside  a file's first block number is beyond the end of the volume
   indirect-loop  a file's table of block numbers names itself, for a file
@@ -39,7 +39,11 @@ def main():
     block_bitmap, inode_bitmap, inode_table = struct.unpack_from("<III", image, group)
 
     def inode_offset(ino):
-        return inode_table * BLOCK + (ino - 1) * inode_size
+        # Inodes are numbered across the block groups: inodes_per_group in
+        # each, in that group's own table (its descriptor says where)
+        g, index = divmod(ino - 1, inodes_per_group)
+        table, = struct.unpack_from("<I", image, group + g * 32 + 8)
+        return table * BLOCK + index * inode_size
 
     def first_block(ino):
         return struct.unpack_from("<I", image, inode_offset(ino) + 40)[0]
@@ -55,7 +59,7 @@ def main():
             offset += length
         sys.exit(f"corrupt_ext2: no '{name}' in the image")
 
-    alice = lookup(2, "alice")
+    alice = lookup(lookup(2, "home"), "alice")
     notes = lookup(alice, "notes.txt")
 
     if kind == "dir-reclen":

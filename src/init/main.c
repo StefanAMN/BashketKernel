@@ -153,6 +153,26 @@ static void shell_task_entry(void) {
     }
 }
 
+// The rescue system: when there is no system disk, the tree stays in memory
+// and the boot module (a tar archive of the programs and /etc) fills it.
+// Everything works, but nothing outside /disk survives a power-off.
+static void mount_rescue_system(void) {
+    kprintf("No system disk: running the rescue system from the boot module (changes are lost at power-off)\n");
+    mount_register("/", "memfs", "memory");
+    if (module_request.response && module_request.response->module_count > 0) {
+        struct limine_file *initrd = module_request.response->modules[0];
+        mount_register("/bin", "initrd", "boot-module");
+        if (!initrd_mount(initrd->address, initrd->size)) {
+            kprintf("WARNING: initrd is corrupt; continuing with what was loaded\n");
+        }
+    } else {
+        kprintf("WARNING: no initrd module; /bin will be empty\n");
+    }
+    // Password hashes are for /bin/login (which runs as root) only
+    vnode_t *passwd = vfs_find(NULL, "/etc/passwd");
+    if (passwd) passwd->mode = 0600;
+}
+
 void _start(void) {
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
         hcf();
@@ -209,20 +229,6 @@ void _start(void) {
     // Phase 6: Filesystem & Initrd
     vfs_init();
     file_init();
-    mount_register("/", "memfs", "memory");
-    if (module_request.response && module_request.response->module_count > 0) {
-        struct limine_file *initrd = module_request.response->modules[0];
-        mount_register("/bin", "initrd", "boot-module");
-        if (!initrd_mount(initrd->address, initrd->size)) {
-            kprintf("WARNING: initrd is corrupt; continuing with what was loaded\n");
-        }
-    } else {
-        kprintf("WARNING: no initrd module; /bin will be empty\n");
-    }
-    // Password hashes are for /bin/login (which runs as root) only
-    vnode_t *passwd = vfs_find(NULL, "/etc/passwd");
-    if (passwd) passwd->mode = 0600;
-
     // Phase 7: Keyboard & Shell
     keyboard_init();
     shell_init();
@@ -240,17 +246,20 @@ void _start(void) {
     // Phase 10: Symmetric Multiprocessing (SMP & Spinlocks)
     smp_init(mp_request.response);
 
-    // Phase 11: Real Block Storage & Persistent Filesystem (VirtIO-Blk & FAT32)
+    // Phase 11: the disks, and with them the root of the file tree.
+    //
+    // The root is the system disk: the first disk after the boot disk that
+    // holds an ext2 volume (a disk carrying a swap header is for swapping).
+    // Without one, the kernel runs the rescue system: a tree in memory,
+    // filled from the boot module, which is lost at power-off.
     if (virtio_blk_init() == 0) {
-        fat32_mount("/disk");
-        // A second disk holding an ext2 volume: users' files, with owners
-        // Further disks: one that carries a swap header is for swapping,
-        // otherwise it is taken to hold the ext2 volume with users' files
         for (unsigned disk = 1; disk < virtio_blk_count(); disk++) {
             if (swap_init(disk) == 0) continue;
-            if (!ext2_mounted()) ext2_mount("/home", disk);
+            if (!ext2_mounted()) ext2_mount("/", disk);
         }
     }
+    if (!ext2_mounted()) mount_rescue_system();
+    if (virtio_blk_present()) fat32_mount("/disk");
 
     // Phase 13: PCI Bus & VirtIO Network Stack
     if (virtio_net_init() == 0) net_init();

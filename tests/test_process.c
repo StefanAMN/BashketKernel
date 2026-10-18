@@ -300,18 +300,20 @@ TEST(mapped_file_pages_are_read_only_when_touched) {
     size_t promised_before = region_promised_pages();
 
     // Reading the whole file, for comparison
-    // (Each measurement starts with nothing in the sector cache.)
+    // (Each measurement starts with nothing in the sector cache, and counts
+    // the requests to the FAT disk only: the programs come from the system
+    // disk.)
     char *whole[] = { "/bin/wc", "/disk/pattern.bin", NULL };
     bcache_invalidate();
-    uint64_t start = virtio_blk_requests();
+    uint64_t start = virtio_blk_requests(0);
     EXPECT_EQ(run("/bin/wc", whole), 0);
-    uint64_t for_whole_file = virtio_blk_requests() - start;
+    uint64_t for_whole_file = virtio_blk_requests(0) - start;
 
     char *one_byte[] = { "/bin/mapread", "/disk/pattern.bin", "51234", NULL };
     bcache_invalidate();
-    start = virtio_blk_requests();
+    start = virtio_blk_requests(0);
     EXPECT_EQ(run("/bin/mapread", one_byte), 0);
-    uint64_t for_one_page = virtio_blk_requests() - start;
+    uint64_t for_one_page = virtio_blk_requests(0) - start;
 
     kprintf("    disk requests: %lu for the whole file, %lu for one mapped page\n", for_whole_file, for_one_page);
     EXPECT_TRUE(for_one_page > 0);                         // It did come from the disk
