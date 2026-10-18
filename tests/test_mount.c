@@ -3,15 +3,22 @@
 #include "file.h"
 #include "vfs.h"
 #include "kstring.h"
+#include "ext2.h"
 
 TEST(mount_table_reflects_the_tree) {
     static char text[1024];
     size_t len = mount_describe(text, sizeof(text));
     EXPECT_TRUE(len > 0 && len == strlen(text));
 
-    // Every source that attached part of the tree is listed where it is
-    EXPECT_TRUE(strstr(text, "memory / memfs\n") != NULL);
-    EXPECT_TRUE(strstr(text, "boot-module /bin initrd\n") != NULL);
+    // Every source that attached part of the tree is listed where it is:
+    // the root is the system disk, or the rescue system in memory
+    if (ext2_mounted()) {
+        EXPECT_TRUE(strstr(text, "/dev/vdb / ext2\n") != NULL);
+        EXPECT_TRUE(strstr(text, "initrd") == NULL && strstr(text, "memfs") == NULL);
+    } else {
+        EXPECT_TRUE(strstr(text, "memory / memfs\n") != NULL);
+        EXPECT_TRUE(strstr(text, "boot-module /bin initrd\n") != NULL);
+    }
     EXPECT_TRUE(strstr(text, "kernel /proc proc\n") != NULL);
     EXPECT_TRUE(strstr(text, "kernel /dev dev\n") != NULL);
     EXPECT_TRUE(strstr(text, "/dev/vda /disk fat32\n") != NULL);

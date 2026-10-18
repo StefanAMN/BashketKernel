@@ -421,16 +421,16 @@ TEST(fat32_directories_are_read_on_demand) {
     // Listing the parent does not read the child. (The sector cache is
     // emptied so that reading shows as requests to the disk.)
     bcache_invalidate();
-    uint64_t requests = virtio_blk_requests();
+    uint64_t requests = virtio_blk_requests(0);
     EXPECT_TRUE(vfs_find_child(disk, "notes") == notes && vfs_find_child(disk, "pattern.bin") != NULL);
-    EXPECT_TRUE(virtio_blk_requests() == requests && notes->unloaded);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests && notes->unloaded);
 
     // Looking inside does, once
     EXPECT_TRUE(vfs_find(NULL, "/disk/notes/hello.txt") != NULL);
-    EXPECT_TRUE(virtio_blk_requests() > requests && !notes->unloaded);
-    requests = virtio_blk_requests();
+    EXPECT_TRUE(virtio_blk_requests(0) > requests && !notes->unloaded);
+    requests = virtio_blk_requests(0);
     EXPECT_TRUE(vfs_find(NULL, "/disk/notes/empty.txt") != NULL);
-    EXPECT_TRUE(virtio_blk_requests() == requests);
+    EXPECT_TRUE(virtio_blk_requests(0) == requests);
 
     // A directory that has not been read is not thereby empty
     EXPECT_TRUE(fat32_forget_directory(notes));

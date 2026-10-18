@@ -25,8 +25,39 @@ static bool try_load(const void *image, size_t size) {
 
 #define TEST_BASE 0x200000000ULL   // Where the tests ask for programs to be placed
 
+// A program file's bytes. On the system disk a file's contents are not kept
+// in its node, so they are read through the VFS into a buffer of their own.
+typedef struct {
+    const void *data;
+    size_t size;
+} program_t;
+
+// Read the whole file at `path`; NULL if it is missing or memory ran out.
+// Give it back with release_program.
+static program_t *load_program(const char *path) {
+    vnode_t *node = vfs_find(NULL, path);
+    if (!node || node->size == 0) return NULL;
+    program_t *program = kmalloc(sizeof(program_t));
+    void *bytes = kmalloc(node->size);
+    if (!program || !bytes || vfs_read(node, 0, node->size, bytes) != node->size) {
+        kfree(program);
+        kfree(bytes);
+        return NULL;
+    }
+    program->data = bytes;
+    program->size = node->size;
+    return program;
+}
+
+// Free what load_program returned (NULL is allowed)
+static void release_program(program_t *program) {
+    if (!program) return;
+    kfree((void *)program->data);
+    kfree(program);
+}
+
 TEST(elf_loads_real_program) {
-    vnode_t *file = vfs_find(NULL, "/bin/hello");
+    program_t *file = load_program("/bin/hello");
     EXPECT_TRUE(file != NULL);
     if (!file) return;
 
@@ -57,6 +88,7 @@ TEST(elf_loads_real_program) {
     EXPECT_EQ(memcmp(mapped, (const uint8_t *)file->data + ph[0].p_offset, 64), 0);
 
     vmm_destroy_address_space(space);
+    release_program(file);
 }
 
 // Read 8 bytes at a user address of another address space
@@ -98,7 +130,7 @@ static const Elf64_Rela *find_relocations(const uint8_t *file, size_t *count, co
 // /bin/colors has a table of pointers to strings: absolute addresses, which
 // are only right once the loader has added the load address to each.
 TEST(elf_applies_relocations) {
-    vnode_t *file = vfs_find(NULL, "/bin/colors");
+    program_t *file = load_program("/bin/colors");
     EXPECT_TRUE(file != NULL);
     if (!file) return;
 
@@ -132,10 +164,11 @@ TEST(elf_applies_relocations) {
     EXPECT_TRUE(elf_apply_relocations(space, file->data, file->size, TEST_BASE, &applied));
     EXPECT_TRUE(applied == count);
     vmm_destroy_address_space(space);
+    release_program(file);
 }
 
 TEST(elf_load_address_is_random) {
-    vnode_t *file = vfs_find(NULL, "/bin/hello");
+    program_t *file = load_program("/bin/hello");
     if (!file) return;
 
     // Left to itself the loader picks a different page-aligned address each
@@ -155,10 +188,11 @@ TEST(elf_load_address_is_random) {
     }
     EXPECT_TRUE(in_range);
     EXPECT_TRUE(distinct);   // Eight draws from 2^26: a repeat would mean it is not random
+    release_program(file);
 }
 
 TEST(elf_rejects_bad_placement_and_relocations) {
-    vnode_t *file = vfs_find(NULL, "/bin/colors");
+    program_t *file = load_program("/bin/colors");
     if (!file) return;
     size_t free_before = test_free_frames();
 
@@ -236,10 +270,11 @@ TEST(elf_rejects_bad_placement_and_relocations) {
 #undef LOADS_AT
     kfree(copy);
     EXPECT_TRUE(test_free_frames() == free_before);      // Rejected images left nothing behind
+    release_program(file);
 }
 
 TEST(elf_rejects_malformed_files) {
-    vnode_t *file = vfs_find(NULL, "/bin/hello");
+    program_t *file = load_program("/bin/hello");
     EXPECT_TRUE(file != NULL);
     if (!file) return;
 
@@ -304,6 +339,7 @@ TEST(elf_rejects_malformed_files) {
 #undef FRESH_COPY
 #undef FIRST_PHDR
     kfree(copy);
+    release_program(file);
 }
 
 void test_suite_elf(void) {

@@ -431,7 +431,7 @@ is read, and a mount point can be neither removed nor renamed (`EBUSY`).
 - **Check:** unit tests mount a memory directory over an ext2 directory,
   read the parent from the disk again, and try to remove and rename it.
 
-### D2. ext2 as the root (M)
+### D2. ext2 as the root (M) — done
 
 - `tools/mkroot.sh` builds `build/root.img`: the user programs in `/bin`,
   `/etc` (passwords, groups, a profile), the home directories with their

@@ -37,16 +37,16 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     args, extra = parser.parse_known_args()
 
-    if not shutil.which("e2fsck") or not os.path.exists(os.path.join(BUILD, "home.img")):
+    if not shutil.which("e2fsck") or not os.path.exists(os.path.join(BUILD, "root.img")):
         print("crash: skipped (no e2fsck, or no ext2 image was built)")
         return 0
 
     rng = random.Random(args.seed)
     fat = os.path.join(BUILD, "crash-fat.img")
-    home = os.path.join(BUILD, "crash-home.img")
+    home = os.path.join(BUILD, "crash-root.img")
     shutil.copy(os.path.join(BUILD, "disk.img"), fat)
-    shutil.copy(os.path.join(BUILD, "home.img"), home)
-    shell = [os.path.join(HERE, "qemu_shell.py"), "--disk", fat, "--home-disk", home, "--keep-disk-writes"] + extra
+    shutil.copy(os.path.join(BUILD, "root.img"), home)
+    shell = [os.path.join(HERE, "qemu_shell.py"), "--disk", fat, "--root-disk", home, "--keep-disk-writes"] + extra
 
     repaired = []
     for round_number in range(1, args.rounds + 1):
@@ -62,7 +62,7 @@ def main():
 
         # 2. Boot again: the kernel repairs at mount, and must still work
         result = subprocess.run(shell + ["--timeout", "60",
-                                         "--expect", "ext2: mounted at /home", "--expect", "still-writable",
+                                         "--expect", "ext2: mounted at /:", "--expect", "still-writable",
                                          "--expect", "sub0/",     # The workload did run: its directories are there
                                          "--forbid", "does not repair",
                                          "exec /bin/ls /home/alice",
