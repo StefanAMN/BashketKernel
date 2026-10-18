@@ -43,6 +43,8 @@ static spinlock_t slot_lock = SPINLOCK_RANKED("swap", LOCK_RANK_SWAP);
 // the disk.
 static mutex_t swap_mutex = MUTEX_INIT("swap-io");
 
+// A 32-bit little-endian number at `p` (the header's byte order, whatever
+// the alignment)
 static uint32_t get32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
@@ -88,6 +90,9 @@ size_t swap_free_pages(void) { return active ? slots_free : 0; }
 uint64_t swap_pages_out(void) { return pages_out; }
 uint64_t swap_pages_in(void) { return pages_in; }
 
+// Take a free slot and give it its first owner. The search goes on from
+// where the last one ended (next fit), so slots are used round the disk
+// rather than the low ones over and over. Returns 0 if none is free.
 static uint32_t slot_alloc(void) {
     uint32_t found = 0;
     uint64_t flags = spinlock_acquire_irqsave(&slot_lock);

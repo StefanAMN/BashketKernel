@@ -30,6 +30,7 @@ static uint64_t wait_for_tick_edge(void) {
     return timer_ticks();
 }
 
+// Convert a count made over one measurement (BENCH_TICKS) into a rate per second
 static uint64_t per_second(uint64_t count) {
     return count * TIMER_HZ / BENCH_TICKS;
 }

@@ -493,7 +493,14 @@ tests (`tools/unused.sh tests` tells them apart), some only inlined.
 
 One pass per area, each on its own branch and checked with `make check`:
 
-1. `src/mm`, `src/kernel` (scheduler, processes, signals, locks, time)
+1. `src/mm`, `src/kernel` (scheduler, processes, signals, locks, time) —
+   done: every function documented; removed `user_set_brk` and the
+   `user_mmap_anon` wrapper (left over from before B4, kept alive only by
+   their own test), `signal_send` and `klog_init` (no caller, no effect),
+   and three copies of `page_align_up` and of `rdtsc` (one each now, in
+   `pmm.h` and `cpu.h`). The linker's list also exposed three kernel shell
+   commands that `help` offered but that had been deleted by mistake
+   (restored, and the shell made table-driven).
 2. `src/arch/x86_64`
 3. `src/fs`
 4. `src/drivers`, `src/net`

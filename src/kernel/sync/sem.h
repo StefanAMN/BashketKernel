@@ -38,6 +38,10 @@ void sem_wait(sem_t *sem);
  */
 bool sem_trywait(sem_t *sem);
 
+/**
+ * @brief Add one to the count and wake a task waiting in sem_wait. Safe
+ *        from interrupt handlers.
+ */
 void sem_post(sem_t *sem);
 
 /**

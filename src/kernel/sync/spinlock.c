@@ -19,6 +19,7 @@ static struct {
     uint32_t cpu_id;
 } first_violation;
 
+// A lock's name for the reports, "(unnamed)" if it has none
 static const char *name_of(const spinlock_t *lock) {
     return lock && lock->name ? lock->name : "(unnamed)";
 }
@@ -61,6 +62,7 @@ void lock_debug_poll(void) {
     panic("locking rules violated");
 }
 
+// Are interrupts on, on this CPU (RFLAGS.IF, bit 9)?
 static inline bool interrupts_enabled(void) {
     uint64_t flags;
     asm volatile("pushfq\n\tpop %0" : "=r"(flags) : : "memory");

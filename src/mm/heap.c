@@ -184,7 +184,7 @@ void kfree(void *ptr) {
     // file, exited processes) becomes available to programs again.
     if (current != NULL && current->is_free && current->size >= KHEAP_TRIM_THRESHOLD) {
         uint64_t payload = (uint64_t)current + BLOCK_HEADER_SIZE;
-        uint64_t new_end = (payload + KHEAP_TRIM_KEEP + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+        uint64_t new_end = page_align_up(payload + KHEAP_TRIM_KEEP);
         uint64_t floor = KHEAP_START_VIRT + KHEAP_INITIAL_SIZE; // Never below the initial size
         if (new_end < floor) new_end = floor;
 

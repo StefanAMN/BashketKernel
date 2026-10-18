@@ -19,12 +19,6 @@ static uint64_t tsc_at_start = 0;
 static uint64_t ticks_at_start = 0;
 static uint64_t last_reading = 0;   // Guards against the clock ever stepping back
 
-static inline uint64_t rdtsc(void) {
-    uint32_t low, high;
-    asm volatile("rdtsc" : "=a"(low), "=d"(high));
-    return ((uint64_t)high << 32) | low;
-}
-
 // Spin until the tick counter changes, and return the TSC at that moment
 static uint64_t tsc_at_next_tick(void) {
     uint64_t tick = timer_ticks();

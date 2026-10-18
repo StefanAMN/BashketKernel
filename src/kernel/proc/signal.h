@@ -97,10 +97,6 @@ int signal_change_mask(task_t *task, int how, uint32_t set, uint32_t *old);
  */
 bool signal_deliverable(const task_t *task);
 
-/**
- * @brief Send a signal to a process. Safe to call from interrupt handlers.
- */
-void signal_send(task_t *task, int sig);
 
 // The same, for a caller that already holds the scheduler lock
 void signal_send_locked(task_t *task, int sig);

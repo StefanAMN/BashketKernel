@@ -17,6 +17,12 @@ static uint64_t *kernel_pml4 = NULL;
 // Protects page-table edits. Lock order: vmm_lock, then the PMM lock.
 static spinlock_t vmm_lock = SPINLOCK_RANKED("vmm", LOCK_RANK_VMM);
 
+// The page table that entry `index` of `current_table` points to, at its
+// kernel address (through the direct map). If the entry is empty and
+// `allocate` is set, a zeroed table is made for it (with VMM_USER in its
+// entry if `flags` has it, so that pages below can be user pages); without
+// `allocate`, NULL. NULL also if the entry maps a large page itself (there
+// is no table below it). Caller holds vmm_lock.
 static uint64_t *get_next_level(uint64_t *current_table, size_t index, bool allocate, uint64_t flags) {
     if ((current_table[index] & VMM_PRESENT) && (current_table[index] & VMM_HUGE)) {
         // A 2 MiB or 1 GiB mapping already covers this address. Replacing it

@@ -77,6 +77,8 @@ void task_set_affinity(task_t *task, int32_t cpu_id);
  */
 uint32_t sched_running_count(void);
 
+struct spinlock;
+
 /**
  * @brief Put the current task to sleep until sched_wakeup(channel) is called
  *        or, if wake_tick is non-zero, until that timer tick.
@@ -92,7 +94,6 @@ uint32_t sched_running_count(void);
  * A kill ends the task here (after releasing `lock`). A signal with a
  * handler makes it return at once without sleeping: see sched_interrupted().
  */
-struct spinlock;
 void sched_sleep(void *channel, struct spinlock *lock, uint64_t wake_tick);
 
 /**
@@ -115,6 +116,11 @@ void sched_sleep_on_task_list(void *channel);
  *        the fields it protects (see sched.c).
  */
 uint64_t sched_lock_irqsave(void);
+
+/**
+ * @brief Release the scheduler lock and put interrupts back as
+ *        sched_lock_irqsave found them (`flags`).
+ */
 void sched_unlock_irqrestore(uint64_t flags);
 
 /**
@@ -198,6 +204,10 @@ void sched_continue(task_t *task);
  *        Cleared automatically if that process exits.
  */
 void sched_set_init(task_t *task);
+
+/**
+ * @brief The PID of the process that adopts orphans, 0 if there is none.
+ */
 uint32_t sched_init_pid(void);
 
 /**

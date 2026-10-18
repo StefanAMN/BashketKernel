@@ -39,10 +39,15 @@ static kmem_cache_t *cache_chain = NULL;
 // One lock for all caches. Lock order: slab_lock, then the PMM lock.
 static spinlock_t slab_lock = SPINLOCK_RANKED("slab", LOCK_RANK_HEAP);
 
+// The slab an object belongs to. Every slab is one page with its header at
+// the start, so it is the object's address rounded down to a page.
 static slab_page_t *slab_of(const void *obj) {
     return (slab_page_t *)((uint64_t)obj & ~(uint64_t)(PAGE_SIZE - 1));
 }
 
+// Take a frame from the frame allocator and make it a slab for `cache`: the
+// header at the start, then as many objects as fit, all on the free list.
+// NULL if no frame is free. Caller holds slab_lock.
 static slab_page_t *slab_page_create(kmem_cache_t *cache) {
     void *phys_frame = pmm_alloc_frame();
     if (!phys_frame) return NULL;
@@ -65,6 +70,8 @@ static slab_page_t *slab_page_create(kmem_cache_t *cache) {
     return slab;
 }
 
+// Take `slab` out of the singly linked list `*list` (nothing happens if it
+// is not there). Caller holds slab_lock.
 static void unlink_slab(slab_page_t **list, slab_page_t *slab) {
     while (*list && *list != slab) list = &(*list)->next;
     if (*list) *list = slab->next;

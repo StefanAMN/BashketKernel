@@ -54,15 +54,19 @@ TEST(user_range_validation) {
     vmm_destroy_address_space(space);
 }
 
-TEST(mmap_brk_and_unmap) {
+// The eager mapping helpers (shared memory, the user stack): zeroed pages at
+// increasing addresses, with frames at once, and unmapping that frees them.
+// (The heap and ordinary mmap only promise memory: region.h, checked from
+// ring 3 by syscheck and the low-memory tests.)
+TEST(mmap_and_unmap) {
     size_t free_before = test_free_frames();
     uint64_t *space = vmm_create_address_space();
     size_t free_with_space = test_free_frames();
 
     // mmap: zeroed pages at increasing addresses
     uint64_t cursor = USER_MMAP_BASE;
-    uint64_t first = user_mmap_anon(space, &cursor, 3 * PAGE_SIZE, PROT_READ | PROT_WRITE);
-    uint64_t second = user_mmap_anon(space, &cursor, 1, PROT_READ);
+    uint64_t first = user_mmap_anon_flags(space, &cursor, 3 * PAGE_SIZE, PROT_READ | PROT_WRITE, false);
+    uint64_t second = user_mmap_anon_flags(space, &cursor, 1, PROT_READ, false);
     EXPECT_TRUE(first == USER_MMAP_BASE);
     EXPECT_TRUE(second == USER_MMAP_BASE + 3 * PAGE_SIZE);
     EXPECT_TRUE(cursor == USER_MMAP_BASE + 4 * PAGE_SIZE);
@@ -85,22 +89,7 @@ TEST(mmap_brk_and_unmap) {
     EXPECT_EQ(user_unmap_range(space, first + 1, PAGE_SIZE), -1);            // Not page aligned
     EXPECT_EQ(user_map_range(space, 0xFFFF900000000000ULL, PAGE_SIZE, PROT_READ), -1);
     EXPECT_EQ(user_map_range(space, 0, PAGE_SIZE, PROT_READ), -1);           // NULL page
-    EXPECT_TRUE(user_mmap_anon(space, &cursor, 0, PROT_READ) == 0);
-
-    // brk: grows and shrinks by whole pages as the break moves
-    uint64_t brk_start = 0x800000, brk_end = 0x800000;
-    size_t free_brk = test_free_frames();
-    EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start + 100) == brk_start + 100);
-    EXPECT_TRUE(vmm_get_phys(space, brk_start) != 0);
-    EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start + 3 * PAGE_SIZE) == brk_start + 3 * PAGE_SIZE);
-    EXPECT_TRUE(vmm_get_phys(space, brk_start + 2 * PAGE_SIZE) != 0);
-    EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start) == brk_start);
-    EXPECT_TRUE(vmm_get_phys(space, brk_start) == 0);
-    EXPECT_TRUE(test_free_frames() >= free_brk - 3);     // Only page tables remain
-
-    // Below the start or absurdly far: break stays put
-    EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start - 1) == brk_start);
-    EXPECT_TRUE(user_set_brk(space, brk_start, &brk_end, brk_start + USER_BRK_MAX + 1) == brk_start);
+    EXPECT_TRUE(user_mmap_anon_flags(space, &cursor, 0, PROT_READ, false) == 0);
 
     vmm_destroy_address_space(space);
     EXPECT_TRUE(free_with_space == free_before - 1);
@@ -199,7 +188,7 @@ void test_suite_mmap(void) {
     kprintf("Suite: Address Spaces, mmap and brk\n");
     RUN_TEST(address_space_is_isolated_and_freed);
     RUN_TEST(user_range_validation);
-    RUN_TEST(mmap_brk_and_unmap);
+    RUN_TEST(mmap_and_unmap);
     RUN_TEST(frame_sharing_counts);
     RUN_TEST(copy_on_write_clone);
 }

@@ -81,6 +81,11 @@ static inline void spinlock_init_ranked(spinlock_t *lock, const char *name, uint
  *        Interrupts must already be off.
  */
 void spinlock_acquire(spinlock_t *lock);
+
+/**
+ * @brief Release a lock taken with spinlock_acquire (interrupts stay as
+ *        they are).
+ */
 void spinlock_release(spinlock_t *lock);
 
 /**
@@ -88,6 +93,11 @@ void spinlock_release(spinlock_t *lock);
  *        to hand back to spinlock_release_irqrestore.
  */
 uint64_t spinlock_acquire_irqsave(spinlock_t *lock);
+
+/**
+ * @brief Release the lock and put interrupts back as they were when
+ *        spinlock_acquire_irqsave returned `flags`.
+ */
 void spinlock_release_irqrestore(spinlock_t *lock, uint64_t flags);
 
 /**
