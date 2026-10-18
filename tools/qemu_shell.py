@@ -80,7 +80,14 @@ def monitor_command(path, command):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("commands", nargs="*", help="shell commands to run in order")
-    ap.add_argument("--iso", default="build/BashketKernel.iso")
+    ap.add_argument("--iso", default="build/BashketKernel-dev.iso",
+                    help="image to boot (default: the developer image, which starts the kernel shell)")
+    ap.add_argument("--boot-prompt", default=None,
+                    help="text that means the machine has booted, instead of the kernel shell's prompt "
+                         "(e.g. 'login: ' for the system image)")
+    ap.add_argument("--prompt", action="append", default=[],
+                    help="further text that means a command has finished and the next may be typed "
+                         "(e.g. 'password: ')")
     ap.add_argument("--mem", default="2G")
     ap.add_argument("--timeout", type=float, default=30.0, help="seconds per step (boot, each command)")
     ap.add_argument("--expect", action="append", default=[], help="regex that must appear in the output")
@@ -145,11 +152,14 @@ def main():
     buf = bytearray()
     status = 0
     boot_len = 0
+    # What "booted" and "ready for the next command" look like
+    boot_prompt = args.boot_prompt.encode() if args.boot_prompt else PROMPT
+    ready = [PROMPT, USER_PROMPT] + [p.encode() for p in args.prompt]
     try:
-        hit = read_until(proc, buf, [PROMPT, b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + args.timeout)
-        if hit == PROMPT:
-            boot_len = buf.find(PROMPT)
-        if hit != PROMPT:
+        hit = read_until(proc, buf, [boot_prompt, b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + args.timeout)
+        if hit == boot_prompt:
+            boot_len = buf.find(boot_prompt)
+        if hit != boot_prompt:
             status = 2 if hit is None else 1
         else:
             for command in args.commands:
@@ -197,12 +207,12 @@ def main():
                 data = CONTROL_KEYS.get(command, command.encode() + b"\n")
                 proc.stdin.write(data)
                 proc.stdin.flush()
-                hit = read_until(proc, buf, [PROMPT, USER_PROMPT, b"CPU EXCEPTION", b"KERNEL PANIC"],
+                hit = read_until(proc, buf, ready + [b"CPU EXCEPTION", b"KERNEL PANIC"],
                                  time.monotonic() + args.timeout)
                 if hit is None:
                     status = 2
                     break
-                if hit not in (PROMPT, USER_PROMPT):
+                if hit not in ready:
                     # Let the fault report finish printing
                     read_until(proc, buf, [b"RBP:"], time.monotonic() + 3)
                     read_until(proc, buf, [CRASH_END], time.monotonic() + 2)

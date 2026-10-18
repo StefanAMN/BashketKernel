@@ -32,6 +32,7 @@ OBJFILES = $(patsubst %.c, $(BUILD)/obj/%.o, $(CFILES)) $(patsubst %.S, $(BUILD)
 
 KERNEL = $(BUILD)/kernel.elf
 ISO = $(BUILD)/BashketKernel.iso
+DEV_ISO = $(BUILD)/BashketKernel-dev.iso
 ISO_ROOT = $(BUILD)/iso_root
 
 # --- User programs and the initrd -------------------------------------------
@@ -124,7 +125,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-boot test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -153,19 +154,33 @@ limine/limine.c:
 limine/limine: limine/limine.c
 	$(CC) -O2 -pipe $< -o $@
 
-iso: $(ISO) $(DISKS)
+iso: $(ISO) $(DEV_ISO) $(DISKS)
 
-$(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
-	rm -rf $(ISO_ROOT)
-	mkdir -p $(ISO_ROOT)/limine
-	cp $(KERNEL) $(INITRD) limine.conf $(ISO_ROOT)/
-	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin $(ISO_ROOT)/limine/
+# A bootable CD image: the kernel, the boot module and Limine, with a
+# limine.conf made from the one in the tree by $(3) (a filter command).
+# $(1): the image, $(2): a directory to assemble it in.
+define make_iso
+	rm -rf $(2)
+	mkdir -p $(2)/limine
+	cp $(KERNEL) $(INITRD) $(2)/
+	$(3) limine.conf > $(2)/limine.conf
+	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin $(2)/limine/
 	xorriso -as mkisofs -b limine/limine-bios-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table \
 		--efi-boot limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
-		$(ISO_ROOT) -o $(ISO) 2>/dev/null
-	./limine/limine bios-install $(ISO) 2>/dev/null
+		$(2) -o $(1) 2>/dev/null
+	./limine/limine bios-install $(1) 2>/dev/null
+endef
+
+# The system: boots to the login prompt (after the menu's few seconds)
+$(ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
+	$(call make_iso,$@,$(ISO_ROOT),cat)
+
+# For development and the scripted tests: no menu, straight to the second
+# entry, the kernel's own shell
+$(DEV_ISO): $(KERNEL) $(INITRD) limine/limine limine.conf
+	$(call make_iso,$@,$(ISO_ROOT)-dev,sed -e 's/^timeout: .*/timeout: 0\ndefault_entry: 2/')
 
 # A FAT32 image holding the files under disk/ plus one program, so that
 # something can be executed straight from the disk. fsck.fat (if installed)
@@ -181,11 +196,16 @@ $(DISK): tools/mkfat.py $(DISK_FILES) $(BUILD)/initrd/bin/hello
 	tools/mkfat.py $@ 64 disk $(BUILD)/initrd/bin/hello=bin/hello
 	@if command -v fsck.fat >/dev/null; then fsck.fat -n $@ >/dev/null || { echo "fsck.fat rejects $@"; rm -f $@; exit 1; }; fi
 
+# The system, as a user would start it: boot menu, then the login prompt
 run: iso $(DISKS)
 	$(QEMU) $(QEMU_FLAGS) -serial mon:stdio
 
+# The same with the kernel's own shell on the console, for development
+run-dev: iso $(DISKS)
+	$(QEMU) $(subst $(ISO),$(DEV_ISO),$(QEMU_FLAGS)) -serial mon:stdio
+
 run-gdb: iso
-	$(QEMU) $(QEMU_FLAGS) -s -S
+	$(QEMU) $(subst $(ISO),$(DEV_ISO),$(QEMU_FLAGS)) -s -S
 
 # CPU=max runs the test targets on QEMU's fullest CPU model, which has the
 # protections the default model lacks (SMEP, SMAP, UMIP): make test CPU=max
@@ -217,7 +237,7 @@ SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-ar
 # QEMU then exits with (value << 1) | 1, so 0x10 (pass) becomes 33.
 test:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
-	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel.iso -boot d \
+	@timeout 120 $(QEMU) $(QEMU_CPU) -m 2G -cdrom build-test/BashketKernel-dev.iso -boot d \
 		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(ROOT_FLAGS),-drive file=build-test/root.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test.log 2>&1; \
@@ -339,7 +359,7 @@ test-net: iso
 SMP_PROGRAM_CPUS ?= 2 4 8
 test-smp:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
-	@timeout 180 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel.iso -boot d \
+	@timeout 180 $(QEMU) $(QEMU_CPU) -smp 4 -m 2G -cdrom build-test/BashketKernel-dev.iso -boot d \
 		-drive file=build-test/disk.img,if=virtio,format=raw,snapshot=on $(if $(ROOT_FLAGS),-drive file=build-test/root.img$(comma)if=virtio$(comma)format=raw$(comma)snapshot=on) $(SWAP_TEST_FLAGS) $(NET_FLAGS) \
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
@@ -505,6 +525,21 @@ test-rescue: iso
 		&& echo "rescue system (no system disk: root in memory from the boot module): ok" \
 		|| { echo "rescue system: FAILED (see $(BUILD)/rescue.log)"; exit 1; }
 
+# The system as it boots for a user: no kernel shell, but /bin/init, /etc/rc
+# and a login prompt that comes back after every session. A wrong password,
+# two users, and Ctrl-C, which must reach the programs on the terminal and
+# not init.
+BOOT_SHELL = tools/qemu_shell.py --quiet --iso $(ISO) --boot-prompt 'login: ' --prompt 'login: ' --prompt 'password: '
+test-boot: iso
+	@$(BOOT_SHELL) --timeout 60 $(SHELL_CPU) \
+		--expect 'dhcp: address 10\.0\.2\.15' --expect 'Welcome to BashketOS' \
+		--expect 'login: incorrect name or password' --expect 'uid 0 \(root\)' --expect 'uid 1000\ngid 100' \
+		--expect '[0-9]+\t0\t0\t[a-z]+ *\tuser\t[^\n]*\tinit\n' --forbid 'Interactive Shell Started|BashketOS> ' \
+		'alice' 'wrong' 'root' 'root' 'id' 'cat /proc/tasks' 'exit' \
+		'alice' 'alice' 'id' '!spin' '^C' 'exit' 'bob' 'bob' 'exit' > $(BUILD)/boot.log 2>&1 \
+		&& echo "boot (init, /etc/rc, login prompt after every session): ok" \
+		|| { echo "boot: FAILED (see $(BUILD)/boot.log)"; exit 1; }
+
 # Jobs in the user shell: a command in the background, another stopped with
 # Ctrl-Z, continued, brought back and interrupted; and an orphaned process,
 # which init must adopt and collect.
@@ -536,6 +571,8 @@ check:
 	@$(MAKE) --no-print-directory test-edit
 	@$(MAKE) --no-print-directory test-home
 	@$(MAKE) --no-print-directory test-rescue
+	@$(MAKE) --no-print-directory test-boot
+	@$(MAKE) --no-print-directory test-boot SMP=4
 	@$(MAKE) --no-print-directory test-crash
 	@$(MAKE) --no-print-directory test-crash SMP=4 CRASH_ROUNDS=3
 	@$(MAKE) --no-print-directory test-paint
