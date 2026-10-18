@@ -29,12 +29,6 @@ static volatile uint32_t pool_events = 0;
 
 static const char *source = "timing only";
 
-static inline uint64_t rdtsc(void) {
-    uint32_t low, high;
-    asm volatile("rdtsc" : "=a"(low), "=d"(high));
-    return ((uint64_t)high << 32) | low;
-}
-
 // The CPU's own generators (Intel SDM Vol. 1, 7.3.17). Both report failure
 // in the carry flag (the generator can run dry), so each is tried a few
 // times. RDSEED gives raw entropy; RDRAND the output of a generator the CPU

@@ -9,10 +9,9 @@
 #include "cow.h"
 #include "string_util.h"
 
-static uint64_t page_align_up(uint64_t value) {
-    return (value + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-}
-
+// The page-table bits for memory a program may use with protection `prot`
+// (PROT_READ, PROT_WRITE, PROT_EXEC): always present and reachable from
+// ring 3; writable only if asked; never executable unless asked (NX).
 static uint64_t prot_to_pte_flags(int prot) {
     uint64_t flags = VMM_PRESENT | VMM_USER;
     if (prot & PROT_WRITE) flags |= VMM_WRITABLE;
@@ -56,10 +55,6 @@ int user_map_range(uint64_t *pml4, uint64_t addr, size_t length, int prot) {
     return 0;
 }
 
-uint64_t user_mmap_anon(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot) {
-    return user_mmap_anon_flags(pml4, next_addr, length, prot, false);
-}
-
 uint64_t user_mmap_anon_flags(uint64_t *pml4, uint64_t *next_addr, size_t length, int prot, bool shared) {
     if (!pml4 || !next_addr || length == 0) return 0;
 
@@ -85,24 +80,3 @@ uint64_t user_mmap_anon_flags(uint64_t *pml4, uint64_t *next_addr, size_t length
     return addr;
 }
 
-uint64_t user_set_brk(uint64_t *pml4, uint64_t brk_start, uint64_t *brk_end, uint64_t new_brk) {
-    if (!pml4 || !brk_end) return 0;
-
-    // Out-of-range requests leave the break where it is; the caller sees the
-    // unchanged value and knows the request failed (Linux brk semantics).
-    if (new_brk < brk_start || new_brk > brk_start + USER_BRK_MAX) return *brk_end;
-
-    uint64_t old_top = page_align_up(*brk_end);
-    uint64_t new_top = page_align_up(new_brk);
-
-    if (new_top > old_top) {
-        if (user_map_range(pml4, old_top, new_top - old_top, PROT_READ | PROT_WRITE) != 0) {
-            return *brk_end;
-        }
-    } else if (new_top < old_top) {
-        user_unmap_range(pml4, new_top, old_top - new_top);
-    }
-
-    *brk_end = new_brk;
-    return new_brk;
-}

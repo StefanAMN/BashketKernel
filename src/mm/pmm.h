@@ -17,6 +17,14 @@
 #define PAGE_SIZE 4096
 
 /**
+ * @brief Round `value` up to the next multiple of PAGE_SIZE (unchanged if it
+ *        is one already).
+ */
+static inline uint64_t page_align_up(uint64_t value) {
+    return (value + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+}
+
+/**
  * @brief Initialize the Physical Memory Manager.
  * @param memmap Pointer to Limine memory map response.
  * @param hhdm_offset Virtual address offset of Higher-Half Direct Map.

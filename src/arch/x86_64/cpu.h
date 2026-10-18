@@ -28,6 +28,17 @@ static inline uint64_t rdmsr(uint32_t msr) {
 void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t regs[4]);
 
 /**
+ * @brief Read the timestamp counter: a count of CPU cycles (at a constant
+ *        rate on any CPU this kernel targets) since reset. Its rate is
+ *        measured at boot (hrtimer.h).
+ */
+static inline uint64_t rdtsc(void) {
+    uint32_t low, high;
+    asm volatile("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)high << 32) | low;
+}
+
+/**
  * @brief Turn on the protection features this CPU offers (SMEP, UMIP) and
  *        record which are active.
  */

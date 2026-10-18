@@ -20,14 +20,18 @@ static size_t next_free_hint = 1;
 // The bitmap is shared by every task and by interrupt context.
 static spinlock_t pmm_lock = SPINLOCK_RANKED("pmm", LOCK_RANK_PMM);
 
+// The bitmap has one bit per frame: set means in use. Mark frame number
+// `bit` in use. Caller holds pmm_lock (as for the two below).
 static inline void bitmap_set(size_t bit) {
     bitmap[bit / 8] |= (1 << (bit % 8));
 }
 
+// Mark frame number `bit` free
 static inline void bitmap_clear(size_t bit) {
     bitmap[bit / 8] &= ~(1 << (bit % 8));
 }
 
+// Is frame number `bit` in use?
 static inline bool bitmap_test(size_t bit) {
     return (bitmap[bit / 8] & (1 << (bit % 8))) != 0;
 }

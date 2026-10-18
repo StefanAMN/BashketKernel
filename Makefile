@@ -125,7 +125,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-kshell test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -539,6 +539,17 @@ test-shutdown: iso
 		|| { echo "shutdown: FAILED in the second boot (see $(BUILD)/shutdown-2.log)"; exit 1; }
 	@echo "shutdown (a change survives a clean power-off; no check after it; restart): ok"
 
+# The kernel shell's commands that write to the terminal directly (the unit
+# tests see what goes through the kernel log, and not these). dmesg goes
+# last and is not waited for: the log it prints contains earlier prompts.
+test-kshell: iso
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'Hello, BashketKernel' --expect '/dev/vdb / ext2' --expect 'memcpy' --expect 'The kernel shell.s commands' \
+		--forbid 'command not found' \
+		'help' 'mount' 'bench' '!dmesg' '@wait:3' > $(BUILD)/kshell.log 2>&1 \
+		&& echo "kernel shell (dmesg, mount, bench and help): ok" \
+		|| { echo "kernel shell: FAILED (see $(BUILD)/kshell.log)"; exit 1; }
+
 # The rescue system: without a system disk the kernel runs from its boot
 # module, in memory. Everything must still work; nothing outside /disk lasts.
 test-rescue: iso
@@ -595,6 +606,7 @@ check:
 	@$(MAKE) --no-print-directory test-edit
 	@$(MAKE) --no-print-directory test-home
 	@$(MAKE) --no-print-directory test-rescue
+	@$(MAKE) --no-print-directory test-kshell
 	@$(MAKE) --no-print-directory test-boot
 	@$(MAKE) --no-print-directory test-boot SMP=4
 	@$(MAKE) --no-print-directory test-shutdown

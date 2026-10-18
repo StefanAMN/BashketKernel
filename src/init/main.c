@@ -262,7 +262,6 @@ void _start(void) {
     file_init();
     // Phase 7: Keyboard & Shell
     keyboard_init();
-    shell_init();
 
     // Phase 8: Advanced Memory Management (Slab, Refcounting, mmap)
     cow_init();
@@ -311,8 +310,6 @@ void _start(void) {
     // Phase 26: Hardware FPU & SSE State Management
     fpu_init();
 
-    // Phase 32: Kernel Logging Ring Buffer
-    klog_init();
 
     // Phase 33: High-Resolution Timers
     hrtimer_init();
