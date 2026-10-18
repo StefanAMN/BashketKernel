@@ -73,6 +73,8 @@ typedef struct vnode {
     struct vnode *parent;       // Pointer to parent directory node
     struct vnode *children;     // Pointer to first child node if directory
     struct vnode *next;         // Pointer to next sibling in directory listing
+    bool mount_point;           // Put here by vfs_mount_dir: may not be removed or renamed
+    struct vnode *covered;      // For a mount point: the directory of the same name it hides, if there was one
 } vnode_t;
 
 /**
@@ -126,6 +128,37 @@ int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out);
 vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type);
 
 vnode_t *vfs_create_dir(vnode_t *parent, const char *name);
+
+/**
+ * @brief Put an empty directory kept in memory at `parent`/`name`, as a
+ *        place to attach another tree: /dev, /proc and /tmp on a root that
+ *        lives on a disk, or a disk volume's root at /disk.
+ *
+ * Nothing is written to the parent's filesystem. If the parent already has a
+ * directory of that name (on a disk, the empty directory left there for the
+ * purpose), it is hidden, not changed: it disappears from the listing, its
+ * node is kept aside, and vfs_unmount_dir puts it back. When the parent is
+ * read from the disk again, the disk's entry stays hidden: a filesystem's
+ * load skips names its directory already has, and a mount point is never
+ * dropped by forgetting the parent's contents.
+ *
+ * The result can be neither removed nor renamed (-EBUSY) until it is
+ * unmounted. Whoever mounted it may give it `ops` (a filesystem's root).
+ *
+ * @param out Receives the new node.
+ * @return 0; -ENOTDIR if `parent` is not a directory or the name is taken
+ *         by a file; -EBUSY if it is taken by a directory that is open, has
+ *         contents already read, or is a mount point itself; -ENOMEM.
+ */
+int vfs_mount_dir(vnode_t *parent, const char *name, vnode_t **out);
+
+/**
+ * @brief Take away a mount point made by vfs_mount_dir, and show the
+ *        directory it hid again.
+ * @return 0; -EINVAL if `node` is not a mount point; -EBUSY if it is open,
+ *         has anything in it, or has a filesystem attached (`ops`).
+ */
+int vfs_unmount_dir(vnode_t *node);
 
 /**
  * @brief Create a device node whose reads and writes are served by `ops`.

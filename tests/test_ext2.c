@@ -362,6 +362,77 @@ TEST(ext2_check_repairs_an_interrupted_write) {
     EXPECT_TRUE(ext2_free_blocks() == blocks && ext2_free_inodes() == inodes);
 }
 
+// A mount point hides a directory on the disk without touching the disk,
+// and stays put when the directory around it is read from the disk again
+TEST(mount_points_cover_a_disk_directory) {
+    uint32_t inodes_before = ext2_free_inodes(), blocks_before = ext2_free_blocks();
+    vnode_t *home = vfs_find(NULL, "/home");
+    vnode_t *outer = NULL, *disk_dir = NULL;
+    EXPECT_EQ(vfs_create(home, "outer", VFS_DIRECTORY, &outer), 0);
+    EXPECT_EQ(vfs_create(outer, "mnt", VFS_DIRECTORY, &disk_dir), 0);
+    if (!outer || !disk_dir) return;
+    put_text("/home/outer/mnt/on-disk.txt", "written to the disk");
+    put_text("/home/outer/beside.txt", "next to it");
+    EXPECT_TRUE(ext2_forget_directory(disk_dir));            // Its contents are known only on the disk now
+    uint32_t inodes_with_dir = ext2_free_inodes();
+
+    vnode_t *mnt = NULL;
+    EXPECT_EQ(vfs_mount_dir(outer, "mnt", &mnt), 0);
+    EXPECT_TRUE(mnt != NULL && mnt->mount_point && mnt->covered == disk_dir && !mnt->ops);
+    if (!mnt) return;
+    EXPECT_TRUE(vfs_find(NULL, "/home/outer/mnt") == mnt);
+    EXPECT_TRUE(vfs_find(NULL, "/home/outer/mnt/on-disk.txt") == NULL); // Hidden, not gone
+
+    // What is made inside it is kept in memory, not written to the disk
+    put_text("/home/outer/mnt/in-memory.txt", "only in memory");
+    EXPECT_TRUE(has_text("/home/outer/mnt/in-memory.txt", "only in memory"));
+    EXPECT_TRUE(ext2_free_inodes() == inodes_with_dir);
+
+    // It can be neither removed nor renamed, nor mounted on twice
+    EXPECT_EQ(vfs_unlink(outer, "mnt"), -EBUSY);
+    EXPECT_EQ(vfs_rename(outer, "mnt", outer, "moved"), -EBUSY);
+    EXPECT_EQ(vfs_mount_dir(outer, "mnt", NULL), -EBUSY);
+    EXPECT_EQ(vfs_mount_dir(outer, "beside.txt", NULL), -ENOTDIR);
+    EXPECT_EQ(vfs_unmount_dir(outer), -EINVAL);               // Not a mount point
+    EXPECT_EQ(vfs_unmount_dir(home), -EBUSY);                 // One, with a filesystem attached
+
+    // Reading the directory from the disk again finds the disk's "mnt" and
+    // leaves it hidden: one entry of that name, the mount point
+    EXPECT_TRUE(ext2_forget_directory(outer));
+    EXPECT_TRUE(has_text("/home/outer/beside.txt", "next to it")); // (Reads it again)
+    size_t named_mnt = 0;
+    for (vnode_t *c = outer->children; c; c = c->next) if (strcmp(c->name, "mnt") == 0) named_mnt++;
+    EXPECT_EQ(named_mnt, (size_t)1);
+    EXPECT_TRUE(vfs_find(NULL, "/home/outer/mnt") == mnt);
+    EXPECT_TRUE(has_text("/home/outer/mnt/in-memory.txt", "only in memory"));
+
+    // Not while something is in it; then the disk's directory is back, as it was
+    EXPECT_EQ(vfs_unmount_dir(mnt), -EBUSY);
+    EXPECT_EQ(remove_entry("/home/outer/mnt", "in-memory.txt"), 0);
+    EXPECT_EQ(vfs_unmount_dir(mnt), 0);
+    EXPECT_TRUE(has_text("/home/outer/mnt/on-disk.txt", "written to the disk"));
+
+    EXPECT_EQ(remove_entry("/home/outer/mnt", "on-disk.txt"), 0);
+    EXPECT_EQ(remove_entry("/home/outer", "mnt"), 0);
+    EXPECT_EQ(remove_entry("/home/outer", "beside.txt"), 0);
+    EXPECT_EQ(vfs_unlink(home, "outer"), 0);
+    EXPECT_TRUE(ext2_free_inodes() == inodes_before && ext2_free_blocks() == blocks_before);
+}
+
+// Over nothing: in a memory directory, a mount point is simply a directory
+// that stays
+TEST(mount_points_in_memory) {
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    EXPECT_TRUE(tmp != NULL && tmp->mount_point);              // /tmp itself is one
+    EXPECT_TRUE(vfs_find(NULL, "/dev")->mount_point && vfs_find(NULL, "/proc")->mount_point);
+    vnode_t *m = NULL;
+    EXPECT_EQ(vfs_mount_dir(tmp, "m", &m), 0);
+    EXPECT_TRUE(m->covered == NULL);
+    EXPECT_EQ(vfs_unlink(tmp, "m"), -EBUSY);
+    EXPECT_EQ(vfs_unmount_dir(m), 0);
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/m") == NULL);
+}
+
 void test_suite_ext2(void) {
     kprintf("Suite: ext2\n");
     if (!ext2_mounted()) {
@@ -373,6 +444,8 @@ void test_suite_ext2(void) {
     RUN_TEST(ext2_large_files_and_holes);
     RUN_TEST(ext2_directories);
     RUN_TEST(ext2_rename_and_move);
+    RUN_TEST(mount_points_cover_a_disk_directory);
+    RUN_TEST(mount_points_in_memory);
     RUN_TEST(ext2_check_repairs_an_interrupted_write);
     RUN_TEST(ext2_rejects_volumes_it_can_not_use);
 }

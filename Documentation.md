@@ -425,12 +425,15 @@ so the numbering has gaps.
 ---
 
 ### 34. VFS Mount Manager (Phase 34)
-**Status: real.** A record of which source provides which part of the tree (`/` memory, `/bin` initrd, `/proc`, `/dev`, `/disk` FAT32), shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Nothing can be unmounted.
+**Status: real.** Mount points: `/dev`, `/proc`, `/tmp` and each disk volume (`/disk` FAT32, `/home` ext2) sit on a directory the kernel puts in place (`vfs_mount_dir`). On a directory read from a disk, the disk's own entry of that name is hidden, not changed, and comes back when the mount point is taken away; a mount point cannot be removed or renamed (`EBUSY`). A record of which source provides which part of the tree is shown by `mount` and `/proc/mounts`. Path lookup does not use it: every source attaches its nodes into the one tree. Only an empty memory directory can be unmounted; volumes stay mounted.
 
 **Goal:** Path mount points (`vfs_mount`), mount table management, shell `mount` command.
 
 - **Order of Learning:**
-  1. **Mount Manager:**
+  1. **Mount points:**
+     - **Concepts:** putting one tree on top of a directory of another; hiding the covered directory rather than changing it; why a mount point must not be removed while mounted; what happens when the directory around it is read from its disk again.
+     - Files to inspect: `vfs_mount_dir`, `vfs_unmount_dir` in `src/fs/vfs.h` and `src/fs/vfs.c`; `mount_points_cover_a_disk_directory` in `tests/test_ext2.c`
+  2. **Mount table:**
      - **Concepts:** Binding filesystem instances to VFS directory paths (`/mnt`, `/dev`, `/proc`).
      - Files to inspect: `src/fs/mount.h`, `src/fs/mount.c`
 
