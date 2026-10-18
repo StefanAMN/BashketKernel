@@ -100,6 +100,7 @@ make check                      # everything below, on both CPU models and 1 to 
 make test-smp                   # unit tests on 4 CPUs, then real programs on 2, 4 and 8 (~1 min)
 make test-home                  # the ext2 system disk: owners across a reboot, e2fsck, damaged images (~40 s)
 make test-boot                  # the system image: init, /etc/rc, login, logout, Ctrl-C (~10 s)
+make test-shutdown              # a change survives a clean power-off; the next boot skips the check; restart (~20 s)
 make test-rescue                # no system disk: the kernel runs the rescue system from its boot module (~10 s)
 make test-swap                  # 80 MiB used on a 64 MiB machine, with and without a swap disk (~30 s)
 make test-paint                 # /bin/paint driven by the mouse, screenshots checked (~10 s)

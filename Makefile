@@ -125,7 +125,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-boot test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -515,6 +515,30 @@ test-swap: iso
 		|| { echo "swap: FAILED, a program killed while swapping did not give everything back at once (see $(BUILD)/swap-killed.log)"; exit 1; }; \
 	echo "swap (80 MiB used on a 64 MiB machine, then two programs of 45; refused without a swap disk): ok"
 
+# Shutting down: a change made in one boot (a file, and a password set with
+# passwd) is there in the next; "shutdown" switches the machine off (QEMU
+# must exit by itself) and leaves the volume marked clean, so the next boot
+# skips the check; e2fsck agrees; "shutdown -r" restarts it.
+SHUTDOWN_SHELL = $(BOOT_SHELL) --prompt 'new password: ' --prompt 'again: ' --keep-disk-writes \
+	--disk $(BUILD)/shutdown-fat.img --root-disk $(BUILD)/shutdown-root.img --timeout 60 $(SHELL_CPU)
+test-shutdown: iso
+	@cp $(DISK) $(BUILD)/shutdown-fat.img && cp $(ROOT_IMG) $(BUILD)/shutdown-root.img
+	@$(SHUTDOWN_SHELL) --expect 'ext2: volume marked clean' --expect 'QEMU exited by itself \(status 0\)' \
+		--forbid 'shutdown: ' \
+		'root' 'root' 'echo made in the first boot > /root/proof' 'passwd alice' 'changed!' 'changed!' \
+		'!shutdown' '@wait:15' > $(BUILD)/shutdown-1.log 2>&1 \
+		|| { echo "shutdown: FAILED in the first boot (see $(BUILD)/shutdown-1.log)"; exit 1; }
+	@e2fsck -fn $(BUILD)/shutdown-root.img > $(BUILD)/shutdown-fsck.log 2>&1 && dumpe2fs -h $(BUILD)/shutdown-root.img 2>/dev/null | grep -q 'state: *clean$$' \
+		|| { echo "shutdown: FAILED, the volume is not clean after a shutdown (see $(BUILD)/shutdown-fsck.log)"; exit 1; }
+	@$(SHUTDOWN_SHELL) --expect 'ext2: the volume was shut down cleanly; no check needed' \
+		--expect 'login: incorrect name or password' --expect 'uid 1000' --expect 'made in the first boot' \
+		--expect 'The system is going down for a restart' --expect 'QEMU exited by itself \(status 0\)' \
+		--forbid 'repaired' \
+		'alice' 'alice' 'alice' 'changed!' 'id' 'exit' 'root' 'root' 'cat /root/proof' \
+		'!shutdown -r' '@wait:15' > $(BUILD)/shutdown-2.log 2>&1 \
+		|| { echo "shutdown: FAILED in the second boot (see $(BUILD)/shutdown-2.log)"; exit 1; }
+	@echo "shutdown (a change survives a clean power-off; no check after it; restart): ok"
+
 # The rescue system: without a system disk the kernel runs from its boot
 # module, in memory. Everything must still work; nothing outside /disk lasts.
 test-rescue: iso
@@ -573,6 +597,8 @@ check:
 	@$(MAKE) --no-print-directory test-rescue
 	@$(MAKE) --no-print-directory test-boot
 	@$(MAKE) --no-print-directory test-boot SMP=4
+	@$(MAKE) --no-print-directory test-shutdown
+	@$(MAKE) --no-print-directory test-shutdown SMP=2
 	@$(MAKE) --no-print-directory test-crash
 	@$(MAKE) --no-print-directory test-crash SMP=4 CRASH_ROUNDS=3
 	@$(MAKE) --no-print-directory test-paint
