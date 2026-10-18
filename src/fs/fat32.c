@@ -1104,7 +1104,8 @@ int fat32_mount(const char *mount_point) {
 
     const char *leaf = NULL;
     vnode_t *parent = vfs_find_parent(mount_point, &leaf);
-    vnode_t *root = parent ? vfs_create_dir(parent, leaf) : NULL;
+    vnode_t *root = NULL;
+    if (parent) vfs_mount_dir(parent, leaf, &root);
     if (!root || root->children || root->ops) return -1; // Must be a new or empty in-memory directory
 
     fat_node_t *root_info = kmalloc(sizeof(fat_node_t));
@@ -1131,14 +1132,20 @@ bool fat32_forget_directory(vnode_t *dir) {
     if (!dir || dir->ops != &fat_dir_ops || dir->unloaded) return false;
     vfs_lock();
     for (vnode_t *c = dir->children; c; c = c->next) {
-        if (c->open_count != 0 || c->children) {
+        if (!c->mount_point && (c->open_count != 0 || c->children)) {
             vfs_unlock();
             return false;
         }
     }
-    while (dir->children) {
-        vnode_t *c = dir->children;
-        dir->children = c->next;
+    // Mount points stay: they are not the disk's (vfs_mount_dir)
+    vnode_t **link = &dir->children;
+    while (*link) {
+        vnode_t *c = *link;
+        if (c->mount_point) {
+            link = &c->next;
+            continue;
+        }
+        *link = c->next;
         kfree((void *)c->private_data);
         kfree(c);
     }

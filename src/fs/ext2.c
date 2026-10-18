@@ -1295,7 +1295,8 @@ int ext2_mount(const char *mount_point, unsigned disk) {
 
     const char *leaf = NULL;
     vnode_t *parent = ok ? vfs_find_parent(mount_point, &leaf) : NULL;
-    vnode_t *root = parent ? vfs_create_dir(parent, leaf) : NULL;
+    vnode_t *root = NULL;
+    if (parent) vfs_mount_dir(parent, leaf, &root);
     ext2_node_t *info = (root && !root->children && !root->ops) ? kmalloc(sizeof(ext2_node_t)) : NULL;
     if (!info) {
         kprintf("ext2: disk %u holds an ext2 volume this driver can not use\n", disk);
@@ -1371,14 +1372,20 @@ bool ext2_forget_directory(vnode_t *dir) {
     if (!dir || dir->ops != &ext2_dir_ops || dir->unloaded) return false;
     vfs_lock();
     for (vnode_t *c = dir->children; c; c = c->next) {
-        if (c->open_count != 0 || c->children) {
+        if (!c->mount_point && (c->open_count != 0 || c->children)) {
             vfs_unlock();
             return false;
         }
     }
-    while (dir->children) {
-        vnode_t *c = dir->children;
-        dir->children = c->next;
+    // Mount points stay: they are not the disk's (vfs_mount_dir)
+    vnode_t **link = &dir->children;
+    while (*link) {
+        vnode_t *c = *link;
+        if (c->mount_point) {
+            link = &c->next;
+            continue;
+        }
+        *link = c->next;
         kfree((void *)c->private_data);
         kfree(c);
     }
