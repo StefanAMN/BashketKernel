@@ -574,8 +574,8 @@ int process_set_group(pid_t pid, uint32_t pgid) {
     return result;
 }
 
-pid_t process_start_init(const char *path) {
-    pid_t pid = process_spawn(path, NULL);
+pid_t process_spawn_init(const char *path, char *const argv[]) {
+    pid_t pid = process_spawn(path, argv);
     if (pid < 0) return pid;
     sched_set_init(sched_find_task((uint32_t)pid));
     return pid;

@@ -255,7 +255,8 @@ TEST(orphans_are_adopted_and_collected_by_init) {
     size_t free_before = test_free_frames();
     EXPECT_TRUE(sched_init_pid() == 0);                    // The test kernel starts none
 
-    pid_t init = process_start_init("/bin/init");
+    char *quiet[] = { "/bin/init", "-s", NULL };          // No login sessions: only adoption
+    pid_t init = process_spawn_init("/bin/init", quiet);
     EXPECT_TRUE(init > 0);
     EXPECT_TRUE(sched_init_pid() == (uint32_t)init);
 

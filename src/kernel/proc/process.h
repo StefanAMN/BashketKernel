@@ -140,9 +140,10 @@ void process_foreground_owner_exited(uint32_t pid);
 bool process_signal_foreground(int sig);
 
 /**
- * @brief Start the program that adopts orphaned processes (see
+ * @brief Start `path` with arguments `argv` as the init process: the one
+ *        that adopts orphaned processes and waits for them (see
  *        sched_set_init). Returns its PID or a negative value.
  */
-pid_t process_start_init(const char *path);
+pid_t process_spawn_init(const char *path, char *const argv[]);
 
 #endif // PROCESS_H
