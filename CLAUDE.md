@@ -11,10 +11,14 @@ former `.agents/AGENTS.md`).
 
 ## Working rules
 
-- **Commit** every verified change directly to `main`, in conventional-commit
-  style (`fix(mm): ...`, `feat(sched): ...`), one commit per finished piece
-  of work rather than many tiny ones. **Push** only when asked
-  (`origin` is `git@github.com:StefanAMN/BashketKernel.git`).
+- **Branch per part.** Pull `main` first (`git pull --ff-only`). Every part
+  of the work (a plan item, a documentation pass, a fix) gets its own branch
+  (`feat/...`, `fix/...`, `docs/...`), commits in conventional-commit style
+  (`fix(mm): ...`, `feat(sched): ...`), one per finished piece rather than
+  many tiny ones. When it is verified, merge it into `main` with `--no-ff`.
+  **Push** only when asked (`origin` is
+  `git@github.com:StefanAMN/BashketKernel.git`; pull requests are merged on
+  GitHub too).
 - **Verified** means `make check` passes (it builds, runs the unit tests and
   the scenario targets on both QEMU CPU models). "It boots" is not the bar:
   kernels routinely run while subtly broken. State the check that proves a
@@ -28,6 +32,11 @@ former `.agents/AGENTS.md`).
 - **Tests.** Every new feature gets a test: in `tests/` with the in-kernel
   framework, and from ring 3 (`user/syscheck.c` or a dedicated program) when
   the feature is visible to programs. Tests clean up after themselves.
+- **Every function has a comment** saying what it does: arguments, result,
+  what it changes, and what the caller must know (locks, sleeping). Public
+  functions once, in the header; static ones at the definition. Code that
+  nothing calls is deleted, not documented (`tools/unused.sh`,
+  `tools/undocumented.py`; PLAN.md track E).
 - **Docs travel with the code.** Update the README status table, and the
   matching section of `Documentation.md` (the ordered guide of what to learn
   and where to read it), in the same commit as the feature.
