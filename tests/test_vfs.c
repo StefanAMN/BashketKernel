@@ -84,16 +84,16 @@ TEST(vfs_write_semantics) {
 }
 
 TEST(vfs_paths) {
-    const char *leaf = NULL;
-    EXPECT_TRUE(vfs_find_parent("/tmp/new.txt", &leaf) == vfs_find(NULL, "/tmp"));
+    char leaf[VFS_NAME_MAX];
+    EXPECT_TRUE(vfs_find_parent("/tmp/new.txt", leaf) == vfs_find(NULL, "/tmp"));
     EXPECT_EQ(strcmp(leaf, "new.txt"), 0);
-    EXPECT_TRUE(vfs_find_parent("/top", &leaf) == vfs_get_root());
+    EXPECT_TRUE(vfs_find_parent("/top", leaf) == vfs_get_root());
     EXPECT_EQ(strcmp(leaf, "top"), 0);
-    EXPECT_TRUE(vfs_find_parent("top", &leaf) == vfs_get_root());
-    EXPECT_TRUE(vfs_find_parent("/no/such/dir/file", &leaf) == NULL);
-    EXPECT_TRUE(vfs_find_parent("/etc/motd/file", &leaf) == NULL);   // Parent is a file
-    EXPECT_TRUE(vfs_find_parent("/", &leaf) == NULL);
-    EXPECT_TRUE(vfs_find_parent("", &leaf) == NULL);
+    EXPECT_TRUE(vfs_find_parent("top", leaf) == vfs_get_root());
+    EXPECT_TRUE(vfs_find_parent("/no/such/dir/file", leaf) == NULL);
+    EXPECT_TRUE(vfs_find_parent("/etc/motd/file", leaf) == NULL);   // Parent is a file
+    EXPECT_TRUE(vfs_find_parent("/", leaf) == NULL);
+    EXPECT_TRUE(vfs_find_parent("", leaf) == NULL);
 
     // "." and "..", repeated and trailing slashes, relative lookups
     vnode_t *bin = vfs_find(NULL, "/bin");
@@ -109,10 +109,33 @@ TEST(vfs_paths) {
     EXPECT_TRUE(vfs_find(bin, "/etc") == vfs_find(NULL, "/etc")); // Absolute ignores the base
     EXPECT_TRUE(vfs_find(NULL, "/bin/hello/.") == NULL);        // A file has no "."
     EXPECT_TRUE(vfs_find(NULL, "/bin/hello/..") == NULL);
-    EXPECT_TRUE(vfs_find_parent_at(bin, "new", &leaf) == bin);
-    EXPECT_TRUE(vfs_find_parent_at(bin, "../tmp/new", &leaf) == vfs_find(NULL, "/tmp"));
-    EXPECT_TRUE(vfs_find_parent("/tmp/.", &leaf) == NULL);
-    EXPECT_TRUE(vfs_find_parent("/tmp/..", &leaf) == NULL);
+    vnode_t *found = NULL;
+    EXPECT_TRUE(vfs_find_parent_at(bin, "new", &found, leaf) == 0 && found == bin);
+    EXPECT_TRUE(vfs_find_parent_at(bin, "../tmp/new", &found, leaf) == 0 && found == vfs_find(NULL, "/tmp"));
+    EXPECT_TRUE(vfs_find_parent("/tmp/.", leaf) == NULL);
+    EXPECT_TRUE(vfs_find_parent("/tmp/..", leaf) == NULL);
+    // The leaf comes without its trailing slashes ("mkdir /tmp/dir/")
+    EXPECT_TRUE(vfs_find_parent("/tmp/dir//", leaf) == vfs_find(NULL, "/tmp"));
+    EXPECT_EQ(strcmp(leaf, "dir"), 0);
+
+    // Names a new entry cannot have: refused, never cut short or kept with a '/'
+    static char long_name[VFS_NAME_MAX + 8];
+    memset(long_name, 'n', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    EXPECT_EQ(vfs_create(tmp, long_name, VFS_FILE, NULL), -ENAMETOOLONG);
+    EXPECT_EQ(vfs_create(tmp, "a/b", VFS_FILE, NULL), -EINVAL);
+    EXPECT_EQ(vfs_create(tmp, "..", VFS_DIRECTORY, NULL), -EINVAL);
+    EXPECT_TRUE(vfs_attach(tmp, long_name, VFS_FILE) == NULL);
+    char long_path[VFS_NAME_MAX + 16];
+    ksnprintf(long_path, sizeof(long_path), "/tmp/%s", long_name);
+    EXPECT_EQ(vfs_find_parent_at(NULL, long_path, &found, leaf), -ENAMETOOLONG);
+    EXPECT_EQ(vfs_find_parent_at(NULL, "/tmp/..", &found, leaf), -EINVAL);
+    EXPECT_EQ(vfs_find_parent_at(NULL, "/no/such/x", &found, leaf), -ENOENT);
+    long_name[VFS_NAME_MAX - 1] = '\0';                         // 127 bytes: the longest allowed
+    EXPECT_EQ(vfs_create(tmp, long_name, VFS_FILE, NULL), 0);
+    EXPECT_TRUE(vfs_find_child(tmp, long_name) != NULL);
+    EXPECT_EQ(vfs_unlink(tmp, long_name), 0);
 
     // A node's absolute path
     char path[32];
@@ -216,10 +239,36 @@ TEST(open_files_and_descriptors) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// The last entry of an archive may lack its padding: the parser must stop
+// at the end of the bytes it was given, not round past it into whatever
+// follows (here, bytes that are not a header at all)
+TEST(initrd_stops_at_the_end_of_the_archive) {
+    static uint8_t archive[4096];
+    memset(archive, 0xAA, sizeof(archive));
+    tar_header_t *h = (tar_header_t *)archive;
+    memset(h, 0, 512);
+    strcpy(h->name, "tmp/initrd-test");
+    strcpy(h->mode, "0000644");
+    strcpy(h->size, "00000001130");       // 600 bytes, octal
+    h->typeflag = '0';
+    memcpy(h->magic, "ustar", 5);
+
+    EXPECT_TRUE(initrd_mount(archive, 512 + 600));   // Not padded to 1024
+    vnode_t *file = vfs_find(NULL, "/tmp/initrd-test");
+    EXPECT_TRUE(file != NULL && file->size == 600);
+    EXPECT_EQ(vfs_unlink(vfs_find(NULL, "/tmp"), "initrd-test"), 0);
+
+    // A header claiming more than there is is refused
+    strcpy(h->size, "00000002000");       // 1024 bytes
+    EXPECT_TRUE(!initrd_mount(archive, 512 + 600));
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/initrd-test") == NULL);
+}
+
 void test_suite_vfs(void) {
     kprintf("Suite: Virtual Filesystem and Open Files\n");
     RUN_TEST(vfs_basic_tree);
     RUN_TEST(vfs_write_semantics);
     RUN_TEST(vfs_paths);
     RUN_TEST(open_files_and_descriptors);
+    RUN_TEST(initrd_stops_at_the_end_of_the_archive);
 }

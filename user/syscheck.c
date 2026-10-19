@@ -425,8 +425,19 @@ static void check_directories(void) {
     close((int)fd);
     CHECK(chdir("../../../../..") == 0);                   /* ".." stops at the root */
     CHECK(getcwd(cwd, sizeof(cwd)) == 1 && strcmp(cwd, "/") == 0);
-    CHECK(mkdir("/tmp/.") == -ENOENT && mkdir("/tmp/..") == -ENOENT);
-    CHECK(unlink("/tmp/cwd-test/sub/..") == -ENOENT);
+    CHECK(mkdir("/tmp/.") == -EINVAL && mkdir("/tmp/..") == -EINVAL);
+    CHECK(unlink("/tmp/cwd-test/sub/..") == -EINVAL);
+
+    /* A trailing slash is not part of the name; a name has at most 127 bytes */
+    CHECK(mkdir("/tmp/cwd-test/slash/") == 0);
+    CHECK(unlink("/tmp/cwd-test/slash/") == 0 && open("/tmp/cwd-test/slash", O_RDONLY) == -ENOENT);
+    char long_name[160];
+    memcpy(long_name, "/tmp/", 5);
+    memset(long_name + 5, 'n', 128);
+    long_name[133] = '\0';
+    CHECK(mkdir(long_name) == -ENAMETOOLONG && open(long_name, O_WRONLY | O_CREAT) == -ENAMETOOLONG);
+    long_name[132] = '\0';                                 /* 127: allowed */
+    CHECK(mkdir(long_name) == 0 && unlink(long_name) == 0);
 
     CHECK(chdir("/no/such") == -ENOENT);
     CHECK(chdir("/etc/motd") == -ENOTDIR);

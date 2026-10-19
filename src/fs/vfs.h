@@ -13,6 +13,9 @@
 #define VFS_FILE      1
 #define VFS_DIRECTORY 2
 
+#define VFS_NAME_MAX  128  // Size of a node's name, with its NUL: names are at most 127 bytes
+#define VFS_PATH_MAX  256  // Size of a path the kernel accepts, with its NUL
+
 struct vnode;
 
 // A device node has no stored contents: reading and writing it call these.
@@ -54,7 +57,7 @@ typedef struct vnode_ops {
 } vnode_ops_t;
 
 typedef struct vnode {
-    char name[128];             // Node name
+    char name[VFS_NAME_MAX];    // Node name
     uint32_t type;              // VFS_FILE or VFS_DIRECTORY
     size_t size;                // File size in bytes
     const void *data;           // Pointer to file data
@@ -78,13 +81,14 @@ typedef struct vnode {
 } vnode_t;
 
 /**
- * @brief Initialize Virtual Filesystem root directory ('/').
+ * @brief Create the root directory ('/'), empty and kept in memory. Called
+ *        by the first thing that builds the tree; later calls do nothing.
+ *        Panics if there is no memory for it.
  */
 void vfs_init(void);
 
 /**
- * @brief Get VFS root directory node ('/').
- * @return Pointer to root vnode.
+ * @brief The root directory node ('/'). NULL before vfs_init.
  */
 vnode_t *vfs_get_root(void);
 
@@ -93,40 +97,63 @@ vnode_t *vfs_get_root(void);
  *        not be separated: looking a name up and then using what was found.
  *        A node pointer is only safe to use while this is held, or while the
  *        node is open (its open_count is not zero). May sleep; nests.
+ *        Every vfs_ function below takes it itself.
  */
 void vfs_lock(void);
+
+/**
+ * @brief Release one hold of the tree lock (vfs_lock).
+ */
 void vfs_unlock(void);
 
 /**
- * @brief Find file or directory node by path (e.g. "/bin/hello" or "hello").
- * @param relative_root Directory node to search from (or NULL for VFS root).
- * @param path File path string.
- * @return Pointer to matching vnode, or NULL if not found.
+ * @brief Find the node a path names: absolute ("/bin/hello"), or relative
+ *        to `relative_root` ("hello", NULL: the root). "." and ".." are
+ *        understood, repeated slashes ignored; directories on a disk are
+ *        read as the walk enters them (which may sleep).
+ * @return The node, or NULL if any component is missing, is not a
+ *         directory where one is needed, or is longer than a name can be.
+ *         The pointer is only safe under vfs_lock (see above).
  */
 vnode_t *vfs_find(vnode_t *relative_root, const char *path);
 
 /**
- * @brief Create a new file vnode under specified parent directory.
+ * @brief Create a file in `parent` (NULL: the root), with `data` as its
+ *        contents if given. Contents given this way are not copied (the
+ *        node points at them until its first write), so they must stay;
+ *        that is only allowed in a directory kept in memory.
+ * @return The new node, or NULL if it could not be made (see vfs_create).
  */
 vnode_t *vfs_create_file(vnode_t *parent, const char *name, const void *data, size_t size);
 
 /**
- * @brief Create a new directory vnode under specified parent directory.
- */
-/**
- * @brief Create a file or directory in `parent` (NULL: the root).
+ * @brief Create a file or directory in `parent` (NULL: the root): on its
+ *        disk if the directory has a `create` operation, else in memory.
+ *        Owned by root, mode 0644 or 0755; whoever creates it for a user
+ *        changes that afterwards. No permission checks.
  * @param type VFS_FILE or VFS_DIRECTORY.
- * @return 0 and the new node in *out, or a negative error number
- *         (EEXIST, EROFS, EINVAL, ENOSPC, ...).
+ * @return 0 and the new node in *out (if `out` is not NULL), or a negative
+ *         error number: EEXIST, EROFS, ENOTDIR (parent is not a directory),
+ *         EINVAL (an empty name, one with '/', "." or ".."), ENAMETOOLONG
+ *         (VFS_NAME_MAX bytes or more), ENOSPC or EIO from the disk, ENOMEM.
  */
 int vfs_create(vnode_t *parent, const char *name, uint32_t type, vnode_t **out);
 
 /**
  * @brief For filesystem drivers: add a node to the tree without asking any
- *        filesystem to store it and without permission checks.
+ *        filesystem to store it and without permission checks (for an entry
+ *        a driver has read from its disk, or has just written there). Owned
+ *        by root, mode 0644 or 0755.
+ * @return The node, or NULL for a name that is empty or too long for a
+ *         node (VFS_NAME_MAX), or when memory ran out.
  */
 vnode_t *vfs_attach(vnode_t *parent, const char *name, uint32_t type);
 
+/**
+ * @brief The directory `name` in `parent` (NULL: the root): the existing one
+ *        if there is one, else a new one made as vfs_create would.
+ * @return NULL if it could not be made, or the name is taken by a file.
+ */
 vnode_t *vfs_create_dir(vnode_t *parent, const char *name);
 
 /**
@@ -147,8 +174,9 @@ vnode_t *vfs_create_dir(vnode_t *parent, const char *name);
  *
  * @param out Receives the new node.
  * @return 0; -ENOTDIR if `parent` is not a directory or the name is taken
- *         by a file; -EBUSY if it is taken by a directory that is open, has
- *         contents already read, or is a mount point itself; -ENOMEM.
+ *         by a file; -EINVAL for a name a new entry cannot have; -EBUSY if it
+ *         is taken by a directory that is open, has contents already read,
+ *         or is a mount point itself; -ENOMEM.
  */
 int vfs_mount_dir(vnode_t *parent, const char *name, vnode_t **out);
 
@@ -161,74 +189,100 @@ int vfs_mount_dir(vnode_t *parent, const char *name, vnode_t **out);
 int vfs_unmount_dir(vnode_t *node);
 
 /**
- * @brief Create a device node whose reads and writes are served by `ops`.
+ * @brief Create a device node in `parent` whose reads and writes are served
+ *        by `ops` (which must stay valid: pass a static table). If a node of
+ *        that name exists, nothing is changed.
+ * @return The new node, or NULL if it existed already or could not be made.
  */
 vnode_t *vfs_create_device(vnode_t *parent, const char *name, const vnode_ops_t *ops);
 
 /**
- * @brief Read bytes from a file vnode.
- * @param file Pointer to file vnode.
- * @param offset Byte offset to start reading from.
- * @param count Maximum number of bytes to read.
- * @param buf Output buffer.
- * @return Number of bytes successfully read.
+ * @brief Read up to `count` bytes of a file from `offset` into the kernel
+ *        buffer `buf`. A node with `ops` is read through them, outside the
+ *        tree lock (it may sleep: a terminal, a disk); the caller must have
+ *        it open so it cannot be removed meanwhile.
+ * @return Bytes read; 0 at or past the end, for a directory, and also when
+ *         the node's read operation failed (callers that must tell an error
+ *         from the end call ops->read themselves, as file_read does).
  */
 size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf);
 
 /**
- * @brief Write bytes to a dynamic heap-allocated file vnode.
- * @param file Pointer to file vnode.
- * @param offset Byte offset to start writing at.
- * @param count Number of bytes to write.
- * @param buf Data input buffer.
- * @return Number of bytes successfully written.
+ * @brief Write `count` bytes from `buf` at `offset`. A file kept in memory
+ *        grows as needed (a gap reads as zeros); the first write copies
+ *        contents that pointed into the initrd into a buffer of its own.
+ *        A node with `ops` is written through them, as in vfs_read.
+ * @return Bytes written; 0 if nothing could be (memory ran out, a node with
+ *         no write operation, a failed write).
  */
 size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf);
 
 /**
- * @brief Delete/unlink file or empty directory node from VFS.
- * @param parent Directory vnode containing the file.
- * @param name File or directory name to delete.
- * @return 0 on success, -1 on failure.
- */
-/**
- * @brief Cut a file to `size` bytes (only shrinking is supported).
+ * @brief Cut a file to `size` bytes. Only shrinking is supported; a file on
+ *        a disk can only be cut to nothing (its `truncate` operation).
  */
 void vfs_truncate(vnode_t *file, size_t size);
 
 /**
- * @brief Find the directory that would contain `path`.
- * @param out_leaf Receives a pointer to the final component inside `path`.
- * @return The parent directory, or NULL if it does not exist or the path has
- *         no final component.
+ * @brief Find the directory that would contain `path`: absolute, or
+ *        relative to `base` (NULL: the root).
+ * @param parent Receives the directory (only on success).
+ * @param leaf Receives the final component, without trailing slashes:
+ *        "/tmp/dir/" gives /tmp and "dir". At least VFS_NAME_MAX bytes.
+ * @return 0; -ENOENT if the directory does not exist (or is a file);
+ *         -EINVAL if the path has no final component or it is "." or "..";
+ *         -ENAMETOOLONG if the final component is too long for a name.
  */
-vnode_t *vfs_find_parent(const char *path, const char **out_leaf);
+int vfs_find_parent_at(vnode_t *base, const char *path, vnode_t **parent, char leaf[VFS_NAME_MAX]);
 
 /**
- * @brief As vfs_find_parent, with relative paths starting at `base`
- *        (NULL: the root).
+ * @brief vfs_find_parent_at from the root, returning just the directory
+ *        (NULL for any of its errors).
  */
-vnode_t *vfs_find_parent_at(vnode_t *base, const char *path, const char **out_leaf);
+vnode_t *vfs_find_parent(const char *path, char leaf[VFS_NAME_MAX]);
 
 /**
  * @brief Write the absolute path of a node into buf.
- * @return Its length, or 0 if it does not fit.
+ * @return Its length, or 0 if it does not fit (or is more than 32 levels
+ *         deep).
  */
 size_t vfs_path_of(vnode_t *node, char *buf, size_t size);
 
 /**
- * @brief Find a direct child of a directory by name.
+ * @brief Find a direct child of a directory by name, reading the directory
+ *        from its disk first if it has not been (may sleep).
+ * @return The child, or NULL (also when `dir` is not a directory).
  */
 vnode_t *vfs_find_child(vnode_t *dir, const char *name);
 
+/**
+ * @brief Remove the file or empty directory `name` from `parent` (NULL: the
+ *        root): from its disk first, then from the tree, freeing the node.
+ *        No permission checks.
+ * @return 0; -ENOENT; -ENOTEMPTY; -EBUSY if it is open, someone's working
+ *         directory, mapped, or a mount point; -EROFS; or the disk's error.
+ */
 int vfs_unlink(vnode_t *parent, const char *name);
 
 /**
  * @brief Give an entry a new name, in the same directory or another of the
  *        same filesystem. Nothing is replaced: -EEXIST if the new name is
- *        taken. -EXDEV across filesystems.
+ *        taken. -EXDEV across filesystems; -EINVAL to move a directory into
+ *        itself or for a name a new entry cannot have; -EBUSY for a mount
+ *        point.
  */
 int vfs_rename(vnode_t *old_parent, const char *old_name, vnode_t *new_parent, const char *new_name);
+
+#ifdef KERNEL_TESTS
+/**
+ * @brief For tests: drop what is known of a disk directory's contents (not
+ *        its mount points), so that the next look inside reads them from the
+ *        disk again. To test what was written, forget it first. False,
+ *        changing nothing, if anything in it is open or has been read into,
+ *        or `dir` is not a directory of a filesystem that loads from a disk.
+ */
+bool vfs_forget_directory(vnode_t *dir);
+#endif
 
 /**
  * @brief Make sure a directory's children have been read from its storage
@@ -236,14 +290,5 @@ int vfs_rename(vnode_t *old_parent, const char *old_name, vnode_t *new_parent, c
  *        walking dir->children directly.
  */
 void vfs_load_dir(vnode_t *dir);
-
-/**
- * @brief Query metadata statistics for a VFS vnode.
- * @param node VFS node to query.
- * @param out_size Pointer to store file size.
- * @param out_type Pointer to store node type.
- * @return 0 on success, -1 on failure.
- */
-int vfs_stat(vnode_t *node, size_t *out_size, uint32_t *out_type);
 
 #endif // VFS_H

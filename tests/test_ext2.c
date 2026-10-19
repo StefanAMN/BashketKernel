@@ -91,7 +91,7 @@ TEST(ext2_records_owner_and_mode) {
         node->mode = 0640;
         EXPECT_EQ(node->ops->setattr(node), 0);
     }
-    EXPECT_TRUE(ext2_forget_directory(alice));
+    EXPECT_TRUE(vfs_forget_directory(alice));
     bcache_invalidate();
     node = vfs_find(NULL, "/home/alice/mine.txt");
     EXPECT_TRUE(node != NULL);
@@ -199,7 +199,7 @@ TEST(ext2_directories) {
     EXPECT_EQ(vfs_unlink(home, "work"), -ENOTEMPTY);
 
     // All there after reading the directory from the disk again
-    EXPECT_TRUE(ext2_forget_directory(work));
+    EXPECT_TRUE(vfs_forget_directory(work));
     bcache_invalidate();
     size_t found = 0;
     for (int i = 0; i < 60; i++) {
@@ -224,7 +224,7 @@ TEST(ext2_directories) {
         put_text(path, "");
     }
     EXPECT_TRUE(ext2_free_blocks() == blocks_now);
-    EXPECT_TRUE(ext2_forget_directory(work));
+    EXPECT_TRUE(vfs_forget_directory(work));
     children = 0;
     vfs_find(NULL, "/home/work/short 0");
     for (vnode_t *c = work->children; c; c = c->next) children++;
@@ -236,7 +236,7 @@ TEST(ext2_directories) {
     static char too_long[150];
     memset(too_long, 'n', sizeof(too_long) - 1);
     memcpy(too_long, "/home/work/", 11);
-    EXPECT_EQ(file_open(too_long, O_WRONLY | O_CREAT, &file), -EINVAL);
+    EXPECT_EQ(file_open(too_long, O_WRONLY | O_CREAT, &file), -ENAMETOOLONG);
     EXPECT_EQ(file_open("/home/work/tab\there", O_WRONLY | O_CREAT, &file), -EINVAL);
 
     // A directory inside, and everything removed again: nothing is left
@@ -266,7 +266,7 @@ TEST(ext2_rename_and_move) {
     EXPECT_EQ(vfs_rename(from, "renamed in place", tmp, "x"), -EXDEV);
     EXPECT_EQ(vfs_rename(home, "from", from, "inside itself"), -EINVAL);
     EXPECT_EQ(vfs_rename(from, "renamed in place", to, "moved.txt"), 0);
-    EXPECT_TRUE(ext2_forget_directory(from) && ext2_forget_directory(to));
+    EXPECT_TRUE(vfs_forget_directory(from) && vfs_forget_directory(to));
     bcache_invalidate();
     EXPECT_TRUE(vfs_find(NULL, "/home/from/a.txt") == NULL && vfs_find(NULL, "/home/from/renamed in place") == NULL);
     EXPECT_TRUE(has_text("/home/to/moved.txt", "contents of a"));
@@ -275,7 +275,7 @@ TEST(ext2_rename_and_move) {
     // A directory, with what is in it, into another
     EXPECT_EQ(vfs_rename(home, "from", to, "from, moved"), 0);
     vnode_t *moved = vfs_find(NULL, "/home/to/from, moved");
-    EXPECT_TRUE(moved != NULL && ext2_forget_directory(moved) && ext2_forget_directory(to));
+    EXPECT_TRUE(moved != NULL && vfs_forget_directory(moved) && vfs_forget_directory(to));
     bcache_invalidate();
     EXPECT_TRUE(vfs_find(NULL, "/home/from") == NULL);
     EXPECT_TRUE(has_text("/home/to/from, moved/b.txt", "contents of b"));
@@ -373,7 +373,7 @@ TEST(mount_points_cover_a_disk_directory) {
     if (!outer || !disk_dir) return;
     put_text("/home/outer/mnt/on-disk.txt", "written to the disk");
     put_text("/home/outer/beside.txt", "next to it");
-    EXPECT_TRUE(ext2_forget_directory(disk_dir));            // Its contents are known only on the disk now
+    EXPECT_TRUE(vfs_forget_directory(disk_dir));            // Its contents are known only on the disk now
     uint32_t inodes_with_dir = ext2_free_inodes();
 
     vnode_t *mnt = NULL;
@@ -399,7 +399,7 @@ TEST(mount_points_cover_a_disk_directory) {
 
     // Reading the directory from the disk again finds the disk's "mnt" and
     // leaves it hidden: one entry of that name, the mount point
-    EXPECT_TRUE(ext2_forget_directory(outer));
+    EXPECT_TRUE(vfs_forget_directory(outer));
     EXPECT_TRUE(has_text("/home/outer/beside.txt", "next to it")); // (Reads it again)
     size_t named_mnt = 0;
     for (vnode_t *c = outer->children; c; c = c->next) if (strcmp(c->name, "mnt") == 0) named_mnt++;

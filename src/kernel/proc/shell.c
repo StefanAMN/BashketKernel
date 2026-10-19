@@ -237,16 +237,17 @@ static const char *error_text(int err) {
         case EACCES:    return "permission denied";
         case ENOSPC:    return "no space left";
         case EINVAL:    return "not a valid name";
+        case ENAMETOOLONG: return "the name is too long";
         case ENOMEM:    return "out of memory";
         default:        return "failed";
     }
 }
 
 // The directory that will hold `path` (a new name in it), or NULL with a
-// message if there is none. *leaf receives the new name.
-static vnode_t *parent_for(const char *command, const char *path, const char **leaf) {
+// message if there is none. `leaf` receives the new name.
+static vnode_t *parent_for(const char *command, const char *path, char leaf[VFS_NAME_MAX]) {
     vnode_t *parent = vfs_find_parent(path, leaf);
-    if (!parent || !*leaf || (*leaf)[0] == '\0') {
+    if (!parent) {
         kprintf("%s: no such directory for '%s'\n", command, path);
         return NULL;
     }
@@ -255,8 +256,8 @@ static vnode_t *parent_for(const char *command, const char *path, const char **l
 
 // touch FILE: create an empty file
 static void cmd_touch(const char *path) {
-    const char *leaf;
-    vnode_t *parent = parent_for("touch", path, &leaf);
+    char leaf[VFS_NAME_MAX];
+    vnode_t *parent = parent_for("touch", path, leaf);
     if (!parent) return;
     int err = vfs_create(parent, leaf, VFS_FILE, NULL);
     if (err == 0) kprintf("Created file '%s'\n", path);
@@ -265,8 +266,8 @@ static void cmd_touch(const char *path) {
 
 // mkdir DIR: create a directory
 static void cmd_mkdir(const char *path) {
-    const char *leaf;
-    vnode_t *parent = parent_for("mkdir", path, &leaf);
+    char leaf[VFS_NAME_MAX];
+    vnode_t *parent = parent_for("mkdir", path, leaf);
     if (!parent) return;
     int err = vfs_create(parent, leaf, VFS_DIRECTORY, NULL);
     if (err == 0) kprintf("Created directory '%s'\n", path);
@@ -275,8 +276,8 @@ static void cmd_mkdir(const char *path) {
 
 // rm PATH: remove a file or an empty directory
 static void cmd_rm(const char *path) {
-    const char *leaf;
-    vnode_t *parent = parent_for("rm", path, &leaf);
+    char leaf[VFS_NAME_MAX];
+    vnode_t *parent = parent_for("rm", path, leaf);
     if (!parent) return;
     int err = vfs_unlink(parent, leaf);
     if (err == 0) kprintf("Removed '%s'\n", path);

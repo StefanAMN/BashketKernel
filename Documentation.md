@@ -113,7 +113,7 @@ so the numbering has gaps.
 ---
 
 ### 6. Virtual Filesystem (VFS) & InitRD (Phase 6)
-**Status: real.** One tree, with nodes from the system disk (`/`), the FAT volume, and memory (`/tmp`, `/dev`, `/proc`), per-process working directories and relative paths. A USTAR initrd with the programs and `/etc` is loaded as a Limine module: without a system disk it fills a root kept in memory, the rescue system (`make test-rescue`), whose changes are lost at power-off.
+**Status: real.** One tree, with nodes from the system disk (`/`), the FAT volume, and memory (`/tmp`, `/dev`, `/proc`), per-process working directories and relative paths. A name has at most 127 bytes and a path at most 255 (`ENAMETOOLONG` beyond); a trailing slash is not part of a name (`mkdir dir/`). A USTAR initrd with the programs and `/etc` is loaded as a Limine module: without a system disk it fills a root kept in memory, the rescue system (`make test-rescue`), whose changes are lost at power-off.
 
 **Goal:** VFS inode and file operation abstractions, USTAR initrd parser.
 

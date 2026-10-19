@@ -513,7 +513,24 @@ One pass per area, each on its own branch and checked with `make check`:
    UMIP). Removed: `ioapic_route_irq`, the public `idt_set_gate`,
    `smp_get_per_cpu` (a second name for `cpu_get`), six private
    declarations of `register_irq_handler` (now in `interrupts.h`).
-3. `src/fs`
+3. `src/fs` — done: every function documented, and the comments in
+   `vfs.h` put back next to the functions they describe. Found on the way:
+   a name of 128 bytes or more was cut short in memory while the disk kept
+   it whole, and `touch x/` made a file called "x/" (one check of new names
+   in `vfs_create` now; `vfs_find_parent_at` returns the last name without
+   its slashes, and an error saying why); the kernel's paths were limited
+   to 127 bytes, shorter than `/tmp/` plus the longest name, and a longer
+   one was reported as a bad address; `file_close` dropped the shared
+   reference count without an atomic operation and the node's open count
+   without the tree lock (two CPUs closing and opening could lose one, and
+   a removed node be freed while open); the initrd parser could step past
+   the end of an archive whose last entry is not padded; `/proc/cpuinfo`
+   printed "1 running tasks" whatever the number; an ext2 rename that
+   failed to read its inodes wrote one back from uninitialised memory; a
+   failed ext2 mount left its mount point behind. Removed: `vfs_stat`,
+   `file_open_at`, the FAT driver's copy of every write (system calls pass
+   it kernel memory), and the two copies of the "forget a directory" test
+   helper (one, `vfs_forget_directory`).
 4. `src/drivers`, `src/net`
 5. `lib`: delete the unused crypto (repair 10 below decided it: nothing
    uses it, and nothing tests it against a reference), keep SHA-256,
@@ -535,7 +552,10 @@ plan:
 1. A fault between `pop rsp` and `sysretq` would run on the user stack;
    harmless today, but an NMI handler needs an IST stack first.
 2. A killed process can leak a kernel buffer if it dies inside a system call
-   holding one (`/proc` reads, FAT writes).
+   holding one. (The two examples once given no longer apply: FAT writes
+   allocate nothing, and a `/proc` read does not sleep while it holds its
+   buffer, so a kill cannot take effect there. Disk and lock waits are
+   uninterruptible.)
 3. With the periodic tick (the fallback for CPUs without a timestamp
    counter) a few ticks are lost under heavy console output, because drawing
    runs with interrupts off. One-shot mode reads the count off the clock.
