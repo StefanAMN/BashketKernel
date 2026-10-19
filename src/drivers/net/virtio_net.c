@@ -64,6 +64,7 @@ static uint64_t rx_count = 0, tx_count = 0;
 // Protects both virtqueues and the buffer tables above
 static spinlock_t card_lock = SPINLOCK_RANKED("virtio-net", LOCK_RANK_DEVICE);
 
+// The card's interrupt handler: wake the receive thread if frames came in
 static void virtio_net_irq(struct registers *regs) {
     (void)regs;
     // Reading the ISR register makes the card lower its interrupt line
@@ -78,6 +79,8 @@ static void virtio_net_irq(struct registers *regs) {
     }
 }
 
+// Give receive buffer number `buffer` to the card to fill. Caller holds
+// card_lock (or is setting the card up). False if the queue is full.
 static bool post_rx_buffer(unsigned buffer) {
     virtqueue_buffer_t b = { rx_phys[buffer], PAGE_SIZE };
     int id = virtqueue_add(&rx_queue, &b, 0, 1); // One buffer, written by the card
@@ -152,10 +155,6 @@ bool virtio_net_present(void) { return present; }
 void virtio_net_get_mac(uint8_t mac[6]) { memcpy(mac, mac_address, 6); }
 uint64_t virtio_net_rx_count(void) { return rx_count; }
 uint64_t virtio_net_tx_count(void) { return tx_count; }
-
-bool virtio_net_rx_pending(void) {
-    return present && virtqueue_has_used(&rx_queue);
-}
 
 void virtio_net_wait_rx(void) {
     uint64_t flags = spinlock_acquire_irqsave(&card_lock);

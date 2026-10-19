@@ -142,6 +142,7 @@ bool mouse_present(void) {
     return present;
 }
 
+// IRQ 12: feed every byte the controller holds for the mouse to the decoder
 static void mouse_irq(struct registers *regs) {
     // The byte is fetched through the keyboard driver, which shares the
     // controller's one data port (and decides whose byte it is)

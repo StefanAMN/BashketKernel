@@ -119,6 +119,7 @@ static volatile struct limine_stack_size_request stack_size_request = {
     .stack_size = 128 * 1024
 };
 
+// Halt and catch fire: show the screen as it is and stop this CPU for good
 static void hcf(void) {
     asm("cli");
     console_refresh();
@@ -204,6 +205,11 @@ static void mount_rescue_system(void) {
     if (passwd) passwd->mode = 0600;
 }
 
+// The kernel's entry point: Limine jumps here on the boot CPU, in long
+// mode on its own stack and page tables. Brings every subsystem up in
+// order (each numbered phase below needs the ones before it), starts
+// /bin/init (or the kernel shell for the "shell" boot option) and becomes
+// the idle task. Never returns.
 void _start(void) {
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
         hcf();
@@ -295,7 +301,6 @@ void _start(void) {
     if (virtio_net_init() == 0) net_init();
 
     // Phase 17: Real-Time Clock & CMOS Driver
-    rtc_init();
 
     // /tmp: the one place every user may create files (and remove their own)
     vnode_t *tmp_dir = NULL;

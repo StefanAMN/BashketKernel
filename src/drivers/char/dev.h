@@ -10,10 +10,11 @@
 #include <stddef.h>
 
 /**
- * @brief Create /dev/null, /dev/zero, /dev/random and /dev/console.
+ * @brief Make /dev (a mount point) with null, zero, random and console for
+ *        everyone, and, where the hardware is there, vda (the first disk,
+ *        root only), fb0 (the screen) and mouse. Called once at boot, after
+ *        the drivers.
  */
 void dev_init(void);
-
-#include "random.h" // get_random_u32 and get_random_bytes live there now
 
 #endif // DEV_H

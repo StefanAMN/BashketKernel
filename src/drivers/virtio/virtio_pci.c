@@ -60,6 +60,7 @@ static inline uint32_t mmio32(volatile uint8_t *base, uint32_t offset) { return 
 static inline void mmio_write8(volatile uint8_t *base, uint32_t offset, uint8_t v) { base[offset] = v; }
 static inline void mmio_write16(volatile uint8_t *base, uint32_t offset, uint16_t v) { *(volatile uint16_t *)(base + offset) = v; }
 static inline void mmio_write32(volatile uint8_t *base, uint32_t offset, uint32_t v) { *(volatile uint32_t *)(base + offset) = v; }
+// (A 64-bit register is written as two 32-bit halves, low first)
 static inline void mmio_write64(volatile uint8_t *base, uint32_t offset, uint64_t v) {
     mmio_write32(base, offset, (uint32_t)v);
     mmio_write32(base, offset + 4, (uint32_t)(v >> 32));
@@ -122,6 +123,7 @@ bool virtio_pci_parse_caps(uint8_t (*read8)(void *ctx, uint8_t offset), uint32_t
     return out->common.found && out->notify.found && out->isr.found && out->device.found;
 }
 
+// The real configuration space, for virtio_pci_parse_caps (`ctx` is the device)
 static uint8_t config_read8(void *ctx, uint8_t offset) { return pci_read8((const pci_device_t *)ctx, offset); }
 static uint32_t config_read32(void *ctx, uint8_t offset) { return pci_read32((const pci_device_t *)ctx, offset); }
 
@@ -143,11 +145,13 @@ static volatile uint8_t *map_structure(const pci_device_t *pci, const virtio_cap
     return (volatile uint8_t *)vmm_map_device(base + cap->offset, cap->length);
 }
 
+// Write the device status register (VIRTIO_STATUS_* bits; 0 resets it)
 static void set_status(virtio_device_t *dev, uint8_t status) {
     if (dev->modern) mmio_write8(dev->common, COMMON_DEVICE_STATUS, status);
     else outb(dev->io_base + VIRTIO_REG_DEVICE_STATUS, status);
 }
 
+// Read the device status register
 static uint8_t get_status(virtio_device_t *dev) {
     return dev->modern ? mmio8(dev->common, COMMON_DEVICE_STATUS) : inb(dev->io_base + VIRTIO_REG_DEVICE_STATUS);
 }

@@ -20,7 +20,6 @@
 #include "mount.h"
 #include "console.h"
 #include "mouse.h"
-#include "kerrno.h"
 
 // --- Device operations -------------------------------------------------------
 
@@ -37,6 +36,7 @@ static int64_t zero_read(vnode_t *node, size_t offset, void *buf, size_t count) 
     return (int64_t)count;
 }
 
+// /dev/random: as many random bytes as asked for (never blocks)
 static int64_t random_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     (void)node; (void)offset;
     get_random_bytes(buf, count);
@@ -49,6 +49,7 @@ static int64_t dev_console_read(vnode_t *node, size_t offset, void *buf, size_t 
     return tty_read(buf, count);
 }
 
+// (Writing it: the screen and the serial line)
 static int64_t dev_console_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
     (void)node; (void)offset;
     return tty_write(buf, count);
@@ -86,11 +87,13 @@ static int64_t disk_transfer(size_t offset, uint8_t *buf, size_t count, bool wri
     return (int64_t)done;
 }
 
+// The read and write operations of /dev/vda (see disk_transfer)
 static int64_t disk_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     (void)node;
     return disk_transfer(offset, buf, count, false);
 }
 
+// (See disk_read)
 static int64_t disk_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
     (void)node;
     return disk_transfer(offset, (uint8_t *)buf, count, true);
@@ -112,22 +115,27 @@ static int64_t fb_transfer(size_t offset, void *buf, size_t count, bool write) {
     return (int64_t)count;
 }
 
+// The read and write operations of /dev/fb0 (see fb_transfer)
 static int64_t fb_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     (void)node;
     return fb_transfer(offset, buf, count, false);
 }
 
+// (See fb_read)
 static int64_t fb_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
     (void)node;
     return fb_transfer(offset, (void *)buf, count, true);
 }
 
+// Opening /dev/fb0 for writing takes the screen from the console: refused
+// with -ENODEV when there is no copy of the text to put back afterwards
 static int fb_opened(vnode_t *node, bool writable) {
     (void)node;
     if (writable && !console_graphics_begin()) return -ENODEV;
     return 0;
 }
 
+// The last writer gone, the console gets the screen back
 static void fb_closed(vnode_t *node, bool writable) {
     (void)node;
     if (writable) console_graphics_end();

@@ -52,6 +52,7 @@ int64_t tty_write(const char *in, size_t count) {
     return (int64_t)count;
 }
 
+// Show what was typed (line mode echoes; raw mode never calls this)
 static void echo(const char *text, size_t count) {
     tty_write(text, count);
 }
