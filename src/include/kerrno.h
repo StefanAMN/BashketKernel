@@ -41,12 +41,13 @@
 #define EMSGSIZE     90  // Message too long
 #define EADDRINUSE   98  // Port already in use
 #define ENETDOWN    100  // No network
+#define ENETUNREACH 101  // Network unreachable (an ICMP error said so)
 #define ECONNRESET  104  // Connection reset by the other end
 #define EISCONN     106  // Already connected
 #define ENOTCONN    107  // Not connected
 #define ETIMEDOUT   110  // Timed out
 #define ECONNREFUSED 111 // Nobody listening on that port
-#define EHOSTUNREACH 113 // No route to host   // Not implemented
+#define EHOSTUNREACH 113 // No route to host
 #define ENOTEMPTY 39 // Directory not empty
 
 #endif // KERRNO_H
