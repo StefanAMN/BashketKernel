@@ -7,7 +7,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "cow.h"
-#include "string_util.h"
+#include "kstring.h"
 
 // The page-table bits for memory a program may use with protection `prot`
 // (PROT_READ, PROT_WRITE, PROT_EXEC): always present and reachable from

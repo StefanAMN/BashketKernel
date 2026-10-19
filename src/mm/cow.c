@@ -6,7 +6,7 @@
 #include "cow.h"
 #include "pmm.h"
 #include "kprintf.h"
-#include "string_util.h"
+#include "kstring.h"
 #include "spinlock.h"
 
 // extra_owners[frame] = owners beyond the first. Zero for almost every frame,

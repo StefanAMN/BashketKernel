@@ -1,6 +1,6 @@
 /**
  * @file sha256.c
- * @brief Full FIPS PUB 180-4 Compliant SHA-256 Cryptographic Hash Implementation
+ * @brief The SHA-256 hash (FIPS 180-4, section 6.2)
  */
 
 #include "sha256.h"
@@ -27,6 +27,8 @@ static const uint32_t K[64] = {
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
 
+// Mix one 64-byte block into the state (the message schedule and the 64
+// rounds of FIPS 180-4, 6.2.2)
 static void sha256_transform(sha256_ctx_t *ctx, const uint8_t data[64]) {
     uint32_t a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
 

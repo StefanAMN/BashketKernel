@@ -141,7 +141,8 @@ Use them rather than improvising QEMU command lines.
 
 ## Layout
 
-- `src/` kernel, `lib/` freestanding libc bits and crypto, `tests/` in-kernel tests.
+- `src/` kernel, `lib/` freestanding string functions and the two crypto
+  primitives in use (SHA-256, ChaCha20), `tests/` in-kernel tests.
 - `user/*.c` user programs, each built into `/bin/<name>` of the initrd;
   `user/lib` is their C library and `crt0`.
 - Entry to and from ring 3: `src/arch/x86_64/syscall_entry.S`. Processes:

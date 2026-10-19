@@ -14,7 +14,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "kprintf.h"
-#include "string_util.h"
+#include "kstring.h"
 
 #define ELF_MAX_PHDRS      64
 #define ELF_MAX_SEGMENT    (256ULL * 1024 * 1024) // Sanity limit per segment

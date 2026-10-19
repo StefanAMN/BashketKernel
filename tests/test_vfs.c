@@ -1,7 +1,7 @@
 #include "test.h"
 #include "vfs.h"
 #include "initrd.h"
-#include "string_util.h"
+#include "kstring.h"
 #include "file.h"
 #include "heap.h"
 #include "kerrno.h"
@@ -247,9 +247,9 @@ TEST(initrd_stops_at_the_end_of_the_archive) {
     memset(archive, 0xAA, sizeof(archive));
     tar_header_t *h = (tar_header_t *)archive;
     memset(h, 0, 512);
-    strcpy(h->name, "tmp/initrd-test");
-    strcpy(h->mode, "0000644");
-    strcpy(h->size, "00000001130");       // 600 bytes, octal
+    memcpy(h->name, "tmp/initrd-test", 15);
+    memcpy(h->mode, "0000644", 7);
+    memcpy(h->size, "00000001130", 11);   // 600 bytes, octal
     h->typeflag = '0';
     memcpy(h->magic, "ustar", 5);
 
@@ -259,7 +259,7 @@ TEST(initrd_stops_at_the_end_of_the_archive) {
     EXPECT_EQ(vfs_unlink(vfs_find(NULL, "/tmp"), "initrd-test"), 0);
 
     // A header claiming more than there is is refused
-    strcpy(h->size, "00000002000");       // 1024 bytes
+    memcpy(h->size, "00000002000", 11);   // 1024 bytes
     EXPECT_TRUE(!initrd_mount(archive, 512 + 600));
     EXPECT_TRUE(vfs_find(NULL, "/tmp/initrd-test") == NULL);
 }

@@ -8,7 +8,7 @@
 #include "vmm.h"
 #include "heap.h"
 #include "kprintf.h"
-#include "string_util.h"
+#include "kstring.h"
 #include "spinlock.h"
 
 // A slab is one 4 KiB page: this header at its start, then as many objects
