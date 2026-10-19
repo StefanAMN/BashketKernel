@@ -503,6 +503,7 @@ const char *strerror(long err) {
         case EISCONN:   return "already connected";
         case EHOSTUNREACH: return "host unreachable";
         case ENOTEMPTY: return "directory not empty";
+        case ENAMETOOLONG: return "name too long";
         default:        return "unknown error";
     }
 }

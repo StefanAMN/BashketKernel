@@ -280,11 +280,11 @@ TEST(fat32_name_rules) {
         "/disk/ends with space ",
         "/disk/ leading space",     // ...or start with a space
         "/disk/tab\there",           // Control characters
-        too_long,                   // More than 127 characters
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         EXPECT_EQ(file_open(bad[i], O_WRONLY | O_CREAT, &file), -EINVAL);
     }
+    EXPECT_EQ(file_open(too_long, O_WRONLY | O_CREAT, &file), -ENAMETOOLONG); // More than 127 characters
     EXPECT_EQ(vfs_create(vfs_find(NULL, "/disk"), "Bad*Dir", VFS_DIRECTORY, NULL), -EINVAL);
 
     // These are fine: all one case, digits, permitted punctuation
@@ -294,8 +294,8 @@ TEST(fat32_name_rules) {
         EXPECT_EQ(file_open(good[i], O_WRONLY | O_CREAT, &file), 0);
         file_close(file);
         EXPECT_TRUE(vfs_find(NULL, good[i]) != NULL);
-        const char *leaf = NULL;
-        vnode_t *parent = vfs_find_parent(good[i], &leaf);
+        char leaf[VFS_NAME_MAX];
+        vnode_t *parent = vfs_find_parent(good[i], leaf);
         EXPECT_EQ(vfs_unlink(parent, leaf), 0);
     }
 
@@ -383,7 +383,7 @@ TEST(fat32_writes_long_names) {
         vfs_find(NULL, "/disk/Work in progress/plain.txt");
         for (vnode_t *c = dir->children; c; c = c->next) count++;
         EXPECT_EQ(count, sizeof(files) / sizeof(files[0]) + 1);
-        if (round == 0) EXPECT_TRUE(fat32_forget_directory(dir) && dir->unloaded);
+        if (round == 0) EXPECT_TRUE(vfs_forget_directory(dir) && dir->unloaded);
     }
 
     // Removing a long-named file frees its long-name entries too: they are
@@ -391,7 +391,7 @@ TEST(fat32_writes_long_names) {
     // and their slots are used again
     EXPECT_EQ(remove_file("/disk/Work in progress", "report 2026 (final) v2.txt"), 0);
     EXPECT_EQ(remove_file("/disk/Work in progress", longest), 0);
-    EXPECT_TRUE(fat32_forget_directory(dir));
+    EXPECT_TRUE(vfs_forget_directory(dir));
     EXPECT_TRUE(vfs_find(NULL, "/disk/Work in progress/report 2026 (final) v2.txt") == NULL);
     EXPECT_TRUE(vfs_find(NULL, longest_path) == NULL);
     EXPECT_TRUE(text_is("/disk/Work in progress/report 2026 (final) v3.txt", "and a third"));
@@ -399,8 +399,8 @@ TEST(fat32_writes_long_names) {
     EXPECT_TRUE(text_is("/disk/Work in progress/report 2026 (final) v2.txt", "back again"));
 
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
-        const char *leaf = NULL;
-        vnode_t *parent = vfs_find_parent(files[i].path, &leaf);
+        char leaf[VFS_NAME_MAX];
+        vnode_t *parent = vfs_find_parent(files[i].path, leaf);
         EXPECT_EQ(vfs_unlink(parent, leaf), 0);
     }
     EXPECT_EQ(vfs_unlink(disk, "Work in progress"), 0);
@@ -415,7 +415,7 @@ TEST(fat32_directories_are_read_on_demand) {
     vfs_find(NULL, "/disk/notes/hello.txt");
     EXPECT_TRUE(!notes->unloaded && notes->children != NULL);
 
-    EXPECT_TRUE(fat32_forget_directory(notes));
+    EXPECT_TRUE(vfs_forget_directory(notes));
     EXPECT_TRUE(notes->unloaded && notes->children == NULL);
 
     // Listing the parent does not read the child. (The sector cache is
@@ -433,7 +433,7 @@ TEST(fat32_directories_are_read_on_demand) {
     EXPECT_TRUE(virtio_blk_requests(0) == requests);
 
     // A directory that has not been read is not thereby empty
-    EXPECT_TRUE(fat32_forget_directory(notes));
+    EXPECT_TRUE(vfs_forget_directory(notes));
     EXPECT_EQ(vfs_unlink(disk, "notes"), -ENOTEMPTY);
 }
 
@@ -452,7 +452,7 @@ TEST(fat32_rename_and_move) {
     EXPECT_EQ(vfs_rename(from, "a.txt", from, "A much longer name.txt"), 0);
     EXPECT_TRUE(vfs_find(NULL, "/disk/from/a.txt") == NULL);
     EXPECT_TRUE(text_is("/disk/from/A much longer name.txt", "contents of a"));
-    EXPECT_TRUE(fat32_forget_directory(from));
+    EXPECT_TRUE(vfs_forget_directory(from));
     EXPECT_TRUE(vfs_find(NULL, "/disk/from/a.txt") == NULL);
     EXPECT_TRUE(text_is("/disk/from/A much longer name.txt", "contents of a"));
     EXPECT_EQ(vfs_rename(from, "A much longer name.txt", from, "b.txt"), 0);
@@ -473,7 +473,7 @@ TEST(fat32_rename_and_move) {
 
     // Into another directory
     EXPECT_EQ(vfs_rename(from, "B.txt", to, "Moved file.txt"), 0);
-    EXPECT_TRUE(fat32_forget_directory(from) && fat32_forget_directory(to));
+    EXPECT_TRUE(vfs_forget_directory(from) && vfs_forget_directory(to));
     EXPECT_TRUE(vfs_find(NULL, "/disk/from/B.txt") == NULL);
     EXPECT_TRUE(text_is("/disk/To Here/Moved file.txt", "contents of a"));
 
@@ -483,7 +483,7 @@ TEST(fat32_rename_and_move) {
     EXPECT_TRUE(vfs_find(NULL, "/disk/from") == NULL);
     EXPECT_TRUE(text_is("/disk/To Here/From, moved/other.txt", "other"));
     vnode_t *moved = vfs_find(NULL, "/disk/To Here/From, moved");
-    EXPECT_TRUE(moved != NULL && fat32_forget_directory(moved) && fat32_forget_directory(to));
+    EXPECT_TRUE(moved != NULL && vfs_forget_directory(moved) && vfs_forget_directory(to));
     EXPECT_TRUE(text_is("/disk/To Here/From, moved/other.txt", "other"));
 
     EXPECT_EQ(remove_file("/disk/To Here/From, moved", "other.txt"), 0);
@@ -510,7 +510,7 @@ TEST(fat32_timestamps_come_from_the_clock) {
     write_text("/disk/stamps/stamped.txt", "now");
     vnode_t *node = vfs_find(NULL, "/disk/stamps/stamped.txt");
     EXPECT_TRUE(node != NULL && node->mtime != 0);
-    EXPECT_TRUE(fat32_forget_directory(dir));                           // What the disk says
+    EXPECT_TRUE(vfs_forget_directory(dir));                           // What the disk says
     node = vfs_find(NULL, "/disk/stamps/stamped.txt");
     EXPECT_TRUE(node != NULL);
     if (node) {

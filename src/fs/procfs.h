@@ -9,7 +9,10 @@
 #include <stdint.h>
 
 /**
- * @brief Initialize ProcFS pseudo-filesystem and mount virtual nodes in '/proc'.
+ * @brief Create /proc (a mount point, hiding any /proc directory on the
+ *        root disk) with its files: version, uptime, timers, meminfo, tasks,
+ *        cpuinfo, kmsg and mounts. Each is generated afresh at every read
+ *        and cannot be written. Call once at boot, after the root is mounted.
  */
 void procfs_init(void);
 

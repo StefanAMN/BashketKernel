@@ -119,8 +119,10 @@ bool initrd_mount(const void *tar_data, size_t tar_size) {
             }
         }
 
+        // The padding of the last entry may be missing: never step past the end
         size_t data_blocks = (size + TAR_BLOCK - 1) / TAR_BLOCK;
-        ptr += TAR_BLOCK + data_blocks * TAR_BLOCK;
+        size_t step = TAR_BLOCK + data_blocks * TAR_BLOCK;
+        ptr = step <= (size_t)(end - ptr) ? ptr + step : end;
     }
 
     kprintf("Initrd: mounted %zu files\n", file_count);

@@ -130,6 +130,7 @@ static const vnode_ops_t ext2_dir_ops;
 #define SB_STATE    58      // Superblock: 16 bits, the volume's state
 #define STATE_VALID 0x0001  // ...set: it was unmounted cleanly
 
+// Little-endian fields at any alignment: read and write 16 and 32 bits at `p`
 static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t get32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
@@ -148,6 +149,8 @@ static int64_t days_from_civil(int64_t y, unsigned m, unsigned d) {
     return era * 146097 + (int64_t)doe - 719468;
 }
 
+// The real-time clock as seconds since 1970 (UTC, as the clock is kept),
+// or 0 if the clock reads as nonsense
 static uint32_t unix_now(void) {
     struct rtc_time now;
     rtc_read_time(&now);
@@ -176,22 +179,29 @@ static uint32_t unix_to_packed(uint32_t seconds) {
 
 // --- Blocks ----------------------------------------------------------------------
 
+// Is `block` one a file or the metadata may use (not before the first data
+// block, not past the end)?
 static bool valid_block(uint32_t block) {
     return block >= vol.first_data_block && block < vol.blocks_count;
 }
 
+// Read filesystem block `block` (vol.block_size bytes) into `buf` through
+// the block cache. False past the end of the volume or on a disk error.
 static bool read_block(uint32_t block, void *buf) {
     if (block >= vol.blocks_count) return false;
     return bcache_read_dev(vol.disk, (uint64_t)block * vol.sectors_per_block, buf, vol.sectors_per_block) == 0;
 }
 
+// Write `buf` to filesystem block `block` (write-through: on the disk when
+// this returns). False past the end of the volume or on a disk error.
 static bool write_block(uint32_t block, const void *buf) {
     if (block >= vol.blocks_count) return false;
     return bcache_write_dev(vol.disk, (uint64_t)block * vol.sectors_per_block, buf, vol.sectors_per_block) == 0;
 }
 
 // The counts of free blocks and inodes live in the superblock and, per
-// group, in the group descriptors. Both are rewritten after every change.
+// group, in the group descriptors. Both are rewritten after every change:
+// the superblock, and the block of descriptors holding group `group`'s.
 static bool write_counts(uint32_t group) {
     put32(superblock + 12, vol.free_blocks);
     put32(superblock + 16, vol.free_inodes);
@@ -233,6 +243,8 @@ static uint32_t alloc_block(uint32_t goal_group) {
     return 0;
 }
 
+// Mark `block` free in its group's bitmap and count it, if it is a valid
+// block and marked in use (never counted twice). Uses bitmap_block.
 static void free_block(uint32_t block) {
     if (!valid_block(block)) return;
     uint32_t g = (block - vol.first_data_block) / vol.blocks_per_group;
@@ -249,6 +261,7 @@ static void free_block(uint32_t block) {
 
 // --- Inodes ----------------------------------------------------------------------
 
+// Is `ino` an inode number this volume has (they start at 1)?
 static bool valid_inode(uint32_t ino) {
     return ino >= 1 && ino <= vol.inodes_count;
 }
@@ -266,6 +279,7 @@ static bool inode_location(uint32_t ino, uint32_t *block, uint32_t *offset) {
     return valid_block(*block);
 }
 
+// Read the first 128 bytes of inode `ino` into *out. Uses inode_block.
 static bool read_inode(uint32_t ino, struct ext2_inode *out) {
     uint32_t block, offset;
     if (!inode_location(ino, &block, &offset) || !read_block(block, inode_block)) return false;
@@ -273,6 +287,8 @@ static bool read_inode(uint32_t ino, struct ext2_inode *out) {
     return true;
 }
 
+// Write *inode over the first 128 bytes of inode `ino` (read, change,
+// write its block). Uses inode_block.
 static bool write_inode(uint32_t ino, const struct ext2_inode *inode) {
     uint32_t block, offset;
     if (!inode_location(ino, &block, &offset) || !read_block(block, inode_block)) return false;
@@ -305,6 +321,9 @@ static uint32_t alloc_inode(uint32_t goal_group, bool directory) {
     return 0;
 }
 
+// Mark inode `ino` free in its group's bitmap and count it (and one
+// directory fewer if it was one). Reserved inodes and ones already free are
+// left alone. Uses bitmap_block. The inode itself is not changed.
 static void free_inode(uint32_t ino, bool directory) {
     if (!valid_inode(ino) || ino < vol.first_ino) return;
     uint32_t g = (ino - 1) / vol.inodes_per_group;
@@ -418,6 +437,7 @@ static void free_contents(struct ext2_inode *inode) {
     inode->sectors = 0;
 }
 
+// The block group inode `ino` belongs to (where its blocks are best put)
 static uint32_t group_of_inode(uint32_t ino) {
     return (ino - 1) / vol.inodes_per_group;
 }
@@ -435,6 +455,7 @@ static uint32_t group_of_inode(uint32_t ino) {
 // space to the record before it; adding one splits a record with space to
 // spare. Records never cross a block boundary.
 
+// Bytes a directory record for a name of `name_len` needs (rounded to 4)
 static uint32_t record_size(size_t name_len) {
     return (uint32_t)((8 + name_len + 3) & ~(size_t)3);
 }
@@ -540,6 +561,7 @@ static uint32_t dir_change(struct ext2_inode *dir, const char *name, bool remove
 
 // --- What the VFS sees -----------------------------------------------------------
 
+// The inode number behind a node of this filesystem (0 if it has none)
 static uint32_t ino_of(const vnode_t *node) {
     const ext2_node_t *info = (const ext2_node_t *)node->private_data;
     return info ? info->ino : 0;
@@ -554,6 +576,9 @@ static void apply_inode(vnode_t *node, const struct ext2_inode *inode) {
     node->mtime = unix_to_packed(inode->mtime);
 }
 
+// Put a node for inode `ino`, called `name`, into the VFS directory `dir`,
+// with this filesystem's operations and what the inode says. A directory
+// is left unread. Returns NULL if memory ran out (or the name is too long).
 static vnode_t *attach(vnode_t *dir, const char *name, uint32_t ino, const struct ext2_inode *inode) {
     bool directory = (inode->mode & MODE_TYPE_MASK) == MODE_DIRECTORY;
     ext2_node_t *info = kmalloc(sizeof(ext2_node_t));
@@ -572,8 +597,10 @@ static vnode_t *attach(vnode_t *dir, const char *name, uint32_t ino, const struc
     return node;
 }
 
-// Read a directory's entries and attach a node for each. Called by the VFS
-// the first time something looks inside the directory.
+// vnode_ops_t.load: read a directory's entries and attach a node for each
+// file and directory (other kinds, names that cannot be shown, and files of
+// 4 GiB and more are skipped). Called by the VFS, holding the tree lock, the
+// first time something looks inside the directory. Returns 0, -EIO, -ENOMEM.
 static int ext2_dir_load(vnode_t *dir) {
     uint32_t dir_ino = ino_of(dir);
     struct ext2_inode inode, child;
@@ -631,6 +658,9 @@ static int ext2_dir_load(vnode_t *dir) {
     return result;
 }
 
+// Can `name` be stored as a new entry? Printable ASCII, no '/', not "."
+// or "..", and short enough for a vnode. (ext2 itself takes any byte but
+// '/' and NUL; this keeps names typeable.)
 static bool valid_name(const char *name) {
     size_t len = strlen(name);
     if (len == 0 || len > NAME_MAX_LEN) return false;
@@ -641,6 +671,10 @@ static bool valid_name(const char *name) {
     return true;
 }
 
+// vnode_ops_t.create: make a file or directory `name` in `dir` on the disk
+// (inode first, then its entry), and attach its node. Owned by root with
+// mode 0700 until the caller's setattr. Returns 0, -EINVAL, -ENOSPC,
+// -EMFILE (the parent has too many subdirectories), -EIO or -ENOMEM.
 static int ext2_dir_create(vnode_t *dir, const char *name, bool directory, vnode_t **out) {
     if (!valid_name(name)) return -EINVAL;
     uint32_t dir_ino = ino_of(dir);
@@ -719,6 +753,9 @@ static void release_inode(uint32_t ino, struct ext2_inode *inode, bool directory
     free_inode(ino, directory);
 }
 
+// vnode_ops_t.remove: take `child`'s entry out of `dir` on the disk, then
+// release its inode and blocks if that was its last name. The VFS has
+// checked that a directory is empty. Returns 0 or -EIO.
 static int ext2_dir_remove(vnode_t *dir, vnode_t *child) {
     uint32_t dir_ino = ino_of(dir), ino = ino_of(child);
     bool directory = child->type == VFS_DIRECTORY;
@@ -754,10 +791,11 @@ static int ext2_dir_remove(vnode_t *dir, vnode_t *child) {
     return err;
 }
 
-// A new name for a file or directory, in the same directory or another. The
-// new entry is written before the old one is removed, with the link count
-// raised in between, so that at no moment does the inode have fewer names
-// than its count says.
+// vnode_ops_t.rename: a new name for a file or directory, in the same
+// directory or another. The new entry is written before the old one is
+// removed, with the link count raised in between, so that at no moment
+// does the inode have fewer names than its count says. Returns 0, -EINVAL,
+// -ENOSPC or -EIO.
 static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, const char *new_name) {
     if (!valid_name(new_name)) return -EINVAL;
     uint32_t old_ino = ino_of(old_dir), new_ino = ino_of(new_dir), ino = ino_of(node);
@@ -765,6 +803,7 @@ static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, co
     bool same_dir = old_dir == new_dir;
     struct ext2_inode from, to, inode;
     int err = 0;
+    bool raised = false;    // The inode's link count went up (and has to come down again)
 
     mutex_lock(&ext2_mutex);
     if (!read_inode(old_ino, &from) || !read_inode(ino, &inode)) err = -EIO;
@@ -774,6 +813,7 @@ static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, co
     if (err == 0) {
         inode.links++;
         if (!write_inode(ino, &inode)) err = -EIO;
+        else raised = true;
     }
     if (err == 0) err = dir_add(target, new_ino, new_name, ino, directory ? FT_DIRECTORY : FT_REGULAR);
     if (err == 0) {
@@ -794,7 +834,7 @@ static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, co
             write_inode(new_ino, &to);
         }
     }
-    if (inode.links > 1 || err == 0) {
+    if (raised) {
         // Back to the one name it has (whether the new or, on failure, the old)
         if (inode.links > 0) inode.links--;
         inode.ctime = unix_now();
@@ -804,7 +844,8 @@ static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, co
     return err;
 }
 
-// Owner, group and permission bits, as the vnode now has them, into the inode
+// vnode_ops_t.setattr: owner, group and permission bits, as the vnode now
+// has them, into the inode. Returns 0 or -EIO.
 static int ext2_setattr(vnode_t *node) {
     uint32_t ino = ino_of(node);
     struct ext2_inode inode;
@@ -826,6 +867,8 @@ static int ext2_setattr(vnode_t *node) {
     return err;
 }
 
+// vnode_ops_t.read: up to `count` bytes from `offset` (holes read as
+// zeros). Returns the bytes read, 0 at the end, -EIO if nothing could be.
 static int64_t ext2_file_read(vnode_t *node, size_t offset, void *buf, size_t count) {
     struct ext2_inode inode;
     uint8_t *out = buf;
@@ -860,6 +903,9 @@ static int64_t ext2_file_read(vnode_t *node, size_t offset, void *buf, size_t co
     return (done == 0 && count > 0) ? -EIO : (int64_t)done;
 }
 
+// vnode_ops_t.write: `count` bytes at `offset`, allocating blocks as
+// needed (data first, the inode's new size last). Returns the bytes
+// written; -ENOSPC if none fitted; -EFBIG beyond 2 GiB; -EIO.
 static int64_t ext2_file_write(vnode_t *node, size_t offset, const void *buf, size_t count) {
     uint32_t ino = ino_of(node);
     struct ext2_inode inode;
@@ -905,6 +951,8 @@ static int64_t ext2_file_write(vnode_t *node, size_t offset, const void *buf, si
     return (int64_t)done;
 }
 
+// vnode_ops_t.truncate: cut the file to nothing and free its blocks.
+// Returns 0 or -EIO.
 static int ext2_file_truncate(vnode_t *node) {
     uint32_t ino = ino_of(node);
     struct ext2_inode inode;
@@ -959,9 +1007,12 @@ static uint8_t *reach_inodes;     // One bit per inode: reachable from the root
 static uint16_t *reach_links;     // Per inode: directory entries found that name it
 static uint32_t check_conflicts;  // Things found that this check does not repair
 
+// Bit `n` of a bitmap: test it, set it
 static bool bit_test(const uint8_t *bits, uint32_t n) { return (bits[n / 8] >> (n % 8)) & 1; }
 static void bit_set(uint8_t *bits, uint32_t n) { bits[n / 8] |= (uint8_t)(1u << (n % 8)); }
 
+// Note that something reachable uses `block`; a block outside the volume,
+// or already noted for something else, counts as a conflict
 static void reach_block(uint32_t block) {
     if (!valid_block(block) || bit_test(reach_blocks, block)) {
         check_conflicts++;        // Outside the volume, or already someone else's
@@ -1303,13 +1354,14 @@ int ext2_mount(const char *mount_point, unsigned disk) {
     if (ok && strcmp(mount_point, "/") == 0) {
         root = vfs_get_root();
     } else if (ok) {
-        const char *leaf = NULL;
-        vnode_t *parent = vfs_find_parent(mount_point, &leaf);
+        char leaf[VFS_NAME_MAX];
+        vnode_t *parent = vfs_find_parent(mount_point, leaf);
         if (parent) vfs_mount_dir(parent, leaf, &root);
     }
     ext2_node_t *info = (root && !root->children && !root->ops) ? kmalloc(sizeof(ext2_node_t)) : NULL;
     if (!info) {
         kprintf("ext2: disk %u holds an ext2 volume this driver can not use\n", disk);
+        if (root && root != vfs_get_root()) vfs_unmount_dir(root); // The mount point made for it goes again
         kfree(groups);
         groups = NULL;
         return -1;
@@ -1397,33 +1449,5 @@ bool ext2_test_damage(struct vnode *file_with_extra_link) {
     }
     mutex_unlock(&ext2_mutex);
     return ok;
-}
-
-// For tests: drop what is known about a directory's contents, so that the
-// next look inside reads it from the disk again (see fat32_forget_directory)
-bool ext2_forget_directory(vnode_t *dir) {
-    if (!dir || dir->ops != &ext2_dir_ops || dir->unloaded) return false;
-    vfs_lock();
-    for (vnode_t *c = dir->children; c; c = c->next) {
-        if (!c->mount_point && (c->open_count != 0 || c->children)) {
-            vfs_unlock();
-            return false;
-        }
-    }
-    // Mount points stay: they are not the disk's (vfs_mount_dir)
-    vnode_t **link = &dir->children;
-    while (*link) {
-        vnode_t *c = *link;
-        if (c->mount_point) {
-            link = &c->next;
-            continue;
-        }
-        *link = c->next;
-        kfree((void *)c->private_data);
-        kfree(c);
-    }
-    dir->unloaded = true;
-    vfs_unlock();
-    return true;
 }
 #endif

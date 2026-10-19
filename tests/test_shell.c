@@ -62,7 +62,7 @@ TEST(shell_file_commands) {
     run_and_capture("touch /tmp/shell-test/empty", out, sizeof(out));
     EXPECT_TRUE(strstr(out, "exists already") != NULL);
     run_and_capture("rm /tmp/shell-test/empty", out, sizeof(out));
-    run_and_capture("rm /tmp/shell-test", out, sizeof(out));
+    run_and_capture("rm /tmp/shell-test/", out, sizeof(out));   // A trailing slash is not part of the name
     EXPECT_TRUE(vfs_find(NULL, "/tmp/shell-test") == NULL);
 
     // On the system disk (the root): a file made there, then removed

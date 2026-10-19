@@ -9,6 +9,7 @@
 
 #define MAX_RELOCATIONS (1u << 20)
 
+// True if [offset, offset + length) lies inside a file of `size` bytes
 static bool in_file(uint64_t offset, uint64_t length, size_t size) {
     return offset <= size && length <= size - offset;
 }

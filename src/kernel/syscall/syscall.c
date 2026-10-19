@@ -46,7 +46,7 @@ extern void syscall_entry(void);
 #define RFLAGS_DF (1ULL << 10)
 #define RFLAGS_AC (1ULL << 18)
 
-#define PATH_MAX 128
+#define PATH_MAX VFS_PATH_MAX
 
 void syscall_enable_on_this_cpu(void) {
     // 1. Enable SCE (System Call Extensions), bit 0 of EFER
@@ -97,7 +97,8 @@ static bool user_range_ok(uint64_t addr, size_t len, bool write) {
 }
 
 // Copy a NUL-terminated string from user memory into a kernel buffer.
-// Returns its length, or -EFAULT if it is unreadable or does not fit.
+// Returns its length; -EFAULT if it is unreadable; -ENAMETOOLONG if it does
+// not fit (with its NUL) in dst_size bytes.
 static int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t dst_size) {
     for (size_t i = 0; i < dst_size; i++) {
         // Check once per page, not once per byte
@@ -109,7 +110,7 @@ static int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t dst_si
         user_access_end();
         if (dst[i] == '\0') return (int64_t)i;
     }
-    return -EFAULT; // No terminator within dst_size
+    return -ENAMETOOLONG; // No terminator within dst_size
 }
 
 // --- Individual system calls -------------------------------------------------
@@ -205,7 +206,8 @@ static int64_t sys_write(int fd, uint64_t buf, size_t count) {
 // free descriptor. Returns the descriptor or a negative error.
 static int64_t sys_open(uint64_t user_path, int flags) {
     char path[PATH_MAX];
-    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
 
     file_t *file = NULL;
     task_t *task = sched_get_current_task();
@@ -319,17 +321,13 @@ static int64_t sys_readdir(int fd, uint64_t user_entry) {
 // umask. The caller needs the right to write in the parent directory.
 static int64_t sys_mkdir(uint64_t user_path) {
     char path[PATH_MAX];
-    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
 
-    const char *leaf = NULL;
-    vnode_t *parent = vfs_find_parent_at(sched_get_current_task()->cwd, path, &leaf);
-    if (!parent) return -ENOENT;
-
-    // Copy the leaf without a trailing slash ("mkdir /tmp/dir/")
-    char name[PATH_MAX];
-    size_t len = 0;
-    while (leaf[len] != '\0' && leaf[len] != '/') { name[len] = leaf[len]; len++; }
-    name[len] = '\0';
+    char name[VFS_NAME_MAX];
+    vnode_t *parent = NULL;
+    int found = vfs_find_parent_at(sched_get_current_task()->cwd, path, &parent, name);
+    if (found < 0) return found;
 
     task_t *task = sched_get_current_task();
     if (!auth_may_access(task->uid, parent, true)) return -EACCES;
@@ -350,11 +348,13 @@ static int64_t sys_mkdir(uint64_t user_path) {
 // or the directory (so that everyone may use /tmp, but not empty it).
 static int64_t sys_unlink(uint64_t user_path) {
     char path[PATH_MAX];
-    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
 
-    const char *leaf = NULL;
-    vnode_t *parent = vfs_find_parent_at(sched_get_current_task()->cwd, path, &leaf);
-    if (!parent) return -ENOENT;
+    char leaf[VFS_NAME_MAX];
+    vnode_t *parent = NULL;
+    int found = vfs_find_parent_at(sched_get_current_task()->cwd, path, &parent, leaf);
+    if (found < 0) return found;
 
     vnode_t *child = vfs_find_child(parent, leaf);
     if (child && !auth_may_remove(sched_get_current_task()->uid, parent, child)) return -EACCES;
@@ -366,22 +366,17 @@ static int64_t sys_unlink(uint64_t user_path) {
 // exists.
 static int64_t sys_rename(uint64_t user_old, uint64_t user_new) {
     char old_path[PATH_MAX], new_path[PATH_MAX];
-    if (copy_string_from_user(old_path, user_old, sizeof(old_path)) < 0) return -EFAULT;
-    if (copy_string_from_user(new_path, user_new, sizeof(new_path)) < 0) return -EFAULT;
+    int64_t old_path_len = copy_string_from_user(old_path, user_old, sizeof(old_path));
+    if (old_path_len < 0) return old_path_len;
+    int64_t new_path_len = copy_string_from_user(new_path, user_new, sizeof(new_path));
+    if (new_path_len < 0) return new_path_len;
 
     task_t *task = sched_get_current_task();
-    const char *old_leaf = NULL, *new_leaf = NULL;
-    vnode_t *old_parent = vfs_find_parent_at(task->cwd, old_path, &old_leaf);
-    vnode_t *new_parent = vfs_find_parent_at(task->cwd, new_path, &new_leaf);
-    if (!old_parent || !new_parent) return -ENOENT;
-
-    // Leaves without a trailing slash ("mv a dir/")
-    char old_name[PATH_MAX], new_name[PATH_MAX];
-    size_t len = 0;
-    while (old_leaf[len] != '\0' && old_leaf[len] != '/') { old_name[len] = old_leaf[len]; len++; }
-    old_name[len] = '\0';
-    for (len = 0; new_leaf[len] != '\0' && new_leaf[len] != '/'; len++) new_name[len] = new_leaf[len];
-    new_name[len] = '\0';
+    char old_name[VFS_NAME_MAX], new_name[VFS_NAME_MAX];
+    vnode_t *old_parent = NULL, *new_parent = NULL;
+    int found = vfs_find_parent_at(task->cwd, old_path, &old_parent, old_name);
+    if (found == 0) found = vfs_find_parent_at(task->cwd, new_path, &new_parent, new_name);
+    if (found < 0) return found;
 
     // Taking the entry out of one directory needs the right to remove it;
     // putting it into the other needs the right to write there
@@ -397,7 +392,8 @@ static int64_t sys_rename(uint64_t user_old, uint64_t user_new) {
 // Find the node a path names, for the calls that change its owner or mode
 static int64_t lookup_for_change(uint64_t user_path, vnode_t **out) {
     char path[PATH_MAX];
-    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
     *out = vfs_find(sched_get_current_task()->cwd, path);
     return *out ? 0 : -ENOENT;
 }
@@ -569,7 +565,8 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
     char *argv[PROCESS_MAX_ARGS + 1];
     char *envp[PROCESS_MAX_ARGS + 1];
 
-    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
 
     char *storage = kmalloc(PROCESS_ARG_BYTES);
     if (!storage) return -ENOMEM;
@@ -657,7 +654,8 @@ static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
 // chdir(path): change the caller's working directory
 static int64_t sys_chdir(uint64_t user_path) {
     char path[PATH_MAX];
-    if (copy_string_from_user(path, user_path, sizeof(path)) < 0) return -EFAULT;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
 
     task_t *task = sched_get_current_task();
     vnode_t *dir = vfs_find(task->cwd, path);
