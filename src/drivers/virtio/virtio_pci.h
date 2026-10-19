@@ -114,10 +114,14 @@ bool virtio_open(virtio_device_t *dev, const pci_device_t *pci);
 bool virtio_negotiate(virtio_device_t *dev, uint64_t wanted, uint64_t *accepted);
 
 /**
- * @brief Tell the device the driver is ready (after its queues are set up),
- *        or that it has given up.
+ * @brief Tell the device the driver is ready (after its queues are set up):
+ *        from now on it may use them and raise interrupts.
  */
 void virtio_driver_ok(virtio_device_t *dev);
+
+/**
+ * @brief Tell the device the driver has given up on it (status FAILED).
+ */
 void virtio_fail(virtio_device_t *dev);
 
 /**
@@ -127,10 +131,16 @@ void virtio_fail(virtio_device_t *dev);
 uint8_t virtio_isr(virtio_device_t *dev);
 
 /**
- * @brief Read the device-specific configuration (a disk's size, a network
+ * @brief Read a byte of the device-specific configuration (a network
  *        card's address). Out of range reads give 0.
  */
 uint8_t virtio_config8(virtio_device_t *dev, uint32_t offset);
+
+/**
+ * @brief Read 64 bits of the device-specific configuration (a disk's
+ *        size), consistently even if the device changes it meanwhile. Out
+ *        of range reads give 0.
+ */
 uint64_t virtio_config64(virtio_device_t *dev, uint32_t offset);
 
 /**

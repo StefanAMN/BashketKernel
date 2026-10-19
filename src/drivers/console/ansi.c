@@ -16,6 +16,7 @@ void ansi_init(ansi_parser_t *parser) {
     for (int i = 0; i < ANSI_MAX_PARAMS; i++) parser->params[i] = 0;
 }
 
+// The action for a character that does nothing visible (yet)
 static ansi_action_t nothing(void) {
     ansi_action_t action = { .kind = ANSI_NOTHING };
     return action;

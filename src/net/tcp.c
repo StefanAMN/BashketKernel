@@ -31,7 +31,7 @@
 #include "kstring.h"
 #include "kprintf.h"
 #include "kerrno.h"
-#include "dev.h"
+#include "random.h"
 
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
@@ -68,7 +68,9 @@ struct tcp_header {
     uint16_t urgent;
 } __attribute__((packed));
 
+// Reverse the byte order of 16 and 32-bit values (the wire is big-endian)
 static uint16_t swap16(uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); }
+// (See swap16)
 static uint32_t swap32(uint32_t v) {
     return (v << 24) | ((v << 8) & 0x00FF0000) | ((v >> 8) & 0x0000FF00) | (v >> 24);
 }
@@ -172,11 +174,13 @@ size_t tcp_sockets_in_use(void) {
 
 // --- Helpers (callers hold tcp_lock) -------------------------------------------
 
+// Tell tcpd there is something to send. Caller holds tcp_lock.
 static void kick_tcpd(void) {
     work_pending = true;
     sched_wakeup(&work_pending);
 }
 
+// Give back a socket's buffers and its slot. Caller holds tcp_lock.
 static void free_socket(struct tcp_socket *sock) {
     kfree(sock->tx);
     kfree(sock->rx);
@@ -197,10 +201,12 @@ static void abort_connection(struct tcp_socket *sock, int error) {
     if (sock->listener || !sock->user_open) free_socket(sock);
 }
 
+// Room left in the receive ring: what we offer the other end as window
 static size_t rx_free(const struct tcp_socket *sock) {
     return TCP_BUFFER_SIZE - sock->rx_len;
 }
 
+// Is any socket on local port `port`? Caller holds tcp_lock.
 static bool port_in_use(uint16_t port) {
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
         if (sockets[i].used && sockets[i].local_port == port) return true;
@@ -208,6 +214,8 @@ static bool port_in_use(uint16_t port) {
     return false;
 }
 
+// A free slot set up as a closed socket with both rings allocated, or NULL
+// (all in use, or no memory). Caller holds tcp_lock.
 static struct tcp_socket *alloc_socket(void) {
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
         struct tcp_socket *sock = &sockets[i];
@@ -232,6 +240,7 @@ static struct tcp_socket *alloc_socket(void) {
     return NULL;
 }
 
+// Choose our first sequence number, at random. Caller holds tcp_lock.
 static void start_sequence(struct tcp_socket *sock) {
     // An unpredictable first sequence number makes it hard for someone who
     // can not see the connection to forge segments for it
@@ -241,6 +250,8 @@ static void start_sequence(struct tcp_socket *sock) {
     sock->snd_max = sock->iss;
 }
 
+// Leave a reset for tcpd to send (input never sends; see the top). Caller
+// holds tcp_lock.
 static void queue_reset(uint32_t ip, uint16_t local_port, uint16_t remote_port, uint32_t seq, uint32_t ack, uint8_t flags) {
     for (size_t i = 0; i < sizeof(resets) / sizeof(resets[0]); i++) {
         if (resets[i].used) continue;
@@ -423,6 +434,8 @@ static void output(struct tcp_socket *sock, bool can_block) {
 
 // --- Receiving -------------------------------------------------------------------
 
+// The largest segment the other end takes, from the options of its SYN
+// (bounds-checked: they come from the network), at most our own
 static uint16_t mss_from_options(const uint8_t *options, size_t len) {
     for (size_t i = 0; i < len; ) {
         uint8_t kind = options[i];
@@ -440,6 +453,8 @@ static uint16_t mss_from_options(const uint8_t *options, size_t len) {
     return TCP_DEFAULT_MSS;
 }
 
+// The connection these addresses and ports belong to, or NULL. Caller
+// holds tcp_lock.
 static struct tcp_socket *find_connection(uint16_t local_port, uint32_t remote_ip, uint16_t remote_port) {
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
         struct tcp_socket *s = &sockets[i];
@@ -449,6 +464,7 @@ static struct tcp_socket *find_connection(uint16_t local_port, uint32_t remote_i
     return NULL;
 }
 
+// The socket listening on `local_port`, or NULL. Caller holds tcp_lock.
 static struct tcp_socket *find_listener(uint16_t local_port) {
     for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
         struct tcp_socket *s = &sockets[i];
@@ -728,6 +744,9 @@ static void run_timers(struct tcp_socket *sock, uint64_t now) {
     }
 }
 
+// The TCP thread: runs the timers, sends the queued resets, and calls
+// output() for every socket, whenever woken and every TCP_TIMER_TICKS
+// while there is a connection
 static void tcpd(void) {
     for (;;) {
         uint64_t irq = spinlock_acquire_irqsave(&tcp_lock);

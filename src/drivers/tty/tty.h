@@ -23,6 +23,9 @@
 
 #define TTY_LINE_MAX 256 // Longest line, including its newline
 
+/**
+ * @brief Start in line mode with nothing typed (also how the tests reset it).
+ */
 void tty_init(void);
 
 /**
@@ -47,6 +50,11 @@ int64_t tty_read(char *out, size_t count);
  *        editing. Raw mode ends by itself when `owner_pid` exits.
  */
 void tty_set_raw(bool raw, uint32_t owner_pid);
+
+/**
+ * @brief Whether the terminal is in raw mode (read without a lock: the
+ *        input interrupt handlers consult it).
+ */
 bool tty_is_raw(void);
 
 /**
@@ -56,7 +64,8 @@ bool tty_is_raw(void);
 void tty_process_exited(uint32_t pid);
 
 /**
- * @brief Write to the screen and the serial port.
+ * @brief Write `count` bytes of kernel memory to the screen and the serial
+ *        port. Never sleeps. Returns `count`.
  */
 int64_t tty_write(const char *in, size_t count);
 

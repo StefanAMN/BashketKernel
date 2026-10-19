@@ -45,6 +45,7 @@ static void serial_drain_uart(void) {
     }
 }
 
+// IRQ 4: take what the UART holds, then wake whoever waits for input
 static void serial_irq_handler(struct registers *regs) {
     (void)regs;
     uint64_t flags = spinlock_acquire_irqsave(&serial_rx_lock);
@@ -67,11 +68,13 @@ void serial_init(void) {
     // Register IRQ 4 (Interrupt 36)
     register_irq_handler(4, serial_irq_handler);
 
-    // Unmask IRQ 4 on 8259 Master PIC
+    // Unmask IRQ 4 on the 8259 master PIC: until the I/O APIC takes over
+    // (ioapic_init masks the PIC again), input arrives that way
     uint8_t mask = inb(0x21);
     outb(0x21, mask & ~(1 << 4));
 }
 
+// Whether the UART's transmit holding register can take a byte (LSR bit 5)
 static int is_transmit_empty(void) {
     return inb(COM1 + 5) & 0x20;
 }
@@ -79,13 +82,6 @@ static int is_transmit_empty(void) {
 void serial_putchar(char c) {
     while (is_transmit_empty() == 0);
     outb(COM1, c);
-}
-
-void serial_write(const char *str) {
-    if (!str) return;
-    for (size_t i = 0; str[i] != '\0'; i++) {
-        serial_putchar(str[i]);
-    }
 }
 
 bool serial_has_char(void) {

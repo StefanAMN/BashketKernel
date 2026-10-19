@@ -29,6 +29,8 @@ static uint64_t write_count = 0;
 // Protects all of the above. Never held across a disk request.
 static spinlock_t cache_lock = SPINLOCK_RANKED("bcache", LOCK_RANK_BCACHE);
 
+// Allocate the cache's memory the first time it is needed. False if there
+// is none to be had (the caller then goes to the disk directly).
 static bool ready(void) {
     if (data) return true;
     uint8_t *memory = kmalloc((size_t)BCACHE_SECTORS * SECTOR);
@@ -42,7 +44,7 @@ static bool ready(void) {
     return true;
 }
 
-// Caller holds cache_lock
+// Put a copy of one sector of disk `dev` in its slot. Caller holds cache_lock.
 static void store(unsigned dev, uint64_t lba, const uint8_t *sector) {
     size_t slot = (size_t)(lba % BCACHE_SECTORS);
     entries[slot].valid = true;
@@ -51,6 +53,7 @@ static void store(unsigned dev, uint64_t lba, const uint8_t *sector) {
     memcpy(data + slot * SECTOR, sector, SECTOR);
 }
 
+// (The two disk-0 versions: see bcache.h)
 int bcache_read(uint64_t lba, void *buf, size_t count) { return bcache_read_dev(0, lba, buf, count); }
 int bcache_write(uint64_t lba, const void *buf, size_t count) { return bcache_write_dev(0, lba, buf, count); }
 

@@ -9,7 +9,8 @@
 #include "klog.h"
 
 // Keeps output from two tasks (or a task and an interrupt handler) from
-// interleaving mid-line. This is a leaf lock: nothing is acquired under it.
+// interleaving mid-line. Only the log's and the console's locks, ranked
+// after it, are taken under it.
 static spinlock_t kprintf_lock = SPINLOCK_RANKED("kprintf", LOCK_RANK_KPRINTF);
 
 void kprintf_force_unlock(void) {
@@ -26,6 +27,7 @@ typedef struct {
     void *ctx;
 } sink_t;
 
+// Write a NUL-terminated string to a sink
 static void emit_string(sink_t *out, const char *s) {
     while (*s) out->put(out->ctx, *s++);
 }
@@ -49,13 +51,14 @@ static void emit_number(sink_t *out, uint64_t val, unsigned base, bool negative,
     while (len > 0) out->put(out->ctx, buf[--len]);
 }
 
+// Print a signed number in decimal (see emit_number)
 static void emit_int(sink_t *out, int64_t val, int width, bool zero_pad) {
     // Negate as unsigned: INT64_MIN has no positive counterpart
     uint64_t magnitude = val < 0 ? 0 - (uint64_t)val : (uint64_t)val;
     emit_number(out, magnitude, 10, val < 0, width, zero_pad);
 }
 
-// Supports %d %u %x %p %s %c %%.
+// The formatter. Supports %d %u %x %p %s %c %%.
 //   A width may come first (%5d, %8s), with a leading 0 for zero padding
 //   (%02d, %08x). Fields are right-aligned.
 //   A 'z' or 'l' before d/u/x means a 64-bit argument (size_t, long).
@@ -121,6 +124,7 @@ static void format(sink_t *out, const char *fmt, va_list args) {
     }
 }
 
+// kprintf's sink: the serial port, the screen and the kernel log
 static void put_to_console(void *ctx, char c) {
     (void)ctx;
     serial_putchar(c);
@@ -146,6 +150,8 @@ typedef struct {
     size_t len; // Characters the full output needs so far
 } buffer_sink_t;
 
+// ksnprintf's sink: store while there is room (keeping one byte for the
+// NUL), and count everything
 static void put_to_buffer(void *ctx, char c) {
     buffer_sink_t *b = ctx;
     if (b->len + 1 < b->size) b->buf[b->len] = c;

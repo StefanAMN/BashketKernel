@@ -43,6 +43,9 @@
  */
 int mouse_init(void);
 
+/**
+ * @brief Whether mouse_init found a mouse.
+ */
 bool mouse_present(void);
 
 /**

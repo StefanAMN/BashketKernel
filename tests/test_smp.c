@@ -8,7 +8,7 @@
 #include "cow.h"
 #include "vmm.h"
 #include "hrtimer.h"
-#include "dev.h"
+#include "random.h"
 #include "kstring.h"
 
 static spinlock_t test_lock = SPINLOCK_INIT;

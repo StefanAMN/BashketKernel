@@ -25,11 +25,16 @@
 #define ETH_FRAME_MIN 60   // Shorter frames are padded with zeros
 
 /**
- * @brief Find and initialise the card.
+ * @brief Find and set up the first virtio network card: its queues, its
+ *        address (made up if it gives none), receive buffers, interrupt.
+ *        Called once at boot.
  * @return 0 if a card is ready, -1 if there is none or it could not be set up.
  */
 int virtio_net_init(void);
 
+/**
+ * @brief Whether a card was set up.
+ */
 bool virtio_net_present(void);
 
 /**
@@ -52,19 +57,19 @@ int virtio_net_send(const void *frame, size_t len);
 size_t virtio_net_poll(void *frame, size_t max);
 
 /**
- * @brief True if virtio_net_poll would return a frame.
- */
-bool virtio_net_rx_pending(void);
-
-/**
- * @brief Sleep until the card has a received frame waiting.
+ * @brief Sleep (uninterruptibly: for the receive thread) until the card has
+ *        a received frame waiting.
  */
 void virtio_net_wait_rx(void);
 
 /**
- * @brief Frames received and sent since boot.
+ * @brief Frames received since boot.
  */
 uint64_t virtio_net_rx_count(void);
+
+/**
+ * @brief Frames sent since boot.
+ */
 uint64_t virtio_net_tx_count(void);
 
 #endif // VIRTIO_NET_H

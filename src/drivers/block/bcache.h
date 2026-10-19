@@ -27,18 +27,34 @@
 #define BCACHE_SECTORS 1024   // 512 KiB of cached sectors
 
 /**
- * @brief Read or write `count` sectors starting at `lba`, through the
- *        cache. 0 on success, -1 on error. May sleep.
+ * @brief Read `count` sectors of disk 0 starting at `lba` into the kernel
+ *        buffer `buf`, from the cache where it has them. 0 on success, -1 on
+ *        a disk error. May sleep.
  */
 int bcache_read(uint64_t lba, void *buf, size_t count);
+
+/**
+ * @brief Write `count` sectors to disk 0 at `lba`: to the disk, then into
+ *        the cache. 0 on success, -1 on a disk error (the cached copies of
+ *        those sectors are then dropped). May sleep. Two writers to the
+ *        same sector at once must be kept apart by the caller (filesystems
+ *        hold their volume lock): the cache could end up with the older.
+ */
 int bcache_write(uint64_t lba, const void *buf, size_t count);
 
-// The same for disk number `dev` (the two above use disk 0)
+/**
+ * @brief bcache_read for disk number `dev`.
+ */
 int bcache_read_dev(unsigned dev, uint64_t lba, void *buf, size_t count);
+
+/**
+ * @brief bcache_write for disk number `dev`.
+ */
 int bcache_write_dev(unsigned dev, uint64_t lba, const void *buf, size_t count);
 
 /**
- * @brief Forget everything (the next reads all go to the disk).
+ * @brief Forget everything (the next reads all go to the disk), for tests
+ *        that must see what is really there.
  */
 void bcache_invalidate(void);
 
@@ -48,6 +64,9 @@ typedef struct {
     uint64_t writes;     // Sectors written (always to the disk as well)
 } bcache_stats_t;
 
+/**
+ * @brief Copy the counts since boot into *out.
+ */
 void bcache_get_stats(bcache_stats_t *out);
 
 #endif // BCACHE_H
