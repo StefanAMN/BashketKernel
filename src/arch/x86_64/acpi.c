@@ -1,6 +1,6 @@
 /**
  * @file acpi.c
- * @brief Minimal ACPI table walker (RSDP -> RSDT/XSDT -> MADT)
+ * @brief Minimal ACPI table walker (RSDP -> RSDT/XSDT -> MADT, FADT -> DSDT)
  *
  * Structure layouts follow the ACPI specification, sections 5.2.5 (RSDP),
  * 5.2.6 (table header), 5.2.7/5.2.8 (RSDT/XSDT) and 5.2.12 (MADT).
@@ -44,7 +44,17 @@ struct acpi_madt {
     // Followed by variable-length entries: { uint8_t type; uint8_t length; ... }
 } __attribute__((packed));
 
+#define MADT_ENTRY_IOAPIC              1
 #define MADT_ENTRY_INT_SOURCE_OVERRIDE 2
+
+struct madt_ioapic {
+    uint8_t  type;           // 1
+    uint8_t  length;         // 12
+    uint8_t  ioapic_id;
+    uint8_t  reserved;
+    uint32_t address;        // Physical address of its registers
+    uint32_t gsi_base;       // The first Global System Interrupt it handles
+} __attribute__((packed));
 
 struct madt_int_source_override {
     uint8_t  type;           // 2
@@ -63,15 +73,24 @@ struct isa_override {
 
 static struct isa_override isa_overrides[16];
 
-// ACPI tables hold physical addresses; reach them through the direct map.
+// The first I/O APIC the MADT lists (the only one this kernel drives)
+static bool ioapic_found;
+static uint32_t ioapic_address, ioapic_gsi_base;
+
+// ACPI tables hold physical addresses (firmware memory, which the
+// bootloader's direct map covers); reach them through the direct map.
 static void *phys_to_virt(uint64_t phys) {
     return (void *)(phys + pmm_get_hhdm_offset());
 }
 
+// Whether the 4-character table signature `sig` is `want`
 static bool signature_is(const char *sig, const char *want) {
     return sig[0] == want[0] && sig[1] == want[1] && sig[2] == want[2] && sig[3] == want[3];
 }
 
+// Walk the MADT's entries and record the first I/O APIC and every ISA
+// interrupt source override. Entries are bounds-checked against the table's
+// length (the firmware's bytes are not trusted); a malformed one ends the walk.
 static void parse_madt(const struct acpi_madt *madt) {
     const uint8_t *ptr = (const uint8_t *)madt + sizeof(struct acpi_madt);
     const uint8_t *end = (const uint8_t *)madt + madt->header.length;
@@ -81,7 +100,12 @@ static void parse_madt(const struct acpi_madt *madt) {
         uint8_t length = ptr[1];
         if (length < 2 || ptr + length > end) break; // Malformed entry
 
-        if (type == MADT_ENTRY_INT_SOURCE_OVERRIDE &&
+        if (type == MADT_ENTRY_IOAPIC && length >= sizeof(struct madt_ioapic) && !ioapic_found) {
+            const struct madt_ioapic *io = (const void *)ptr;
+            ioapic_found = true;
+            ioapic_address = io->address;
+            ioapic_gsi_base = io->gsi_base;
+        } else if (type == MADT_ENTRY_INT_SOURCE_OVERRIDE &&
             length >= sizeof(struct madt_int_source_override)) {
             const struct madt_int_source_override *iso = (const void *)ptr;
             if (iso->bus == 0 && iso->source < 16) {
@@ -168,8 +192,9 @@ bool acpi_parse_s5(const uint8_t *aml, size_t length, uint8_t *typ_a, uint8_t *t
         if (!named || q >= end || *q != 0x12) continue;
         q++;
         if (q >= end) return false;
-        q += 1 + (*q >> 6);                        // The package length
-        q++;                                       // The number of elements
+        size_t header = 1 + (*q >> 6) + 1;         // The package length, then the number of elements
+        if ((size_t)(end - q) <= header) return false;
+        q += header;
         uint32_t a, b;
         size_t used = aml_integer(q, end, &a);
         if (used == 0) return false;
@@ -183,6 +208,8 @@ bool acpi_parse_s5(const uint8_t *aml, size_t length, uint8_t *typ_a, uint8_t *t
     return false;
 }
 
+// The little-endian 32-bit value at `offset` in `table` (FADT fields are
+// not all naturally aligned)
 static uint32_t get32_at(const uint8_t *table, size_t offset) {
     return (uint32_t)table[offset] | ((uint32_t)table[offset + 1] << 8) |
            ((uint32_t)table[offset + 2] << 16) | ((uint32_t)table[offset + 3] << 24);
@@ -259,12 +286,20 @@ bool acpi_init(void *rsdp_ptr) {
     }
 
     const struct acpi_rsdp *rsdp = rsdp_ptr;
+    if (rsdp->signature[0] != 'R' || rsdp->signature[1] != 'S' || rsdp->signature[2] != 'D') {
+        kprintf("ACPI: the RSDP has no signature; assuming identity ISA IRQ routing\n");
+        return false;
+    }
 
     // Prefer the XSDT (64-bit pointers) when the firmware provides one
     bool use_xsdt = rsdp->revision >= 2 && rsdp->xsdt_address != 0;
     const struct acpi_sdt_header *root =
         phys_to_virt(use_xsdt ? rsdp->xsdt_address : rsdp->rsdt_address);
     size_t entry_size = use_xsdt ? 8 : 4;
+    if (root->length < sizeof(struct acpi_sdt_header)) {
+        kprintf("ACPI: the root table is shorter than its header; ignored\n");
+        return false;
+    }
     size_t entry_count = (root->length - sizeof(struct acpi_sdt_header)) / entry_size;
     const uint8_t *entries = (const uint8_t *)root + sizeof(struct acpi_sdt_header);
     bool found_madt = false;
@@ -273,9 +308,10 @@ bool acpi_init(void *rsdp_ptr) {
         uint64_t table_phys = use_xsdt
             ? *(const uint64_t *)(entries + i * 8)
             : *(const uint32_t *)(entries + i * 4);
+        if (table_phys == 0) continue;
         const struct acpi_sdt_header *table = phys_to_virt(table_phys);
 
-        if (signature_is(table->signature, "APIC")) {
+        if (signature_is(table->signature, "APIC") && table->length >= sizeof(struct acpi_madt)) {
             parse_madt((const struct acpi_madt *)table);
             found_madt = true;
         } else if (signature_is(table->signature, "FACP")) {
@@ -285,6 +321,13 @@ bool acpi_init(void *rsdp_ptr) {
 
     if (!found_madt) kprintf("ACPI: MADT not found; assuming identity ISA IRQ routing\n");
     return found_madt;
+}
+
+bool acpi_ioapic(uint64_t *phys, uint32_t *gsi_base) {
+    if (!ioapic_found) return false;
+    *phys = ioapic_address;
+    *gsi_base = ioapic_gsi_base;
+    return true;
 }
 
 uint32_t acpi_isa_irq_to_gsi(uint8_t irq, uint16_t *out_flags) {

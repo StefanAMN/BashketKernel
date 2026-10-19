@@ -14,7 +14,6 @@
 #include "keyboard.h"
 #include "process.h"
 
-extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
 #define SERIAL_BUFFER_SIZE 256
 static char serial_buffer[SERIAL_BUFFER_SIZE];

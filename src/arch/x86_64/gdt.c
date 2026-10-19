@@ -29,6 +29,10 @@ static struct gdt_ptr gdt_pointer;
 // other CPUs get theirs from the stack allocator when they are started.
 static uint8_t double_fault_stack[16 * 1024] __attribute__((aligned(16)));
 
+// Fill segment descriptor `num` (Intel SDM Vol. 3A, 3.4.5). In long mode
+// base and limit are ignored for code and data; what counts is the access
+// byte (present, privilege level, code or data) and the long-mode bit in
+// the high nibble of `gran`.
 static void set_gdt_entry(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
     gdt_table.entries[num].base_low    = (base & 0xFFFF);
     gdt_table.entries[num].base_middle = (base >> 16) & 0xFF;

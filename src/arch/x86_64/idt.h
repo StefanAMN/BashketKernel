@@ -35,21 +35,15 @@ struct idt_ptr {
 } __attribute__((packed));
 
 /**
- * @brief Initialize all 256 IDT gates with assembly ISR stubs and load IDTR.
+ * @brief Point all 256 vectors at their stubs in isr_stubs.S (interrupt
+ *        gates, DPL 0; the double fault on its own stack, IST1) and load the
+ *        table on the boot CPU. Every vector then reaches isr_handler.
  */
 void idt_init(void);
 
 /**
- * @brief Set an individual IDT gate descriptor.
- * @param num Vector number (0..255).
- * @param base 64-bit virtual address of ISR entry stub.
- * @param selector Code Segment Selector (0x08).
- * @param flags Type and attribute flags (0x8E = present, DPL 0, 64-bit interrupt gate).
- */
-void idt_set_gate(uint8_t num, uint64_t base, uint16_t selector, uint8_t flags);
-
-/**
- * @brief Load the (shared) IDT on a CPU other than the boot CPU.
+ * @brief Load the (shared) IDT on a CPU other than the boot CPU, after
+ *        idt_init has filled it.
  */
 void idt_load_on_this_cpu(void);
 

@@ -9,12 +9,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// Write `val` to model-specific register `msr` of the calling CPU (a #GP
+// if the CPU has no such register)
 static inline void wrmsr(uint32_t msr, uint64_t val) {
     uint32_t low = (uint32_t)val;
     uint32_t high = (uint32_t)(val >> 32);
     asm volatile("wrmsr" : : "c"(msr), "a"(low), "d"(high));
 }
 
+// Read model-specific register `msr` of the calling CPU
 static inline uint64_t rdmsr(uint32_t msr) {
     uint32_t low, high;
     asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
@@ -74,6 +77,7 @@ static inline void user_access_begin(void) {
     if (cpu_smap_enabled) asm volatile("stac" : : : "cc", "memory");
 }
 
+// Close the window user_access_begin opened
 static inline void user_access_end(void) {
     if (cpu_smap_enabled) asm volatile("clac" : : : "cc", "memory");
 }

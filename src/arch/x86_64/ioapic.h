@@ -9,34 +9,31 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define IOAPIC_BASE_PHYS 0xFEC00000ULL
-
 /**
- * @brief Initialize I/O APIC controller.
+ * @brief Map the I/O APIC the MADT describes (after acpi_init), mask the
+ *        8259 PIC for good, and route the timer, keyboard and serial IRQs.
+ *        Without it, device interrupts are never delivered.
  */
 void ioapic_init(void);
 
 /**
- * @brief Route a hardware IRQ line to a specific LAPIC interrupt vector.
- * @param irq Hardware IRQ line number (e.g. 1 for Keyboard).
- * @param vector Target CPU interrupt vector (e.g. 33).
- * @param apic_id Target LAPIC ID (e.g. 0).
- */
-void ioapic_route_irq(uint8_t irq, uint8_t vector, uint32_t apic_id);
-
-/**
  * @brief Route a legacy ISA IRQ to vector 32 + irq on the boot CPU, using the
- * pin, polarity and trigger mode the ACPI MADT gives for it.
+ *        pin, polarity and trigger mode the ACPI MADT gives for it. (PCI
+ *        devices use this too, for the line their configuration space names:
+ *        on QEMU the MADT overrides those lines to level-triggered. Real
+ *        PCI routing would need the DSDT's _PRT, which is not read.)
+ *        Boot only, one CPU at a time (the registers are an index/data pair).
  */
 void ioapic_route_isa_irq(uint8_t irq);
 
 /**
- * @brief Program one I/O APIC redirection entry.
- * @param pin I/O APIC input pin (GSI).
+ * @brief Program one I/O APIC redirection entry and unmask it. Refused, with
+ *        a message, for a GSI this I/O APIC does not handle.
+ * @param gsi Global System Interrupt (the I/O APIC's GSI base + its pin).
  * @param vector IDT vector to deliver.
  * @param mode Extra low-word bits (bit 13 active low, bit 15 level triggered).
  * @param apic_id Destination Local APIC ID.
  */
-void ioapic_route_pin(uint8_t pin, uint8_t vector, uint32_t mode, uint32_t apic_id);
+void ioapic_route_pin(uint32_t gsi, uint8_t vector, uint32_t mode, uint32_t apic_id);
 
 #endif // IOAPIC_H

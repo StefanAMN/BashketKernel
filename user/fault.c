@@ -25,6 +25,8 @@ int main(int argc, char **argv) {
     } else if (strcmp(what, "div0") == 0) {
         volatile int zero = 0, one = 1;
         printf("%d\n", one / zero);                /* #DE */
+    } else if (strcmp(what, "ud2") == 0) {
+        asm volatile("ud2");                       /* Defined to be undefined: #UD */
     } else if (strcmp(what, "sgdt") == 0) {
         /* Reveals where the kernel's GDT is. Blocked only on CPUs with UMIP;
          * on others this is allowed and the program exits 1. */
@@ -33,7 +35,7 @@ int main(int argc, char **argv) {
     } else if (strcmp(what, "int") == 0) {
         asm volatile("int 0x20");                  /* IDT gates are DPL 0: #GP */
     } else {
-        printf("usage: fault cli|kread|kwrite|null|text|exec-stack|div0|sgdt|int\n");
+        printf("usage: fault cli|kread|kwrite|null|text|exec-stack|div0|ud2|sgdt|int\n");
         return 2;
     }
 

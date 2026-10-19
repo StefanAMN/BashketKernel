@@ -161,16 +161,16 @@ so the numbering has gaps.
 ---
 
 ### 9. APIC & IOAPIC Interrupt Controller Subsystem (Phase 9)
-**Status: real.** ISA IRQs routed from the ACPI MADT. The LAPIC timer is not used.
+**Status: real.** The local APIC is found through the `IA32_APIC_BASE` MSR and the I/O APIC through the ACPI MADT, and both are mapped uncached in the device region (`vmm_map_device`), not reached through the direct map. ISA IRQs are routed with the MADT's overrides; PCI devices use the line their configuration space names, which works where the firmware's MADT describes those lines (QEMU) but does not read the DSDT's `_PRT`. Only the first I/O APIC is driven. Each CPU's LAPIC timer runs its one-shot (or periodic) tick, calibrated against the PIT. A program that raises an exception is killed with the signal Unix uses for it (`SIGFPE` for a division by zero, `SIGILL` for an unknown instruction, `SIGSEGV` for bad memory accesses).
 
 **Goal:** Local APIC timer, IOAPIC redirection table configuration.
 
 - **Order of Learning:**
   1. **Local APIC (LAPIC):**
-     - **Concepts:** Memory-mapped APIC registers, LAPIC timer calibration, EOI signals.
+     - **Concepts:** Memory-mapped APIC registers (mapped uncached), LAPIC timer calibration, EOI signals.
      - Files to inspect: `src/arch/x86_64/lapic.h`, `src/arch/x86_64/lapic.c`
   2. **IOAPIC:**
-     - **Concepts:** Replacing legacy 8259 PIC, routing hardware IRQs to specific APIC IDs.
+     - **Concepts:** Replacing legacy 8259 PIC, routing hardware IRQs to specific APIC IDs, the MADT's I/O APIC and interrupt source override entries (`src/arch/x86_64/acpi.c`).
      - Files to inspect: `src/arch/x86_64/ioapic.h`, `src/arch/x86_64/ioapic.c`
 
 ---
