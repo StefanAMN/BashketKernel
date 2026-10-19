@@ -58,6 +58,7 @@ def read_until(proc, buf, patterns, deadline):
         if ready:
             chunk = os.read(proc.stdout.fileno(), 65536)
             if not chunk:
+                proc.output_ended = True  # QEMU is going: see the end of main
                 return None
             buf.extend(chunk)
 
@@ -221,8 +222,15 @@ def main():
                     break
     finally:
         # Did the machine switch itself off (or reset, with -no-reboot)
-        # before we were done with it?
+        # before we were done with it? QEMU closes its output a moment
+        # before it has exited: asked at once, the answer was "still
+        # running" now and then, and it was killed instead.
         ended_by_itself = proc.poll()
+        if ended_by_itself is None and getattr(proc, "output_ended", False):
+            try:
+                ended_by_itself = proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         proc.kill()
         proc.wait()
 
