@@ -22,6 +22,7 @@ TEST(sleep_lasts_as_long_as_asked) {
 static volatile uint64_t sleeper_woke_at = 0;
 static task_t *sleeper_task = NULL;
 
+// Sleeps ten ticks and notes when it woke
 static void sleeper_entry(void) {
     sched_sleep_ticks(10);
     sleeper_woke_at = timer_ticks();
@@ -173,6 +174,7 @@ TEST(idle_cpus_take_no_timer_interrupts) {
 static volatile uint64_t nap_started, nap_ended;
 static volatile uint64_t nap_length;
 
+// Sleeps nap_length nanoseconds and notes when it started and ended
 static void napper(void) {
     nap_started = clock_ns();
     nanosleep(nap_length);
@@ -210,6 +212,7 @@ TEST(fine_sleeps_block_and_end_on_time) {
 static volatile uint64_t woke_at[4];
 static volatile int woke_order[4], woke_count;
 
+// One of four sleepers, each with an earlier deadline than the last started
 static void ordered_sleeper(void) {
     // Which sleeper this is comes from the order they start in
     static volatile int next_index;
@@ -238,6 +241,7 @@ TEST(sleepers_wake_in_deadline_order) {
 
 static volatile int reaper_woke;
 
+// Waits, as the kernel's reaper does, for a task to die
 static void reaper_waiter(void) {
     sched_wait_for_reapable();
     reaper_woke = 1;

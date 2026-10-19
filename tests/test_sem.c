@@ -22,6 +22,7 @@ static sem_t gate;
 static volatile int waiter_passed = 0;
 static task_t *waiter_task = NULL;
 
+// Waits on the gate, then notes that it got through
 static void waiter_entry(void) {
     sem_wait(&gate);
     waiter_passed = 1;
@@ -52,6 +53,7 @@ TEST(semaphore_blocks_until_post) {
 
 static sem_t handoff;
 
+// Sleeps five ticks, then posts
 static void late_poster_entry(void) {
     sched_sleep_ticks(5);
     sem_post(&handoff);
@@ -77,6 +79,7 @@ TEST(semaphore_wait_with_nothing_runnable) {
 static mutex_t door = MUTEX_INIT("test-door");
 static volatile int inside = 0, most_inside = 0, visits = 0;
 
+// Enters the mutex twenty times, sleeping inside, counting who is inside
 static void visitor_entry(void) {
     for (int i = 0; i < 20; i++) {
         mutex_lock(&door);

@@ -121,10 +121,6 @@ static int64_t load(const char *path, void *buf, size_t size) {
     return (int64_t)total;
 }
 
-static int remove_file(const char *dir, const char *name) {
-    return vfs_unlink(vfs_find(NULL, dir), name);
-}
-
 TEST(fat32_write_and_read_back) {
     char buf[128];
 
@@ -167,9 +163,9 @@ TEST(fat32_write_and_read_back) {
     EXPECT_EQ(memcmp(big, "short", 5), 0);
     EXPECT_EQ(memcmp(big + 2000, "END", 3), 0);
 
-    EXPECT_EQ(remove_file("/disk", "new.txt"), 0);
+    EXPECT_EQ(test_remove("/disk", "new.txt"), 0);
     EXPECT_TRUE(vfs_find(NULL, "/disk/new.txt") == NULL);
-    EXPECT_EQ(remove_file("/disk", "new.txt"), -ENOENT);
+    EXPECT_EQ(test_remove("/disk", "new.txt"), -ENOENT);
 }
 
 // Every cluster a file takes must come back when it is truncated or removed.
@@ -207,7 +203,7 @@ TEST(fat32_cluster_accounting) {
     EXPECT_TRUE(n > 0 && n < (int64_t)sizeof(huge));
     file_close(file);
 
-    EXPECT_EQ(remove_file("/disk", "big.bin"), 0);
+    EXPECT_EQ(test_remove("/disk", "big.bin"), 0);
     EXPECT_EQ(fat32_free_clusters(), free_at_start);
 }
 
@@ -225,8 +221,8 @@ TEST(fat32_directories) {
     EXPECT_EQ(memcmp(buf, "nested", 6), 0);
 
     // A directory with something in it stays
-    EXPECT_EQ(remove_file("/disk", "work"), -ENOTEMPTY);
-    EXPECT_EQ(remove_file("/disk/work", "deeper"), -ENOTEMPTY);
+    EXPECT_EQ(test_remove("/disk", "work"), -ENOTEMPTY);
+    EXPECT_EQ(test_remove("/disk/work", "deeper"), -ENOTEMPTY);
 
     // More files than one cluster of directory entries holds (16 per 512
     // bytes, two of them taken by "." and ".."): the directory has to grow
@@ -249,14 +245,14 @@ TEST(fat32_directories) {
     // Remove everything again; the space of a deleted entry is reused
     for (int i = 0; i < 40; i++) {
         ksnprintf(name, sizeof(name), "f%d.txt", i);
-        EXPECT_EQ(remove_file("/disk/work", name), 0);
+        EXPECT_EQ(test_remove("/disk/work", name), 0);
     }
     EXPECT_EQ(store("/disk/work/again.txt", O_WRONLY | O_CREAT, "x", 1), 1);
-    EXPECT_EQ(remove_file("/disk/work", "again.txt"), 0);
-    EXPECT_EQ(remove_file("/disk/work/deeper", "b.txt"), 0);
-    EXPECT_EQ(remove_file("/disk/work", "deeper"), 0);
-    EXPECT_EQ(remove_file("/disk/work", "a.txt"), 0);
-    EXPECT_EQ(remove_file("/disk", "work"), 0);
+    EXPECT_EQ(test_remove("/disk/work", "again.txt"), 0);
+    EXPECT_EQ(test_remove("/disk/work/deeper", "b.txt"), 0);
+    EXPECT_EQ(test_remove("/disk/work", "deeper"), 0);
+    EXPECT_EQ(test_remove("/disk/work", "a.txt"), 0);
+    EXPECT_EQ(test_remove("/disk", "work"), 0);
 
     EXPECT_TRUE(vfs_find(NULL, "/disk/work") == NULL);
     EXPECT_EQ(fat32_free_clusters(), free_at_start);
@@ -301,11 +297,12 @@ TEST(fat32_name_rules) {
 
     // An open file cannot be removed, here as anywhere
     EXPECT_EQ(file_open("/disk/held.txt", O_WRONLY | O_CREAT, &file), 0);
-    EXPECT_EQ(remove_file("/disk", "held.txt"), -EBUSY);
+    EXPECT_EQ(test_remove("/disk", "held.txt"), -EBUSY);
     file_close(file);
-    EXPECT_EQ(remove_file("/disk", "held.txt"), 0);
+    EXPECT_EQ(test_remove("/disk", "held.txt"), 0);
 }
 
+// Create or empty the file at `path` and write `text` into it, expecting success
 static void write_text(const char *path, const char *text) {
     file_t *file = NULL;
     EXPECT_EQ(file_open(path, O_WRONLY | O_CREAT | O_TRUNC, &file), 0);
@@ -314,25 +311,16 @@ static void write_text(const char *path, const char *text) {
     file_close(file);
 }
 
-static bool text_is(const char *path, const char *text) {
-    char buf[128] = {0};
-    file_t *file = NULL;
-    if (file_open(path, O_RDONLY, &file) != 0) return false;
-    int64_t n = file_read(file, buf, sizeof(buf) - 1);
-    file_close(file);
-    return n == (int64_t)strlen(text) && memcmp(buf, text, (size_t)n) == 0;
-}
-
 // Names that do not fit eight characters and three, as put on the image by
 // the tool that built it (and accepted by fsck.fat)
 TEST(fat32_reads_long_names) {
     vnode_t *dir = vfs_find(NULL, "/disk/Long Names");
     EXPECT_TRUE(dir != NULL && dir->type == VFS_DIRECTORY);
-    EXPECT_TRUE(text_is("/disk/Long Names/A file with quite a long name, for testing.txt",
+    EXPECT_TRUE(test_file_is("/disk/Long Names/A file with quite a long name, for testing.txt",
                         "A name that needs more than one long-name entry to store.\n"));
-    EXPECT_TRUE(text_is("/disk/Long Names/MixedCase.Text", "mixed\n"));
-    EXPECT_TRUE(text_is("/disk/Long Names/archive.tar.gz", "two dots\n"));
-    EXPECT_TRUE(text_is("/disk/Long Names/deep.txt", "inner\n"));       // A short name among long ones
+    EXPECT_TRUE(test_file_is("/disk/Long Names/MixedCase.Text", "mixed\n"));
+    EXPECT_TRUE(test_file_is("/disk/Long Names/archive.tar.gz", "two dots\n"));
+    EXPECT_TRUE(test_file_is("/disk/Long Names/deep.txt", "inner\n"));       // A short name among long ones
 
     // The invented short names stay out of sight
     EXPECT_TRUE(vfs_find(NULL, "/disk/Long Names/AFILEW~1.TXT") == NULL);
@@ -377,8 +365,8 @@ TEST(fat32_writes_long_names) {
     // Forget everything and read the directory from the disk again: the
     // names, their contents and nothing else must be there
     for (int round = 0; round < 2; round++) {
-        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) EXPECT_TRUE(text_is(files[i].path, files[i].text));
-        EXPECT_TRUE(text_is(longest_path, "127 characters"));
+        for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) EXPECT_TRUE(test_file_is(files[i].path, files[i].text));
+        EXPECT_TRUE(test_file_is(longest_path, "127 characters"));
         size_t count = 0;
         vfs_find(NULL, "/disk/Work in progress/plain.txt");
         for (vnode_t *c = dir->children; c; c = c->next) count++;
@@ -389,14 +377,14 @@ TEST(fat32_writes_long_names) {
     // Removing a long-named file frees its long-name entries too: they are
     // not found as orphans or as a file when the directory is read again,
     // and their slots are used again
-    EXPECT_EQ(remove_file("/disk/Work in progress", "report 2026 (final) v2.txt"), 0);
-    EXPECT_EQ(remove_file("/disk/Work in progress", longest), 0);
+    EXPECT_EQ(test_remove("/disk/Work in progress", "report 2026 (final) v2.txt"), 0);
+    EXPECT_EQ(test_remove("/disk/Work in progress", longest), 0);
     EXPECT_TRUE(vfs_forget_directory(dir));
     EXPECT_TRUE(vfs_find(NULL, "/disk/Work in progress/report 2026 (final) v2.txt") == NULL);
     EXPECT_TRUE(vfs_find(NULL, longest_path) == NULL);
-    EXPECT_TRUE(text_is("/disk/Work in progress/report 2026 (final) v3.txt", "and a third"));
+    EXPECT_TRUE(test_file_is("/disk/Work in progress/report 2026 (final) v3.txt", "and a third"));
     write_text("/disk/Work in progress/report 2026 (final) v2.txt", "back again");
-    EXPECT_TRUE(text_is("/disk/Work in progress/report 2026 (final) v2.txt", "back again"));
+    EXPECT_TRUE(test_file_is("/disk/Work in progress/report 2026 (final) v2.txt", "back again"));
 
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         char leaf[VFS_NAME_MAX];
@@ -451,16 +439,16 @@ TEST(fat32_rename_and_move) {
     // A new name in the same directory: short to long, long to short
     EXPECT_EQ(vfs_rename(from, "a.txt", from, "A much longer name.txt"), 0);
     EXPECT_TRUE(vfs_find(NULL, "/disk/from/a.txt") == NULL);
-    EXPECT_TRUE(text_is("/disk/from/A much longer name.txt", "contents of a"));
+    EXPECT_TRUE(test_file_is("/disk/from/A much longer name.txt", "contents of a"));
     EXPECT_TRUE(vfs_forget_directory(from));
     EXPECT_TRUE(vfs_find(NULL, "/disk/from/a.txt") == NULL);
-    EXPECT_TRUE(text_is("/disk/from/A much longer name.txt", "contents of a"));
+    EXPECT_TRUE(test_file_is("/disk/from/A much longer name.txt", "contents of a"));
     EXPECT_EQ(vfs_rename(from, "A much longer name.txt", from, "b.txt"), 0);
-    EXPECT_TRUE(text_is("/disk/from/b.txt", "contents of a"));
+    EXPECT_TRUE(test_file_is("/disk/from/b.txt", "contents of a"));
 
     // Only the case changes: allowed (it is the same file)
     EXPECT_EQ(vfs_rename(from, "b.txt", from, "B.txt"), 0);
-    EXPECT_TRUE(text_is("/disk/from/B.txt", "contents of a") && vfs_find(NULL, "/disk/from/b.txt") == NULL);
+    EXPECT_TRUE(test_file_is("/disk/from/B.txt", "contents of a") && vfs_find(NULL, "/disk/from/b.txt") == NULL);
 
     // What is refused, and leaves everything as it was
     EXPECT_EQ(vfs_rename(from, "B.txt", from, "other.txt"), -EEXIST);
@@ -469,33 +457,33 @@ TEST(fat32_rename_and_move) {
     EXPECT_EQ(vfs_rename(from, "B.txt", from, "bad*name"), -EINVAL);
     EXPECT_EQ(vfs_rename(from, "B.txt", tmp, "B.txt"), -EXDEV);         // Another filesystem
     EXPECT_EQ(vfs_rename(disk, "from", from, "inside itself"), -EINVAL);
-    EXPECT_TRUE(text_is("/disk/from/B.txt", "contents of a") && text_is("/disk/from/other.txt", "other"));
+    EXPECT_TRUE(test_file_is("/disk/from/B.txt", "contents of a") && test_file_is("/disk/from/other.txt", "other"));
 
     // Into another directory
     EXPECT_EQ(vfs_rename(from, "B.txt", to, "Moved file.txt"), 0);
     EXPECT_TRUE(vfs_forget_directory(from) && vfs_forget_directory(to));
     EXPECT_TRUE(vfs_find(NULL, "/disk/from/B.txt") == NULL);
-    EXPECT_TRUE(text_is("/disk/To Here/Moved file.txt", "contents of a"));
+    EXPECT_TRUE(test_file_is("/disk/To Here/Moved file.txt", "contents of a"));
 
     // A directory, with what is in it; its ".." must name the new parent,
     // which is what lets fsck.fat (make test-disk) accept the result
     EXPECT_EQ(vfs_rename(disk, "from", to, "From, moved"), 0);
     EXPECT_TRUE(vfs_find(NULL, "/disk/from") == NULL);
-    EXPECT_TRUE(text_is("/disk/To Here/From, moved/other.txt", "other"));
+    EXPECT_TRUE(test_file_is("/disk/To Here/From, moved/other.txt", "other"));
     vnode_t *moved = vfs_find(NULL, "/disk/To Here/From, moved");
     EXPECT_TRUE(moved != NULL && vfs_forget_directory(moved) && vfs_forget_directory(to));
-    EXPECT_TRUE(text_is("/disk/To Here/From, moved/other.txt", "other"));
+    EXPECT_TRUE(test_file_is("/disk/To Here/From, moved/other.txt", "other"));
 
-    EXPECT_EQ(remove_file("/disk/To Here/From, moved", "other.txt"), 0);
-    EXPECT_EQ(remove_file("/disk/To Here", "From, moved"), 0);
-    EXPECT_EQ(remove_file("/disk/To Here", "Moved file.txt"), 0);
+    EXPECT_EQ(test_remove("/disk/To Here/From, moved", "other.txt"), 0);
+    EXPECT_EQ(test_remove("/disk/To Here", "From, moved"), 0);
+    EXPECT_EQ(test_remove("/disk/To Here", "Moved file.txt"), 0);
     EXPECT_EQ(vfs_unlink(disk, "To Here"), 0);
     EXPECT_TRUE(fat32_free_clusters() == free_before);
 
     // Files kept in memory can be renamed too
     write_text("/tmp/old name", "in memory");
     EXPECT_EQ(vfs_rename(tmp, "old name", tmp, "new name"), 0);
-    EXPECT_TRUE(text_is("/tmp/new name", "in memory") && vfs_find(NULL, "/tmp/old name") == NULL);
+    EXPECT_TRUE(test_file_is("/tmp/new name", "in memory") && vfs_find(NULL, "/tmp/old name") == NULL);
     EXPECT_EQ(vfs_unlink(tmp, "new name"), 0);
 }
 
@@ -520,7 +508,7 @@ TEST(fat32_timestamps_come_from_the_clock) {
         EXPECT_TRUE((date & 31) == now.day || now.hour == 23);           // (Unless midnight has just passed)
         EXPECT_TRUE((time >> 11) < 24 && ((time >> 5) & 63) < 60);
     }
-    EXPECT_EQ(remove_file("/disk/stamps", "stamped.txt"), 0);
+    EXPECT_EQ(test_remove("/disk/stamps", "stamped.txt"), 0);
     EXPECT_EQ(vfs_unlink(disk, "stamps"), 0);
 
     // The files the image came with have the date they were given there

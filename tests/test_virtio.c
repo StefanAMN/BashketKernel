@@ -9,6 +9,7 @@
 static uint8_t space[256];
 
 static uint8_t fake8(void *ctx, uint8_t offset) { (void)ctx; return space[offset]; }
+// A configuration space the tests write (`space`), read a byte or 32 bits at a time
 static uint32_t fake32(void *ctx, uint8_t offset) {
     (void)ctx;
     uint32_t value = 0;
@@ -16,6 +17,7 @@ static uint32_t fake32(void *ctx, uint8_t offset) {
     return value;
 }
 
+// Store 32 bits in the fake configuration space
 static void put32(uint8_t at, uint32_t value) {
     for (int i = 0; i < 4; i++) space[at + i] = (uint8_t)(value >> (8 * i));
 }

@@ -30,6 +30,7 @@ static bool page_is_whole(uint64_t *space, uint64_t i) {
     return true;
 }
 
+// How many of the test region's pages are swapped out
 static size_t swapped_count(uint64_t *space) {
     size_t n = 0;
     for (uint64_t i = 0; i < PAGES; i++) if (vmm_pte_swapped(vmm_get_pte(space, BASE + i * PAGE_SIZE))) n++;

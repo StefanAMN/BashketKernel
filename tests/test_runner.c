@@ -3,51 +3,13 @@
 #include "pit.h"
 #include "tcp.h"
 #include "kprintf.h"
+#include "file.h"
+#include "kstring.h"
 
+// The counts every EXPECT_ adds to (see test.h)
 int tests_run = 0;
 int tests_passed = 0;
 int tests_failed = 0;
-
-// Declarations for test suites
-extern void test_suite_example(void);
-extern void test_suite_pmm(void);
-extern void test_suite_vmm(void);
-extern void test_suite_heap(void);
-extern void test_suite_sched(void);
-extern void test_suite_syscall(void);
-extern void test_suite_elf(void);
-extern void test_suite_vfs(void);
-extern void test_suite_shell(void);
-extern void test_suite_slab(void);
-extern void test_suite_mmap(void);
-extern void test_suite_apic(void);
-extern void test_suite_smp(void);
-extern void test_suite_storage(void);
-extern void test_suite_virtio(void);
-extern void test_suite_mouse(void);
-extern void test_suite_swap(void);
-extern void test_suite_fat32(void);
-extern void test_suite_process(void);
-extern void test_suite_ext2(void);
-extern void test_suite_net(void);
-extern void test_suite_tcp(void);
-extern void test_suite_rtc(void);
-extern void test_suite_pipe(void);
-extern void test_suite_ansi(void);
-extern void test_suite_priority(void);
-extern void test_suite_sem(void);
-extern void test_suite_procfs(void);
-extern void test_suite_tty(void);
-extern void test_suite_fpu(void);
-extern void test_suite_auth(void);
-extern void test_suite_klog(void);
-extern void test_suite_hrtimer(void);
-extern void test_suite_mount(void);
-extern void test_suite_shm(void);
-extern void test_suite_crypto(void);
-extern void test_suite_dev(void);
-extern void test_suite_bench(void);
-extern void test_suite_lib(void);
 
 void test_settle(void) {
     if (tcp_sockets_in_use() == 0) return;
@@ -55,10 +17,22 @@ void test_settle(void) {
     while (tcp_sockets_in_use() != 0 && timer_ticks() < deadline) sched_sleep_ticks(1);
 }
 
+bool test_file_is(const char *path, const char *text) {
+    char buf[128] = {0};
+    file_t *file = NULL;
+    if (file_open(path, O_RDONLY, &file) != 0) return false;
+    int64_t n = file_read(file, buf, sizeof(buf) - 1);
+    file_close(file);
+    return n == (int64_t)strlen(text) && memcmp(buf, text, (size_t)n) == 0;
+}
+
+int test_remove(const char *dir, const char *name) {
+    return vfs_unlink(vfs_find(NULL, dir), name);
+}
+
 bool run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
     
-    test_suite_example();
     test_suite_pmm();
     test_suite_vmm();
     test_suite_heap();
