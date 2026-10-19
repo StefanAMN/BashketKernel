@@ -7,6 +7,7 @@
 static volatile int task1_counter = 0;
 static volatile int task2_counter = 0;
 
+// Two tasks that count to five, yielding after each step
 static void dummy_task_1(void) {
     for (int i = 0; i < 5; i++) {
         task1_counter++;
@@ -14,6 +15,7 @@ static void dummy_task_1(void) {
     }
 }
 
+// (See dummy_task_1)
 static void dummy_task_2(void) {
     for (int i = 0; i < 5; i++) {
         task2_counter++;
@@ -59,6 +61,8 @@ static volatile int stress_done = 0;
 static volatile int stress_corrupt = 0;
 static volatile uint64_t stress_deadline = 0;
 
+// Allocates, fills, checks and frees blocks of random sizes until the
+// deadline, counting any block whose contents changed under it
 static void heap_stress_task(void) {
     uint32_t seed = 0x9E3779B9u ^ (uint32_t)(uint64_t)&seed;
     uint8_t *held[8] = {0};
@@ -118,7 +122,7 @@ TEST(heap_stress_under_preemption) {
 }
 
 void test_suite_sched(void) {
-    kprintf("Suite: Phase 4 Multitasking & Cooperative Scheduler\n");
+    kprintf("Suite: Tasks and the scheduler\n");
     RUN_TEST(multitasking_cooperative);
     RUN_TEST(zombie_reaping);
     RUN_TEST(heap_stress_under_preemption);

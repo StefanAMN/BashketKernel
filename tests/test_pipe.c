@@ -53,6 +53,7 @@ static volatile int64_t writer_result;
 static volatile int writer_finished;
 static task_t *writer_task;
 
+// Writes more than the pipe holds in one call, then closes its end
 static void big_writer_entry(void) {
     uint8_t *data = kmalloc(BIG_TRANSFER);
     for (size_t i = 0; i < BIG_TRANSFER; i++) data[i] = (uint8_t)(i * 7);
