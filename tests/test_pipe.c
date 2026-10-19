@@ -3,7 +3,7 @@
 #include "sched.h"
 #include "heap.h"
 #include "kerrno.h"
-#include "string_util.h"
+#include "kstring.h"
 
 TEST(pipe_passes_bytes_in_order) {
     pipe_t *p = pipe_create();

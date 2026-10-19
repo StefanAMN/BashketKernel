@@ -11,7 +11,7 @@
 #include "initrd.h"
 #include "vfs.h"
 #include "kprintf.h"
-#include "string_util.h"
+#include "kstring.h"
 
 #define TAR_BLOCK 512
 

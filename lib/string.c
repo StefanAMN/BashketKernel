@@ -1,6 +1,6 @@
 /**
  * @file string.c
- * @brief Implementation of Standard Memory and String Library Routines
+ * @brief The C library's memory and string functions (see string.h)
  */
 
 #include "string.h"
@@ -89,13 +89,6 @@ int strncmp(const char *s1, const char *s2, size_t n) {
   return 0;
 }
 
-char *strcpy(char *dest, const char *src) {
-  char *orig = dest;
-  while ((*dest++ = *src++) != '\0')
-    ;
-  return orig;
-}
-
 char *strncpy(char *dest, const char *src, size_t n) {
   size_t i;
   for (i = 0; i < n && src[i] != '\0'; i++) {
@@ -105,16 +98,6 @@ char *strncpy(char *dest, const char *src, size_t n) {
     dest[i] = '\0';
   }
   return dest;
-}
-
-char *strcat(char *dest, const char *src) {
-  char *orig = dest;
-  while (*dest) {
-    dest++;
-  }
-  while ((*dest++ = *src++))
-    ;
-  return orig;
 }
 
 char *strchr(const char *s, int c) {

@@ -545,9 +545,13 @@ One pass per area, each on its own branch and checked with `make check`:
    PCI fields nothing filled in, `virtio_net_rx_pending`, `dev.h`'s
    re-export of `random.h`, a second copy of each UDP datagram on its way
    to the caller.
-5. `lib`: delete the unused crypto (repair 10 below decided it: nothing
-   uses it, and nothing tests it against a reference), keep SHA-256,
-   ChaCha20 and what PBKDF2 needs
+5. `lib` — done: the unused crypto deleted (AES and its modes, BLAKE2s,
+   Ed25519, HKDF, HMAC, MD5, Poly1305, SHA-1, SHA-512, SipHash, CRC32: about
+   2000 lines nothing called), with `ctype`, `strcpy`, `strcat`, the empty
+   `crypto_subsystem_init` and two headers that only included `string.h`.
+   What is left (SHA-256, ChaCha20, the string functions) is documented,
+   and SHA-256 is tested against whole published hashes instead of the
+   first few bytes of one.
 6. `user/lib`, then `user`
 7. `tests`
 

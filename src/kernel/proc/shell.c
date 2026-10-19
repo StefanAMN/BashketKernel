@@ -19,7 +19,7 @@
 #include "sched.h"
 #include "pit.h"
 #include "process.h"
-#include "string_util.h"
+#include "kstring.h"
 #include "rtc.h"
 #include "klog.h"
 #include "mount.h"

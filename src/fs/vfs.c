@@ -7,7 +7,7 @@
 #include "mutex.h"
 #include "heap.h"
 #include "kprintf.h"
-#include "string_util.h"
+#include "kstring.h"
 #include "kerrno.h"
 
 static vnode_t *vfs_root = NULL;

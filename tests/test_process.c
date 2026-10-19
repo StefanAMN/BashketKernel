@@ -11,7 +11,6 @@
 #include "elf.h"
 #include "spinlock.h"
 #include "vfs.h"
-#include "string_util.h"
 #include "cpu.h"
 
 static int run(const char *path, char *const argv[]) {

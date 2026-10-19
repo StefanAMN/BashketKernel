@@ -5,7 +5,6 @@
 #include "pmm.h"
 #include "heap.h"
 #include "kstring.h"
-#include "string_util.h"
 
 // Read a whole /proc file through the open-file layer, in small pieces so
 // the offset handling is exercised too.

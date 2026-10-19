@@ -4,7 +4,7 @@
  */
 
 #include "gdt.h"
-#include "string_util.h"
+#include "kstring.h"
 
 #include "percpu.h"
 
