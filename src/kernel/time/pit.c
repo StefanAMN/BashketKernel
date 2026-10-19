@@ -12,7 +12,6 @@
 #include "spinlock.h"
 #include "console.h"
 
-extern void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
 
 // The PIT's interrupt (IRQ 0): one tick of the periodic mode
 static void pit_irq_handler(struct registers *regs) {

@@ -18,14 +18,18 @@
 #define PIC2_DATA    0xA1
 
 /**
- * @brief Remap Master and Slave PIC vector offsets.
+ * @brief Reinitialise both 8259 PICs so their IRQs arrive on vectors
+ *        offset1..offset1+7 and offset2..offset2+7, keeping their masks.
+ *        Done even though the I/O APIC replaces them: a stray interrupt from
+ *        a PIC must not land on a CPU exception vector.
  * @param offset1 Master PIC base vector offset (usually 32 / 0x20).
  * @param offset2 Slave PIC base vector offset (usually 40 / 0x28).
  */
 void pic_remap(int offset1, int offset2);
 
 /**
- * @brief Disable 8259 PIC by masking all IRQs.
+ * @brief Mask every IRQ on both 8259 PICs, so that only the I/O APIC
+ *        delivers device interrupts.
  */
 void pic_disable(void);
 

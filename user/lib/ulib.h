@@ -31,6 +31,8 @@ void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 
 /* Signals */
 #define SIGINT   2
+#define SIGILL   4                  /* Killed for an unknown instruction (cannot be caught yet) */
+#define SIGFPE   8                  /* Killed for a division by zero (cannot be caught yet) */
 #define SIGKILL  9
 #define SIGUSR1 10
 #define SIGSEGV 11

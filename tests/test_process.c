@@ -12,6 +12,7 @@
 #include "spinlock.h"
 #include "vfs.h"
 #include "string_util.h"
+#include "cpu.h"
 
 static int run(const char *path, char *const argv[]) {
     pid_t pid = process_spawn(path, argv);
@@ -51,6 +52,9 @@ TEST(faulting_programs_are_killed) {
     char *text[]   = { "/bin/fault", "text", NULL };
     char *xstack[] = { "/bin/fault", "exec-stack", NULL };
     char *intn[]   = { "/bin/fault", "int", NULL };
+    char *div0[]   = { "/bin/fault", "div0", NULL };
+    char *ud2[]    = { "/bin/fault", "ud2", NULL };
+    char *sgdt[]   = { "/bin/fault", "sgdt", NULL };
 
     EXPECT_EQ(run("/bin/fault", cli),    128 + SIGSEGV);  // #GP: privileged instruction
     EXPECT_EQ(run("/bin/fault", kread),  128 + SIGSEGV);  // #PF: supervisor page
@@ -59,6 +63,11 @@ TEST(faulting_programs_are_killed) {
     EXPECT_EQ(run("/bin/fault", text),   128 + SIGSEGV);  // #PF: write to read-only text
     EXPECT_EQ(run("/bin/fault", xstack), 128 + SIGSEGV);  // #PF: execute on NX stack
     EXPECT_EQ(run("/bin/fault", intn),   128 + SIGSEGV);  // #GP: int n with DPL 0 gate
+    EXPECT_EQ(run("/bin/fault", div0),   128 + SIGFPE);   // #DE
+    EXPECT_EQ(run("/bin/fault", ud2),    128 + SIGILL);   // #UD
+    // Only a CPU with UMIP refuses sgdt in ring 3 (QEMU's default does not)
+    bool umip = strstr(cpu_protection_summary(), "umip") != NULL;
+    EXPECT_EQ(run("/bin/fault", sgdt),   umip ? 128 + SIGSEGV : 1);
 }
 
 TEST(processes_leave_nothing_behind) {

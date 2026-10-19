@@ -34,4 +34,15 @@ struct registers {
     uint64_t ss;
 };
 
+/**
+ * @brief Have `handler` called for every interrupt on ISA IRQ line `irq`
+ *        (0..15, delivered as vector 32 + irq), with the interrupted
+ *        registers. Lines are shared by PCI devices, so up to four handlers
+ *        can be registered per line; all are called each time, and each
+ *        must ask its own device whether it raised the interrupt.
+ *        Registering the same handler twice is a no-op; a fifth handler is
+ *        refused with a message. Called at boot, before the line is routed.
+ */
+void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
+
 #endif // INTERRUPTS_H

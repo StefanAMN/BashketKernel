@@ -5,49 +5,64 @@
 
 #include "lapic.h"
 #include "vmm.h"
-#include "pmm.h"
+#include "cpu.h"
 #include "kprintf.h"
+
+// IA32_APIC_BASE (Intel SDM Vol. 3A, 11.4.4): bits 12 and up hold the
+// physical address of the local APIC's registers (the same on every CPU)
+#define MSR_APIC_BASE      0x1B
+#define APIC_BASE_ADDR_MASK 0x000FFFFFFFFFF000ULL
+
+#define LAPIC_REG_ID   0x020
+#define LAPIC_REG_EOI  0x0B0
+#define LAPIC_REG_SVR  0x0F0   // Spurious interrupt vector register: bit 8 enables the APIC
+#define LAPIC_SVR_ON   0x1FF   // Enabled, spurious interrupts on vector 0xFF
+#define LAPIC_REG_ICR_LOW  0x300
+#define LAPIC_REG_ICR_HIGH 0x310
 
 static volatile uint32_t *lapic_base = NULL;
 
+// Read the local APIC register at byte offset `reg` (of the calling CPU's
+// own APIC: every CPU sees its own at the same address)
 static inline uint32_t lapic_read(uint32_t reg) {
     return lapic_base[reg / 4];
 }
 
+// Write `val` to the local APIC register at byte offset `reg`, then read
+// one back so the write has reached the APIC before the caller goes on
 static inline void lapic_write(uint32_t reg, uint32_t val) {
     lapic_base[reg / 4] = val;
-    (void)lapic_base[0]; // Read-after-write flush
+    (void)lapic_base[LAPIC_REG_ID / 4]; // Read-after-write flush
 }
 
 void lapic_init(void) {
-    uint64_t hhdm = pmm_get_hhdm_offset();
-    uint64_t lapic_virt = LAPIC_BASE_PHYS + hhdm;
+    uint64_t phys = rdmsr(MSR_APIC_BASE) & APIC_BASE_ADDR_MASK;
 
-    // Map LAPIC MMIO physical page into virtual memory space
-    vmm_map_page(NULL, lapic_virt, LAPIC_BASE_PHYS, VMM_PRESENT | VMM_WRITABLE);
-    lapic_base = (volatile uint32_t *)lapic_virt;
+    // The registers are one 4 KiB page, mapped uncached
+    lapic_base = vmm_map_device(phys, 0x1000);
+    if (!lapic_base) {
+        kprintf("LAPIC: could not map its registers\n");
+        return;
+    }
+    lapic_write(LAPIC_REG_SVR, LAPIC_SVR_ON);
 
-    // Spurious Interrupt Vector Register (SVR 0x0F0)
-    // Bit 8 = Enable APIC (0x100), Vector = 0xFF (255)
-    lapic_write(0x0F0, 0x1FF);
-
-    kprintf("LAPIC Init: Local APIC enabled (ID: %u, Base MMIO: %p)\n", lapic_get_id(), (void *)lapic_virt);
+    kprintf("LAPIC Init: Local APIC enabled (ID: %u, registers at 0x%zx)\n", lapic_get_id(), phys);
 }
 
 void lapic_enable_on_this_cpu(void) {
     // Each CPU has its own local APIC at the same address
-    if (lapic_base != NULL) lapic_write(0x0F0, 0x1FF);
+    if (lapic_base != NULL) lapic_write(LAPIC_REG_SVR, LAPIC_SVR_ON);
 }
 
 void lapic_eoi(void) {
     if (lapic_base) {
-        lapic_write(0x0B0, 0); // EOI Register 0x0B0
+        lapic_write(LAPIC_REG_EOI, 0);
     }
 }
 
 uint32_t lapic_get_id(void) {
     if (!lapic_base) return 0;
-    return lapic_read(0x020) >> 24; // ID Register 0x020 bits 31..24
+    return lapic_read(LAPIC_REG_ID) >> 24; // Bits 31..24
 }
 
 void lapic_send_ipi(uint32_t lapic_id, uint8_t vector) {
@@ -58,9 +73,9 @@ void lapic_send_ipi(uint32_t lapic_id, uint8_t vector) {
     // half (0x300) sends. Low half: bits 7..0 vector, delivery mode 000
     // (fixed), destination mode physical, no shorthand. Bit 12 reads as 1
     // while the previous send is still on its way.
-    while (lapic_read(0x300) & (1u << 12)) asm volatile("pause");
-    lapic_write(0x310, lapic_id << 24);
-    lapic_write(0x300, vector);
+    while (lapic_read(LAPIC_REG_ICR_LOW) & (1u << 12)) asm volatile("pause");
+    lapic_write(LAPIC_REG_ICR_HIGH, lapic_id << 24);
+    lapic_write(LAPIC_REG_ICR_LOW, vector);
 }
 
 // --- Timer -------------------------------------------------------------------

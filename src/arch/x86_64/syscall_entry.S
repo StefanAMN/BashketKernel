@@ -5,7 +5,7 @@
  * What the CPU does on `syscall` (Intel SDM Vol. 2B, SYSCALL):
  *   RCX    <- RIP of the next user instruction
  *   R11    <- RFLAGS
- *   RFLAGS <- RFLAGS & ~SFMASK   (we mask IF and DF)
+ *   RFLAGS <- RFLAGS & ~SFMASK   (we mask IF, DF and AC)
  *   CS/SS  <- kernel selectors from STAR[47:32]
  *   RIP    <- LSTAR
  * It does NOT switch stacks: RSP is still the user's. The first job here is

@@ -26,9 +26,6 @@
 #include "limine.h"
 #include "percpu.h"
 
-// The per-CPU structure itself is in percpu.h
-typedef cpu_t per_cpu_t;
-
 /**
  * @brief Start every other CPU and wait for them to report in.
  * @param response The bootloader's list of CPUs, or NULL if it gave none.
@@ -41,11 +38,11 @@ void smp_init(struct LIMINE_MP(response) *response);
 size_t smp_get_cpu_count(void);
 
 /**
- * @brief Number of CPUs the bootloader reported.
+ * @brief Number of CPUs that were started: the bootloader's count, capped
+ *        at MAX_CPUS and at those memory could be found for. CPU numbers
+ *        (cpu_get) run from 0 to this minus 1.
  */
 size_t smp_get_cpu_total(void);
-
-per_cpu_t *smp_get_per_cpu(uint32_t cpu_id);
 
 // Interrupt vectors used between and within CPUs. WAKE is sent by another
 // CPU: there is a function to run, a TLB to flush or a task to pick up.
@@ -59,7 +56,8 @@ per_cpu_t *smp_get_per_cpu(uint32_t cpu_id);
 void smp_start_scheduling(void);
 
 /**
- * @brief Handler for IPI_VECTOR_WAKE.
+ * @brief Handler for IPI_VECTOR_WAKE (interrupts off): answer a pending TLB
+ *        shootdown and run a function smp_call left for this CPU.
  */
 void smp_handle_ipi(void);
 
@@ -86,7 +84,8 @@ void smp_tlb_service(void);
 bool smp_call(uint32_t cpu_id, void (*fn)(void *), void *arg, bool wait);
 
 /**
- * @brief Whether a function started with smp_call is still running there.
+ * @brief Whether a function started with smp_call on CPU `cpu_id` has not
+ *        yet finished there (false for a CPU that does not exist).
  */
 bool smp_call_busy(uint32_t cpu_id);
 

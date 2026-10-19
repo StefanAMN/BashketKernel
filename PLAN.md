@@ -501,7 +501,18 @@ One pass per area, each on its own branch and checked with `make check`:
    `pmm.h` and `cpu.h`). The linker's list also exposed three kernel shell
    commands that `help` offered but that had been deleted by mistake
    (restored, and the shell made table-driven).
-2. `src/arch/x86_64`
+2. `src/arch/x86_64` — done: every function documented. Found on the way:
+   the local and I/O APICs were reached at fixed addresses through the
+   direct map (cached memory, and an address the firmware may put
+   elsewhere); now from `IA32_APIC_BASE` and the MADT, through
+   `vmm_map_device`. `acpi_init` trusted the root table's length (a short
+   one underflowed into a huge entry count). A CPU that could not be given
+   a stack still counted in the CPU total. Every ring-3 exception other
+   than #GP and #PF reported `SIGKILL`; a division by zero now ends the
+   program with `SIGFPE` and `ud2` with `SIGILL` (tested, with `sgdt` under
+   UMIP). Removed: `ioapic_route_irq`, the public `idt_set_gate`,
+   `smp_get_per_cpu` (a second name for `cpu_get`), six private
+   declarations of `register_irq_handler` (now in `interrupts.h`).
 3. `src/fs`
 4. `src/drivers`, `src/net`
 5. `lib`: delete the unused crypto (repair 10 below decided it: nothing
