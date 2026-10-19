@@ -18,6 +18,8 @@ typedef struct {
     sha256_ctx_t inner, outer; /* Hash states after the padded key */
 } hmac_key_t;
 
+/* Work out the two hash states for `key` (hashed first if longer than a
+ * block), then wipe the padded copies from the stack */
 static void hmac_key(hmac_key_t *k, const uint8_t *key, size_t key_len) {
     uint8_t block[64], pad[64];
     memset(block, 0, sizeof(block));
@@ -40,6 +42,7 @@ static void hmac_key(hmac_key_t *k, const uint8_t *key, size_t key_len) {
     memset(pad, 0, sizeof(pad));
 }
 
+/* HMAC of the message `a` followed by `b` (b_len may be 0) under key `k` */
 static void hmac(const hmac_key_t *k, const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len, uint8_t mac[32]) {
     sha256_ctx_t ctx = k->inner;
     sha256_update(&ctx, a, a_len);
@@ -80,12 +83,14 @@ int password_matches(const struct account *account, const char *password) {
 
 /* --- The file ------------------------------------------------------------------ */
 
+/* The value of one lower-case hex digit, or -1 */
 static int hex_value(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return -1;
 }
 
+/* `count` bytes from 2 * count hex digits; -1 at anything else */
 static int from_hex(const char *text, uint8_t *out, size_t count) {
     for (size_t i = 0; i < count; i++) {
         int high = hex_value(text[2 * i]);
@@ -96,6 +101,7 @@ static int from_hex(const char *text, uint8_t *out, size_t count) {
     return 0;
 }
 
+/* `count` bytes as 2 * count lower-case hex digits and a NUL */
 static void to_hex(const uint8_t *bytes, size_t count, char *out) {
     for (size_t i = 0; i < count; i++) {
         out[2 * i] = "0123456789abcdef"[bytes[i] >> 4];
@@ -117,6 +123,16 @@ static int split(char *line, char *fields[], int max) {
     return count;
 }
 
+/* A field that must be a number: all digits, at most nine of them. A uid
+ * written as "x" must not be read as 0, which is root. */
+static int number(const char *text, unsigned *out) {
+    size_t len = strlen(text);
+    if (len == 0 || len > 9) return -1;
+    for (size_t i = 0; i < len; i++) if (text[i] < '0' || text[i] > '9') return -1;
+    *out = (unsigned)atoi(text);
+    return 0;
+}
+
 /* One line of the file. Returns 0 if it is a well-formed account. */
 static int parse_line(char *line, struct account *out) {
     char *f[7];
@@ -126,9 +142,7 @@ static int parse_line(char *line, struct account *out) {
 
     memset(out, 0, sizeof(*out));
     strcpy(out->name, f[0]);
-    out->uid = (unsigned)atoi(f[1]);
-    out->gid = (unsigned)atoi(f[2]);
-    out->iterations = (unsigned)atoi(f[3]);
+    if (number(f[1], &out->uid) || number(f[2], &out->gid) || number(f[3], &out->iterations)) return -1;
     if (out->iterations == 0 || out->iterations > 1000000) return -1;
     if (from_hex(f[4], out->salt, 16) != 0 || from_hex(f[5], out->hash, 32) != 0) return -1;
     return 0;
@@ -136,12 +150,17 @@ static int parse_line(char *line, struct account *out) {
 
 static char file_text[4096];
 
-static long read_file(void) {
+/* Read the file into file_text (NUL-terminated). Returns its length, or a
+ * negative error. *complete says whether all of it fitted: a larger file
+ * is read only in part (lookups see the accounts that fitted). */
+static long read_file(int *complete) {
     long fd = open(PASSWORD_FILE, O_RDONLY);
     if (fd < 0) return fd;
-    long total = 0, n;
+    long total = 0, n = 0;
     while (total < (long)sizeof(file_text) - 1 &&
            (n = read((int)fd, file_text + total, sizeof(file_text) - 1 - (size_t)total)) > 0) total += n;
+    char more;
+    *complete = !(total == (long)sizeof(file_text) - 1 && read((int)fd, &more, 1) > 0);
     close((int)fd);
     file_text[total] = '\0';
     return total;
@@ -149,7 +168,8 @@ static long read_file(void) {
 
 /* Look through the file; `name` NULL means "the account with this uid" */
 static long find(const char *name, unsigned uid, struct account *out) {
-    long err = read_file();
+    int complete;
+    long err = read_file(&complete);
     if (err < 0) return err;
 
     for (char *line = file_text; *line; ) {
@@ -177,6 +197,7 @@ static size_t put_text(char *out, size_t used, const char *text) {
     return used + len;
 }
 
+/* (See put_text) */
 static size_t put_number(char *out, size_t used, unsigned value) {
     char digits[12];
     int n = 0;
@@ -201,10 +222,15 @@ long account_set_password(const char *name, const char *password) {
     password_hash(password, account.salt, sizeof(account.salt), account.iterations, account.hash);
 
     /* Write the file again with that one line replaced. (find() cut the
-     * text up, so read it afresh.) */
+     * text up, so read it afresh.) Only if all of it was read: writing back
+     * what fitted would delete every account after it. The rewrite itself
+     * is not atomic: a crash between truncating and writing leaves the
+     * file empty (rename does not replace, so there is no safer order). */
     static char updated[4096 + 160];
-    err = read_file();
+    int complete;
+    err = read_file(&complete);
     if (err < 0) return err;
+    if (!complete) return -EFBIG;
     size_t name_len = strlen(name), used = 0;
     for (char *line = file_text; *line; ) {
         char *end = strchr(line, '\n');
@@ -240,6 +266,7 @@ long account_set_password(const char *name, const char *password) {
 
 long read_password(const char *prompt, char *buf, size_t size) {
     size_t len = 0;
+    if (size == 0) return -EINVAL;
     printf("%s", prompt);
     tty_raw(1);
     for (;;) {

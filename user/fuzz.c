@@ -19,6 +19,7 @@
 
 static unsigned long rng_state;
 
+/* The next number of the round's pseudo-random sequence (seeded per round) */
 static unsigned long rnd(void) {
     rng_state ^= rng_state << 13;
     rng_state ^= rng_state >> 7;
@@ -26,6 +27,7 @@ static unsigned long rnd(void) {
     return rng_state;
 }
 
+/* One of `count` values, at random */
 static unsigned long pick(const unsigned long *values, unsigned long count) {
     return values[rnd() % count];
 }
@@ -43,6 +45,8 @@ static const char *const programs[] = { "/bin/hello", "/bin/echo", "/tmp/fuzz-a"
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
+/* An address worth passing as a pointer: NULL, valid buffers and their
+ * edges, read-only code, the ends of the user half, kernel addresses */
 static unsigned long random_pointer(void) {
     const unsigned long choices[] = {
         0,                                          /* NULL */
@@ -69,6 +73,7 @@ static unsigned long random_pointer(void) {
     return pick(choices, COUNT(choices));
 }
 
+/* A length worth passing: 0, page edges, and huge ones */
 static unsigned long random_length(void) {
     const unsigned long choices[] = {
         0, 1, 2, 7, 8, 64, 4095, 4096, 4097, 8192, 65536, 1UL << 20, 1UL << 31, 1UL << 32,
@@ -77,18 +82,21 @@ static unsigned long random_length(void) {
     return pick(choices, COUNT(choices));
 }
 
+/* A descriptor: ones that are open, ones that are not, absurd ones */
 static unsigned long random_fd(void) {
     const unsigned long choices[] = { 0, 1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 255, 0x7FFFFFFF, 0x80000000UL,
                                       0xFFFFFFFFUL, 0xFFFFFFFFFFFFFFFFUL };
     return pick(choices, COUNT(choices));
 }
 
+/* open() flags, sensible and not */
 static unsigned long random_flags(void) {
     const unsigned long choices[] = { O_RDONLY, O_WRONLY, O_RDWR, 3, O_WRONLY | O_CREAT, O_RDWR | O_CREAT | O_TRUNC,
                                       O_WRONLY | O_APPEND, O_RDONLY | O_TRUNC, 0xFFFFFFFFUL, 0x80000000UL };
     return (rnd() % 6 == 0) ? rnd() : pick(choices, COUNT(choices));
 }
 
+/* Any of the above, or a small number, or anything at all */
 static unsigned long random_any(void) {
     switch (rnd() % 5) {
         case 0:  return random_pointer();
@@ -99,6 +107,8 @@ static unsigned long random_any(void) {
     }
 }
 
+/* Make one system call with random arguments, keeping calls that would
+ * damage the test bench itself to safe arguments (see the top) */
 static void one_call(void) {
     static const long numbers[] = {
         SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_YIELD, SYS_GETPID, SYS_LSEEK, SYS_MMAP,
@@ -237,6 +247,8 @@ static void one_call(void) {
     if (num == SYS_FORK && result == 0) exit(0);
 }
 
+/* One round, in a child: open some descriptors of each kind, make
+ * CALLS_PER_ROUND random calls from `seed`'s sequence, exit 0 */
 static void fuzz_child(unsigned long seed) {
     rng_state = seed;
     mapped = mmap_anon(4096);

@@ -32,6 +32,7 @@ sighandler_t signal(int sig, sighandler_t handler) {
     return previous < 0 ? SIG_ERR : (sighandler_t)previous;
 }
 
+/* The handler returns through __sigreturn, as with signal() */
 long sigaction(int sig, const struct sigaction *action, struct sigaction *old) {
     return syscall4(SYS_SIGACTION, sig, action, old, __sigreturn);
 }
@@ -64,6 +65,7 @@ long umask(unsigned mask)                          { return syscall1(SYS_UMASK, 
  * it only copies the strings when we exec. */
 char **environ;
 
+/* (See ulib.h for what these mean) */
 const char *getenv(const char *name) {
     size_t len = strlen(name);
     for (char **e = environ; e && *e; e++) {
@@ -146,8 +148,10 @@ typedef struct block {
 
 static block_t *free_list = NULL;
 
+/* Take the first free block big enough (rounded up to 16 bytes), or a
+ * new one from sbrk */
 void *malloc(size_t size) {
-    if (size == 0) return NULL;
+    if (size == 0 || size > ((size_t)1 << 40)) return NULL; /* (Rounding a huge size up would wrap to 0) */
     size = (size + 15) & ~(size_t)15;
 
     for (block_t **link = &free_list; *link; link = &(*link)->next_free) {
@@ -164,6 +168,7 @@ void *malloc(size_t size) {
     return block + 1;
 }
 
+/* Put the block on the free list (its memory stays with this process) */
 void free(void *ptr) {
     if (!ptr) return;
     block_t *block = (block_t *)ptr - 1;
@@ -198,10 +203,10 @@ char *strcpy(char *dst, const char *src) {
 }
 
 char *strchr(const char *s, int c) {
-    for (; *s; s++) {
-        if (*s == (char)c) return (char *)s;
+    for (;; s++) {
+        if (*s == (char)c) return (char *)s;   /* Also finds the terminator when c is 0, as in C */
+        if (!*s) return NULL;
     }
-    return NULL;
 }
 
 void *memset(void *dst, int value, size_t n) {
@@ -225,6 +230,7 @@ int memcmp(const void *a, const void *b, size_t n) {
     return 0;
 }
 
+/* Digits at the start of `s`, after an optional '-'; stops at anything else */
 long atoi(const char *s) {
     long value = 0;
     int negative = 0;
@@ -369,6 +375,8 @@ long dns_parse_reply(const uint8_t *buf, size_t len, unsigned id, uint32_t *ip) 
     return -ENOENT;                                     /* The name exists but has no address */
 }
 
+/* Ask `server` (a few times, two seconds each) for the address of `name`,
+ * with a random query id; only an answer from that server to that id counts */
 long dns_lookup(uint32_t server, unsigned port, const char *name, uint32_t *ip) {
     static uint8_t query[300], reply[512];
     if (server == 0) return -EHOSTUNREACH;              /* No server configured */
@@ -466,6 +474,7 @@ void tty_size(unsigned *columns, unsigned *rows) {
     if (rows) *rows = size[1];
 }
 
+/* (The same words the kernel shell uses for its errors) */
 const char *strerror(long err) {
     switch (err < 0 ? -err : err) {
         case 0:         return "success";
@@ -504,6 +513,7 @@ const char *strerror(long err) {
         case EHOSTUNREACH: return "host unreachable";
         case ENOTEMPTY: return "directory not empty";
         case ENAMETOOLONG: return "name too long";
+        case EFBIG:     return "file too large";
         default:        return "unknown error";
     }
 }
@@ -522,6 +532,7 @@ typedef struct {
     size_t len;
 } outbuf_t;
 
+/* Write out what is buffered (one system call, or more if it was short) */
 static void out_flush(outbuf_t *out) {
     size_t sent = 0;
     while (sent < out->len) {
@@ -532,15 +543,19 @@ static void out_flush(outbuf_t *out) {
     out->len = 0;
 }
 
+/* Add a character, flushing first if the buffer is full */
 static void out_char(outbuf_t *out, char c) {
     if (out->len == sizeof(out->data)) out_flush(out);
     out->data[out->len++] = c;
 }
 
+/* Add a NUL-terminated string */
 static void out_string(outbuf_t *out, const char *s) {
     while (*s) out_char(out, *s++);
 }
 
+/* Add a number in `base`, right-aligned in `width`, padded with spaces or
+ * (zero_pad) zeros after a minus sign */
 static void out_number(outbuf_t *out, unsigned long value, unsigned base, int negative, int width, int zero_pad) {
     char digits[24];
     int n = 0;
@@ -629,6 +644,7 @@ long readline(char *buf, size_t size) {
 /* The same, from any descriptor */
 long fdreadline(int fd, char *buf, size_t size) {
     size_t len = 0;
+    if (size == 0) return -1;
     for (;;) {
         char c;
         long n = read(fd, &c, 1);

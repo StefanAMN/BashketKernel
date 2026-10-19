@@ -9,20 +9,20 @@
 
 /* Process */
 __attribute__((noreturn)) void exit(int status);
-long fork(void);
-long execve(const char *path, char *const argv[], char *const envp[]);
+long fork(void); /* A copy of this process; returns the child's pid here, 0 in the child, or a negative error */
+long execve(const char *path, char *const argv[], char *const envp[]); /* Run another program in this process; returns only on error */
 long execv(const char *path, char *const argv[]);    /* Passes on our own environment */
 
 /* Environment: "NAME=value" strings, inherited across fork and exec */
 extern char **environ;
-const char *getenv(const char *name);
+const char *getenv(const char *name); /* The value of NAME in the environment, or NULL */
 int setenv(const char *name, const char *value);     /* 0, or -1 if out of memory */
 long waitpid(long pid, int *status, int options);  /* pid -1: any child. options: 0, or WNOHANG */
-long getpid(void);
-long getppid(void);
-long kill(long pid, int sig);
-void yield(void);
-void sleep_ms(unsigned long ms);
+long getpid(void); /* This process's id */
+long getppid(void); /* Its parent's id */
+long kill(long pid, int sig); /* Send a signal to a process (negative pid: to its whole group) */
+void yield(void); /* Let another task run */
+void sleep_ms(unsigned long ms); /* Sleep for at least `ms` milliseconds */
 long uptime_ticks(void);                     /* Timer ticks (10 ms each) since boot */
 unsigned long clock_ns(void);                /* Nanoseconds since boot */
 long sleep_ns(unsigned long nanoseconds);    /* Sleeps to within microseconds; -EINTR if a signal cut it short */
@@ -63,27 +63,27 @@ struct sigaction {
 };
 #define SA_RESTART 1
 #define sigbit(sig) (1u << (sig))
-long sigaction(int sig, const struct sigaction *action, struct sigaction *old);
+long sigaction(int sig, const struct sigaction *action, struct sigaction *old); /* Returns 0 or a negative error */
 
 /* Hold signals back: a blocked signal waits until it is unblocked. SIGKILL
  * can not be blocked. Either pointer may be NULL (old alone reads the set). */
 #define SIG_BLOCK   0               /* Add `set` to the blocked signals */
 #define SIG_UNBLOCK 1               /* Remove it */
 #define SIG_SETMASK 2               /* Replace them with it */
-long sigprocmask(int how, const uint32_t *set, uint32_t *old);
+long sigprocmask(int how, const uint32_t *set, uint32_t *old); /* Returns 0 or a negative error */
 
 /* Jobs. A process group is the set of processes a shell started for one
  * command; kill() with a negative number signals a whole group. The
  * terminal's foreground group is the one Ctrl-C and Ctrl-Z act on. */
 long setpgid(long pid, long pgid);           /* pid 0: the caller; pgid 0: a group of its own */
-long getpgid(long pid);
+long getpgid(long pid); /* The process group of `pid` (0: the caller) */
 long tcsetpgrp(long pgid);                   /* 0: no job control (Ctrl-C reaches every process) */
-long tcgetpgrp(void);
+long tcgetpgrp(void); /* The terminal's foreground group (0: none) */
 
 /* Users and permissions. uid 0 is root and may do anything. */
 long getuid(void);                           /* The real user: who started this process */
 long geteuid(void);                          /* The effective user: whose rights it has (differs in a set-uid program) */
-long getgid(void);
+long getgid(void); /* The group this process runs as */
 long setuid(unsigned uid);                   /* Root may become anyone; anyone else may only go back to their real user */
 long setgid(unsigned gid);                   /* Root only */
 long umask(unsigned mask);                   /* Bits removed from the mode of files this process creates; returns the old mask */
@@ -92,7 +92,7 @@ long chown(const char *path, unsigned uid, unsigned gid); /* Root only (an owner
 #define KEEP_ID 0xFFFFFFFFu
 
 /* Memory */
-void *sbrk(long increment);
+void *sbrk(long increment); /* Move the end of the heap; returns the old end, or (void *)-1 */
 void *mmap_anon(size_t length);             /* Zero-filled memory. A page costs nothing until it is first touched. */
 void *mmap_file(int fd, size_t length, size_t offset, int prot); /* The file's contents as memory, read when first touched; a private copy: writing to it does not change the file */
 void *mmap_shared(size_t length);            /* Stays shared with children created by fork */
@@ -101,26 +101,26 @@ void *mmap_shared(size_t length);            /* Stays shared with children creat
 long shmget(unsigned key, size_t size);      /* Find or create; returns an id */
 void *shmat(long id);                        /* Map it here; NULL on failure. munmap() to detach. */
 long shmrm(long id);                         /* Release the key; memory goes with the last mapping */
-long munmap(void *addr, size_t length);
-void *malloc(size_t size);
-void free(void *ptr);
+long munmap(void *addr, size_t length); /* Give back pages from mmap_* or shmat */
+void *malloc(size_t size); /* Heap memory (16-byte aligned), or NULL (also for 0 and absurd sizes) */
+void free(void *ptr); /* Give back what malloc returned (NULL is allowed) */
 
 /* Files */
-long open(const char *path, int flags);
-long close(int fd);
-long read(int fd, void *buf, size_t count);
-long write(int fd, const void *buf, size_t count);
-long lseek(int fd, long offset, int whence);
-long pipe(int fds[2]);
-long dup2(int old_fd, int new_fd);
+long open(const char *path, int flags); /* A descriptor, or a negative error. flags: O_RDONLY, O_WRONLY or O_RDWR, with O_CREAT, O_TRUNC, O_APPEND, O_CLOEXEC */
+long close(int fd); /* 0, or -EBADF */
+long read(int fd, void *buf, size_t count); /* Bytes read (0: end of file), or a negative error */
+long write(int fd, const void *buf, size_t count); /* Bytes written, or a negative error */
+long lseek(int fd, long offset, int whence); /* New position (SEEK_SET, SEEK_CUR, SEEK_END), or a negative error */
+long pipe(int fds[2]); /* fds[0] reads what fds[1] writes */
+long dup2(int old_fd, int new_fd); /* Make new_fd refer to old_fd's open file (closing what it was) */
 long dup(int fd);                            /* The same open file under the lowest free descriptor */
 long pipe2(int fds[2], int flags);           /* flags: 0 or O_CLOEXEC */
 long fcntl(int fd, int command, long arg);   /* F_GETFD, or F_SETFD with FD_CLOEXEC or 0 */
 long readdir(int fd, struct dirent *entry);   /* 1 = entry filled, 0 = end */
-long mkdir(const char *path);
-long chdir(const char *path);
+long mkdir(const char *path); /* 0, or a negative error (-EEXIST, -ENOENT, -EACCES, -ENAMETOOLONG ...) */
+long chdir(const char *path); /* Change the working directory */
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
-long unlink(const char *path);
+long unlink(const char *path); /* Remove a file or an empty directory */
 long rename(const char *from, const char *to);  /* Within one filesystem; fails with -EEXIST rather than replace anything */
 
 /* Network. The machine is 10.0.2.15; QEMU's gateway (which also reaches the
@@ -136,7 +136,7 @@ long connect(int fd, uint32_t ip, unsigned port); /* TCP: open a connection; wai
 long listen(int fd, int backlog);                 /* TCP: take connections on the bound port */
 long shutdown(int fd);                             /* TCP: finished writing; the other end reads end-of-file. Reading goes on */
 long accept(int fd, struct net_address *from);    /* TCP: the next connection, as a new descriptor (from may be NULL) */
-long sendto(int fd, const void *buf, size_t len, uint32_t ip, unsigned port);
+long sendto(int fd, const void *buf, size_t len, uint32_t ip, unsigned port); /* UDP: one datagram; bytes sent, or a negative error */
 long recvfrom(int fd, void *buf, size_t len, struct net_address *from, unsigned long timeout_ms); /* 0: wait for ever */
 long ping(uint32_t ip, unsigned long timeout_ms); /* Round-trip time in microseconds, or a negative error */
 long netconfig(struct net_config *get, const struct net_config *set); /* Read the settings, then (root) replace them; either may be NULL */
@@ -145,20 +145,20 @@ long netconfig(struct net_config *get, const struct net_config *set); /* Read th
  * server about anything else. Returns 0 and the address, -ENOENT if there
  * is no such name, or another negative error. */
 long resolve(const char *name, uint32_t *ip);
-long dns_lookup(uint32_t server, unsigned port, const char *name, uint32_t *ip);
+long dns_lookup(uint32_t server, unsigned port, const char *name, uint32_t *ip); /* Ask one server (resolve() asks the configured one) */
 long dns_build_query(uint8_t *buf, size_t size, unsigned id, const char *name);   /* Returns the length */
-long dns_parse_reply(const uint8_t *buf, size_t len, unsigned id, uint32_t *ip);
+long dns_parse_reply(const uint8_t *buf, size_t len, unsigned id, uint32_t *ip); /* The first address in an answer to query `id` */
 uint32_t parse_ip(const char *text);              /* "10.0.2.2" -> number; 0 if it is not an address */
-void format_ip(uint32_t ip, char out[16]);
+void format_ip(uint32_t ip, char out[16]); /* Number -> "10.0.2.2" */
 
 /* Terminal */
 void tty_raw(int raw);                           /* 1: every key at once, no echo; 0: whole lines (the default) */
-void tty_size(unsigned *columns, unsigned *rows);
+void tty_size(unsigned *columns, unsigned *rows); /* The screen's size in characters */
 
 /* The screen as pixels (/dev/fb0): its size, and how many bytes one row of
  * it takes in the device. Four bytes per pixel: blue, green, red, unused. */
 struct fb_info { unsigned width, height, pitch, bpp; };
-int fb_info(struct fb_info *info);
+int fb_info(struct fb_info *info); /* 0, or a negative error if there is no screen */
 
 /* Shut the system down (root only): every process ends, the disks are left
  * clean, and the machine switches off (restart 0) or restarts (1). Returns
@@ -166,22 +166,22 @@ int fb_info(struct fb_info *info);
 long reboot(int restart);
 
 /* Formatted output */
-void puts(const char *s);
+void puts(const char *s); /* A string and a newline, to standard output */
 void printf(const char *fmt, ...);               /* To standard output */
-void fprintf(int fd, const char *fmt, ...);
+void fprintf(int fd, const char *fmt, ...); /* printf to a descriptor */
 long readline(char *buf, size_t size);           /* From standard input; -1 at end of input */
-long fdreadline(int fd, char *buf, size_t size);
-const char *strerror(long err);
+long fdreadline(int fd, char *buf, size_t size); /* readline from a descriptor */
+const char *strerror(long err); /* Words for an error number (negative or positive) */
 
 /* Strings */
-size_t strlen(const char *s);
-int strcmp(const char *a, const char *b);
-int strncmp(const char *a, const char *b, size_t n);
-char *strcpy(char *dst, const char *src);
-char *strchr(const char *s, int c);
-void *memset(void *dst, int value, size_t n);
-void *memcpy(void *dst, const void *src, size_t n);
-int memcmp(const void *a, const void *b, size_t n);
-long atoi(const char *s);
+size_t strlen(const char *s); /* The C library's string functions, with their usual meanings */
+int strcmp(const char *a, const char *b); /* (see strlen) */
+int strncmp(const char *a, const char *b, size_t n); /* (see strlen) */
+char *strcpy(char *dst, const char *src); /* (see strlen) */
+char *strchr(const char *s, int c); /* The first c in s (the terminator for c == 0), or NULL */
+void *memset(void *dst, int value, size_t n); /* (see strlen) */
+void *memcpy(void *dst, const void *src, size_t n); /* (see strlen) */
+int memcmp(const void *a, const void *b, size_t n); /* (see strlen) */
+long atoi(const char *s); /* A decimal number (after an optional '-') at the start of `s` */
 
 #endif

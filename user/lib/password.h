@@ -36,9 +36,11 @@ struct account {
     uint8_t hash[32];
 };
 
-/* Find an account by name, or by user id. 0, -ENOENT, or another error. */
+/* Find an account by name, or by user id. 0, -ENOENT, or another error.
+ * Lines that are not well formed are skipped; only the first 4 KiB of the
+ * file is looked at. */
 long account_by_name(const char *name, struct account *out);
-long account_by_uid(unsigned uid, struct account *out);
+long account_by_uid(unsigned uid, struct account *out);  /* (As account_by_name) */
 
 /* PBKDF2-HMAC-SHA256, 32 bytes of output */
 void password_hash(const char *password, const uint8_t *salt, size_t salt_len, unsigned iterations, uint8_t out[32]);
@@ -46,10 +48,12 @@ void password_hash(const char *password, const uint8_t *salt, size_t salt_len, u
 /* Does the password belong to the account? */
 int password_matches(const struct account *account, const char *password);
 
-/* Give an account a new password (and a new salt). Needs to be root. */
+/* Give an account a new password (and a new salt). Needs to be root.
+ * -EFBIG, changing nothing, if the file is larger than 4 KiB. */
 long account_set_password(const char *name, const char *password);
 
-/* Print `prompt` and read a line from the terminal without showing it */
+/* Print `prompt` and read a line from the terminal without showing it (raw
+ * mode; backspace works). Returns its length (cut to size - 1). */
 long read_password(const char *prompt, char *buf, size_t size);
 
 #endif

@@ -37,10 +37,12 @@
 #define FIXED_PART 236              /* Up to and including the boot file name */
 #define OPTIONS_AT (FIXED_PART + 4) /* After the magic number that says "options follow" */
 
+/* Big-endian 32-bit fields of a message: write and read */
 static void put32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
 }
 
+/* (See put32) */
 static uint32_t get32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
@@ -51,6 +53,9 @@ struct lease {
     uint32_t ip, netmask, gateway, dns, server, seconds;
 };
 
+/* Build a DHCP message of `type` (DISCOVER, or REQUEST for `requested`
+ * from `server`) for our card `mac`, exchange `xid`, in the 548 bytes at
+ * `msg`. Returns its length. */
 static size_t build(uint8_t *msg, int type, uint32_t xid, const uint8_t mac[6], uint32_t requested, uint32_t server) {
     memset(msg, 0, 548);
     msg[0] = 1;                     /* A request (2 is a reply) */
@@ -117,6 +122,7 @@ static bool exchange(int sock, const uint8_t *msg, size_t len, uint32_t xid, con
     return false;
 }
 
+/* Print a configuration, labelled `what` */
 static void show(const char *what, const struct net_config *c) {
     char ip[16], mask[16], gateway[16], dns[16];
     format_ip(c->ip, ip); format_ip(c->netmask, mask); format_ip(c->gateway, gateway); format_ip(c->dns, dns);

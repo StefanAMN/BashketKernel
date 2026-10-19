@@ -7,8 +7,9 @@
  */
 #include "ulib.h"
 
+/* A user or group id: decimal digits only, at most nine. 0, or -1 */
 static int number(const char *text, unsigned *out) {
-    if (*text == '\0') return -1;
+    if (*text == '\0' || strlen(text) > 9) return -1;   /* (More would wrap around) */
     unsigned value = 0;
     for (; *text; text++) {
         if (*text < '0' || *text > '9') return -1;

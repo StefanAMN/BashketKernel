@@ -9,6 +9,7 @@
  */
 #include "ulib.h"
 
+/* Lower-case hex digits as a number; 0 if anything else is in the way */
 static unsigned long parse_hex(const char *s) {
     unsigned long value = 0;
     for (; *s; s++) {
@@ -20,6 +21,7 @@ static unsigned long parse_hex(const char *s) {
     return value;
 }
 
+/* A number as lower-case hex digits and a NUL (out has room for 17) */
 static void to_hex(unsigned long value, char *out) {
     char digits[17];
     int n = 0;

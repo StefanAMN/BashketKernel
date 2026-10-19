@@ -1,6 +1,7 @@
 /* Exercises the system call interface from ring 3 and exits 0 only if every
  * check passes. The kernel test suite runs this and checks the exit status. */
 #include "ulib.h"
+#include "password.h"
 
 static int failures = 0;
 
@@ -51,6 +52,8 @@ static void check_gs_is_ours(void) {
     CHECK(getpid() > 0);
 }
 
+/* Pointers into the kernel, to NULL or past the user half: -EFAULT, never
+ * a crash (each check_ function below counts its failed CHECKs) */
 static void check_bad_pointers(void) {
     /* The kernel must refuse pointers outside our address space ... */
     CHECK(write(1, (void *)0xffffffff80000000, 16) == -EFAULT);
@@ -68,6 +71,8 @@ static void check_bad_pointers(void) {
     CHECK(execv((const char *)0xffffffff80000000, NULL) == -EFAULT);
 }
 
+/* Identity, unknown calls and bad descriptors, the clocks and sleeping,
+ * priorities, the screen's description (fb_info) */
 static void check_basics(void) {
     CHECK(getpid() > 0);
     CHECK(write(1, "", 0) == 0);
@@ -167,6 +172,7 @@ static void check_basics(void) {
     CHECK(getcwd(cwd, sizeof(cwd)) == 1 && strcmp(cwd, "/") == 0);
 }
 
+/* brk and mmap: grow, use, give back, and refuse what cannot be */
 static void check_memory(void) {
     /* brk: grow, use, shrink */
     char *base = sbrk(0);
@@ -203,6 +209,8 @@ static void check_memory(void) {
 
 static int global_counter = 100;
 
+/* fork: the child has its own copy of the stack and the globals, and its
+ * exit status reaches the parent */
 static void check_fork(void) {
     int stack_value = 7;
     long pid = fork();
@@ -282,6 +290,7 @@ static void check_fork(void) {
     CHECK(status == 128 + 9);
 }
 
+/* open, read, write, lseek, close: errors, appending, truncation */
 static void check_files(void) {
     char buf[64];
 
@@ -351,6 +360,7 @@ static void check_files(void) {
     while (count > 0) CHECK(close(opened[--count]) == 0);
 }
 
+/* rename: a new name, a move into a directory, and what it refuses */
 static void check_rename(void) {
     char buf[16];
     long fd = open("/tmp/first name", O_WRONLY | O_CREAT | O_TRUNC);
@@ -397,6 +407,7 @@ static void check_rename(void) {
     CHECK(unlink("/tmp/another/kept") == 0 && unlink("/tmp/another") == 0);
 }
 
+/* mkdir, chdir, getcwd, unlink; ".", ".." and trailing slashes; names too long */
 static void check_directories(void) {
     char cwd[64], buf[8];
 
@@ -481,6 +492,8 @@ static int shell_status(const char *command, char *const envp[]) {
     return status;
 }
 
+/* The environment: the default one, setenv, and inheritance through fork
+ * and exec */
 static void check_environment(void) {
     /* The kernel started us with a small default environment */
     CHECK(getenv("PATH") != NULL && strcmp(getenv("PATH"), "/bin") == 0);
@@ -531,6 +544,7 @@ static void check_environment(void) {
 static volatile int handler_calls = 0;
 static volatile int handler_last_signal = 0;
 
+/* A handler that counts its calls and remembers the signal */
 static void counting_handler(int sig) {
     handler_calls++;
     handler_last_signal = sig;
@@ -563,6 +577,8 @@ __attribute__((noinline)) static unsigned long register_churn(unsigned long seed
     return a ^ b ^ c ^ d ^ e ^ f ^ (unsigned long)(y * 1000.0);
 }
 
+/* Handlers, ignoring, default actions, kill's errors, and signals that
+ * interrupt a sleeping call */
 static void check_signals(void) {
     int status;
 
@@ -712,6 +728,7 @@ static int interrupted_child(int what) {
 static volatile int mask_calls, mask_depth, mask_deepest;
 static volatile int order[8], order_count;
 
+/* (Counts calls, for the mask checks) */
 static void count_mask_calls(int sig) {
     (void)sig;
     mask_calls++;
@@ -725,6 +742,8 @@ static void reentrant_handler(int sig) {
     mask_depth--;
 }
 
+/* SIGUSR1's handler sends SIGUSR2, which its mask holds back until it
+ * returns: the order recorded shows that */
 static void usr1_then_usr2(int sig) {
     order[order_count++] = sig;
     if (sig == SIGUSR1) {
@@ -733,6 +752,8 @@ static void usr1_then_usr2(int sig) {
     }
 }
 
+/* sigprocmask and sigaction's mask: blocked signals wait, SIGKILL cannot
+ * be blocked, a handler's own signal is held while it runs */
 static void check_signal_masks(void) {
     uint32_t set, old = 0xFFFFFFFF;
     struct sigaction action, previous;
@@ -857,6 +878,7 @@ static void check_signal_masks(void) {
 static volatile int tstp_calls;
 static void count_tstp(int sig) { (void)sig; tstp_calls++; }
 
+/* Process groups, the terminal's foreground group, stopping and continuing */
 static void check_jobs(void) {
     int status;
     long me = getpid();
@@ -1000,6 +1022,8 @@ static long meminfo(const char *label) {
     return atoi(at);
 }
 
+/* Mapped memory costs nothing until touched (MemFree and Promised in
+ * /proc/meminfo say so), and file mappings read the file */
 static void check_lazy_memory(void) {
     const size_t big = 64UL << 20;                         /* 64 MiB */
     long free_before = meminfo("MemFree:");
@@ -1153,6 +1177,8 @@ static void check_lazy_memory(void) {
     CHECK(meminfo("Promised:") == promised_before);
 }
 
+/* A signal ends a sleeping read, sleep or waitpid with -EINTR, and an
+ * ignored one does not */
 static void check_interrupted_calls(void) {
     CHECK(interrupted_child(0) == 0);            /* read on a pipe */
     CHECK(interrupted_child(1) == 0);            /* sleep */
@@ -1330,6 +1356,7 @@ static void check_netconfig_and_dns(void) {
     CHECK(resolve("10.1.2.3", &ip) == 0 && ip == parse_ip("10.1.2.3"));
 }
 
+/* Address parsing, UDP over loopback and to the host, ping */
 static void check_network(void) {
     char buf[64];
     struct net_address from;
@@ -1409,6 +1436,8 @@ static void check_network(void) {
     CHECK(waitpid(waiting, &status, 0) == waiting && status == 0);
 }
 
+/* MAP_SHARED and shmget/shmat: writes are seen across fork and between
+ * processes; keys and permissions */
 static void check_shared_memory(void) {
     int status;
 
@@ -1556,6 +1585,7 @@ static void checks_as_alice(void) {
     close((int)sock);
 }
 
+/* (Run as bob, uid 1001, by check_users) What alice made private stays so */
 static void checks_as_bob(void) {
     /* Alice made her file private: Bob can neither read, write nor remove it */
     CHECK(getuid() == 1001);
@@ -1586,6 +1616,7 @@ static long tmp_mode(const char *name) {
     return mode;
 }
 
+/* Copy one file to another (created or truncated). 0, or -1 */
 static int copy_file(const char *from, const char *to) {
     static char buf[4096];
     long in = open(from, O_RDONLY);
@@ -1624,6 +1655,7 @@ static int run_capture(const char *path, char *out, size_t size) {
     return status;
 }
 
+/* Whether `what` occurs in `text` */
 static int contains(const char *text, const char *what) {
     size_t len = strlen(what);
     for (; *text; text++) if (strncmp(text, what, len) == 0) return 1;
@@ -1698,6 +1730,8 @@ static void permission_checks_as_bob(void) {
     CHECK(run_capture("/tmp/root-only", out, sizeof(out)) == 126);
 }
 
+/* Run `checks` in a child that has become user `uid` in group `gid`.
+ * Returns its number of failures (100 if it could not change user). */
 static int as_user_in_group(unsigned uid, unsigned gid, void (*checks)(void)) {
     long pid = fork();
     if (pid == 0) {
@@ -1711,6 +1745,7 @@ static int as_user_in_group(unsigned uid, unsigned gid, void (*checks)(void)) {
     return status;
 }
 
+/* umask, groups, chown of the group, and set-uid programs */
 static void check_groups_and_setuid(void) {
     static char out[128];
     CHECK(getuid() == 0 && geteuid() == 0 && getgid() == 0);
@@ -1743,6 +1778,7 @@ static void check_groups_and_setuid(void) {
     CHECK(unlink("/tmp/group.txt") == 0 && unlink("/tmp/suid-id") == 0 && unlink("/tmp/root-only") == 0);
 }
 
+/* Permission bits as alice and bob, and root's freedom from them */
 static void check_users(void) {
     CHECK(getuid() == 0);                               /* The checks themselves run as root */
     root_pid = getpid();
@@ -1763,6 +1799,64 @@ static void check_users(void) {
     CHECK(unlink("/tmp/alice.txt") == 0);
 }
 
+/* Write `len` bytes as the whole of `path` (root: the checks run as root) */
+static long replace_file(const char *path, const char *text, size_t len) {
+    long fd = open(path, O_WRONLY | O_TRUNC);
+    if (fd < 0) return fd;
+    long written = write((int)fd, text, len);
+    close((int)fd);
+    return written;
+}
+
+/* The account file is read by a library that holds 4 KiB of it. A larger
+ * file must not be cut short by a change of password (every account after
+ * the first 4 KiB would go), and a malformed number must not read as 0
+ * (uid 0 is root). The file is put back afterwards. */
+static void check_password_file(void) {
+    static char original[4096], big[8192];
+    long fd = open(PASSWORD_FILE, O_RDONLY);
+    CHECK(fd >= 0);
+    long original_len = read((int)fd, original, sizeof(original));
+    close((int)fd);
+    CHECK(original_len > 0 && original_len < (long)sizeof(original));
+    if (original_len <= 0) return;
+
+    /* 40 more accounts: about 5.5 KiB in all */
+    size_t len = (size_t)original_len;
+    memcpy(big, original, len);
+    for (int i = 0; i < 40; i++) {
+        char line[160];
+        size_t n = 0;
+        const char *head = "filler";
+        while (*head) line[n++] = *head++;
+        line[n++] = (char)('0' + i / 10);
+        line[n++] = (char)('0' + i % 10);
+        const char *rest = ":2000:100:4096:00112233445566778899aabbccddeeff:"
+                           "0011223344556677889900112233445566778899001122334455667788990011\n";
+        while (*rest) line[n++] = *rest++;
+        memcpy(big + len, line, n);
+        len += n;
+    }
+    CHECK(replace_file(PASSWORD_FILE, big, len) == (long)len);
+    CHECK(account_set_password("alice", "changed") == -EFBIG);
+    fd = open(PASSWORD_FILE, O_RDONLY);
+    static char after[8192];
+    long after_len = read((int)fd, after, sizeof(after));
+    close((int)fd);
+    CHECK(after_len == (long)len && memcmp(after, big, len) == 0);
+
+    /* "x" is not a user id */
+    static const char evil[] = "evil:x:0:4096:00112233445566778899aabbccddeeff:"
+                               "0011223344556677889900112233445566778899001122334455667788990011\n";
+    CHECK(replace_file(PASSWORD_FILE, evil, sizeof(evil) - 1) == (long)sizeof(evil) - 1);
+    struct account account;
+    CHECK(account_by_name("evil", &account) == -ENOENT);
+
+    CHECK(replace_file(PASSWORD_FILE, original, (size_t)original_len) == original_len);
+    CHECK(account_by_name("alice", &account) == 0 && account.uid == 1000);
+}
+
+/* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
 static void check_pipes(void) {
     int fds[2];
     char buf[32];
@@ -1870,6 +1964,7 @@ static unsigned long exec_holding_pipe(int flags) {
     return status == 0 ? ms : 0;
 }
 
+/* dup, dup2, close-on-exec, and waitpid's options and errors */
 static void check_descriptors_and_wait(void) {
     char buf[8];
     int p[2], status;
@@ -1937,6 +2032,7 @@ static void check_descriptors_and_wait(void) {
     CHECK(waitpid(pid, &status, WNOHANG) == -ECHILD);
 }
 
+/* The stack grows as it is used, in the parent and in a child */
 static void check_stack_growth(void) {
     /* The stack starts at 16 KiB and grows as it is used: 2 MiB works */
     CHECK(recurse(500) == 500);
@@ -2056,6 +2152,7 @@ int main(void) {
     check_netconfig_and_dns();
     check_shared_memory();
     check_users();
+    check_password_file();
     check_groups_and_setuid();
     check_pipes();
 
