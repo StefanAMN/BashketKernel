@@ -25,8 +25,24 @@ static size_t slurp(const char *path, char *out, size_t size) {
     while (total + 1 < size && (n = file_read(file, out + total, (size - 1 - total) < 7 ? (size - 1 - total) : 7)) > 0) {
         total += (size_t)n;
     }
+
     out[total] = '\0';
     file_close(file);
+    return total;
+}
+
+// The same in one read, for the status of a process that is running: each
+// read makes the text afresh, and slurp's small pieces could come from two
+// moments of it (a State that changes length shifts every line after it;
+// "Pid:" was once lost that way and the search found "PPid:" instead).
+// PLAN.md lists that tearing as a limit.
+static size_t slurp_live(const char *path, char *out, size_t size) {
+    file_t *file = NULL;
+    if (file_open(path, O_RDONLY, &file) != 0) return 0;
+    int64_t n = file_read(file, out, size - 1);
+    file_close(file);
+    size_t total = n > 0 ? (size_t)n : 0;
+    out[total] = '\0';
     return total;
 }
 
@@ -104,7 +120,7 @@ TEST(proc_pid_directories_follow_processes) {
     vnode_t *dir = vfs_find(NULL, path);
     EXPECT_TRUE(dir != NULL && dir->type == VFS_DIRECTORY);
     proc_path(path, pid, "status");
-    EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
+    EXPECT_TRUE(slurp_live(path, text, sizeof(text)) > 0);
     EXPECT_TRUE(strstr(text, "Name:\tspin\n") != NULL && strstr(text, "Kind:\tuser\n") != NULL);
     EXPECT_EQ(number_after(text, "Pid:\t"), (int64_t)pid);
     EXPECT_EQ(number_after(text, "Uid:\t"), 0);
@@ -211,7 +227,7 @@ TEST(proc_pid_status_names_the_system_call) {
     if (task) TEST_WAIT(task->in_syscall == SYS_SLEEP + 1, 300);
 
     proc_path(path, pid, "status");
-    EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
+    EXPECT_TRUE(slurp_live(path, text, sizeof(text)) > 0);
     EXPECT_EQ(number_after(text, "Syscall:\t"), (int64_t)SYS_SLEEP);
     EXPECT_TRUE(number_after(text, "Size:\t") > 0);              // Its program at least
 
