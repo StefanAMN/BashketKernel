@@ -1,6 +1,8 @@
 /* cat: copy files (or standard input, if none are named) to standard output. */
 #include "ulib.h"
 
+/* Copy everything readable from `fd` to standard output. 0, or 1 if a read
+ * or write failed */
 static int copy(int fd) {
     char buf[512];
     long n;

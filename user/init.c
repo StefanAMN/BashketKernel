@@ -15,6 +15,7 @@
  */
 #include "ulib.h"
 
+/* SIGCHLD's handler: does nothing; arriving is what wakes init */
 static void child_changed(int sig) {
     (void)sig; /* Being interrupted is the point: it ends the sleep in main */
 }

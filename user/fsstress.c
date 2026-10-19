@@ -13,6 +13,8 @@
 
 static unsigned long state;
 
+/* The next number of a fixed pseudo-random sequence (seeded from the
+ * command line, so a run can be repeated), below `limit` */
 static unsigned next(unsigned limit) {
     state = state * 6364136223846793005UL + 1442695040888963407UL;
     return (unsigned)((state >> 33) % limit);

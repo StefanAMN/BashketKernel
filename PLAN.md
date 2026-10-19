@@ -552,7 +552,19 @@ One pass per area, each on its own branch and checked with `make check`:
    What is left (SHA-256, ChaCha20, the string functions) is documented,
    and SHA-256 is tested against whole published hashes instead of the
    first few bytes of one.
-6. `user/lib`, then `user`
+6. `user/lib`, then `user` — done: every function documented (a
+   program's `main` by the comment its file starts with, which gives its
+   usage; the library's one-line declarations by a comment on the same
+   line: `tools/undocumented.py` accepts both). Found on the way: changing
+   a password rewrote `/etc/passwd` from the first 4 KiB the library had
+   read, deleting every account after them (now refused with `EFBIG`); a
+   uid field that is not a number read as 0, which is root; `edit` loaded
+   only the beginning of a large file, said so, and then saved that over
+   the whole file; `malloc` of a huge size wrapped to a zero-byte block;
+   `fdreadline` and `read_password` with a size of 0 wrote before the
+   buffer; `strchr` did not find the terminator as C's does; `chown`
+   accepted ids that overflow. Tested in `syscheck` (a 5.5 KiB account
+   file, a bad uid) and `make test-edit` (a 580 KiB file is not saved).
 7. `tests`
 
 In each pass: document every function to the rule; delete functions

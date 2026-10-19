@@ -34,8 +34,9 @@ former `.agents/AGENTS.md`).
   the feature is visible to programs. Tests clean up after themselves.
 - **Every function has a comment** saying what it does: arguments, result,
   what it changes, and what the caller must know (locks, sleeping). Public
-  functions once, in the header; static ones at the definition. Code that
-  nothing calls is deleted, not documented (`tools/unused.sh`,
+  functions once, in the header; static ones at the definition (a user
+  program's `main` is described by the comment at the top of its file).
+  Code that nothing calls is deleted, not documented (`tools/unused.sh`,
   `tools/undocumented.py`; PLAN.md track E).
 - **Docs travel with the code.** Update the README status table, and the
   matching section of `Documentation.md` (the ordered guide of what to learn

@@ -61,6 +61,9 @@ static job_t jobs[MAX_JOBS];
 static int interactive = 0;     /* Reading the terminal: job control is on */
 static long shell_group = 0;
 
+/* Record a job (a stopped or background pipeline) of `count` processes,
+ * `text` being its command line. Returns its job number, or 0 if the table
+ * is full. */
 static int job_add(const long *pids, const int *alive, int count, const char *text, int stopped) {
     for (int n = 0; n < MAX_JOBS; n++) {
         if (jobs[n].used) continue;
@@ -168,15 +171,21 @@ static int run_in_foreground(long *pids, int *alive, int count, const char *text
     return status;
 }
 
+/* Character classes of the command line */
 static int is_operator(char c) { return c == '|' || c == '<' || c == '>'; }
 static int is_blank(char c)    { return c == ' ' || c == '\t'; }
 
 /* Copy the next word from *cursor into word_storage. Handles "double quotes".
  * Returns the copy, or NULL if there is no word here or no room left. */
+/* (A character of a variable's name, for $NAME) */
 static int is_name_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
+/* The next word of the line at *cursor (quotes and $variables applied),
+ * stored in word_storage from *used on; moves *cursor past it. NULL if no
+ * word starts here (the end of the line, an operator), a quote is not
+ * closed, or the line's words do not fit in word_storage. */
 static char *next_word(const char **cursor, size_t *used) {
     const char *p = *cursor;
     while (is_blank(*p)) p++;
@@ -279,6 +288,8 @@ static void redirect_or_die(const char *path, int flags, int target) {
     close((int)fd);
 }
 
+/* In a child: apply a stage's redirections and run its program. Never
+ * returns (exits 127 if the program could not be run). */
 static void exec_stage(stage_t *stage) {
     ignore_interrupt(0); /* Unlike the shell, the program should die on Ctrl-C */
     if (script_fd >= 0) close(script_fd); /* The script is the shell's business, not the program's */
@@ -378,6 +389,9 @@ static int run_pipeline(stage_t *stages, int count, int background, const char *
     return run_in_foreground(pids, alive, count, text, NULL);
 }
 
+/* Run one command line: a built-in, or a pipeline in the foreground or (with
+ * a final '&') the background. Returns its status; sets *should_exit for
+ * "exit". */
 static int run_line(const char *line, int *should_exit) {
     static stage_t stages[MAX_STAGES];
     static char text[256];
