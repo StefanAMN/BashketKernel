@@ -125,6 +125,10 @@ void swap_slot_unref(uint32_t slot) {
 }
 
 size_t swap_out(uint64_t *space, uint64_t *cursor, size_t want) {
+    return swap_out_keeping(space, cursor, want, NULL, 0);
+}
+
+size_t swap_out_keeping(uint64_t *space, uint64_t *cursor, size_t want, const vmm_range_t *keep, size_t keep_count) {
     if (!active || !space || !cursor) return 0;
     uint64_t hhdm = pmm_get_hhdm_offset();
     size_t done = 0;
@@ -138,7 +142,7 @@ size_t swap_out(uint64_t *space, uint64_t *cursor, size_t want) {
         // it faults, and that fault waits for swap_mutex: nobody can change
         // the page while it is on its way out.
         uint64_t virt, frame;
-        if (!vmm_swap_pick(space, cursor, slot, &virt, &frame)) {
+        if (!vmm_swap_pick(space, cursor, slot, keep, keep_count, &virt, &frame)) {
             swap_slot_unref(slot);
             break;            // Nothing left that may go
         }
@@ -185,13 +189,31 @@ int swap_in(uint64_t *space, uint64_t virt) {
     return result;
 }
 
+// Swap out up to `want` of `task`'s pages (it must be the current task),
+// leaving those of the buffers its current system call has checked.
+// Nothing at all if it checked more than it could record: one of them
+// might be taken. Returns how many went.
+static size_t give_up(task_t *task, size_t want) {
+    if (task->call_ranges_full) return 0;
+    return swap_out_keeping(vmm_space_from_phys((uint64_t)task->pml4_phys), &task->swap_cursor, want,
+                            task->call_ranges, task->call_range_count);
+}
+
 size_t swap_make_room_for_fork(void) {
     if (!active) return 0;
     task_t *task = sched_get_current_task();
     if (!task || !task->is_user) return 0;
     size_t free_frames = pmm_get_free_frames();
     if (free_frames >= SWAP_LOW_FRAMES) return 0;
-    return swap_out(vmm_space_from_phys((uint64_t)task->pml4_phys), &task->swap_cursor, SWAP_HIGH_FRAMES - free_frames);
+    return give_up(task, SWAP_HIGH_FRAMES - free_frames);
+}
+
+size_t swap_make_room_for_call(void) {
+    if (!active) return 0;
+    task_t *task = sched_get_current_task();
+    if (!task || !task->is_user || task->call_ranges_full) return 0;
+    size_t free_frames = pmm_get_free_frames();
+    return give_up(task, free_frames < SWAP_HIGH_FRAMES ? SWAP_HIGH_FRAMES - free_frames : 1);
 }
 
 void swap_relieve_pressure(void) {
@@ -210,6 +232,6 @@ void swap_relieve_pressure(void) {
     if (task->swap_retry_below != 0 && free_frames >= task->swap_retry_below) return;
 
     size_t want = SWAP_HIGH_FRAMES - free_frames;
-    size_t got = swap_out(vmm_space_from_phys((uint64_t)task->pml4_phys), &task->swap_cursor, want);
+    size_t got = give_up(task, want);
     task->swap_retry_below = got < want ? free_frames / 2 + 1 : 0;
 }

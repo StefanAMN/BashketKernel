@@ -162,19 +162,28 @@ static inline uint32_t vmm_pte_swap_slot(uint64_t pte) {
     return (uint32_t)((pte & PTE_ADDR_MASK) >> 12);
 }
 
+/** A range of user addresses, [start, end) */
+typedef struct {
+    uint64_t start;
+    uint64_t end;
+} vmm_range_t;
+
 /**
  * @brief Choose a page of a user address space to swap out and take it
  *        away: its entry becomes a swapped entry for `slot`.
  *
- * Candidates are present user pages whose frame nobody else shares. The
- * search starts at `*cursor` and wraps round; a page whose accessed bit is
- * set has the bit cleared and is passed over this time.
+ * Candidates are present user pages whose frame nobody else shares and
+ * which touch none of the `keep_count` ranges in `keep` (the buffers of a
+ * system call in progress; NULL and 0 for none). The search starts at
+ * `*cursor` and wraps round; a page whose accessed bit is set has the bit
+ * cleared and is passed over this time.
  *
  * @param virt, frame Receive the page's address and the frame it had, which
  *        the caller now holds the only reference to.
  * @return false if the address space has no page that may go.
  */
-bool vmm_swap_pick(uint64_t *pml4, uint64_t *cursor, uint32_t slot, uint64_t *virt, uint64_t *frame);
+bool vmm_swap_pick(uint64_t *pml4, uint64_t *cursor, uint32_t slot, const vmm_range_t *keep, size_t keep_count,
+                   uint64_t *virt, uint64_t *frame);
 
 /**
  * @brief Turn the swapped entry for `virt` back into a present one that

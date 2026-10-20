@@ -428,12 +428,12 @@ static int64_t sys_fstat(int fd, uint64_t user_st) {
 #define UTIME_NOW ((uint64_t)-1)
 
 // Change a file's length on behalf of user `uid` (who has the right to
-// write it): as a write would, it takes a set-uid bit away from a file
-// changed by anyone but root. Caller holds the tree lock.
+// write it): as a write would, it takes the set-uid and set-gid bits away
+// from a file changed by anyone but root. Caller holds the tree lock.
 static int64_t resize_file(vnode_t *node, uint64_t length, uint32_t uid) {
     if (length > 0x7FFFFFFFu) return -EFBIG;               // (What ext2 here can hold, and more than any disk)
-    if (uid != UID_ROOT && (node->mode & PERM_SETUID)) {
-        node->mode &= (uint16_t)~PERM_SETUID;
+    if (uid != UID_ROOT && (node->mode & PERM_SET_IDS)) {
+        node->mode &= (uint16_t)~PERM_SET_IDS;
         if (node->ops && node->ops->setattr) node->ops->setattr(node);
     }
     return vfs_truncate(node, (size_t)length);
@@ -512,8 +512,9 @@ static int64_t sys_readlink(uint64_t user_path, uint64_t user_buf, size_t size) 
 }
 
 // unlink(path): remove a file or an empty directory. Except for root, the
-// caller needs the right to write in the directory and must own the entry
-// or the directory (so that everyone may use /tmp, but not empty it).
+// caller needs the right to write in the directory, and in a sticky one
+// (/tmp) must own the entry or the directory: everyone may use /tmp, but
+// not empty it (auth_may_remove).
 static int64_t sys_unlink(uint64_t user_path) {
     char path[PATH_MAX];
     int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
@@ -579,6 +580,9 @@ static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
     if (uid != UID_ROOT && uid != node->uid) return -EPERM;
     if (node->read_only) return -EROFS;
     if (mode & ~(uint64_t)PERM_ALL) return -EINVAL;
+    // A program may only be made to run with a group its owner is in: the
+    // bit is quietly left off otherwise, as POSIX allows
+    if (uid != UID_ROOT && !auth_current_in_group(node->gid)) mode &= ~(uint64_t)PERM_SETGID;
     node->mode = (uint16_t)mode;
     return (node->ops && node->ops->setattr) ? node->ops->setattr(node) : 0; // Where it is kept, if anywhere
 }
@@ -628,7 +632,8 @@ static int64_t sys_getgroups(uint64_t size, uint64_t user_list) {
 // chown(path, uid, gid): give a file to another user or group
 // (CHOWN_KEEP leaves one as it is). Root only, except that an owner may
 // move a file into a group it is in (its own or a supplementary one).
-// Takes away the set-uid bit.
+// Takes away the set-uid and set-gid bits (root changing only the group
+// keeps set-uid: the owner is the same).
 static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid) {
     vnode_t *node = NULL;
     int64_t err = lookup_for_change(user_path, &node);
@@ -645,8 +650,10 @@ static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid)
 
     if (new_uid != CHOWN_KEEP) node->uid = (uint32_t)new_uid;
     if (new_gid != CHOWN_KEEP) node->gid = (uint32_t)new_gid;
-    // Whoever the file belongs to now did not ask for it to be set-uid
+    // Whoever the file belongs to now did not ask for it to be set-uid, and
+    // the group it is in now did not ask for it to be set-gid
     if (task->uid != UID_ROOT || new_uid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETUID;
+    if (task->uid != UID_ROOT || new_gid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETGID;
     return (node->ops && node->ops->setattr) ? node->ops->setattr(node) : 0;
 }
 
@@ -1121,7 +1128,10 @@ static int64_t sys_sigprocmask(int how, uint64_t user_set, uint64_t user_old) {
 
 int64_t syscall_handler(struct registers *regs) {
     uint64_t number = regs->rax;
+    task_t *self = sched_get_current_task();
+    process_call_ranges_reset(self);   // The buffers this call checks are kept in memory while it runs (swap.h)
     int64_t result = dispatch(regs);
+    process_call_ranges_reset(self);   // ...and no longer: the call is over
 
     // If a signal handler is about to run instead of this call's result
     // being looked at, the handler's settings may ask for the call to be
@@ -1230,7 +1240,8 @@ static int64_t dispatch(struct registers *regs) {
 
         case SYS_GETUID:  return (int64_t)task->ruid;   // Who started this process
         case SYS_GETEUID: return (int64_t)task->uid;    // Whose rights it has
-        case SYS_GETGID:  return (int64_t)task->gid;
+        case SYS_GETGID:  return (int64_t)task->rgid;   // The group of whoever started it
+        case SYS_GETEGID: return (int64_t)task->gid;    // The group whose rights it has
         case SYS_SETUID:
             // Root may become anyone, for good: real and effective user both
             // change. Anyone else may only go back to being themselves, which
@@ -1244,8 +1255,14 @@ static int64_t dispatch(struct registers *regs) {
             task->uid = (uint32_t)regs->rdi;
             return 0;
         case SYS_SETGID:
+            // As setuid: root sets both groups for good; anyone else may only
+            // go back to their real group (a set-gid program giving it up)
             if (regs->rdi > 0xFFFFFFFFULL) return -EINVAL;
-            if (task->uid != UID_ROOT && (uint32_t)regs->rdi != task->gid) return -EPERM;
+            if (task->uid == UID_ROOT) {
+                task->rgid = (uint32_t)regs->rdi;
+            } else if ((uint32_t)regs->rdi != task->rgid) {
+                return -EPERM;
+            }
             task->gid = (uint32_t)regs->rdi;
             return 0;
         case SYS_SETGROUPS: return sys_setgroups(regs->rdi, regs->rsi);

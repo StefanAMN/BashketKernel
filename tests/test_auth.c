@@ -8,7 +8,7 @@
 
 TEST(permission_rules) {
     vnode_t file = { .uid = 1000, .mode = 0644 };   // Owner reads and writes, others read
-    vnode_t dir = { .uid = 0, .mode = 0666 };       // A shared directory, like /tmp
+    vnode_t dir = { .uid = 0, .mode = 01666 };      // A shared, sticky directory, like /tmp
 
     // Root may do anything, whatever the bits say
     vnode_t locked = { .uid = 1000, .mode = 0 };
@@ -24,17 +24,24 @@ TEST(permission_rules) {
     EXPECT_TRUE(!auth_may_access(1000, &file, false) && auth_may_access(1001, &file, true));
     EXPECT_TRUE(!auth_may_access(1000, NULL, false));
 
-    // Removing needs a writable directory and ownership of the file (or of
-    // the directory): sharing /tmp does not mean deleting each other's files
+    // Removing needs a writable directory and, in a sticky one, ownership of
+    // the file (or of the directory): sharing /tmp does not mean deleting
+    // each other's files
     file.mode = 0644;
     EXPECT_TRUE(auth_may_remove(1000, &dir, &file));
     EXPECT_TRUE(!auth_may_remove(1001, &dir, &file));
     EXPECT_TRUE(auth_may_remove(UID_ROOT, &dir, &file));
-    vnode_t private_dir = { .uid = 1001, .mode = 0600 };
+    vnode_t private_dir = { .uid = 1001, .mode = 01600 };
     EXPECT_TRUE(auth_may_remove(1001, &private_dir, &file));   // Its directory's owner may
     EXPECT_TRUE(!auth_may_remove(1000, &private_dir, &file));  // No write access to the directory
-    dir.mode = 0644;
+    dir.mode = 01644;
     EXPECT_TRUE(!auth_may_remove(1000, &dir, &file));
+    // Without the sticky bit, writing in the directory is all it takes
+    dir.mode = 0666;
+    EXPECT_TRUE(auth_may_remove(1001, &dir, &file) && auth_may_remove(1000, &dir, &file));
+    dir.mode = 0644;
+    EXPECT_TRUE(!auth_may_remove(1001, &dir, &file));
+    EXPECT_TRUE(!auth_may_remove(1000, NULL, &file) && !auth_may_remove(1000, &dir, NULL));
 
     // Signals: to your own processes, or from root
     EXPECT_TRUE(auth_may_signal(1000, 1000) && auth_may_signal(UID_ROOT, 1000));
@@ -130,7 +137,7 @@ TEST(group_and_execute_bits) {
     EXPECT_TRUE(hello->mode == 0755 && hello->uid == UID_ROOT);
     EXPECT_TRUE(su->mode == 04755 && passwd->mode == 04755 && su->uid == UID_ROOT);
     EXPECT_TRUE(motd->mode == 0644 && accounts->mode == 0600);
-    EXPECT_TRUE(tmp->mode == 0777 && vfs_get_root()->mode == 0755);
+    EXPECT_TRUE(tmp->mode == 01777 && vfs_get_root()->mode == 0755);      // /tmp: sticky
 
     // A file that is not marked executable is not run, even by the kernel
     EXPECT_EQ(process_spawn("/etc/motd", NULL), -1);
@@ -162,7 +169,8 @@ TEST(supplementary_groups) {
     EXPECT_TRUE(auth_current_in_group(GID_ROOT) && !auth_current_in_group(50));
 }
 
-// Writing to a set-uid file takes the bit away, unless root is the writer
+// Writing to a set-uid or set-gid file takes the bits away, unless root is
+// the writer; so does giving it away
 TEST(setuid_bit_does_not_survive_a_rewrite) {
     file_t *file = NULL;
     EXPECT_EQ(file_open_as(1000, NULL, "/tmp/tool", O_WRONLY | O_CREAT, &file), 0);
@@ -178,6 +186,14 @@ TEST(setuid_bit_does_not_survive_a_rewrite) {
     file_close(file);
     EXPECT_TRUE(node->mode == 04755);
     EXPECT_EQ(file_open_as(1000, NULL, "/tmp/tool", O_WRONLY, &file), 0);   // Its owner writing does not
+    file_close(file);
+    EXPECT_TRUE(node->mode == 0755);
+
+    node->mode = 02755;                                                      // Set-gid alone
+    EXPECT_EQ(file_open_as(UID_ROOT, NULL, "/tmp/tool", O_WRONLY, &file), 0);
+    file_close(file);
+    EXPECT_TRUE(node->mode == 02755);
+    EXPECT_EQ(file_open_as(1000, NULL, "/tmp/tool", O_WRONLY, &file), 0);
     file_close(file);
     EXPECT_TRUE(node->mode == 0755);
 

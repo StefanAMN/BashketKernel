@@ -537,7 +537,7 @@ static uint32_t ino_of(const vnode_t *node) {
 static void apply_inode(vnode_t *node, const struct ext2_inode *inode) {
     node->uid = inode->uid | ((uint32_t)inode->uid_high << 16);
     node->gid = inode->gid | ((uint32_t)inode->gid_high << 16);
-    node->mode = inode->mode & 07777 & 04777;       // The bits this kernel knows
+    node->mode = inode->mode & 07777;               // Permissions, set-uid, set-gid, sticky
     node->size = (node->type == VFS_FILE) ? inode->size : 0;
     node->mtime = inode->mtime;
 }

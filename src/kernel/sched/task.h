@@ -12,10 +12,12 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "region.h"
+#include "vmm.h"
 
 #define KERNEL_STACK_SIZE (16 * 1024) // 16 KiB kernel stack per task
 #define TASK_MAX_FDS 16               // Open file descriptors per process
 #define TASK_MAX_GROUPS 16            // Supplementary groups per process (setgroups)
+#define TASK_CALL_RANGES 8            // Buffers one system call may have checked and still keep in memory (swap.h)
 #define TASK_NSIG 32                  // Signal numbers 1..31
 
 struct file;
@@ -76,6 +78,9 @@ typedef struct task {
     mem_region_t regions[TASK_MAX_REGIONS]; // Memory promised by mmap, given page by page on first touch (region.h)
     size_t swap_retry_below; // After a search that found nothing: do not search again until fewer frames than this are free (0: no such search yet)
     uint64_t swap_cursor;    // The clock hand: where the last search for a page to swap out stopped (swap.h)
+    vmm_range_t call_ranges[TASK_CALL_RANGES]; // User memory the system call in progress has checked: not swapped out until it returns
+    uint32_t call_range_count;  // How many of call_ranges[] are in use
+    bool call_ranges_full;   // It checked more than fit: nothing of it may be swapped out until it returns
     size_t promised_pages;   // Pages of those regions, and of the heap, not yet touched
     uint64_t stack_top;      // Highest address of the user stack (randomised per program)
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
@@ -83,7 +88,8 @@ typedef struct task {
     void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
     uint32_t uid;            // Effective user: whose rights this process has (0: root, may do anything)
     uint32_t ruid;           // Real user: who started it (differs from uid only in a set-uid program)
-    uint32_t gid;            // Its group
+    uint32_t gid;            // Effective group: the one permission checks use
+    uint32_t rgid;           // Real group: whoever started it (differs from gid only in a set-gid program)
     uint32_t groups[TASK_MAX_GROUPS]; // Supplementary groups: more whose members' rights it has (setgroups)
     uint32_t group_count;    // How many of groups[] are in use
     uint16_t umask;          // Permission bits removed from every file it creates

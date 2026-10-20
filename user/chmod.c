@@ -4,7 +4,9 @@
  *                          file's group and everyone else: 4 read, 2 write,
  *                          1 execute. 0644: owner reads and writes, the
  *                          rest read. 0755: the same, and all may run it.
- *                          4755: also set-uid (runs with its owner's rights).
+ *                          4755: also set-uid (runs with its owner's rights);
+ *                          2755: set-gid (with its group's); 1777: sticky
+ *                          (on a directory: each may remove only their own).
  */
 #include "ulib.h"
 

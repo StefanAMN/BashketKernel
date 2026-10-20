@@ -3,7 +3,7 @@
 #include "ulib.h"
 
 int main(void) {
-    long uid = getuid(), euid = geteuid(), gid = getgid();
+    long uid = getuid(), euid = geteuid(), gid = getgid(), egid = getegid();
     printf("uid %ld%s\n", uid, uid == 0 ? " (root)" : "");
     printf("gid %ld\n", gid);
     unsigned groups[16];
@@ -13,7 +13,8 @@ int main(void) {
         for (long i = 0; i < count; i++) printf(" %u", groups[i]);
         printf("\n");
     }
-    /* Different only inside a set-uid program */
+    /* Different only inside a set-uid (set-gid) program */
     if (euid != uid) printf("effective uid %ld%s\n", euid, euid == 0 ? " (root)" : "");
+    if (egid != gid) printf("effective gid %ld\n", egid);
     return 0;
 }
