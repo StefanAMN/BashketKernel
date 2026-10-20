@@ -62,6 +62,12 @@ void mouse_handle_byte(uint8_t byte);
 int64_t mouse_read(void *buf, size_t count, bool block);
 
 /**
+ * @brief For poll(): POLLIN when an event is queued (the mouse cannot be
+ *        written to).
+ */
+int mouse_poll(void);
+
+/**
  * @brief Forget queued events and any packet half received.
  */
 void mouse_flush(void);

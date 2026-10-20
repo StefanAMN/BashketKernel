@@ -54,6 +54,11 @@ typedef struct vnode_ops {
     // refuse by returning a negative error number.
     int (*opened)(struct vnode *node, bool writable);
     void (*closed)(struct vnode *node, bool writable);
+
+    // For poll(): which of POLLIN, POLLOUT, POLLERR, POLLHUP (poll.h) are
+    // true of the device now. NULL: always readable and writable. Whoever
+    // provides it calls poll_notify() whenever the answer may change.
+    int (*poll)(struct vnode *node);
 } vnode_ops_t;
 
 typedef struct vnode {

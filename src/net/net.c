@@ -14,6 +14,7 @@
 #include "spinlock.h"
 #include "kerrno.h"
 #include "random.h"
+#include "poll.h"
 
 #define ETHERTYPE_IPV4 0x0800
 #define ETHERTYPE_ARP  0x0806
@@ -480,7 +481,10 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
     }
     spinlock_release_irqrestore(&net_lock, flags);
 
-    if (sock) sched_wakeup(sock);
+    if (sock) {
+        sched_wakeup(sock);
+        poll_notify();
+    }
 }
 
 // A received IPv4 packet (header checked, fragments refused): hand its
@@ -649,6 +653,13 @@ void udp_close(udp_socket_t *sock) {
 
     sched_wakeup(sock); // Anyone still waiting on it finds it closed
     kfree(queue);
+}
+
+int udp_poll(udp_socket_t *sock) {
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
+    int events = (sock->open && sock->count > 0) ? POLLIN : 0;
+    spinlock_release_irqrestore(&net_lock, flags);
+    return events | POLLOUT; // Sending never waits for room (a datagram is sent or dropped)
 }
 
 int64_t udp_sendto(udp_socket_t *sock, uint32_t ip, uint16_t port, const void *data, size_t len) {

@@ -12,6 +12,7 @@
 #include "random.h"
 #include "kprintf.h"
 #include "kerrno.h"
+#include "poll.h"
 
 
 #define MOUSE_IRQ 12
@@ -93,6 +94,7 @@ void mouse_handle_byte(uint8_t byte) {
         push_event(dx, dy, buttons);
         last_buttons = buttons;
         sched_wakeup(queue);
+        poll_notify();
     }
     spinlock_release_irqrestore(&mouse_lock, flags);
 }
@@ -136,6 +138,13 @@ void mouse_flush(void) {
     packet_have = 0;
     last_buttons = 0;
     spinlock_release_irqrestore(&mouse_lock, flags);
+}
+
+int mouse_poll(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&mouse_lock);
+    int events = queue_count > 0 ? POLLIN : 0;
+    spinlock_release_irqrestore(&mouse_lock, flags);
+    return events;
 }
 
 bool mouse_present(void) {

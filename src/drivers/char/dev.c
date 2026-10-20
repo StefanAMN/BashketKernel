@@ -147,13 +147,25 @@ static int64_t dev_mouse_read(vnode_t *node, size_t offset, void *buf, size_t co
     return mouse_read(buf, count, true);
 }
 
+// poll() on /dev/mouse and /dev/console: what their drivers say
+static int dev_mouse_poll(vnode_t *node) {
+    (void)node;
+    return mouse_poll();
+}
+
+// (See dev_mouse_poll)
+static int dev_console_poll(vnode_t *node) {
+    (void)node;
+    return tty_poll();
+}
+
 static const vnode_ops_t fb_ops = { .read = fb_read, .write = fb_write, .opened = fb_opened, .closed = fb_closed };
-static const vnode_ops_t mouse_ops = { .read = dev_mouse_read };
+static const vnode_ops_t mouse_ops = { .read = dev_mouse_read, .poll = dev_mouse_poll };
 static const vnode_ops_t disk_ops = { .read = disk_read, .write = disk_write };
 static const vnode_ops_t null_ops    = { .read = NULL,             .write = null_write };
 static const vnode_ops_t zero_ops    = { .read = zero_read,        .write = null_write };
 static const vnode_ops_t random_ops  = { .read = random_read,      .write = null_write };
-static const vnode_ops_t console_ops = { .read = dev_console_read, .write = dev_console_write };
+static const vnode_ops_t console_ops = { .read = dev_console_read, .write = dev_console_write, .poll = dev_console_poll };
 
 void dev_init(void) {
     vfs_init();

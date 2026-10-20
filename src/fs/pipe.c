@@ -13,6 +13,7 @@
 #include "spinlock.h"
 #include "kstring.h"
 #include "kerrno.h"
+#include "poll.h"
 
 pipe_t *pipe_create(void) {
     pipe_t *p = (pipe_t *)kmalloc(sizeof(pipe_t));
@@ -47,7 +48,10 @@ int64_t pipe_read(pipe_t *pipe, void *buf, size_t count) {
         pipe->count--;
     }
 
-    if (done > 0) sched_wakeup(pipe); // A writer may be waiting for room
+    if (done > 0) {
+        sched_wakeup(pipe); // A writer may be waiting for room
+        poll_notify();
+    }
     spinlock_release_irqrestore(&pipe->lock, flags);
     return (int64_t)done;
 }
@@ -78,6 +82,7 @@ int64_t pipe_write(pipe_t *pipe, const void *buf, size_t count) {
             pipe->count++;
         }
         sched_wakeup(pipe); // A reader may be waiting for data
+        poll_notify();
     }
     spinlock_release_irqrestore(&pipe->lock, flags);
 
@@ -97,6 +102,21 @@ static void close_end(pipe_t *pipe, bool *end) {
     spinlock_release_irqrestore(&pipe->lock, flags);
 
     if (unused) kfree(pipe);
+    else poll_notify();
+}
+
+int pipe_poll(pipe_t *pipe, bool reader) {
+    uint64_t flags = spinlock_acquire_irqsave(&pipe->lock);
+    int events = 0;
+    if (reader) {
+        if (pipe->count > 0) events |= POLLIN;
+        if (!pipe->writer_open) events |= POLLIN | POLLHUP;     // End of file: a read returns at once
+    } else {
+        if (!pipe->reader_open) events |= POLLERR;              // A write would fail (EPIPE)
+        else if (pipe->count < PIPE_BUFFER_SIZE) events |= POLLOUT;
+    }
+    spinlock_release_irqrestore(&pipe->lock, flags);
+    return events;
 }
 
 void pipe_close_reader(pipe_t *pipe) { if (pipe) close_end(pipe, &pipe->reader_open); }

@@ -122,6 +122,7 @@ long dup(int fd);                            /* The same open file under the low
 long pipe2(int fds[2], int flags);           /* flags: 0 or O_CLOEXEC */
 long fcntl(int fd, int command, long arg);   /* F_GETFD, or F_SETFD with FD_CLOEXEC or 0 */
 long readdir(int fd, struct dirent *entry);   /* 1 = entry filled, 0 = end */
+long poll(struct pollfd *fds, unsigned count, long timeout_ms); /* Wait until one is ready (-1: no limit; 0: just look). How many are; 0 on timeout; -EINTR */
 long mkdir(const char *path); /* 0, or a negative error (-EEXIST, -ENOENT, -EACCES, -ENAMETOOLONG ...) */
 long chdir(const char *path); /* Change the working directory */
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
