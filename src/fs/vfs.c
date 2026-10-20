@@ -678,6 +678,29 @@ int vfs_lookup_as(uint32_t uid, vnode_t *base, const char *path, bool follow_las
     return result;
 }
 
+int vfs_stat(vnode_t *node, struct vfs_stat *out) {
+    if (!node || !out) return -EINVAL;
+    vfs_lock();
+    memset(out, 0, sizeof(*out));
+    out->type = node->type;
+    out->mode = node->mode;
+    out->uid = node->uid;
+    out->gid = node->gid;
+    out->size = node->size;
+    out->mtime = node->mtime;
+    out->links = 1;
+    if (node->type == VFS_DIRECTORY) {                     // Its own ".", its entry, and each child's ".."
+        vfs_load_dir(node);                                // (Counting needs the children known)
+        out->links = 2;
+        for (vnode_t *child = node->children; child; child = child->next) {
+            if (child->type == VFS_DIRECTORY) out->links++;
+        }
+    }
+    int err = (node->ops && node->ops->stat) ? node->ops->stat(node, out) : 0;
+    vfs_unlock();
+    return err;
+}
+
 int vfs_symlink(vnode_t *parent, const char *name, const char *target, vnode_t **out) {
     if (!parent) parent = vfs_root;
     size_t len = target ? strlen(target) : 0;

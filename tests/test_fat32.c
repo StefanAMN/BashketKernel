@@ -40,6 +40,18 @@ TEST(fat32_tree_is_mounted) {
     EXPECT_TRUE(vfs_find(NULL, "/disk/README.TXT") == NULL);
     // "." and ".." entries on the disk did not become children
     EXPECT_TRUE(vfs_find_child(notes, ".") == NULL && vfs_find_child(notes, "..") == NULL);
+
+    // stat: the first cluster stands in for an inode number (none for an
+    // empty file, which has no cluster), and no file has a second name
+    struct vfs_stat st, other;
+    EXPECT_EQ(vfs_stat(hello, &st), 0);
+    EXPECT_TRUE(st.type == VFS_FILE && st.size == 26 && st.links == 1 && st.ino >= 2);
+    EXPECT_EQ(vfs_stat(readme, &other), 0);
+    EXPECT_TRUE(other.ino >= 2 && other.ino != st.ino);
+    EXPECT_EQ(vfs_stat(empty, &st), 0);
+    EXPECT_EQ(st.ino, 0u);
+    EXPECT_EQ(vfs_stat(notes, &st), 0);
+    EXPECT_TRUE(st.type == VFS_DIRECTORY && st.links == 2 && st.ino >= 2);
 }
 
 TEST(fat32_file_contents) {

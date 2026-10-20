@@ -529,6 +529,9 @@ void format_ip(uint32_t ip, char out[16]) {
 
 void tty_raw(int raw) { syscall1(SYS_TTY_RAW, raw); }
 long isatty(int fd) { return syscall1(SYS_ISATTY, fd); }
+long stat(const char *path, struct stat *st)  { return syscall2(SYS_STAT, (long)path, (long)st); }
+long lstat(const char *path, struct stat *st) { return syscall2(SYS_LSTAT, (long)path, (long)st); }
+long fstat(int fd, struct stat *st)           { return syscall2(SYS_FSTAT, fd, (long)st); }
 
 long reboot(int restart) { return syscall1(SYS_REBOOT, restart); }
 
@@ -641,7 +644,7 @@ static void out_number(outbuf_t *out, unsigned long value, unsigned base, int ne
     while (n) out_char(out, digits[--n]);
 }
 
-/* Supports %d %u %x %p %s %c %%, the l length modifier, and a field width
+/* Supports %d %u %x %o %p %s %c %%, the l length modifier, and a field width
  * with optional zero padding (%5d, %02d, %8s). Fields are right-aligned. */
 static void format(int fd, const char *fmt, va_list args) {
     outbuf_t out;
@@ -670,6 +673,7 @@ static void format(int fd, const char *fmt, va_list args) {
             }
             case 'u': out_number(&out, is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned), 10, 0, width, zero_pad); break;
             case 'x': out_number(&out, is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned), 16, 0, width, zero_pad); break;
+            case 'o': out_number(&out, is_long ? va_arg(args, unsigned long) : va_arg(args, unsigned), 8, 0, width, zero_pad); break;
             case 'p': out_string(&out, "0x"); out_number(&out, (unsigned long)va_arg(args, void *), 16, 0, 0, 0); break;
             case 's': {
                 const char *str = va_arg(args, const char *);

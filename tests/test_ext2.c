@@ -169,9 +169,17 @@ TEST(ext2_directories) {
     uint32_t blocks_before = ext2_free_blocks(), inodes_before = ext2_free_inodes();
     vnode_t *home = vfs_find(NULL, "/home");
     vnode_t *work = NULL;
+    struct vfs_stat before, after;
+    EXPECT_EQ(vfs_stat(home, &before), 0);
     EXPECT_EQ(vfs_create(home, "work", VFS_DIRECTORY, &work), 0);
     EXPECT_EQ(vfs_create(home, "work", VFS_DIRECTORY, NULL), -EEXIST);
     EXPECT_TRUE(work != NULL);
+    // A new subdirectory's ".." is one more link to its parent, on disk;
+    // the new one has its own name and its "."
+    EXPECT_EQ(vfs_stat(home, &after), 0);
+    EXPECT_TRUE(before.links >= 4 && after.links == before.links + 1 && after.ino == before.ino);
+    EXPECT_EQ(vfs_stat(work, &after), 0);
+    EXPECT_TRUE(after.type == VFS_DIRECTORY && after.links == 2 && after.ino != before.ino);
 
     // Enough entries, with names long enough, that the directory needs
     // several blocks
@@ -465,9 +473,21 @@ TEST(ext2_links) {
     if (file) { EXPECT_EQ(file_write(file, "!", 1), 1); file_close(file); }
     EXPECT_TRUE(test_file_is("/root/second-name", "one file, two names!"));
 
+    // stat: both names are one inode with two links (as the disk counts
+    // them); a symbolic link is an inode of its own
+    struct vfs_stat one, two, link;
+    EXPECT_EQ(vfs_stat(vfs_find(NULL, "/root/linked.txt"), &one), 0);
+    EXPECT_EQ(vfs_stat(vfs_find(NULL, "/root/second-name"), &two), 0);
+    EXPECT_TRUE(one.ino != 0 && one.ino == two.ino && one.links == 2 && two.links == 2 && one.size == 20);
+    EXPECT_EQ(vfs_lookup(NULL, "/root/short", false, &found), 0);
+    EXPECT_EQ(vfs_stat(found, &link), 0);
+    EXPECT_TRUE(link.type == VFS_SYMLINK && link.ino != one.ino && link.links == 1);
+
     // One name gone, the file stays; the last one gone, it goes
     EXPECT_EQ(test_remove("/root", "linked.txt"), 0);
     EXPECT_TRUE(test_file_is("/root/second-name", "one file, two names!"));
+    EXPECT_EQ(vfs_stat(vfs_find(NULL, "/root/second-name"), &two), 0);
+    EXPECT_EQ(two.links, 1);
     EXPECT_EQ(test_remove("/root", "second-name"), 0);
     EXPECT_EQ(test_remove("/root", "short"), 0);
     EXPECT_EQ(test_remove("/root", "long"), 0);

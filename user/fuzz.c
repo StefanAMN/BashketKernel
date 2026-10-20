@@ -119,6 +119,7 @@ static void one_call(void) {
         SYS_MUNMAP, SYS_BRK, SYS_PIPE, SYS_DUP2, SYS_SLEEP, SYS_FORK, SYS_EXECVE, SYS_WAITPID,
         SYS_KILL, SYS_UNAME, SYS_READDIR, SYS_GETCWD, SYS_MKDIR, SYS_UNLINK, SYS_GETPPID, SYS_TIME,
         SYS_SIGNAL, SYS_SIGACTION, SYS_SIGPROCMASK, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_NETCONFIG, SYS_DUP, SYS_PIPE2, SYS_FCNTL, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_GETEUID, SYS_GETGID, SYS_SETGID, SYS_UMASK, SYS_SETUID, SYS_CHMOD, SYS_CHOWN, SYS_RENAME, SYS_POLL, SYS_LINK, SYS_SYMLINK, SYS_READLINK,
+        SYS_ISATTY, SYS_STAT, SYS_LSTAT, SYS_FSTAT,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -168,6 +169,10 @@ static void one_call(void) {
             break;
         case SYS_READLINK:
             if (shaped) { a = (unsigned long)safe_paths[rnd() % COUNT(safe_paths)]; b = random_pointer(); c = random_length(); }
+            break;
+        case SYS_STAT:
+        case SYS_LSTAT:                                   /* (They only describe: any path will do) */
+            if (shaped) { a = (unsigned long)safe_paths[rnd() % COUNT(safe_paths)]; b = random_pointer(); }
             break;
         case SYS_MKDIR:
         case SYS_UNLINK:
