@@ -3,18 +3,31 @@
  *
  *   sh                 read commands from standard input until "exit"
  *   sh -c "command"    run one command line and exit with its status
- *   sh FILE            run the commands in FILE (lines starting with # are comments)
+ *   sh FILE            run the commands in FILE ('#' starts a comment)
  *
- * A command line is one or more pipelines separated by ';' (one after the
- * other), '&&' (the next only if this one succeeded) or '||' (only if it
- * failed). A pipeline is one or more programs joined by '|'. Each may redirect
- * its input with "< file" and its output with "> file" or ">> file".
- * A program name without a '/' is looked up in the directories of $PATH.
+ * A command line is one or more pipelines separated by ';' or newlines (one
+ * after the other), '&&' (the next only if this one succeeded) or '||'
+ * (only if it failed). A pipeline is one or more programs joined by '|'.
+ * Each may redirect its input with "< file" and its output with "> file"
+ * or ">> file". A program name without a '/' is looked up in the
+ * directories of $PATH.
+ *
+ * Compound commands, on one line or over several (the prompt asks for the
+ * rest with "> "), nested as deep as wanted:
+ *   if LIST; then LIST; [elif LIST; then LIST;] [else LIST;] fi
+ *   while LIST; do LIST; done
+ *   for NAME in WORDS; do LIST; done
+ * with break [N] and continue [N] inside loops, and the built-in test
+ * EXPR (or [ EXPR ]) for conditions: -e -f -d PATH, -z -n STRING, a = b,
+ * a != b, x -eq -ne -lt -le -gt -ge y, and ! to turn one round. Ctrl-C
+ * ends a loop as well as the command it was running.
+ *
  * A word may join plain, "double quoted" ($ expanded) and 'single quoted'
  * (taken as it is) parts. $(command) is replaced by what the command
- * prints: one word inside double quotes, split at blanks outside them. A word with *, ? or [...] and no quoted part is
- * replaced by the names it matches, sorted (user/lib/glob.h); one that
- * matches nothing stays as typed.
+ * prints: one word inside double quotes, split at blanks outside them. A
+ * word with *, ? or [...] and no quoted part is replaced by the names it
+ * matches, sorted (user/lib/glob.h); one that matches nothing stays as
+ * typed.
  * $NAME expands to an environment variable and $? to the last exit status;
  * "export NAME=value" sets one for the shell and everything it starts.
  *
@@ -601,6 +614,9 @@ static int run_pipeline(stage_t *stages, int count, int background, const char *
     return run_in_foreground(pids, alive, count, text, NULL);
 }
 
+static int test_builtin(int argc, char **argv);
+static int loop_control(int argc, char **argv);
+
 /* Run one pipeline (a part of a command line between ';', '&&' and '||'):
  * a built-in, or programs in the foreground or (with a final '&') the
  * background. Returns its status; sets *should_exit for "exit". */
@@ -633,6 +649,12 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     if (count == 1 && strcmp(stages[0].argv[0], "exit") == 0) {
         *should_exit = 1;
         return stages[0].argc > 1 ? (int)atoi(stages[0].argv[1]) : 0;
+    }
+    if (count == 1 && (strcmp(stages[0].argv[0], "break") == 0 || strcmp(stages[0].argv[0], "continue") == 0)) {
+        return loop_control(stages[0].argc, stages[0].argv);
+    }
+    if (count == 1 && (strcmp(stages[0].argv[0], "test") == 0 || strcmp(stages[0].argv[0], "[") == 0)) {
+        return test_builtin(stages[0].argc, stages[0].argv);
     }
     /* cd has to be a built-in: a child process could only change its own
      * directory, not the shell's */
@@ -696,6 +718,8 @@ static int run_pipeline_text(const char *line, int *should_exit) {
         printf("Programs live in /bin (try: ls /bin). Syntax:\n"
                "  prog args | prog2      pipe output into another program\n"
                "  a ; b, a && b, a || b  run b after a; only if a succeeded; only if it failed\n"
+               "  if c; then a; else b; fi     while c; do a; done     for x in 1 2 3; do echo $x; done\n"
+               "  [ -f FILE ], [ $x = y ], [ 3 -lt 4 ], [ ! ... ]   conditions (test); break, continue\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
                "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
                "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
@@ -711,47 +735,536 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     return run_pipeline(stages, count, background, text);
 }
 
-/* Run a command line: pipelines separated by ';' (run the next whatever
- * happened), '&&' (run it only if the last one succeeded) and '||' (only if
- * it failed). A part that is not run leaves the status as it was, so
- * "a && b || c" runs c when a or b fails. $? is up to date for each part.
- * Separators inside quotes (either kind) are text. Returns the status of the last
- * part run; stops at "exit". */
-static int run_line(const char *line, int *should_exit) {
-    enum { ALWAYS, IF_OK, IF_FAILED } condition = ALWAYS;
-    int status = last_status;
-    const char *p = line;
+/* --- Compound commands: if, while, for --------------------------------------
+ *
+ * A command text (a line, a -c argument, or several lines of a script or of
+ * the prompt) is cut into segments at ';', newlines, '&&' and '||' outside
+ * quotes and $( ), and the segments are parsed into a tree: a simple
+ * command (run by run_pipeline_text), or an if, while or for holding lists
+ * of further commands. A segment starting with a keyword (if, then, elif,
+ * else, fi, while, do, done, for) is structure: "then echo a" is the
+ * keyword and the first command of the body. A text that stops inside an
+ * if/while/for (or after '&&' or '||') is incomplete: at the prompt and in
+ * a script the next line is added to it. */
+
+enum { JOIN_ALWAYS, JOIN_IF_OK, JOIN_IF_FAILED };      /* How a command follows the one before */
+enum { PARSE_OK, PARSE_SYNTAX, PARSE_INCOMPLETE };
+enum { NODE_SIMPLE, NODE_IF, NODE_WHILE, NODE_FOR };
+#define RUN_INCOMPLETE (-1)                             /* run_text: more lines are needed */
+
+typedef struct segment {
+    char *text;               /* What is left of it to parse (inside `storage`) */
+    char *storage;            /* malloc'd copy of the segment */
+    int join_next;            /* JOIN_*: what its end separator says about the next command */
+} segment_t;
+
+typedef struct node node_t;
+typedef struct {
+    node_t **items;
+    int *joins;               /* joins[i]: how items[i] follows items[i - 1] (JOIN_*) */
+    int count, cap;
+} cmd_list_t;
+
+struct node {
+    int kind;                 /* NODE_* */
+    char *text;               /* NODE_SIMPLE: the command; NODE_FOR: the words to loop over */
+    char name[32];            /* NODE_FOR: the variable */
+    cmd_list_t cond, body;    /* if: condition, then-part; while: condition, body; for: body */
+    cmd_list_t other;         /* if: the else-part (an elif is an else holding one if) */
+};
+
+static segment_t *segs;       /* The segments being parsed, and where the parser is */
+static int seg_count, seg_pos, parse_state;
+static int loop_depth;        /* Loops being run (for break and continue) */
+static int pending_break, pending_continue;   /* Loops still to leave, or to continue */
+static int interrupted;       /* A command was ended by Ctrl-C: loops stop */
+
+/* Cut `text` into segments (segs, seg_count). Returns PARSE_OK, or
+ * PARSE_SYNTAX for an empty command before '&&' or '||' (or no memory), or
+ * PARSE_INCOMPLETE for a text that ends with '&&' or '||'. A '#' starting a
+ * word outside quotes comments out the rest of its line. */
+static int cut_segments(const char *text) {
+    int cap = 0, join = JOIN_ALWAYS;
+    seg_count = seg_pos = 0;
+    segs = NULL;
+    const char *p = text;
     while (*p) {
-        /* The part up to the next separator that is not inside quotes */
-        char part[256];
+        char quoted = 0;
+        int depth = 0;
+        const char *start = p;
         size_t n = 0;
-        int quoted = 0, next = ALWAYS;
-        int depth = 0;                                                   /* Inside $( ... ) */
+        char *buf = malloc(strlen(p) + 1);
+        if (!buf) return PARSE_SYNTAX;
         for (; *p; p++) {
-            if (!quoted && (*p == '"' || *p == '\'')) quoted = *p;      /* Into a quote ... */
-            else if (quoted && *p == quoted) quoted = 0;                /* ... and out of it */
+            if (!quoted && depth == 0 && *p == '#' && (p == start || is_blank(p[-1]) || p[-1] == '\n')) {
+                while (*p && *p != '\n') p++;              /* A comment, to the end of the line */
+                if (!*p) break;
+            }
+            if (!quoted && (*p == '"' || *p == '\'')) quoted = *p;
+            else if (quoted && *p == quoted) quoted = 0;
             else if (quoted != '\'' && p[0] == '$' && p[1] == '(') depth++;
             else if (!quoted && depth > 0 && *p == ')') depth--;
-            if (!quoted && depth == 0 && (*p == ';' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
-            if (n + 1 < sizeof(part)) part[n++] = *p;
+            if (!quoted && depth == 0 && (*p == ';' || *p == '\n' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
+            buf[n++] = *p;
         }
-        part[n] = '\0';
-        if (*p == ';') { next = ALWAYS; p++; }
-        else if (*p) { next = (*p == '&') ? IF_OK : IF_FAILED; p += 2; }
+        buf[n] = '\0';
+        int next = JOIN_ALWAYS;
+        if (*p == ';' || *p == '\n') p++;
+        else if (*p) { next = (*p == '&') ? JOIN_IF_OK : JOIN_IF_FAILED; p += 2; }
 
-        int empty = 1;
-        for (size_t i = 0; i < n; i++) if (!is_blank(part[i]) && part[i] != '\n') empty = 0;
-        if (empty && next != ALWAYS) {                     /* "&& b" or "a && && b" */
-            fprintf(2, "sh: syntax error\n");
-            return last_status = 2;
+        char *t = buf;
+        while (is_blank(*t)) t++;
+        size_t len = strlen(t);
+        while (len > 0 && is_blank(t[len - 1])) t[--len] = '\0';
+        if (len == 0) {                                     /* Nothing here */
+            free(buf);
+            if (next != JOIN_ALWAYS) return PARSE_SYNTAX;   /* "&& b", "a && && b" */
+            continue;                                       /* (A newline after "&&" keeps the "&&") */
         }
-        if (condition == ALWAYS || (condition == IF_OK && status == 0) || (condition == IF_FAILED && status != 0)) {
-            if (!empty) status = last_status = run_pipeline_text(part, should_exit);
-            if (*should_exit) break;
+        if (seg_count == cap) {
+            cap = cap ? cap * 2 : 16;
+            segment_t *grown = malloc(sizeof(segment_t) * (size_t)cap);
+            if (!grown) { free(buf); return PARSE_SYNTAX; }
+            if (segs) memcpy(grown, segs, sizeof(segment_t) * (size_t)seg_count);
+            free(segs);
+            segs = grown;
         }
-        condition = next;
+        segs[seg_count].storage = buf;
+        segs[seg_count].text = t;
+        segs[seg_count].join_next = next;
+        seg_count++;
+        join = next;
+    }
+    return join == JOIN_ALWAYS ? PARSE_OK : PARSE_INCOMPLETE;
+}
+
+/* Free the segments */
+static void free_segments(void) {
+    for (int i = 0; i < seg_count; i++) free(segs[i].storage);
+    free(segs);
+    segs = NULL;
+    seg_count = seg_pos = 0;
+}
+
+/* The first word of `text` into word[32] (blank-separated; "" if longer) */
+static void first_word(const char *text, char word[32]) {
+    size_t n = 0;
+    while (text[n] && !is_blank(text[n])) n++;
+    if (n >= 32) n = 0;
+    memcpy(word, text, n);
+    word[n] = '\0';
+}
+
+/* Whether `word` is one of the keywords that end or divide a compound command */
+static int is_closing_keyword(const char *word) {
+    static const char *const closing[] = { "then", "elif", "else", "fi", "do", "done" };
+    for (unsigned i = 0; i < sizeof(closing) / sizeof(closing[0]); i++) {
+        if (strcmp(word, closing[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+/* If the current segment starts with keyword `kw`, take the keyword off it
+ * (and the segment, if nothing is left) and return 1; else 0. With
+ * `alone`, anything after the keyword is a syntax error ("fi x"). */
+static int take_keyword(const char *kw, int alone) {
+    if (seg_pos >= seg_count) return 0;
+    char word[32];
+    first_word(segs[seg_pos].text, word);
+    if (strcmp(word, kw) != 0) return 0;
+    char *rest = segs[seg_pos].text + strlen(kw);
+    while (is_blank(*rest)) rest++;
+    if (*rest == '\0') seg_pos++;
+    else if (alone) parse_state = PARSE_SYNTAX;
+    else segs[seg_pos].text = rest;
+    return 1;
+}
+
+/* Expect keyword `kw` next: PARSE_INCOMPLETE if the text ended first,
+ * PARSE_SYNTAX if something else is there. Returns whether it was taken. */
+static int expect_keyword(const char *kw, int alone) {
+    if (parse_state != PARSE_OK) return 0;
+    if (seg_pos >= seg_count) { parse_state = PARSE_INCOMPLETE; return 0; }
+    if (!take_keyword(kw, alone)) { parse_state = PARSE_SYNTAX; return 0; }
+    return parse_state == PARSE_OK;
+}
+
+/* Add `item`, joined by `join`, to a list. 0, or -1 if memory ran out. */
+static int list_add(cmd_list_t *list, node_t *item, int join) {
+    if (list->count == list->cap) {
+        int cap = list->cap ? list->cap * 2 : 4;
+        node_t **items = malloc(sizeof(node_t *) * (size_t)cap);
+        int *joins = malloc(sizeof(int) * (size_t)cap);
+        if (!items || !joins) { free(items); free(joins); return -1; }
+        if (list->count) {
+            memcpy(items, list->items, sizeof(node_t *) * (size_t)list->count);
+            memcpy(joins, list->joins, sizeof(int) * (size_t)list->count);
+        }
+        free(list->items);
+        free(list->joins);
+        list->items = items;
+        list->joins = joins;
+        list->cap = cap;
+    }
+    list->items[list->count] = item;
+    list->joins[list->count++] = join;
+    return 0;
+}
+
+static void free_list(cmd_list_t *list);
+
+/* Free a node and everything in it */
+static void free_node(node_t *node) {
+    if (!node) return;
+    free(node->text);
+    free_list(&node->cond);
+    free_list(&node->body);
+    free_list(&node->other);
+    free(node);
+}
+
+/* Free the commands of a list (not the list itself) */
+static void free_list(cmd_list_t *list) {
+    for (int i = 0; i < list->count; i++) free_node(list->items[i]);
+    free(list->items);
+    free(list->joins);
+    memset(list, 0, sizeof(*list));
+}
+
+static void parse_list(cmd_list_t *list, int nested);
+
+/* A new node of `kind`, or NULL (parse_state set) if memory ran out */
+static node_t *new_node(int kind) {
+    node_t *node = malloc(sizeof(node_t));
+    if (!node) { parse_state = PARSE_SYNTAX; return NULL; }
+    memset(node, 0, sizeof(*node));
+    node->kind = kind;
+    return node;
+}
+
+/* The rest of an if (after "if" or "elif"): condition, then-part, and an
+ * elif, else or fi. The node, or NULL with parse_state set. */
+static node_t *parse_if(void) {
+    node_t *node = new_node(NODE_IF);
+    if (!node) return NULL;
+    parse_list(&node->cond, 1);
+    if (expect_keyword("then", 0)) parse_list(&node->body, 1);
+    if (parse_state == PARSE_OK) {
+        if (take_keyword("elif", 0)) {
+            node_t *inner = parse_if();                   /* It takes the one "fi" */
+            if (inner && list_add(&node->other, inner, JOIN_ALWAYS) < 0) { free_node(inner); parse_state = PARSE_SYNTAX; }
+        } else {
+            if (take_keyword("else", 0)) parse_list(&node->other, 1);
+            expect_keyword("fi", 1);
+        }
+    }
+    if (parse_state == PARSE_OK && (node->cond.count == 0 || node->body.count == 0)) parse_state = PARSE_SYNTAX;
+    if (parse_state != PARSE_OK) { free_node(node); return NULL; }
+    return node;
+}
+
+/* The rest of a while (after "while"): condition, "do", body, "done". The
+ * node, or NULL with parse_state set. */
+static node_t *parse_while(void) {
+    node_t *node = new_node(NODE_WHILE);
+    if (!node) return NULL;
+    parse_list(&node->cond, 1);
+    if (expect_keyword("do", 0)) parse_list(&node->body, 1);
+    expect_keyword("done", 1);
+    if (parse_state == PARSE_OK && (node->cond.count == 0 || node->body.count == 0)) parse_state = PARSE_SYNTAX;
+    if (parse_state != PARSE_OK) { free_node(node); return NULL; }
+    return node;
+}
+
+/* A for, starting at the current segment, "for NAME in WORDS" (one
+ * segment), then "do", body, "done". The node, or NULL with parse_state set. */
+static node_t *parse_for(void) {
+    node_t *node = new_node(NODE_FOR);
+    if (!node) return NULL;
+    const char *p = segs[seg_pos].text + 3;
+    while (is_blank(*p)) p++;
+    size_t n = 0;
+    while (is_name_char(p[n])) n++;
+    const char *after = p + n;
+    while (is_blank(*after)) after++;
+    int bad_name = n == 0 || n >= sizeof(node->name) || (p[0] >= '0' && p[0] <= '9');   /* Not "1" */
+    if (bad_name || strncmp(after, "in", 2) != 0 || (after[2] && !is_blank(after[2]))) {
+        parse_state = PARSE_SYNTAX;
+        free_node(node);
+        return NULL;
+    }
+    memcpy(node->name, p, n);
+    node->name[n] = '\0';
+    after += 2;
+    size_t len = strlen(after);
+    node->text = malloc(len + 1);
+    if (node->text) memcpy(node->text, after, len + 1);
+    else parse_state = PARSE_SYNTAX;
+    seg_pos++;
+    if (expect_keyword("do", 0)) parse_list(&node->body, 1);
+    expect_keyword("done", 1);
+    if (parse_state == PARSE_OK && node->body.count == 0) parse_state = PARSE_SYNTAX;
+    if (parse_state != PARSE_OK) { free_node(node); return NULL; }
+    return node;
+}
+
+/* One command: a simple one, or an if/while/for (whose keyword starts the
+ * current segment). The node, or NULL with parse_state set. */
+static node_t *parse_command(void) {
+    char word[32];
+    first_word(segs[seg_pos].text, word);
+    if (take_keyword("if", 0)) return parse_if();
+    if (take_keyword("while", 0)) return parse_while();
+    if (strcmp(word, "for") == 0) return parse_for();
+
+    node_t *node = new_node(NODE_SIMPLE);
+    if (!node) return NULL;
+    size_t len = strlen(segs[seg_pos].text);
+    node->text = malloc(len + 1);
+    if (!node->text) { free_node(node); parse_state = PARSE_SYNTAX; return NULL; }
+    memcpy(node->text, segs[seg_pos].text, len + 1);
+    seg_pos++;
+    return node;
+}
+
+/* Commands up to the end of the text or (if `nested`) up to a keyword that
+ * closes or divides the compound command being parsed. A closing keyword
+ * at the top level, or right after '&&' or '||', is a syntax error. */
+static void parse_list(cmd_list_t *list, int nested) {
+    int join = JOIN_ALWAYS;
+    while (parse_state == PARSE_OK) {
+        if (seg_pos >= seg_count) {
+            if (nested) parse_state = PARSE_INCOMPLETE;   /* The text ended inside an if/while/for */
+            return;
+        }
+        char word[32];
+        first_word(segs[seg_pos].text, word);
+        if (is_closing_keyword(word)) {
+            if (!nested || join != JOIN_ALWAYS) parse_state = PARSE_SYNTAX;   /* "fi" alone; "a && then" */
+            return;
+        }
+        node_t *node = parse_command();
+        if (!node) return;
+        if (list_add(list, node, join) < 0) { free_node(node); parse_state = PARSE_SYNTAX; return; }
+        join = segs[seg_pos - 1].join_next;                /* What ended it says how the next follows */
+    }
+}
+
+static int exec_list(cmd_list_t *list, int *should_exit);
+
+/* After a round of a loop: deal with a pending break or continue. Returns
+ * 1 if the loop must end (a break for it, or anything for a loop further
+ * out), 0 if it goes on. */
+static int leave_loop(void) {
+    if (pending_break) {
+        pending_break--;                                    /* This loop is left; more for outer ones */
+        return 1;
+    }
+    if (pending_continue) {
+        if (--pending_continue == 0) return 0;              /* This loop carries on */
+        return 1;
+    }
+    return 0;
+}
+
+/* for: the words expanded once, as for a command, and copied (the body
+ * reuses the parser's storage); then the body once for each, with the
+ * variable set to it. Its status. */
+static int exec_for(node_t *node, int *should_exit) {
+    static stage_t stages[MAX_STAGES];
+    int count = parse(node->text, stages);
+    if (count < 0 || count > 1) {
+        fprintf(2, "sh: syntax error\n");
+        return 2;
+    }
+    int words = count ? stages[0].argc : 0, status = 0;
+    char **copy = malloc(sizeof(char *) * (size_t)(words + 1));
+    if (!copy) return 1;
+    for (int i = 0; i < words; i++) {
+        size_t n = strlen(stages[0].argv[i]);
+        copy[i] = malloc(n + 1);
+        if (copy[i]) memcpy(copy[i], stages[0].argv[i], n + 1);
+    }
+    for (int i = 0; i < words; i++) {
+        if (copy[i]) setenv(node->name, copy[i]);
+        status = exec_list(&node->body, should_exit);
+        if (*should_exit || interrupted || leave_loop()) break;
+    }
+    for (int i = 0; i < words; i++) free(copy[i]);
+    free(copy);
+    return status;
+}
+
+/* Run one command of the tree; its status. An if whose branches are not
+ * taken, and a loop that never runs its body, give 0. */
+static int exec_node(node_t *node, int *should_exit) {
+    if (node->kind == NODE_SIMPLE) {
+        int status = run_pipeline_text(node->text, should_exit);
+        if (status == 128 + SIGINT) interrupted = 1;        /* Ctrl-C: no further loop rounds */
+        return status;
+    }
+    if (node->kind == NODE_IF) {
+        int cond = exec_list(&node->cond, should_exit);
+        if (*should_exit || interrupted || pending_break || pending_continue) return cond;
+        if (cond == 0) return exec_list(&node->body, should_exit);
+        return node->other.count ? exec_list(&node->other, should_exit) : 0;
+    }
+
+    int status = 0;
+    loop_depth++;
+    if (node->kind == NODE_FOR) {
+        status = exec_for(node, should_exit);
+    } else {
+        for (;;) {
+            int cond = exec_list(&node->cond, should_exit);
+            if (*should_exit || interrupted || leave_loop() || cond != 0) break;
+            status = exec_list(&node->body, should_exit);
+            if (*should_exit || interrupted || leave_loop()) break;
+        }
+    }
+    loop_depth--;
+    return status;
+}
+
+/* Run a list: each command in turn, the next one only if its join allows
+ * (a command not run leaves the status as it was). Stops at exit, a
+ * pending break or continue, or Ctrl-C. Returns the last status; $? is up
+ * to date after each command. */
+static int exec_list(cmd_list_t *list, int *should_exit) {
+    int status = last_status;
+    for (int i = 0; i < list->count; i++) {
+        int join = list->joins[i];
+        if (join == JOIN_ALWAYS || (join == JOIN_IF_OK && status == 0) || (join == JOIN_IF_FAILED && status != 0)) {
+            status = last_status = exec_node(list->items[i], should_exit);
+        }
+        if (*should_exit || interrupted || pending_break || pending_continue) break;
     }
     return status;
+}
+
+/* Parse and run a command text. Returns its status (2 for a syntax error,
+ * with a message), or, if `may_continue` and the text stops inside an
+ * if/while/for or after '&&' or '||', RUN_INCOMPLETE without running
+ * anything. */
+static int run_text(const char *text, int *should_exit, int may_continue) {
+    cmd_list_t top;
+    memset(&top, 0, sizeof(top));
+    parse_state = cut_segments(text);
+    int ended_early = parse_state == PARSE_INCOMPLETE;      /* (After "&&": still parse, to catch errors) */
+    if (ended_early) parse_state = PARSE_OK;
+    if (parse_state == PARSE_OK) parse_list(&top, 0);
+    if (parse_state == PARSE_OK && ended_early) parse_state = PARSE_INCOMPLETE;
+    free_segments();
+    if (parse_state == PARSE_INCOMPLETE && may_continue) {
+        free_list(&top);
+        return RUN_INCOMPLETE;
+    }
+    if (parse_state != PARSE_OK) {
+        free_list(&top);
+        fprintf(2, "sh: syntax error\n");
+        return last_status = 2;
+    }
+    interrupted = 0;
+    int status = exec_list(&top, should_exit);
+    free_list(&top);
+    pending_break = pending_continue = 0;
+    return status;
+}
+
+/* Run a command text that must be complete (sh -c, $(...)): see run_text */
+static int run_line(const char *line, int *should_exit) {
+    return run_text(line, should_exit, 0);
+}
+
+/* break [N] and continue [N]: leave (or start the next round of) the N-th
+ * enclosing loop, 1 if not given. Outside a loop, or with an N that is not
+ * a positive number, an error (status 1); otherwise 0. */
+static int loop_control(int argc, char **argv) {
+    long n = argc > 1 ? atoi(argv[1]) : 1;
+    if (argc > 2 || n < 1 || (argc > 1 && (argv[1][0] < '0' || argv[1][0] > '9'))) {
+        fprintf(2, "sh: %s: expected a positive number\n", argv[0]);
+        return 1;
+    }
+    if (loop_depth == 0) {
+        fprintf(2, "sh: %s: only meaningful in a loop\n", argv[0]);
+        return 1;
+    }
+    if (n > loop_depth) n = loop_depth;                     /* As POSIX: the outermost loop */
+    if (argv[0][0] == 'b') pending_break = (int)n;
+    else pending_continue = (int)n;
+    return 0;
+}
+
+/* Whether `op` is one of test's two-operand operators */
+static int is_binary_test(const char *op) {
+    static const char *const ops[] = { "=", "!=", "-eq", "-ne", "-lt", "-le", "-gt", "-ge" };
+    for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) if (strcmp(op, ops[i]) == 0) return 1;
+    return 0;
+}
+
+/* Whether `s` is a decimal integer, with an optional '-' */
+static int is_integer(const char *s) {
+    if (*s == '-') s++;
+    if (!*s) return 0;
+    for (; *s; s++) if (*s < '0' || *s > '9') return 0;
+    return 1;
+}
+
+/* test EXPR, [ EXPR ]: by the number of operands, as POSIX has it: none is
+ * false; one is true if not empty; "-z s", "-n s", "-e path", "-f path",
+ * "-d path"; "a = b", "a != b", "x -eq y" (and -ne -lt -le -gt -ge, for
+ * integers); "! EXPR" turns any of them round. Returns 0 (true), 1 (false)
+ * or 2 (an expression it cannot read, with a message). */
+static int test_builtin(int argc, char **argv) {
+    const char *name = argv[0];
+    if (strcmp(name, "[") == 0) {
+        if (strcmp(argv[argc - 1], "]") != 0) {
+            fprintf(2, "sh: [: missing ]\n");
+            return 2;
+        }
+        argc--;
+    }
+    char **a = argv + 1;
+    int n = argc - 1, negate = 0;
+    if (n >= 2 && strcmp(a[0], "!") == 0 && !(n == 3 && is_binary_test(a[1]))) {
+        negate = 1;
+        a++;
+        n--;
+    }
+
+    int result = 2;
+    struct stat st;
+    if (n == 0) {
+        result = 1;
+    } else if (n == 1) {
+        result = a[0][0] ? 0 : 1;
+    } else if (n == 2) {
+        if (strcmp(a[0], "-z") == 0) result = a[1][0] ? 1 : 0;
+        else if (strcmp(a[0], "-n") == 0) result = a[1][0] ? 0 : 1;
+        else if (strcmp(a[0], "-e") == 0) result = stat(a[1], &st) == 0 ? 0 : 1;
+        else if (strcmp(a[0], "-f") == 0) result = stat(a[1], &st) == 0 && st.type == S_FILE ? 0 : 1;
+        else if (strcmp(a[0], "-d") == 0) result = stat(a[1], &st) == 0 && st.type == S_DIR ? 0 : 1;
+    } else if (n == 3 && strcmp(a[1], "=") == 0) {
+        result = strcmp(a[0], a[2]) == 0 ? 0 : 1;
+    } else if (n == 3 && strcmp(a[1], "!=") == 0) {
+        result = strcmp(a[0], a[2]) != 0 ? 0 : 1;
+    } else if (n == 3 && is_binary_test(a[1])) {
+        if (!is_integer(a[0]) || !is_integer(a[2])) {
+            fprintf(2, "sh: %s: integer expected\n", name);
+            return 2;
+        }
+        long x = atoi(a[0]), y = atoi(a[2]);
+        const char *op = a[1];
+        int holds = strcmp(op, "-eq") == 0 ? x == y : strcmp(op, "-ne") == 0 ? x != y :
+                    strcmp(op, "-lt") == 0 ? x < y : strcmp(op, "-le") == 0 ? x <= y :
+                    strcmp(op, "-gt") == 0 ? x > y : x >= y;
+        result = holds ? 0 : 1;
+    }
+    if (result == 2) {
+        fprintf(2, "sh: %s: cannot read the expression\n", name);
+        return 2;
+    }
+    return negate ? !result : result;
 }
 
 /* Offer the names in directory `dir` that start with `start` to the line
@@ -861,23 +1374,42 @@ int main(int argc, char **argv) {
     static lineedit_t editor;
     editor.complete = complete_names;
     int editing = interactive;
+    /* Lines are gathered in `pending` until they make a complete command:
+     * an if, while or for may take several, and the prompt is then "> " */
     static char line[256];
+    static char pending[4096];
+    size_t pending_len = 0;
     while (!should_exit) {
-        if (interactive) check_jobs();
+        if (interactive && pending_len == 0) check_jobs();
         long got;
         if (editing) {
-            got = lineedit_read(&editor, "$ ", line, sizeof(line));
+            got = lineedit_read(&editor, pending_len ? "> " : "$ ", line, sizeof(line));
         } else {
             got = fdreadline(script_fd < 0 ? 0 : script_fd, line, sizeof(line));
         }
-        if (got < 0) break; /* End of input */
+        if (got < 0) {                                       /* End of input */
+            if (pending_len) {
+                fprintf(2, "sh: syntax error: the input ended inside a command\n");
+                last_status = 2;
+            }
+            break;
+        }
 
-        /* Skip leading blanks; a line starting with # is a comment */
-        const char *command = line;
-        while (is_blank(*command)) command++;
-        if (*command == '#') continue;
+        if (pending_len + (size_t)got + 2 > sizeof(pending)) {
+            fprintf(2, "sh: command too long\n");
+            pending_len = 0;
+            last_status = 2;
+            continue;
+        }
+        memcpy(pending + pending_len, line, (size_t)got);
+        pending_len += (size_t)got;
+        pending[pending_len++] = '\n';
+        pending[pending_len] = '\0';
 
-        last_status = run_line(command, &should_exit);
+        int status = run_text(pending, &should_exit, 1);
+        if (status == RUN_INCOMPLETE) continue;               /* More lines to come */
+        last_status = status;
+        pending_len = 0;
     }
     return last_status;
 }

@@ -660,6 +660,13 @@ test-jobs: iso
 		--expect '\n/etc/motd\n' --expect '\ncompare.sh  demo.sh  motd  passwd  rc\n' \
 		'exec /bin/sh' '~ech^I/e^Imo^I\r' '@wait:1' '~ls /etc/^I^I^U\r' '@wait:1' 'exit' > $(BUILD)/completion.log 2>&1 \
 		&& echo "Tab completion: ok" || { echo "Tab completion: FAILED (see $(BUILD)/completion.log)"; exit 1; }
+	@# Compound commands at the prompt: the rest of an if is asked for with
+	@# "> " (lines sent without waiting for "$ "), and nothing runs before fi
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect '\$$ if true; then\n> echo inner\n> fi\ninner\n\$$ ' --expect 'done\nn1\nn2\n\$$ ' \
+		'exec /bin/sh' '!if true; then' '@wait:1' '!echo inner' '@wait:1' 'fi' \
+		'for x in 1 2; do echo n$$x; done' 'exit' > $(BUILD)/control.log 2>&1 \
+		&& echo "if and for at the prompt: ok" || { echo "if and for at the prompt: FAILED (see $(BUILD)/control.log)"; exit 1; }
 
 # The text tools against files with known answers: head, tail, grep (with
 # -v, -c, several files, the exit status), sort (-n, -r, stable), cp (into
