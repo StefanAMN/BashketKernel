@@ -795,7 +795,13 @@ count, a symbolic link with and without following); syscheck from ring 3,
 including a path through a directory the caller may not search (EACCES)
 and a bad pointer (EFAULT); `/bin/stat`.
 
-### I2. `cp`, `head`, `tail`, `grep`, `sort` (S)
+### I2. `cp`, `head`, `tail`, `grep`, `sort` (S) — done
+
+Done as proposed, with a line reader for the user library and `make
+test-tools`. `cp` needed I1 to say which filesystem a file is on, so it
+can refuse to copy a file onto itself. `sort` keeps equal lines in input
+order under `-r` too (GNU's `-s`). The shell has no command substitution
+(backquotes), which the test first assumed. The proposal:
 
 User programs, each reading files or standard input: `cp SRC DST` (or into
 a directory; the mode is copied, the owner is the caller's), `head -n N`,
@@ -870,7 +876,7 @@ G1, G2, G3                       done
         |
 H1, H2, H3                       done
         |
-I1 -> I2                         next
+I1 -> I2                         done
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
