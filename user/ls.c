@@ -30,16 +30,8 @@ int main(int argc, char **argv) {
         /* When it was last written, where the filesystem records that */
         char when[20] = "                ";
         if (entry.mtime != 0) {
-            unsigned date = entry.mtime >> 16, time = entry.mtime & 0xFFFF;
-            unsigned parts[5] = { 1980 + (date >> 9), (date >> 5) & 15, date & 31, time >> 11, (time >> 5) & 63 };
-            static const char separators[5] = { '-', '-', ' ', ':', '\0' };
-            int at = 0;
-            for (int i = 0; i < 5; i++) {
-                int digits = i == 0 ? 4 : 2;
-                for (int d = digits - 1; d >= 0; d--) { when[at + d] = (char)('0' + parts[i] % 10); parts[i] /= 10; }
-                at += digits;
-                when[at++] = separators[i];
-            }
+            format_date(entry.mtime, when);
+            when[16] = '\0';                       /* To the minute */
         }
         printf("%c%s %5u %5u %8lu %s %s\n", entry.type == DT_DIR ? 'd' : '-', perms, entry.uid, entry.gid,
                (unsigned long)entry.size, when, entry.name);

@@ -1,6 +1,6 @@
 #include "test.h"
 #include "bcache.h"
-#include "rtc.h"
+#include "walltime.h"
 #include "fat32.h"
 #include "virtio_blk.h"
 #include "vfs.h"
@@ -489,8 +489,6 @@ TEST(fat32_rename_and_move) {
 
 // Files carry the date and time from the clock, not a fixed one
 TEST(fat32_timestamps_come_from_the_clock) {
-    struct rtc_time now;
-    rtc_read_time(&now);
     vnode_t *disk = vfs_find(NULL, "/disk");
 
     vnode_t *dir = NULL;
@@ -502,18 +500,18 @@ TEST(fat32_timestamps_come_from_the_clock) {
     node = vfs_find(NULL, "/disk/stamps/stamped.txt");
     EXPECT_TRUE(node != NULL);
     if (node) {
-        unsigned date = node->mtime >> 16, time = node->mtime & 0xFFFF;
-        EXPECT_EQ(1980 + (date >> 9), (unsigned)now.year);
-        EXPECT_EQ((date >> 5) & 15, (unsigned)now.month);
-        EXPECT_TRUE((date & 31) == now.day || now.hour == 23);           // (Unless midnight has just passed)
-        EXPECT_TRUE((time >> 11) < 24 && ((time >> 5) & 63) < 60);
+        // Kept by the disk to two seconds, as Unix time now
+        uint32_t clock = walltime_seconds();
+        EXPECT_TRUE(node->mtime <= clock && clock - node->mtime <= 5);
     }
     EXPECT_EQ(test_remove("/disk/stamps", "stamped.txt"), 0);
     EXPECT_EQ(vfs_unlink(disk, "stamps"), 0);
 
     // The files the image came with have the date they were given there
     vnode_t *readme = vfs_find(NULL, "/disk/readme.txt");
-    EXPECT_TRUE(readme != NULL && (readme->mtime >> 25) + 1980 == 2026 && ((readme->mtime >> 21) & 15) == 1);
+    struct rtc_time given;
+    if (readme) walltime_to_date(readme->mtime, &given);
+    EXPECT_TRUE(readme != NULL && given.year == 2026 && given.month == 1);
 }
 
 // The VFS's own read-only flag (no filesystem sets it at the moment)

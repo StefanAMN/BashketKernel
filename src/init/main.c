@@ -36,7 +36,7 @@
 #include "process.h"
 #include "pci.h"
 #include "virtio_net.h"
-#include "rtc.h"
+#include "walltime.h"
 #include "pipe.h"
 #include "ansi.h"
 #include "priority.h"
@@ -315,8 +315,9 @@ void _start(void) {
     fpu_init();
 
 
-    // Phase 33: High-Resolution Timers
+    // Phase 33: High-Resolution Timers, and the time of day kept from them
     hrtimer_init();
+    walltime_init();
 
     // The clock can now be read without an interrupt counting for it: stop
     // the periodic tick and let each CPU's timer fire only when needed

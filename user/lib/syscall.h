@@ -55,6 +55,8 @@
 #define SYS_REBOOT   310
 #define SYS_PING     305
 #define SYS_CLOCK_NS 228
+#define SYS_REALTIME 311
+#define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
 #define SYS_SHMGET   29
 #define SYS_SHMAT    30
@@ -162,7 +164,7 @@ struct dirent {
     uint64_t size;
     uint32_t uid;       /* Owner */
     uint32_t gid;       /* Group */
-    uint32_t mtime;     /* Last written, or 0 if not known: bits 31-25 year since 1980, 24-21 month, 20-16 day, 15-11 hour, 10-5 minute, 4-0 seconds / 2 */
+    uint32_t mtime;     /* Last written: seconds since 1970, UTC (0 if not known) */
     uint32_t reserved;
     char name[128];
 };

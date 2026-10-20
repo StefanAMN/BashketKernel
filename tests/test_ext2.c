@@ -5,7 +5,7 @@
 #include "vfs.h"
 #include "file.h"
 #include "auth.h"
-#include "rtc.h"
+#include "walltime.h"
 #include "kstring.h"
 #include "kprintf.h"
 #include "kerrno.h"
@@ -84,10 +84,8 @@ TEST(ext2_records_owner_and_mode) {
     EXPECT_TRUE(node != NULL);
     if (node) {
         EXPECT_TRUE(node->uid == 1000 && node->mode == 0640 && node->size == 16);
-        struct rtc_time now;
-        rtc_read_time(&now);
-        EXPECT_EQ(1980 + (node->mtime >> 25), (unsigned)now.year);   // Written now, by the clock
-        EXPECT_EQ((node->mtime >> 21) & 15, (unsigned)now.month);
+        uint32_t clock = walltime_seconds();                             // Written now, by the clock
+        EXPECT_TRUE(node->mtime <= clock && clock - node->mtime <= 5);
     }
     EXPECT_TRUE(test_file_is("/home/alice/mine.txt", "alice wrote this"));
 
