@@ -162,6 +162,7 @@ uint32_t parse_ip(const char *text);              /* "10.0.2.2" -> number; 0 if 
 void format_ip(uint32_t ip, char out[16]); /* Number -> "10.0.2.2" */
 
 /* Terminal */
+long isatty(int fd);                             /* 1 if fd is the terminal, 0 if not (a file, a pipe), -EBADF */
 void tty_raw(int raw);                           /* 1: every key at once, no echo; 0: whole lines (the default) */
 void tty_size(unsigned *columns, unsigned *rows); /* The screen's size in characters */
 

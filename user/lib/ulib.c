@@ -528,6 +528,7 @@ void format_ip(uint32_t ip, char out[16]) {
 }
 
 void tty_raw(int raw) { syscall1(SYS_TTY_RAW, raw); }
+long isatty(int fd) { return syscall1(SYS_ISATTY, fd); }
 
 long reboot(int restart) { return syscall1(SYS_REBOOT, restart); }
 

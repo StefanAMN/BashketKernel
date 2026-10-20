@@ -167,6 +167,10 @@ static const vnode_ops_t zero_ops    = { .read = zero_read,        .write = null
 static const vnode_ops_t random_ops  = { .read = random_read,      .write = null_write };
 static const vnode_ops_t console_ops = { .read = dev_console_read, .write = dev_console_write, .poll = dev_console_poll };
 
+bool dev_is_console(const vnode_t *node) {
+    return node && node->ops == &console_ops;
+}
+
 void dev_init(void) {
     vfs_init();
     vnode_t *dev_dir = vfs_find(NULL, "/dev");

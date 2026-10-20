@@ -692,7 +692,13 @@ so does anyone who types more than one thing at a time.
 **Check:** `sh -c` runs of each form with programs that succeed and fail
 (`true`-like and `false`-like exits), and the exit status of the whole.
 
-### G2. Line editing and history at the prompt (M)
+### G2. Line editing and history at the prompt (M) — done
+
+Done as proposed (`user/lib/lineedit.c`), with one kernel addition:
+`isatty` (system call 313), because a shell reading a pipe must neither
+edit nor prompt. That showed it had also been taking the terminal for job
+control when reading a pipe; "interactive" now means reading the
+terminal. The proposal:
 
 The terminal's line discipline offers backspace and Ctrl-U; the arrow keys
 do nothing. When it reads from the terminal, the shell edits the line
