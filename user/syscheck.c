@@ -2,6 +2,7 @@
  * check passes. The kernel test suite runs this and checks the exit status. */
 #include "ulib.h"
 #include "password.h"
+#include "lineedit.h"
 
 static int failures = 0;
 
@@ -1975,6 +1976,73 @@ clean_up:;
     for (unsigned i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) CHECK(unlink(gone[i]) == 0);
 }
 
+/* Feed every byte of `keys` to the editor; the result of the last one */
+static int type_keys(lineedit_t *e, const char *keys) {
+    int result = LINEEDIT_MORE;
+    for (; *keys; keys++) result = lineedit_key(e, *keys);
+    return result;
+}
+
+/* The shell's line editor, without a terminal: keys in, line and cursor out */
+static void check_line_editing(void) {
+    /* isatty: the console is the terminal, a pipe and a file are not */
+    int p[2];
+    CHECK(pipe(p) == 0 && isatty(p[0]) == 0 && isatty(p[1]) == 0);
+    close(p[0]); close(p[1]);
+    long fd = open("/dev/console", O_RDONLY);
+    CHECK(fd >= 0 && isatty((int)fd) == 1);
+    close((int)fd);
+    fd = open("/etc/motd", O_RDONLY);
+    CHECK(fd >= 0 && isatty((int)fd) == 0);
+    close((int)fd);
+    CHECK(isatty(99) == -EBADF);
+
+    static lineedit_t e;
+    lineedit_start(&e);
+    CHECK(type_keys(&e, "helo") == LINEEDIT_MORE && strcmp(e.line, "helo") == 0 && e.cursor == 4);
+    type_keys(&e, "\033[D\033[Dl");                    /* Left twice, insert */
+    CHECK(strcmp(e.line, "hello") == 0 && e.cursor == 3);
+    type_keys(&e, "\033[H\033[3~");                     /* Home, Delete */
+    CHECK(strcmp(e.line, "ello") == 0 && e.cursor == 0);
+    type_keys(&e, "\x05!\x7f\x7f");                    /* Ctrl-E, insert, Backspace twice */
+    CHECK(strcmp(e.line, "ell") == 0 && e.cursor == 3);
+    type_keys(&e, " one two\x17");                      /* Ctrl-W: the word before the cursor */
+    CHECK(strcmp(e.line, "ell one ") == 0);
+    type_keys(&e, "\x01\033[C\x0b");                   /* Ctrl-A, Right, Ctrl-K */
+    CHECK(strcmp(e.line, "e") == 0 && e.cursor == 1);
+    type_keys(&e, "cho a\x02\t");                      /* Other control keys do nothing */
+    CHECK(strcmp(e.line, "echo a") == 0);
+    CHECK(lineedit_key(&e, '\r') == LINEEDIT_DONE);
+
+    /* History: up and down through the lines entered, the line being typed kept */
+    lineedit_start(&e);
+    CHECK(type_keys(&e, "echo b\r") == LINEEDIT_DONE);
+    lineedit_start(&e);
+    CHECK(type_keys(&e, "\r") == LINEEDIT_DONE);         /* An empty line is not remembered */
+    lineedit_start(&e);
+    type_keys(&e, "unfinished\033[A");
+    CHECK(strcmp(e.line, "echo b") == 0 && e.cursor == 6);
+    type_keys(&e, "\033[A");
+    CHECK(strcmp(e.line, "echo a") == 0);
+    type_keys(&e, "\033[A");                              /* Nothing older: stays */
+    CHECK(strcmp(e.line, "echo a") == 0);
+    type_keys(&e, "\033[B\033[B");
+    CHECK(strcmp(e.line, "unfinished") == 0);
+    CHECK(type_keys(&e, "\x15\x04") == LINEEDIT_EOF);   /* Ctrl-U, then Ctrl-D on the empty line */
+
+    /* A full line takes no more, and the history keeps the newest lines */
+    lineedit_start(&e);
+    for (int i = 0; i < LINEEDIT_MAX + 10; i++) lineedit_key(&e, 'x');
+    CHECK(e.len == LINEEDIT_MAX - 1);
+    for (int i = 0; i < LINEEDIT_HISTORY + 5; i++) {
+        lineedit_start(&e);
+        char line[8] = { 'n', (char)('0' + i / 10), (char)('0' + i % 10), '\r', 0 };
+        type_keys(&e, line);
+    }
+    CHECK(e.count == LINEEDIT_HISTORY && strcmp(e.history[LINEEDIT_HISTORY - 1], "n68") == 0 &&
+          strcmp(e.history[0], "n05") == 0);
+}
+
 /* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
 static void check_pipes(void) {
     int fds[2];
@@ -2275,6 +2343,7 @@ int main(void) {
     check_time_of_day();
     check_poll();
     check_links();
+    check_line_editing();
     check_groups_and_setuid();
     check_pipes();
 

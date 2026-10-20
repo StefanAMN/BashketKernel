@@ -14,7 +14,9 @@
  * "export NAME=value" sets one for the shell and everything it starts.
  *
  * Ctrl-C ends the running programs and returns to the prompt; Ctrl-D at an
- * empty prompt leaves the shell.
+ * empty prompt leaves the shell. At the terminal the line can be edited
+ * (the arrow keys, Home, End, Delete, Ctrl-A, -E, -K, -U, -W) and Up and
+ * Down go through the lines entered before.
  *
  * Jobs (only when reading commands from the terminal): a line ending in '&'
  * runs in the background, and Ctrl-Z stops the running command and returns
@@ -27,6 +29,7 @@
  * Ctrl-Z are meant for.
  */
 #include "ulib.h"
+#include "lineedit.h"
 
 #define MAX_ARGS   16
 #define MAX_STAGES 8
@@ -562,8 +565,9 @@ int main(int argc, char **argv) {
 
     /* Reading the terminal: take charge of it. The shell gets a process
      * group of its own, which has the terminal whenever no command does,
-     * and Ctrl-Z, like Ctrl-C, is not meant for the shell itself. */
-    if (script_fd < 0) {
+     * and Ctrl-Z, like Ctrl-C, is not meant for the shell itself. (Reading
+     * a pipe is not reading the terminal: no prompts, no job control.) */
+    if (script_fd < 0 && isatty(0) == 1) {
         interactive = 1;
         setpgid(0, 0);
         shell_group = getpgid(0);
@@ -571,11 +575,20 @@ int main(int argc, char **argv) {
         signal(SIGTSTP, SIG_IGN);
     }
 
+    /* At the terminal, lines are edited here, with a history (lineedit.h);
+     * from a script or a pipe they are read as they come */
+    static lineedit_t editor;
+    int editing = interactive;
     static char line[256];
     while (!should_exit) {
         if (interactive) check_jobs();
-        if (script_fd < 0) printf("$ ");
-        if (fdreadline(script_fd < 0 ? 0 : script_fd, line, sizeof(line)) < 0) break; /* End of input */
+        long got;
+        if (editing) {
+            got = lineedit_read(&editor, "$ ", line, sizeof(line));
+        } else {
+            got = fdreadline(script_fd < 0 ? 0 : script_fd, line, sizeof(line));
+        }
+        if (got < 0) break; /* End of input */
 
         /* Skip leading blanks; a line starting with # is a comment */
         const char *command = line;
