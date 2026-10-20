@@ -681,6 +681,28 @@ test-tools: iso
 		'sort s' 'sort -n s' 'sort -r -n s' 'mkdir d ; cp a d' 'cat d/a' 'cp a /tmp/t/../t/a' 'wc a' \
 		'rm d/a ; rm d ; rm a ; rm b ; rm s ; cd / ; rm /tmp/t' 'exit' > $(BUILD)/tools.log 2>&1 \
 		&& echo "text tools (head, tail, grep, sort, cp): ok" || { echo "text tools: FAILED (see $(BUILD)/tools.log)"; exit 1; }
+	@# find and du on a tree made for them: sizes in whole KiB, a link back up
+	@# (listed and counted, not followed), filters, and a chain of
+	@# directories deeper than they enter (34 levels; the limit is 32)
+	@eval set -- $$(python3 -c 'print(" ".join(["\"mkdir d ; cd d\""] * 34))'); \
+	tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'find /tmp/k \| sort\n/tmp/k\n/tmp/k/a\n/tmp/k/a/b\n/tmp/k/a/b/three.c\n/tmp/k/a/b/up\n/tmp/k/a/two.txt\n/tmp/k/one.txt\n\$$ ' \
+		--expect "find /tmp/k -name '\*.txt' \| sort\n/tmp/k/a/two.txt\n/tmp/k/one.txt\n\\$$ " \
+		--expect 'find /tmp/k -type d \| sort\n/tmp/k\n/tmp/k/a\n/tmp/k/a/b\n\$$ ' \
+		--expect "find /tmp/k -type f -name 't\*' \| sort\n/tmp/k/a/b/three.c\n/tmp/k/a/two.txt\n\\$$ " \
+		--expect 'du /tmp/k\n4\t/tmp/k/a/b\n5\t/tmp/k/a\n7\t/tmp/k\n\$$ ' --expect 'du -s /tmp/k\n7\t/tmp/k\n\$$ ' \
+		--expect 'find: /nope: no such file or directory\nmissing: 1\n' \
+		--expect 'find: /tmp/z(/d){32}: more than 32 levels down, not entered\n' --expect '\ndeep: 1\n' \
+		--expect 'du: /tmp/z(/d){32}: more than 32 levels down, not entered\n' \
+		--forbid 'usage:|not found|/tmp/z(/d){33}' \
+		'exec /bin/sh' 'mkdir /tmp/k ; mkdir /tmp/k/a ; mkdir /tmp/k/a/b' \
+		'truncate -s 2000 /tmp/k/one.txt ; truncate -s 100 /tmp/k/a/two.txt ; truncate -s 3000 /tmp/k/a/b/three.c' \
+		'ln -s .. /tmp/k/a/b/up' 'find /tmp/k | sort' "find /tmp/k -name '*.txt' | sort" 'find /tmp/k -type d | sort' \
+		"find /tmp/k -type f -name 't*' | sort" 'du /tmp/k' 'du -s /tmp/k' 'find /nope ; echo missing: $$?' \
+		'mkdir /tmp/z ; cd /tmp/z' "$$@" 'cd /' 'find /tmp/z > /dev/null ; echo deep: $$?' 'du -s /tmp/z' \
+		'rm /tmp/k/a/b/up ; rm /tmp/k/a/b/three.c ; rm /tmp/k/a/b ; rm /tmp/k/a/two.txt ; rm /tmp/k/a ; rm /tmp/k/one.txt ; rm /tmp/k' \
+		'exit' > $(BUILD)/find-du.log 2>&1 \
+		&& echo "find and du: ok" || { echo "find and du: FAILED (see $(BUILD)/find-du.log)"; exit 1; }
 
 check:
 	@python3 tools/undocumented.py --check > /dev/null \
