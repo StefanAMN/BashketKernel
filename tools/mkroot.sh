@@ -26,6 +26,10 @@ cp -a "$homes/." "$stage/home/"
 # A symbolic link made here, by the host, for the kernel to follow (its
 # links are checked the other way round, by e2fsck after test-home)
 ln -s alice/notes.txt "$stage/home/alice-notes"
+# A file for one group (staff, 50, in /etc/group): alice is in it as a
+# supplementary group, bob is not
+mkdir -p "$stage/srv"
+echo "notes for the staff group" > "$stage/srv/staff.txt"
 # Permission bits: what a checkout happens to have (the builder's umask) is
 # not what the system should. Directories 0755, files 0644, programs 0755;
 # then the exceptions.
@@ -34,6 +38,7 @@ chmod 4755 "$stage/bin/su" "$stage/bin/passwd"   # Set-uid root: they change who
 chmod 0600 "$stage/etc/passwd"                   # Password hashes: for /bin/login (root) only
 chmod 0700 "$stage/root"
 chmod 0600 "$stage/home/alice/diary.txt"         # Something only alice may read (the tests rely on it)
+chmod 0640 "$stage/srv/staff.txt"                # Readable by its group (set below)
 
 rm -f "$image"
 mke2fs -q -t ext2 -O ^resize_inode,^dir_index,^ext_attr -b 1024 -L system -d "$stage" "$image" "$size"
@@ -53,6 +58,7 @@ mke2fs -q -t ext2 -O ^resize_inode,^dir_index,^ext_attr -b 1024 -L system -d "$s
             echo "sif \"${path#.}\" gid $gid"
         done
     done < "$stage/etc/passwd"
+    echo "sif \"/srv/staff.txt\" gid 50"
 } | debugfs -w "$image" -f - >/dev/null 2>&1
 
 e2fsck -fn "$image" >/dev/null 2>&1 || { echo "e2fsck rejects $image" >&2; rm -f "$image"; exit 1; }

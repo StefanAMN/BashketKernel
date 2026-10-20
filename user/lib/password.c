@@ -150,11 +150,11 @@ static int parse_line(char *line, struct account *out) {
 
 static char file_text[4096];
 
-/* Read the file into file_text (NUL-terminated). Returns its length, or a
- * negative error. *complete says whether all of it fitted: a larger file
- * is read only in part (lookups see the accounts that fitted). */
-static long read_file(int *complete) {
-    long fd = open(PASSWORD_FILE, O_RDONLY);
+/* Read the file at `path` into file_text (NUL-terminated). Returns its
+ * length, or a negative error. *complete says whether all of it fitted: a
+ * larger file is read only in part (lookups see the lines that fitted). */
+static long read_file(const char *path, int *complete) {
+    long fd = open(path, O_RDONLY);
     if (fd < 0) return fd;
     long total = 0, n = 0;
     while (total < (long)sizeof(file_text) - 1 &&
@@ -169,7 +169,7 @@ static long read_file(int *complete) {
 /* Look through the file; `name` NULL means "the account with this uid" */
 static long find(const char *name, unsigned uid, struct account *out) {
     int complete;
-    long err = read_file(&complete);
+    long err = read_file(PASSWORD_FILE, &complete);
     if (err < 0) return err;
 
     for (char *line = file_text; *line; ) {
@@ -189,6 +189,47 @@ static long find(const char *name, unsigned uid, struct account *out) {
 
 long account_by_name(const char *name, struct account *out) { return find(name, 0, out); }
 long account_by_uid(unsigned uid, struct account *out)      { return find(NULL, uid, out); }
+
+/* Is `name` one of the comma-separated names in `members`? */
+static int is_member(const char *members, const char *name) {
+    size_t len = strlen(name);
+    for (const char *m = members; *m; ) {
+        const char *comma = strchr(m, ',');
+        size_t n = comma ? (size_t)(comma - m) : strlen(m);
+        if (n == len && strncmp(m, name, len) == 0) return 1;
+        if (!comma) break;
+        m = comma + 1;
+    }
+    return 0;
+}
+
+long account_groups(const char *name, unsigned primary, unsigned *groups, int max) {
+    int complete;
+    long err = read_file(GROUP_FILE, &complete);
+    if (err == -ENOENT) return 0;                    /* No file: no more groups */
+    if (err < 0) return err;
+
+    int count = 0;
+    for (char *line = file_text; *line; ) {
+        char *end = strchr(line, '\n');
+        if (end) *end = '\0';
+        char *f[5];
+        unsigned gid;
+        /* name:password:gid:members, the password field unused */
+        if (split(line, f, 5) == 4 && f[0][0] && number(f[2], &gid) == 0 &&
+            gid != primary && is_member(f[3], name)) {
+            int seen = 0;
+            for (int i = 0; i < count; i++) if (groups[i] == gid) seen = 1;
+            if (!seen) {
+                if (count == max) return -E2BIG;
+                groups[count++] = gid;
+            }
+        }
+        if (!end) break;
+        line = end + 1;
+    }
+    return count;
+}
 
 /* Building a line of the file: append text, or ':' and a number */
 static size_t put_text(char *out, size_t used, const char *text) {
@@ -228,7 +269,7 @@ long account_set_password(const char *name, const char *password) {
      * file empty (rename does not replace, so there is no safer order). */
     static char updated[4096 + 160];
     int complete;
-    err = read_file(&complete);
+    err = read_file(PASSWORD_FILE, &complete);
     if (err < 0) return err;
     if (!complete) return -EFBIG;
     size_t name_len = strlen(name), used = 0;

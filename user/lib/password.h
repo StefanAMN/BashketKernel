@@ -25,6 +25,8 @@
 #include "ulib.h"
 
 #define PASSWORD_FILE "/etc/passwd"
+#define GROUP_FILE    "/etc/group"
+#define MAX_GROUPS    16        /* Supplementary groups a process may have (the kernel's limit) */
 #define PASSWORD_ITERATIONS 4096
 #define PASSWORD_MIN_LENGTH 4
 
@@ -41,6 +43,16 @@ struct account {
  * file is looked at. */
 long account_by_name(const char *name, struct account *out);
 long account_by_uid(unsigned uid, struct account *out);  /* (As account_by_name) */
+
+/* /etc/group holds one line per group, readable by all:
+ *
+ *     name:x:gid:member,member,...
+ *
+ * Fill `groups` (room for `max`) with the gids of the groups that list
+ * `name` as a member, leaving out `primary` (the account's own group, which
+ * it is in anyway) and repeats. Returns how many; 0 if there is no such
+ * file; -E2BIG if there are more than `max`. */
+long account_groups(const char *name, unsigned primary, unsigned *groups, int max);
 
 /* PBKDF2-HMAC-SHA256, 32 bytes of output */
 void password_hash(const char *password, const uint8_t *salt, size_t salt_len, unsigned iterations, uint8_t out[32]);

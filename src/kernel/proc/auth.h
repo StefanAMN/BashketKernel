@@ -24,10 +24,14 @@
  * in a file only root may write: /bin/passwd belongs to root and has the
  * bit, and takes care to change only the caller's own line.
  *
- * Not done: supplementary groups (a process is in one group), the execute
- * bit on directories (anyone may look a name up in any directory), set-gid
- * and the sticky bit (/tmp instead has a rule of its own: see
- * auth_may_remove).
+ * Besides its own group a process may be in up to TASK_MAX_GROUPS more,
+ * its supplementary groups (setgroups, which only root may call: /bin/login
+ * and /bin/su set them from /etc/group). The group digit applies when the
+ * file's group is any one of them. They are copied by fork and kept by
+ * execve; a set-uid program keeps its caller's.
+ *
+ * Not done: set-gid and the sticky bit (/tmp instead has a rule of its
+ * own: see auth_may_remove).
  */
 
 #ifndef AUTH_H
@@ -59,6 +63,14 @@
  *        PERM_WRITE or PERM_EXEC, one of them) to the node?
  */
 bool auth_permits(uint32_t uid, uint32_t gid, const vnode_t *node, int want);
+
+/**
+ * @brief The same for a process that is also in the `count` groups of
+ *        `groups` (supplementary groups; NULL with count 0 for none): the
+ *        group digit applies if the file's group is `gid` or any of them.
+ */
+bool auth_permits_groups(uint32_t uid, uint32_t gid, const uint32_t *groups, uint32_t count,
+                         const vnode_t *node, int want);
 
 /**
  * @brief The same for reading or writing, taking the group from the
@@ -103,6 +115,12 @@ uint32_t auth_current_uid(void);
  * @brief The group of the calling process (root's for kernel threads).
  */
 uint32_t auth_current_gid(void);
+
+/**
+ * @brief Is the calling process in group `gid`, as its own group or one of
+ *        its supplementary groups? (Kernel threads: only in root's.)
+ */
+bool auth_current_in_group(uint32_t gid);
 
 /**
  * @brief The permission bits the calling process takes away from what it
