@@ -11,31 +11,27 @@ original learning roadmap is at `git show 0c3bd4d:plan.md`.
 
 ## Where the kernel stands
 
-Implemented and covered by `make check` (unit tests, low-memory, disk,
-network, editor, login, four-CPU and fuzz targets, on QEMU's default CPU and
-on `-cpu max`):
+Implemented and covered by `make check` (the documentation check, unit
+tests on QEMU's default CPU, on `-cpu max` and without a timestamp counter,
+on 1 to 8 CPUs, and scenario targets for the disks, the network, the
+editor, login, shutdown, power cuts, swap, the mouse and fuzzing):
 
-- Boot through Limine, framebuffer console with ANSI escape sequences,
-  serial, kernel log.
-- Interrupts through the I/O APIC, shared interrupt lines, a calibrated
-  nanosecond clock.
-- Physical and virtual memory, heap, slab, per-process address spaces,
-  copy-on-write `fork`, on-demand stack growth, shared memory.
-- Preemptive scheduler with priorities, blocking and wakeup, signals with
-  handlers, safe-point kill.
-- Ring 3 programs: position-independent, loaded at random addresses (ASLR),
-  with SMEP, SMAP and UMIP where the CPU has them.
-- Files: in-memory tree, initrd, `/proc`, `/dev`, pipes, file descriptors,
-  working directories, users and permissions.
-- A virtio disk with a writable FAT32 volume; a virtio network card with
-  ARP, IPv4, ICMP echo and UDP sockets.
-- A terminal with line and raw modes, a user-space shell, a text editor and
-  about thirty small programs.
-
-Deleted rather than kept as placeholders: the mock bootloader check, PS/2
-mouse and cursor, swap, the window manager, the separate "RamFS" module
-(`/tmp` is simply part of the in-memory tree) and the kernel's old global
-environment table.
+- Boot through Limine into `/bin/init` and a login prompt, from an ext2
+  system disk (a rescue system in memory without one); clean shutdown and
+  restart through ACPI.
+- Every CPU scheduling, with per-CPU data, ranked spinlocks checked at run
+  time, TLB shootdown and one-shot local APIC timers.
+- Memory: frames, page tables, heap, slab, copy-on-write `fork`, lazy and
+  file-backed mappings, shared memory, swap.
+- Processes: signals with handlers and masks, process groups and job
+  control, users, groups, permissions and set-uid programs, ASLR, SMEP,
+  SMAP and UMIP where the CPU has them.
+- Files: ext2 (the root) and FAT32 on virtio disks, a sector cache, mount
+  points, `/proc`, `/dev` (including the screen and the mouse), pipes.
+- Network: virtio-net, ARP, IPv4, ICMP, UDP, TCP, DHCP and DNS.
+- A terminal with line and raw modes, a user-space shell with pipelines and
+  jobs, an editor, a paint program and about forty other programs.
+- Every function has a comment saying what it does (track E).
 
 ## How to read the proposals
 
@@ -583,6 +579,70 @@ that describe what the code no longer does. At the end, `make check` runs
 `tools/undocumented.py --check` and fails if any function has no comment
 (done: the count is 0).
 
+## Track F — What a user of the system still misses
+
+Proposed on 2026-10-20, after track E. Each item documents the code it
+touches as it goes (every function a comment, enforced by `make check`).
+
+### F1. The time of day (S)
+
+Programs can ask how long the machine has been up, not what time it is:
+there is no `date`, and `ls -l` shows FAT's packed dates. Every file
+timestamp is a fresh read of the CMOS clock (a dozen port accesses, each a
+trip out of the virtual machine). Read the clock once at boot, keep the
+time as "boot time + the nanosecond clock", and give programs
+`clock_gettime(CLOCK_REALTIME)` and `settimeofday` (root). The filesystems
+take their times from it. A `date` program prints it (and root sets it).
+**Check:** the kernel's time agrees with the CMOS clock to the second at
+boot and advances with the monotonic clock; setting it moves both file
+times and `date`; non-root is refused.
+
+### F2. Waiting on several descriptors: `poll` (M)
+
+A program can only wait on one thing at a time. `nc` has to choose between
+the terminal and the connection, `paint` between the mouse and the
+keyboard. `poll` takes a list of descriptors and the events wanted
+(readable, writable, hung up) and sleeps until one is ready or a timeout
+passes. Each kind of file says whether it is ready (pipes, the terminal,
+TCP and UDP sockets, the mouse, regular files always) and wakes a common
+channel when that may have changed.
+**Check:** unit tests per kind of file; from ring 3, a child that writes to
+one of two pipes after a delay wakes a parent polling both, with the right
+one marked; `nc` relays in both directions in a scripted run.
+
+### F3. Links on ext2 (M)
+
+Hard links exist on disk (the driver counts them) but cannot be made, and
+symbolic links are skipped when a directory is read. Add `link`,
+`symlink` and `readlink`; path lookup follows symbolic links (absolute and
+relative, at most 8 deep, `ELOOP` beyond) except in the last component
+where the call says not to (`unlink`, `lstat`-like uses). `ln` and `ln -s`
+programs.
+**Check:** links made by the kernel are accepted by `e2fsck`, and ones
+made by `mke2fs -d` on the host are followed by the kernel; a loop of
+links gives `ELOOP`; removing one name of a hard-linked file leaves the
+other.
+
+### F4. A faster `kmalloc` (S)
+
+`kmalloc` and `kfree` walk every block of the heap (repair 5). Size classes
+for small blocks (the slab allocator is already there) and a free list
+kept in address order for the rest.
+**Check:** the heap tests and leak checks still pass; `bench` shows
+allocation time no longer growing with the number of live blocks.
+
+### F5. Stacks for the moments the current one cannot be trusted (S)
+
+PID 0 runs on the boot stack, which has no guard page (repair 4), and an
+NMI arriving between `pop rsp` and `sysretq` would run on the user's stack
+(repair 1). Give PID 0 an ordinary guarded kernel stack and NMIs an IST
+stack of their own, with a handler that reports and returns.
+**Check:** a stack overflow in PID 0's context is reported as one (a test
+with a deliberately deep recursion in a kernel task stands in); an NMI
+sent from the QEMU monitor (`nmi`) is reported and the system carries on.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -606,11 +666,11 @@ plan:
    sanitised, and the fuzzer makes random `sigreturn` calls).
 8. The `sysretq` non-canonical-address check cannot be demonstrated under
    QEMU, which behaves like AMD CPUs there.
-9. The GitHub Actions workflow has never been run. Pushing this tree is its
-   first run: check the result.
-10. `lib/crypto` beyond SHA-256 and ChaCha20 (which now have known-answer
-    tests and real users) is unused and unaudited; decide whether it stays
-    as a separate library or goes.
+9. The GitHub Actions workflow failed every run until 2026-10-20: the
+   runner's gcc defaults to C17 and the code had come to depend on C23
+   (`bool` without `<stdbool.h>`). Both builds now pass `-std=gnu17`; the
+   next push is the first run that can get as far as `make check`.
+10. (Done: the unused crypto was deleted in track E.)
 
 ---
 
@@ -627,8 +687,10 @@ C1 -> C2 -> C3                   persistence done properly
         |
 B2, B4, B5, C4                   as interest dictates
         |
-D1 -> D2 -> D3 -> D4             the system on its disk (next)
-E (one area at a time)           alongside D: each D item documents the code it touches
+D1 -> D2 -> D3 -> D4             the system on its disk (done)
+E (one area at a time)           done: every function documented
+        |
+F1, F2, F3, F4, F5               next, in that order; independent of each other
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
