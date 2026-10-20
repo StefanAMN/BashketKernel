@@ -5,7 +5,9 @@
  *   sh -c "command"    run one command line and exit with its status
  *   sh FILE            run the commands in FILE (lines starting with # are comments)
  *
- * A command line is one or more programs joined by '|'. Each may redirect
+ * A command line is one or more pipelines separated by ';' (one after the
+ * other), '&&' (the next only if this one succeeded) or '||' (only if it
+ * failed). A pipeline is one or more programs joined by '|'. Each may redirect
  * its input with "< file" and its output with "> file" or ">> file".
  * A program name without a '/' is looked up in the directories of $PATH.
  * $NAME expands to an environment variable and $? to the last exit status;
@@ -389,10 +391,10 @@ static int run_pipeline(stage_t *stages, int count, int background, const char *
     return run_in_foreground(pids, alive, count, text, NULL);
 }
 
-/* Run one command line: a built-in, or a pipeline in the foreground or (with
- * a final '&') the background. Returns its status; sets *should_exit for
- * "exit". */
-static int run_line(const char *line, int *should_exit) {
+/* Run one pipeline (a part of a command line between ';', '&&' and '||'):
+ * a built-in, or programs in the foreground or (with a final '&') the
+ * background. Returns its status; sets *should_exit for "exit". */
+static int run_pipeline_text(const char *line, int *should_exit) {
     static stage_t stages[MAX_STAGES];
     static char text[256];
 
@@ -483,6 +485,7 @@ static int run_line(const char *line, int *should_exit) {
     if (count == 1 && strcmp(stages[0].argv[0], "help") == 0) {
         printf("Programs live in /bin (try: ls /bin). Syntax:\n"
                "  prog args | prog2      pipe output into another program\n"
+               "  a ; b, a && b, a || b  run b after a; only if a succeeded; only if it failed\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
                "  cd [dir], pwd          change or print the current directory\n"
                "  export NAME=value      set an environment variable; $NAME uses it, $? is the last status\n"
@@ -493,6 +496,45 @@ static int run_line(const char *line, int *should_exit) {
     }
 
     return run_pipeline(stages, count, background, text);
+}
+
+/* Run a command line: pipelines separated by ';' (run the next whatever
+ * happened), '&&' (run it only if the last one succeeded) and '||' (only if
+ * it failed). A part that is not run leaves the status as it was, so
+ * "a && b || c" runs c when a or b fails. $? is up to date for each part.
+ * Separators inside double quotes are text. Returns the status of the last
+ * part run; stops at "exit". */
+static int run_line(const char *line, int *should_exit) {
+    enum { ALWAYS, IF_OK, IF_FAILED } condition = ALWAYS;
+    int status = last_status;
+    const char *p = line;
+    while (*p) {
+        /* The part up to the next separator that is not inside quotes */
+        char part[256];
+        size_t n = 0;
+        int quoted = 0, next = ALWAYS;
+        for (; *p; p++) {
+            if (*p == '"') quoted = !quoted;
+            if (!quoted && (*p == ';' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
+            if (n + 1 < sizeof(part)) part[n++] = *p;
+        }
+        part[n] = '\0';
+        if (*p == ';') { next = ALWAYS; p++; }
+        else if (*p) { next = (*p == '&') ? IF_OK : IF_FAILED; p += 2; }
+
+        int empty = 1;
+        for (size_t i = 0; i < n; i++) if (!is_blank(part[i]) && part[i] != '\n') empty = 0;
+        if (empty && next != ALWAYS) {                     /* "&& b" or "a && && b" */
+            fprintf(2, "sh: syntax error\n");
+            return last_status = 2;
+        }
+        if (condition == ALWAYS || (condition == IF_OK && status == 0) || (condition == IF_FAILED && status != 0)) {
+            if (!empty) status = last_status = run_pipeline_text(part, should_exit);
+            if (*should_exit) break;
+        }
+        condition = next;
+    }
+    return status;
 }
 
 int main(int argc, char **argv) {
