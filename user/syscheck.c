@@ -2008,6 +2008,16 @@ static int run_quietly(const char *path, const char *a1, const char *a2, const c
     return status;
 }
 
+/* /bin/dhcp's lease arithmetic (its own checks, -T: when to renew, rebind
+ * and give up, from what a server may send), and options it must refuse
+ * before touching the network */
+static void check_dhcp_lease_times(void) {
+    CHECK(run_quietly("/bin/dhcp", "-T", NULL, NULL) == 0);
+    CHECK(run_quietly("/bin/dhcp", "-t", "5", NULL) == 2);      /* Only with -d */
+    CHECK(run_quietly("/bin/dhcp", "-t", "x", NULL) == 2);
+    CHECK(run_quietly("/bin/dhcp", "-d", "-n", "0") == 2);
+}
+
 /* Whether two files hold the same bytes */
 static int same_contents(const char *a, const char *b) {
     static char x[4096], y[4096];
@@ -2962,6 +2972,7 @@ int main(void) {
     check_network();
     check_tcp();
     check_netconfig_and_dns();
+    check_dhcp_lease_times();
     check_shared_memory();
     check_users();
     check_password_file();
