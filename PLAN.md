@@ -856,7 +856,13 @@ quote.
 **Check:** a scripted session: joined words, both quotes, a quote inside
 the other kind, an unclosed quote refused.
 
-### J3. Command substitution, `$(...)` (S)
+### J3. Command substitution, `$(...)` (S) — done
+
+Done as proposed, with the child running the command line itself (a
+fork of the shell, job control off) rather than starting `/bin/sh`. The
+output is never read as shell text: `$(cat f)` cannot run what `f`
+says. Unquoted output is split into words but not wildcard-expanded. The
+proposal:
 
 `echo "today: $(date)"`: the command runs in a child of the shell with
 its output in a pipe, and the output (trailing newlines removed) takes

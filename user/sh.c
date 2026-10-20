@@ -11,7 +11,8 @@
  * its input with "< file" and its output with "> file" or ">> file".
  * A program name without a '/' is looked up in the directories of $PATH.
  * A word may join plain, "double quoted" ($ expanded) and 'single quoted'
- * (taken as it is) parts. A word with *, ? or [...] and no quoted part is
+ * (taken as it is) parts. $(command) is replaced by what the command
+ * prints: one word inside double quotes, split at blanks outside them. A word with *, ? or [...] and no quoted part is
  * replaced by the names it matches, sorted (user/lib/glob.h); one that
  * matches nothing stays as typed.
  * $NAME expands to an environment variable and $? to the last exit status;
@@ -220,22 +221,89 @@ static int append_variable(const char **p, char *word, size_t *len, size_t used)
     return 0;
 }
 
+static int run_line(const char *line, int *should_exit);
+
+#define WORD_QUOTED 1         /* next_word: some part was in quotes */
+#define WORD_SPLIT  2         /* next_word: holds FIELD_BREAKs, to be split into words */
+#define FIELD_BREAK '\x1f'    /* Where unquoted $(...) output had blanks (0x1f in output counts as one) */
+#define SUBST_MAX   4096      /* Most output a $(...) may give */
+
+/* The ')' that closes the "$(" just before `p`, skipping nested ones and
+ * quoted text; NULL if there is none */
+static const char *closing_paren(const char *p) {
+    int depth = 1;
+    char quote = 0;
+    for (; *p; p++) {
+        if (quote) { if (*p == quote) quote = 0; continue; }
+        if (*p == '"' || *p == '\'') quote = *p;
+        else if (*p == '(') depth++;
+        else if (*p == ')' && --depth == 0) return p;
+    }
+    return NULL;
+}
+
+/* $(command): run the command line in a child of this shell, its output
+ * into a pipe, and collect it into out[size] without the trailing newlines.
+ * $? becomes its status. Returns the length, or -1 (a message printed) if
+ * it cannot be run or prints more than size - 1 bytes. */
+static long substitute(const char *command, char *out, size_t size) {
+    int p[2];
+    if (pipe(p) != 0) return -1;
+    long pid = fork();
+    if (pid < 0) { close(p[0]); close(p[1]); return -1; }
+    if (pid == 0) {
+        dup2(p[1], 1);
+        close(p[0]);
+        close(p[1]);
+        interactive = 0;                      /* The child runs the command, not jobs */
+        int should_exit = 0;
+        exit(run_line(command, &should_exit));
+    }
+    close(p[1]);
+    size_t used = 0;
+    int too_long = 0;
+    for (;;) {
+        char buf[256];
+        long n = read(p[0], buf, sizeof(buf));
+        if (n == -EINTR) continue;
+        if (n <= 0) break;
+        for (long i = 0; i < n; i++) {        /* (Read to the end even when too long, so the child finishes) */
+            if (used + 1 < size) out[used++] = buf[i];
+            else too_long = 1;
+        }
+    }
+    close(p[0]);
+    int status = -1;
+    while (waitpid(pid, &status, 0) == -EINTR) { }
+    last_status = status;
+    if (too_long) {
+        fprintf(2, "sh: $(%s): more than %lu bytes of output\n", command, (unsigned long)(size - 1));
+        return -1;
+    }
+    while (used > 0 && out[used - 1] == '\n') used--;
+    out[used] = '\0';
+    return (long)used;
+}
+
 /* The next word of the line at *cursor, stored in word_storage from *used
  * on; moves *cursor past it. A word runs to a blank or an operator outside
  * quotes, and may be made of parts: plain text, "double quoted" ($NAME and
  * $? expanded, blanks and operators kept) and 'single quoted' (everything
  * kept as it is): `"a b"c` is one word, `a b c`. NULL if no word starts
  * here (the end of the line, an operator), a quote is not closed, or the
- * line's words do not fit in word_storage. *was_quoted (if not NULL) says
- * whether any part was in quotes: such a word is not a wildcard pattern. */
-static char *next_word(const char **cursor, size_t *used, int *was_quoted) {
+ * line's words do not fit in word_storage. $(command) is replaced by the
+ * command's output: as it is inside double quotes, and outside them with
+ * its blanks as FIELD_BREAKs, at which the caller splits the word. *flags
+ * (if not NULL) receives WORD_QUOTED (any part was in quotes: not a
+ * wildcard pattern) and WORD_SPLIT. */
+static char *next_word(const char **cursor, size_t *used, int *flags) {
     const char *p = *cursor;
     while (is_blank(*p)) p++;
 
     char *word = word_storage + *used;
     size_t len = 0;
     char quote = 0;                   /* The quote we are inside, or 0 */
-    int quoted = 0, any = 0;
+    int quoted = 0, split = 0, any = 0;
     for (;;) {
         char c = *p;
         if (c == '\0') {
@@ -251,6 +319,23 @@ static char *next_word(const char **cursor, size_t *used, int *was_quoted) {
         } else if (quote && c == quote) {
             quote = 0;
             p++;
+        } else if (c == '$' && quote != '\'' && p[1] == '(') {
+            const char *end = closing_paren(p + 2);
+            char command[256];
+            if (!end || (size_t)(end - (p + 2)) >= sizeof(command)) return NULL;
+            memcpy(command, p + 2, (size_t)(end - (p + 2)));
+            command[end - (p + 2)] = '\0';
+            p = end + 1;
+            static char output[SUBST_MAX + 1];
+            long n = substitute(command, output, sizeof(output));
+            if (n < 0) return NULL;
+            for (long i = 0; i < n; i++) {
+                char o = output[i];
+                if (!quote && (is_blank(o) || o == '\n' || o == FIELD_BREAK)) o = FIELD_BREAK;
+                if (*used + len + 1 >= sizeof(word_storage)) return NULL;
+                word[len++] = o;
+            }
+            if (!quote) split = 1;
         } else if (c == '$' && quote != '\'' && (is_name_char(p[1]) || p[1] == '?')) {
             p++;
             if (append_variable(&p, word, &len, *used) < 0) return NULL;
@@ -261,7 +346,7 @@ static char *next_word(const char **cursor, size_t *used, int *was_quoted) {
         }
     }
     if (!any) return NULL;            /* No word here at all ("" is one: empty) */
-    if (was_quoted) *was_quoted = quoted;
+    if (flags) *flags = (quoted ? WORD_QUOTED : 0) | (split ? WORD_SPLIT : 0);
 
     word[len] = '\0';
     *used += len + 1;
@@ -327,6 +412,38 @@ static int expand_wildcard(char *pattern, stage_t *stage, size_t *used) {
     return 0;
 }
 
+/* Add the parts of `word` between FIELD_BREAKs to the stage's arguments,
+ * leaving out empty ones (an unquoted $(...) that printed nothing gives no
+ * argument at all). 0, or -1 if there are more than MAX_ARGS. */
+static int add_fields(char *word, stage_t *stage) {
+    char *start = word;
+    for (char *c = word;; c++) {
+        if (*c != FIELD_BREAK && *c != '\0') continue;
+        int last = (*c == '\0');
+        *c = '\0';
+        if (*start) {
+            if (stage->argc >= MAX_ARGS) return -1;
+            stage->argv[stage->argc++] = start;
+        }
+        if (last) return 0;
+        start = c + 1;
+    }
+}
+
+/* The word after '<' or '>': one name, even from a $(...) (whose output
+ * may not be several words, nor none). NULL if there is no such word. */
+static char *redirect_target(const char **p, size_t *used) {
+    int flags;
+    char *word = next_word(p, used, &flags);
+    if (!word || !(flags & WORD_SPLIT)) return word;
+    char *start = word;
+    while (*start == FIELD_BREAK) start++;
+    size_t n = strlen(start);
+    while (n > 0 && start[n - 1] == FIELD_BREAK) start[--n] = '\0';
+    for (size_t i = 0; i < n; i++) if (start[i] == FIELD_BREAK) return NULL;
+    return n > 0 ? start : NULL;
+}
+
 /* Split `line` into pipeline stages. Returns the number of stages, 0 for an
  * empty line, -1 on a syntax error. */
 static int parse(const char *line, stage_t *stages) {
@@ -347,18 +464,20 @@ static int parse(const char *line, stage_t *stages) {
             p++;
         } else if (*p == '<') {
             p++;
-            if (!(stage->in_path = next_word(&p, &used, NULL))) return -1;
+            if (!(stage->in_path = redirect_target(&p, &used))) return -1;
         } else if (*p == '>') {
             p++;
             stage->out_append = (*p == '>');
             if (stage->out_append) p++;
-            if (!(stage->out_path = next_word(&p, &used, NULL))) return -1;
+            if (!(stage->out_path = redirect_target(&p, &used))) return -1;
         } else {
             if (stage->argc >= MAX_ARGS) return -1;
-            int quoted;
-            char *word = next_word(&p, &used, &quoted);
+            int flags;
+            char *word = next_word(&p, &used, &flags);
             if (!word) return -1;
-            if (!quoted && glob_has_wildcard(word)) {
+            if (flags & WORD_SPLIT) {
+                if (add_fields(word, stage) < 0) return -1;
+            } else if (!(flags & WORD_QUOTED) && glob_has_wildcard(word)) {
                 if (expand_wildcard(word, stage, &used) < 0) return -1;
             } else {
                 stage->argv[stage->argc++] = word;
@@ -508,7 +627,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
         fprintf(2, "sh: syntax error\n");
         return 2;
     }
-    if (count == 0) return 0;
+    if (count == 0) return last_status;   /* Nothing to run: $? as it is (or as a $(...) left it) */
 
     /* Built-ins run inside the shell itself */
     if (count == 1 && strcmp(stages[0].argv[0], "exit") == 0) {
@@ -580,6 +699,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  prog < in > out        redirect input and output (>> appends)\n"
                "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
                "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
+               "  echo $(date)           the output of a command, in place (up to 4 KiB)\n"
                "  cd [dir], pwd          change or print the current directory\n"
                "  export NAME=value      set an environment variable; $NAME uses it, $? is the last status\n"
                "  prog args &            run in the background; Ctrl-Z stops the running command\n"
@@ -606,10 +726,13 @@ static int run_line(const char *line, int *should_exit) {
         char part[256];
         size_t n = 0;
         int quoted = 0, next = ALWAYS;
+        int depth = 0;                                                   /* Inside $( ... ) */
         for (; *p; p++) {
             if (!quoted && (*p == '"' || *p == '\'')) quoted = *p;      /* Into a quote ... */
             else if (quoted && *p == quoted) quoted = 0;                /* ... and out of it */
-            if (!quoted && (*p == ';' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
+            else if (quoted != '\'' && p[0] == '$' && p[1] == '(') depth++;
+            else if (!quoted && depth > 0 && *p == ')') depth--;
+            if (!quoted && depth == 0 && (*p == ';' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
             if (n + 1 < sizeof(part)) part[n++] = *p;
         }
         part[n] = '\0';
