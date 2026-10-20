@@ -49,7 +49,7 @@ USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker
 # sha256.o and date.o are the kernel tree's own lib/crypto/sha256.c and
 # lib/time/date.c, compiled again for user programs (login hashes passwords
 # with the one; date and ls turn seconds into dates with the other)
-USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o
+USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o $(BUILD)/user/lib/lines.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
@@ -74,7 +74,7 @@ $(BUILD)/user/lib/date.o: lib/time/date.c Makefile
 
 $(BUILD)/initrd/bin/%: $(BUILD)/user/%.o $(USER_LIB_OBJS) user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o -o $@
+	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/lineedit.o $(BUILD)/user/lib/glob.o $(BUILD)/user/lib/lines.o -o $@
 
 # USTAR archive of bin/ plus the static files under user/rootfs
 $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
@@ -130,7 +130,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-kshell test-nmi test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-kshell test-nmi test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-tools test-net fuzz check
 
 all: $(KERNEL)
 
@@ -657,6 +657,27 @@ test-jobs: iso
 		'exec /bin/sh' '~ech^I/e^Imo^I\r' '@wait:1' '~ls /etc/^I^I^U\r' '@wait:1' 'exit' > $(BUILD)/completion.log 2>&1 \
 		&& echo "Tab completion: ok" || { echo "Tab completion: FAILED (see $(BUILD)/completion.log)"; exit 1; }
 
+# The text tools against files with known answers: head, tail, grep (with
+# -v, -c, several files, the exit status), sort (-n, -r, stable), cp (into
+# a directory, onto itself)
+test-tools: iso
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'head -n 2 a\none\ntwo\n\$$ ' --expect 'tail -n 2 a\nfour\nfive\n\$$ ' \
+		--expect 'grep tw a\ntwo\n\$$ ' --expect 'grep -v -c three a\n4\n\$$ ' \
+		--expect 'grep two a b\na:two\nb:two again\n\$$ ' --expect '\nnone: 1\n' --expect '\nmissing: 2\n' \
+		--expect 'sort s\n100\n20\n3\nb-first\nb-second\n\$$ ' --expect 'sort -n s\nb-first\nb-second\n3\n20\n100\n\$$ ' \
+		--expect 'sort -r -n s\n100\n20\n3\nb-first\nb-second\n\$$ ' --expect 'cat d/a\none\ntwo\nthree\nfour\nfive\n\$$ ' \
+		--expect 'cp: a and /tmp/t/../t/a are the same file' --expect 'wc a\n5 5 24\n\$$ ' \
+		--forbid 'not found|usage:' \
+		'exec /bin/sh' 'mkdir /tmp/t ; cd /tmp/t' \
+		'echo one > a ; echo two >> a ; echo three >> a ; echo four >> a ; echo five >> a ; echo two again > b' \
+		'head -n 2 a' 'tail -n 2 a' 'grep tw a' 'grep -v -c three a' \
+		'grep two a b' 'grep nothing a ; echo none: $$?' 'grep x /no/such ; echo missing: $$?' \
+		'echo b-first > s ; echo 20 >> s ; echo 100 >> s ; echo b-second >> s ; echo 3 >> s' \
+		'sort s' 'sort -n s' 'sort -r -n s' 'mkdir d ; cp a d' 'cat d/a' 'cp a /tmp/t/../t/a' 'wc a' \
+		'rm d/a ; rm d ; rm a ; rm b ; rm s ; cd / ; rm /tmp/t' 'exit' > $(BUILD)/tools.log 2>&1 \
+		&& echo "text tools (head, tail, grep, sort, cp): ok" || { echo "text tools: FAILED (see $(BUILD)/tools.log)"; exit 1; }
+
 check:
 	@python3 tools/undocumented.py --check > /dev/null \
 		&& echo "every function has a comment: ok" \
@@ -693,6 +714,7 @@ check:
 	@$(MAKE) --no-print-directory test-login
 	@$(MAKE) --no-print-directory test-jobs
 	@$(MAKE) --no-print-directory test-jobs SMP=4
+	@$(MAKE) --no-print-directory test-tools
 	@$(MAKE) --no-print-directory test-net
 	@$(MAKE) --no-print-directory test-net CPU=max
 	@$(MAKE) --no-print-directory fuzz FUZZ_SEEDS="1 2 3"
