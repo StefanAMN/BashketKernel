@@ -3,6 +3,7 @@
 #include "ulib.h"
 #include "password.h"
 #include "lineedit.h"
+#include "glob.h"
 
 static int failures = 0;
 
@@ -2043,6 +2044,24 @@ static void check_line_editing(void) {
           strcmp(e.history[0], "n05") == 0);
 }
 
+/* The shell's wildcard matcher */
+static void check_wildcards(void) {
+    CHECK(glob_match("*", "anything") && glob_match("*", "") && !glob_match("*", ".hidden"));
+    CHECK(glob_match(".*", ".hidden") && glob_match("*.c", "sh.c") && !glob_match("*.c", "sh.h"));
+    CHECK(glob_match("a*b*c", "aXbYbZc") && !glob_match("a*b*c", "aXbYbZ"));
+    CHECK(glob_match("?", "x") && !glob_match("?", "") && !glob_match("?", "xy"));
+    CHECK(glob_match("f??e", "fake") && !glob_match("f??e", "fame!"));
+    CHECK(glob_match("[abc]x", "bx") && !glob_match("[abc]x", "dx"));
+    CHECK(glob_match("[a-c][0-9]", "b7") && !glob_match("[a-c][0-9]", "d7"));
+    CHECK(glob_match("[!a-c]*", "dog") && !glob_match("[!a-c]*", "cat"));
+    CHECK(glob_match("[]]", "]") && glob_match("[a-]", "-"));    /* ']' first, '-' last: members */
+    CHECK(glob_match("[ab", "[ab") && !glob_match("[ab", "a"));   /* Unclosed: literal */
+    CHECK(glob_match("plain", "plain") && !glob_match("plain", "plainer"));
+    /* Many stars against a long name that does not match: answered quickly */
+    CHECK(!glob_match("*a*a*a*a*a*a*a*a*b", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    CHECK(glob_has_wildcard("x*") && glob_has_wildcard("[a]") && !glob_has_wildcard("plain"));
+}
+
 /* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
 static void check_pipes(void) {
     int fds[2];
@@ -2344,6 +2363,7 @@ int main(void) {
     check_poll();
     check_links();
     check_line_editing();
+    check_wildcards();
     check_groups_and_setuid();
     check_pipes();
 
