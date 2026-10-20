@@ -340,6 +340,7 @@ static void free_chain(uint32_t cluster) {
 // --- Directory entries on disk ------------------------------------------------
 
 static void fat_now(uint16_t *date, uint16_t *time);
+static void fat_from_unix(uint32_t seconds, uint16_t *date, uint16_t *time);
 
 // Change the first cluster and size recorded in a node's directory entry,
 // and stamp it as written now. Caller holds the volume lock.
@@ -524,14 +525,19 @@ static void fill_lfn_entry(uint8_t entry[32], const char *name, unsigned ordinal
 
 // --- Dates --------------------------------------------------------------------
 
-// The date and time now, as FAT packs them: years since 1980 in 7 bits,
+// A Unix time as FAT packs a date and time: years since 1980 in 7 bits,
 // month in 4, day in 5; hours in 5, minutes in 6, seconds/2 in 5
+static void fat_from_unix(uint32_t seconds, uint16_t *date, uint16_t *time) {
+    struct rtc_time t;
+    walltime_to_date(seconds, &t);
+    unsigned year = t.year >= 1980 && t.year < 2108 ? t.year - 1980u : 0;
+    *date = (uint16_t)((year << 9) | ((unsigned)t.month << 5) | t.day);
+    *time = (uint16_t)(((unsigned)t.hour << 11) | ((unsigned)t.minute << 5) | (t.second / 2));
+}
+
+// The date and time now, as FAT packs them
 static void fat_now(uint16_t *date, uint16_t *time) {
-    struct rtc_time now;
-    walltime_to_date(walltime_seconds(), &now);
-    unsigned year = now.year >= 1980 && now.year < 2108 ? now.year - 1980u : 0;
-    *date = (uint16_t)((year << 9) | ((unsigned)now.month << 5) | now.day);
-    *time = (uint16_t)(((unsigned)now.hour << 11) | ((unsigned)now.minute << 5) | (now.second / 2));
+    fat_from_unix(walltime_seconds(), date, time);
 }
 
 // A FAT date and time as seconds since 1970 (what the VFS keeps), or 0
@@ -753,10 +759,42 @@ static int64_t fat_file_write(vnode_t *node, size_t offset, const void *buf, siz
     return result;
 }
 
-// vnode_ops_t.truncate: cut the file to nothing (the entry first, then the
-// clusters are freed). Returns 0 or -EIO.
-static int fat_file_truncate(vnode_t *node) {
+// vnode_ops_t.truncate: cut the file to `size` bytes. The entry first
+// (new size, and no first cluster for an empty file), then the chain is
+// cut after the last cluster kept and the rest freed: a crash in between
+// leaves lost clusters, never an entry pointing at freed ones. The rest of
+// the last cluster is zeroed. Returns 0 or -EIO.
+static int fat_file_truncate(vnode_t *node, size_t size) {
     fat_node_t *info = (fat_node_t *)node->private_data;
+    if (size > 0) {
+        size_t cluster_bytes = (size_t)volume.sectors_per_cluster * SECTOR;
+        volume_lock();
+        uint32_t last = info->first_cluster;                  // The cluster holding byte size - 1
+        for (size_t at = cluster_bytes; at < size && valid_cluster(last); at += cluster_bytes) last = next_cluster(last);
+        bool ok = valid_cluster(last);
+        // Zero the rest of the last cluster, from byte `size` on
+        size_t within = size % cluster_bytes;
+        for (size_t s = within / SECTOR; ok && within && s < volume.sectors_per_cluster; s++) {
+            uint8_t sector[SECTOR];
+            uint64_t lba = cluster_to_sector(last) + s;
+            size_t from = (s == within / SECTOR) ? within % SECTOR : 0;
+            if (from && bcache_read(lba, sector, 1) != 0) { ok = false; break; }
+            memset(sector + from, 0, SECTOR - from);
+            ok = bcache_write(lba, sector, 1) == 0;
+        }
+        uint32_t rest = ok ? next_cluster(last) : 0;
+        ok = ok && update_entry(info, info->first_cluster, (uint32_t)size);
+        if (ok && valid_cluster(rest)) {
+            ok = set_fat_entry(last, FAT_END_MARK);
+            if (ok) free_chain(rest);
+        }
+        if (ok) {
+            node->size = size;
+            node->mtime = walltime_seconds();
+        }
+        volume_unlock();
+        return ok ? 0 : -EIO;
+    }
 
     volume_lock();
     uint32_t chain = info->first_cluster;
@@ -1112,6 +1150,26 @@ static int fat_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, con
 
 static int fat_dir_load(vnode_t *dir);
 
+// vnode_ops_t.touch: write node->mtime into the directory entry (FAT keeps
+// times to two seconds, from 1980). 0 or -EIO.
+static int fat_touch(vnode_t *node) {
+    const fat_node_t *info = (const fat_node_t *)node->private_data;
+    if (!info || info->entry_lba == 0) return 0;          // The root directory has no entry
+    volume_lock();
+    uint8_t sector[SECTOR];
+    bool ok = bcache_read(info->entry_lba, sector, 1) == 0;
+    if (ok) {
+        struct dir_entry *entry = (struct dir_entry *)(sector + info->entry_offset);
+        uint16_t date, time;                                // (Not through pointers into a packed struct)
+        fat_from_unix(node->mtime, &date, &time);
+        entry->write_date = date;
+        entry->write_time = time;
+        ok = bcache_write(info->entry_lba, sector, 1) == 0;
+    }
+    volume_unlock();
+    return ok ? 0 : -EIO;
+}
+
 // stat(): FAT has no inode numbers; the first cluster is the nearest thing
 // (0 for an empty file). FAT has no hard links: the count stands.
 static int fat_stat(vnode_t *node, struct vfs_stat *st) {
@@ -1122,7 +1180,7 @@ static int fat_stat(vnode_t *node, struct vfs_stat *st) {
 }
 
 static const vnode_ops_t fat_file_ops = { .read = fat_file_read, .write = fat_file_write, .truncate = fat_file_truncate,
-                                          .stat = fat_stat };
+                                          .stat = fat_stat, .touch = fat_touch };
 static const vnode_ops_t fat_dir_ops = { .create = fat_dir_create, .remove = fat_dir_remove,
                                          .rename = fat_dir_rename, .load = fat_dir_load, .stat = fat_stat };
 

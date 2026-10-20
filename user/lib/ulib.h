@@ -165,6 +165,9 @@ void format_ip(uint32_t ip, char out[16]); /* Number -> "10.0.2.2" */
 long stat(const char *path, struct stat *st);   /* Describe what path names (following a final link): 0, -ENOENT, -EACCES ... */
 long lstat(const char *path, struct stat *st);  /* The same, but a final link is described itself */
 long fstat(int fd, struct stat *st);            /* Describe an open file: 0 or -EBADF */
+long truncate(const char *path, unsigned long length); /* Make a file that long (cut, or zeros added): 0, -EACCES, -EISDIR, -ENOSPC ... */
+long ftruncate(int fd, unsigned long length);   /* The same for a file open for writing (-EINVAL if it is not) */
+long utime(const char *path, unsigned long seconds); /* Set its modification time (UTIME_NOW: now): 0, -EPERM, -EACCES, -EINVAL */
 long isatty(int fd);                             /* 1 if fd is the terminal, 0 if not (a file, a pipe), -EBADF */
 void tty_raw(int raw);                           /* 1: every key at once, no echo; 0: whole lines (the default) */
 void tty_size(unsigned *columns, unsigned *rows); /* The screen's size in characters */
