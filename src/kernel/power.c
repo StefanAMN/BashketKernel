@@ -38,6 +38,10 @@ static unsigned wait_for_others(uint64_t ticks) {
 }
 
 void system_shutdown(bool restart) {
+    // Begun, it is finished: whoever called it (a root process) must not be
+    // killable by the others it is about to end, or the machine is left
+    // with every process told to stop and nothing switching it off
+    sched_make_unkillable(sched_get_current_task());
     kprintf("\nThe system is going down for %s.\n", restart ? "a restart" : "power-off");
 
     // Politely first: a process may catch SIGTERM and finish what it is

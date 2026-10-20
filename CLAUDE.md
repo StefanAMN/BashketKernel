@@ -198,11 +198,14 @@ code comments and commit messages; `git log` is the full history.
   including the string constant my check treated as the failure marker (and
   the one it treated as success). Text a hostile program can print proves
   nothing either way.
-- **A root fuzzer finds its own test bench first.** Twice now a "kernel
-  failure" after fuzzing was the fuzzer legitimately using root's powers:
-  deleting files, then `chmod` on `/` through a random pointer that happened
-  to point at the string "/". Calls that change shared state get safe
-  arguments or definitely-invalid ones, never arbitrary valid memory.
+- **A root fuzzer finds its own test bench first.** Three times now a
+  "kernel failure" after fuzzing was the fuzzer legitimately using root's
+  powers: deleting files, `chmod` on `/` through a random pointer that
+  happened to point at the string "/", and `reboot(0)` from a random call
+  number. Calls that change shared state get safe arguments or
+  definitely-invalid ones, never arbitrary valid memory; a new such call
+  goes on the fuzzer's list the day it is added. (The reboot also showed a
+  real bug: the other processes could kill the shutdown half way.)
 - **Some defences cannot be demonstrated here.** QEMU, like AMD CPUs, faults
   in ring 3 on `sysretq` to a non-canonical address; Intel faults in ring 0.
   The check for it rests on the manual, and its test passes either way. Say
