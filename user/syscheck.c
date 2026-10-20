@@ -1984,6 +1984,23 @@ static int type_keys(lineedit_t *e, const char *keys) {
     return result;
 }
 
+static int completion_asked_command;      /* What complete_fixed was last asked */
+
+/* A completion function with a fixed set of names, for the editor's tests:
+ * programs "cat", "cd" and "cmp"; in any directory "notes.txt", "notes.md"
+ * and "src/". Records whether it was asked for a program name. */
+static void complete_fixed(lineedit_t *e, const char *word, int command) {
+    static const char *const programs[] = { "cmp", "cat", "cd" };
+    static const char *const files[] = { "notes.txt", "src/", "notes.md" };
+    const char *start = word;
+    for (const char *c = word; *c; c++) if (*c == '/') start = c + 1;
+    completion_asked_command = command;
+    const char *const *names = command && start == word ? programs : files;
+    for (int i = 0; i < 3; i++) {
+        if (strncmp(names[i], start, strlen(start)) == 0) lineedit_add_match(e, names[i]);
+    }
+}
+
 /* The shell's line editor, without a terminal: keys in, line and cursor out */
 static void check_line_editing(void) {
     /* isatty: the console is the terminal, a pipe and a file are not */
@@ -2042,6 +2059,32 @@ static void check_line_editing(void) {
     }
     CHECK(e.count == LINEEDIT_HISTORY && strcmp(e.history[LINEEDIT_HISTORY - 1], "n68") == 0 &&
           strcmp(e.history[0], "n05") == 0);
+
+    /* Tab: nothing without a completion function */
+    lineedit_start(&e);
+    type_keys(&e, "ca\t");
+    CHECK(strcmp(e.line, "ca") == 0);
+    /* One match: completed, with a space; a program name first, a file after */
+    e.complete = complete_fixed;
+    type_keys(&e, "\t");
+    CHECK(strcmp(e.line, "cat ") == 0 && completion_asked_command == 1);
+    type_keys(&e, "s\t");
+    CHECK(strcmp(e.line, "cat src/") == 0 && completion_asked_command == 0);   /* A directory: no space */
+    /* Several: as far as they agree; a second Tab asks for the sorted list */
+    type_keys(&e, "\x15" "cat n\t");
+    CHECK(strcmp(e.line, "cat notes.") == 0 && e.show_matches == 0 && e.match_count == 2);
+    type_keys(&e, "\t");
+    CHECK(e.show_matches == 1 && strcmp(e.matches[0], "notes.md") == 0 && strcmp(e.matches[1], "notes.txt") == 0);
+    e.show_matches = 0;
+    type_keys(&e, "t\t");
+    CHECK(strcmp(e.line, "cat notes.txt ") == 0);
+    /* After '|' or ';' a program name goes again; the cursor need not be at the end */
+    lineedit_start(&e);
+    type_keys(&e, "ls | c\t");
+    CHECK(strcmp(e.line, "ls | c") == 0 && completion_asked_command == 1 && e.match_count == 3);
+    type_keys(&e, "a\033[Hsrc/no\t");                                     /* Before "ls" */
+    CHECK(strcmp(e.line, "src/notes.ls | ca") == 0 && completion_asked_command == 1);
+    e.complete = NULL;
 }
 
 /* The shell's wildcard matcher */
