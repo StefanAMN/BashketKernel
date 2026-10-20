@@ -224,7 +224,10 @@ the lines `/bin/login` accepts), and owners for shared memory segments.
 Not done: set-gid and sticky bits. (Supplementary groups came with L4,
 search permission on directories with smaller repair 11.) Owners for files on `/disk` wait for a filesystem
 that can store them (C2), and a password changed with `passwd` is lost at
-reboot for the same reason: `/etc` is in the initrd.
+reboot for the same reason: `/etc` is in the initrd. (The password part no
+longer holds since D2: `/etc`
+is on the ext2 root, and `make test-shutdown` checks that a password
+changed in one boot works in the next.)
 
 - Groups, the execute bit, set-uid programs (which make `su` and `passwd`
   possible), `umask`.
