@@ -156,8 +156,8 @@ Done as user programs (`dhcp`, `host`, and name support in `ping`) over a
 kernel whose address is now a setting (`netconfig`) and which can work
 unconfigured: broadcast from 0.0.0.0, accept whatever reaches its card. The
 kernel still boots with QEMU's usual addresses, so nothing depends on a
-DHCP server being there; `dhcp` replaces them. Not done: lease renewal, a
-resolver cache, record types other than A. The DNS check uses a server in
+DHCP server being there; `dhcp` replaces them (and with `-d` keeps the
+lease renewed, L5). Not done: a resolver cache, record types other than A. The DNS check uses a server in
 the test script; against a real resolver it was only tried by hand.
 
 - A DHCP client so that the address is no longer fixed at 10.0.2.15, and a
@@ -1009,17 +1009,25 @@ unit tests in `tests/` for the permission check; syscheck for the calls
 (non-root refused, too many refused, fork copies); `make test-login`: a
 user reads a file through a second group.
 
-### L5. DHCP lease renewal (S)
+### L5. DHCP lease renewal (S) — done
 
 `dhcp` takes an address and exits; the lease runs out unnoticed. With
 `-d` it stays, and renews at half the lease time (T1) by a unicast
 REQUEST to the server that gave it, falling back to a broadcast at 7/8
 (T2) and to starting over when the lease ends, as RFC 2131 section 4.4.5
-says. **Check:** `tools/test_net.py` against QEMU's DHCP server with a
-short lease is not possible (QEMU's lease is fixed at a day), so the
-timing is computed by a function tested on its own, and a scripted run
-renews at once (`dhcp -d -t SECONDS` overrides T1 for the test) and
-sees QEMU acknowledge it.
+says. T1 and T2 from the server (options 58 and 59) are used when they
+make sense (0 < T1 < T2 < lease); a lease of 0 counts as a minute, so a
+broken server cannot make us renew in a loop, and an infinite one is
+never renewed. **Check:** QEMU's lease is fixed at a day, so the
+arithmetic is a function checked on its own (`dhcp -T`, run by
+syscheck), and `tools/test_net.py` renews at once (`dhcp -d -t 1 -n 2`:
+T1 one second after each lease, exit after two renewals). It reads
+QEMU's own capture of the traffic (`filter-dump`), not just what `dhcp`
+prints: each renewal must be a REQUEST addressed to the server alone,
+naming the address held, answered by an ACK. Not tested against a
+server: rebinding and expiry, which only happen when the server stops
+answering (QEMU always answers); the decision to enter them is in the
+`-T` cases.
 
 ---
 
