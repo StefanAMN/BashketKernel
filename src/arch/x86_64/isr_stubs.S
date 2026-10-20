@@ -211,3 +211,7 @@ nmi_stub:
     pop rax
     add rsp, 16
     iretq
+
+// No executable stack: without this note the linker assumes this object
+// needs one (and binutils older than 2.45 warns, failing the CI build)
+.section .note.GNU-stack,"",@progbits
