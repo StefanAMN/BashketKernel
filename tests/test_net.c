@@ -71,6 +71,23 @@ TEST(net_ping_gateway) {
     for (int i = 0; i < 20; i++) EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
 }
 
+// A neighbour's address is asked for again once the answer is a minute old,
+// so a machine that changes its card (or a replaced gateway) is found again.
+// Until then the cached answer is used without asking.
+TEST(net_arp_answers_age) {
+    EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+    uint64_t asked = net_stats()->arp_requests_sent;
+    EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+    EXPECT_TRUE(net_stats()->arp_requests_sent == asked);                 // Fresh: not asked
+
+    EXPECT_TRUE(net_arp_age(NET_GATEWAY, 6001));                           // Older than a minute
+    EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+    EXPECT_TRUE(net_stats()->arp_requests_sent == asked + 1);             // Asked again, answered
+    EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+    EXPECT_TRUE(net_stats()->arp_requests_sent == asked + 1);             // And fresh again
+    EXPECT_TRUE(!net_arp_age(NET_IP(10, 0, 2, 99), 1));                   // (Unknown: nothing to age)
+}
+
 TEST(net_ping_ourselves_and_nobody) {
     // To our own address: delivered inside the stack, without the card
     uint64_t sent_before = virtio_net_tx_count();
@@ -410,6 +427,7 @@ void test_suite_net(void) {
     RUN_TEST(net_checksum_known_values);
     RUN_TEST(net_card_and_stack_are_up);
     RUN_TEST(net_ping_gateway);
+    RUN_TEST(net_arp_answers_age);
     RUN_TEST(net_ping_ourselves_and_nobody);
     RUN_TEST(udp_sockets_over_loopback);
     RUN_TEST(net_drops_malformed_frames);

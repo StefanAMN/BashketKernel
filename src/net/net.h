@@ -60,6 +60,7 @@ typedef struct {
     uint64_t frames_in;          // Frames given to the stack
     uint64_t dropped;            // Malformed, not for us, or not understood
     uint64_t arp_replies_sent;
+    uint64_t arp_requests_sent;  // Questions asked, first ones and refreshes of old answers
     uint64_t echo_replies_sent;
     uint64_t udp_delivered;      // Datagrams put on a socket's queue
     uint64_t udp_no_socket;      // Datagrams for a port nobody listens on
@@ -150,6 +151,14 @@ int net_ping(uint32_t ip, uint64_t timeout_ticks, uint64_t *rtt_ticks);
  * @brief True if the hardware address for `ip` is known (ARP cache).
  */
 bool net_arp_known(uint32_t ip);
+
+#ifdef KERNEL_TESTS
+/**
+ * @brief For tests: make the ARP cache's answer for `ip` `ticks` older, as
+ *        if time had passed. False if there is no answer for `ip`.
+ */
+bool net_arp_age(uint32_t ip, uint64_t ticks);
+#endif
 
 // --- UDP sockets -------------------------------------------------------------
 

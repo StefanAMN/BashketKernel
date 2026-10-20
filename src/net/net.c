@@ -30,6 +30,8 @@
 #define ARP_CACHE_SIZE 16
 #define ARP_TRIES 3
 #define ARP_WAIT_TICKS 30          // Per try: 0.3 s
+#define ARP_STALE_TICKS 6000       // An answer older than 60 s is asked for again (a machine
+                                   // may have changed its card, a gateway been replaced)
 
 #define EPHEMERAL_PORT_FIRST 49152 // Ports given to sockets that did not ask for one
 
@@ -111,7 +113,8 @@ static const uint8_t broadcast_mac[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 typedef struct {
     uint32_t ip;                   // 0: unused entry
     uint8_t mac[6];
-    uint64_t last_used;
+    uint64_t last_used;            // For replacement when the cache is full
+    uint64_t learned;              // When the machine last said this itself (ticks)
 } arp_entry_t;
 static arp_entry_t arp_cache[ARP_CACHE_SIZE];
 
@@ -224,37 +227,54 @@ static void arp_learn(uint32_t ip, const uint8_t mac[6]) {
     if (!slot) slot = oldest; // Cache full: replace the entry unused for longest
     slot->ip = ip;
     memcpy(slot->mac, mac, 6);
-    slot->last_used = timer_ticks();
+    slot->last_used = slot->learned = timer_ticks();
     spinlock_release_irqrestore(&net_lock, flags);
 
     sched_wakeup(arp_cache); // Someone may be waiting for exactly this answer
 }
 
-// Caller holds net_lock
-static bool arp_lookup_locked(uint32_t ip, uint8_t mac[6]) {
-    bool found = false;
+// The hardware address for `ip`, if known. *stale (if not NULL) says
+// whether the answer is old enough to be asked for again. Caller holds
+// net_lock.
+static bool arp_lookup_locked(uint32_t ip, uint8_t mac[6], bool *stale) {
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].ip == ip) {
             memcpy(mac, arp_cache[i].mac, 6);
-            arp_cache[i].last_used = timer_ticks();
-            found = true;
-            break;
+            uint64_t now = timer_ticks();
+            arp_cache[i].last_used = now;
+            if (stale) *stale = now - arp_cache[i].learned > ARP_STALE_TICKS;
+            return true;
         }
     }
-    return found;
+    return false;
 }
 
-// arp_lookup_locked, taking net_lock
-static bool arp_lookup(uint32_t ip, uint8_t mac[6]) {
+#ifdef KERNEL_TESTS
+bool net_arp_age(uint32_t ip, uint64_t ticks) {
     uint64_t flags = spinlock_acquire_irqsave(&net_lock);
-    bool found = arp_lookup_locked(ip, mac);
+    bool found = false;
+    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (arp_cache[i].ip == ip) {
+            arp_cache[i].learned -= ticks;
+            found = true;
+        }
+    }
+    spinlock_release_irqrestore(&net_lock, flags);
+    return found;
+}
+#endif
+
+// arp_lookup_locked, taking net_lock
+static bool arp_lookup(uint32_t ip, uint8_t mac[6], bool *stale) {
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
+    bool found = arp_lookup_locked(ip, mac, stale);
     spinlock_release_irqrestore(&net_lock, flags);
     return found;
 }
 
 bool net_arp_known(uint32_t ip) {
     uint8_t mac[6];
-    return arp_lookup(ip, mac);
+    return arp_lookup(ip, mac, NULL);
 }
 
 // Send an ARP request or reply (`operation`) for `target_ip` to `dst_mac`.
@@ -277,6 +297,7 @@ static void arp_send(uint16_t operation, const uint8_t dst_mac[6], const uint8_t
     arp->sender_ip = htonl(local_ip);
     memcpy(arp->target_mac, target_mac, 6);
     arp->target_ip = htonl(target_ip);
+    if (operation == ARP_REQUEST) stats.arp_requests_sent++;   // (Approximate, like the others: no lock)
 
     virtio_net_send(frame, sizeof(frame));
 }
@@ -306,17 +327,28 @@ static void arp_input(const uint8_t *payload, size_t len) {
 
 // Find the hardware address to send to for `ip`, asking the network if
 // necessary. May sleep. Returns 0, -EHOSTUNREACH or -EINTR.
+//
+// An answer older than ARP_STALE_TICKS is asked for again. A caller that
+// may wait waits for the new answer (and gets EHOSTUNREACH if none comes:
+// the machine has gone). One that may not (the receive thread) uses the old
+// answer, and the question it sends brings a new one for next time.
 static int arp_resolve(uint32_t ip, uint8_t mac[6], bool can_block) {
-    if (arp_lookup(ip, mac)) return 0;
-    if (!can_block) return -EHOSTUNREACH;
-
     static const uint8_t unknown[6] = { 0 };
+    bool stale = false;
+    if (arp_lookup(ip, mac, &stale) && !stale) return 0;
+    if (!can_block) {
+        if (!stale) return -EHOSTUNREACH;                  // Never known
+        arp_send(ARP_REQUEST, broadcast_mac, unknown, ip);
+        return 0;
+    }
+
     for (int attempt = 0; attempt < ARP_TRIES; attempt++) {
         arp_send(ARP_REQUEST, broadcast_mac, unknown, ip);
 
         uint64_t deadline = timer_ticks() + ARP_WAIT_TICKS;
         uint64_t flags = spinlock_acquire_irqsave(&net_lock);
-        while (!arp_lookup_locked(ip, mac) && timer_ticks() < deadline) {
+        // (An old answer is not the answer: a new one resets its age)
+        while (!(arp_lookup_locked(ip, mac, &stale) && !stale) && timer_ticks() < deadline) {
             if (sched_interrupted()) {
                 spinlock_release_irqrestore(&net_lock, flags);
                 return -EINTR;
@@ -324,7 +356,7 @@ static int arp_resolve(uint32_t ip, uint8_t mac[6], bool can_block) {
             sched_sleep(arp_cache, &net_lock, deadline);
         }
         spinlock_release_irqrestore(&net_lock, flags);
-        if (arp_lookup(ip, mac)) return 0;
+        if (arp_lookup(ip, mac, &stale) && !stale) return 0;
     }
     return -EHOSTUNREACH;
 }
