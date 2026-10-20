@@ -28,7 +28,7 @@
  * allocation of that memory, by address and offset, instead of corrupting
  * whoever got it; one that reads after freeing sees 0x6b6b... rather than
  * plausible data. (The slab caches keep their freed objects to themselves
- * and are not covered.)
+ * and poison them the same way: see slab.c.)
  */
 
 #include "heap.h"
