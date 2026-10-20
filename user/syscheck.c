@@ -2251,6 +2251,89 @@ static void check_shell_words(void) {
     CHECK(sh_capture("echo $(echo unclosed", out, sizeof(out)) == 2);
 }
 
+/* Whether `sh -c command` prints exactly `expected` and ends with `status` */
+static int sh_ends(const char *command, const char *expected, int status) {
+    static char out[512];
+    return sh_capture(command, out, sizeof(out)) == status && strcmp(out, expected) == 0;
+}
+
+/* The shell's if, while and for, break and continue, and test / [ */
+static void check_shell_control(void) {
+    /* if: the branch taken; elif; nothing taken is status 0; the status of the branch */
+    CHECK(sh_prints("if false; then echo a; else echo b; fi", "b\n"));
+    CHECK(sh_prints("if true; then echo a; else echo b; fi", "a\n"));
+    CHECK(sh_prints("if false; then echo a; elif true; then echo b; else echo c; fi", "b\n"));
+    CHECK(sh_prints("if false; then echo a; elif false; then echo b; else echo c; fi", "c\n"));
+    CHECK(sh_prints("if false; then echo a; fi; echo s=$?", "s=0\n"));
+    CHECK(sh_ends("if true; then false; fi", "", 1));
+    CHECK(sh_prints("if true && false || true; then echo list; fi", "list\n"));
+    CHECK(sh_prints("if true; then echo a; fi && echo after", "a\nafter\n"));
+
+    /* Loops: the words expanded once; nesting; break and continue, with N */
+    CHECK(sh_prints("for x in 1 2 3; do echo n$x; done", "n1\nn2\nn3\n"));
+    CHECK(sh_prints("for x in; do echo never; done; echo s=$?", "s=0\n"));
+    CHECK(sh_prints("for f in $(echo p q) 'r s'; do echo [$f]; done", "[p]\n[q]\n[r s]\n"));
+    CHECK(sh_prints("export I=x; while [ \"$I\" != xxx ]; do export I=\"$I\"x; echo $I; done", "xx\nxxx\n"));
+    CHECK(sh_prints("while false; do echo never; done; echo s=$?", "s=0\n"));
+    CHECK(sh_prints("for x in a b c d; do if [ $x = b ]; then continue; fi; if [ $x = d ]; then break; fi; echo $x; done",
+                    "a\nc\n"));
+    CHECK(sh_prints("for i in 1 2; do for j in a b c; do if [ $j = b ]; then continue 2; fi; echo $i$j; done; done",
+                    "1a\n2a\n"));
+    CHECK(sh_prints("for i in 1 2; do for j in a b; do break 2; done; echo never; done; echo out", "out\n"));
+    CHECK(sh_prints("while true; do while true; do break 5; done; done; echo out", "out\n"));   /* N past the outermost */
+    CHECK(sh_ends("break", "", 1));                                       /* Not in a loop */
+
+    /* test and [ */
+    CHECK(sh_prints("[ -f /etc/motd ] && [ -d /bin ] && [ -e /bin/sh ] && echo yes", "yes\n"));
+    CHECK(sh_ends("[ -d /etc/motd ]", "", 1));
+    CHECK(sh_ends("[ -e /no/such ]", "", 1));
+    CHECK(sh_prints("[ -z '' ] && [ -n x ] && [ abc ] && test a = a && [ a != b ] && echo yes", "yes\n"));
+    CHECK(sh_ends("[ '' ]", "", 1));
+    CHECK(sh_ends("test", "", 1));
+    CHECK(sh_prints("[ 3 -lt 10 ] && [ 10 -gt 3 ] && [ -2 -le -2 ] && [ 5 -ge 5 ] && [ 1 -ne 2 ] && [ 7 -eq 7 ] && echo yes",
+                    "yes\n"));
+    CHECK(sh_ends("[ 10 -lt 3 ]", "", 1));
+    CHECK(sh_prints("[ ! -e /no/such ] && [ ! a = b ] && echo yes", "yes\n"));
+    CHECK(sh_ends("[ ! a = a ]", "", 1));
+    CHECK(sh_ends("[ 1 -eq x ]", "", 2));                                /* Not a number */
+    CHECK(sh_ends("[ a = a", "", 2));                                    /* No ] */
+    CHECK(sh_ends("[ a b c d ]", "", 2));
+
+    /* Syntax errors, and text that stops inside a command */
+    CHECK(sh_ends("fi", "", 2));
+    CHECK(sh_ends("if true; then echo x", "", 2));
+    CHECK(sh_ends("if true; echo x; fi", "", 2));                       /* No then */
+    CHECK(sh_ends("while true; do; done", "", 2));
+    CHECK(sh_ends("if; then echo x; fi", "", 2));
+    CHECK(sh_ends("for 1 in a; do echo x; done", "", 2));
+    CHECK(sh_ends("echo a && then", "", 2));
+    CHECK(sh_ends("if true; then echo x; fi extra", "", 2));
+
+    /* A script over several lines, with comments and nesting */
+    long fd = open("/tmp/control.sh", O_WRONLY | O_CREAT | O_TRUNC);
+    static const char script[] =
+        "# Counts down, then says which numbers were even\n"
+        "for n in 3 2 1\n"
+        "do\n"
+        "    if [ $n = 2 ]   # the even one\n"
+        "    then\n"
+        "        echo even $n\n"
+        "    else\n"
+        "        echo odd $n\n"
+        "    fi\n"
+        "done\n"
+        "echo done\n";
+    CHECK(fd >= 0 && write((int)fd, script, sizeof(script) - 1) == (long)sizeof(script) - 1);
+    close((int)fd);
+    CHECK(sh_prints("sh /tmp/control.sh", "odd 3\neven 2\nodd 1\ndone\n"));
+    fd = open("/tmp/control.sh", O_WRONLY | O_TRUNC);
+    static const char unfinished[] = "if true\nthen\necho unfinished\n";
+    CHECK(fd >= 0 && write((int)fd, unfinished, strlen(unfinished)) == (long)strlen(unfinished));
+    close((int)fd);
+    CHECK(sh_ends("sh /tmp/control.sh", "", 2));                         /* The file ends inside the if */
+    CHECK(unlink("/tmp/control.sh") == 0);
+}
+
 /* Feed every byte of `keys` to the editor; the result of the last one */
 static int type_keys(lineedit_t *e, const char *keys) {
     int result = LINEEDIT_MORE;
@@ -2685,6 +2768,7 @@ int main(void) {
     check_truncate();
     check_text_tools();
     check_shell_words();
+    check_shell_control();
     check_groups_and_setuid();
     check_pipes();
 
