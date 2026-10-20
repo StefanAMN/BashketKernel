@@ -21,6 +21,14 @@
  *
  * Sizes are whole blocks, header included, in multiples of 16, so their
  * lowest bit is free to say whether the block is free.
+ *
+ * Free memory is poisoned: everything in a free block after its links
+ * holds POISON, and kmalloc checks that what it hands out still does. A
+ * kernel bug that writes to memory after freeing it is caught at the next
+ * allocation of that memory, by address and offset, instead of corrupting
+ * whoever got it; one that reads after freeing sees 0x6b6b... rather than
+ * plausible data. (The slab caches keep their freed objects to themselves
+ * and are not covered.)
  */
 
 #include "heap.h"
@@ -28,6 +36,7 @@
 #include "pmm.h"
 #include "kprintf.h"
 #include "spinlock.h"
+#include "kstring.h"
 
 typedef struct block {
     size_t size;               // The whole block, header included; bit 0 set: free
@@ -46,6 +55,7 @@ typedef struct free_links {
 #define MIN_BLOCK (HEADER + sizeof(free_links_t))   // A free block must hold its links
 #define CLASSES 48                                  // Size classes: 2^5 up to 2^47 and beyond
 #define GROW_MIN (64 * 1024)                        // Grow by at least this, so small requests do not grow page by page
+#define POISON 0x6b                                 // Fills free memory (Linux's POISON_FREE: easy to spot in a dump)
 
 _Static_assert(sizeof(block_t) == ALIGNMENT, "the header keeps payloads 16-byte aligned");
 
@@ -55,6 +65,8 @@ static block_t *free_lists[CLASSES];
 static uint64_t heap_end_virt = KHEAP_START_VIRT;
 static size_t total_allocated_bytes = 0;
 static size_t failed_allocations = 0;
+static size_t poison_damage = 0;      // Blocks found written after they were freed
+static bool poison_damage_fatal = true;
 
 // The free lists and the blocks are walked and edited by every kmalloc and
 // kfree, and a timer interrupt can switch tasks in the middle of either.
@@ -81,6 +93,20 @@ static block_t *prev_block(block_t *b) {
 
 // The free-list links in a free block's payload
 static free_links_t *links(block_t *b) { return (free_links_t *)(b + 1); }
+
+// Fill [from, from + bytes) with POISON
+static void poison(void *from, size_t bytes) { memset(from, POISON, bytes); }
+
+// The first byte of [from, from + bytes) that is not POISON, or NULL
+static const uint8_t *first_unpoisoned(const void *from, size_t bytes) {
+    const uint8_t *p = (const uint8_t *)from, *end = p + bytes;
+    for (; p < end && ((uint64_t)p & 7); p++) if (*p != POISON) return p;   // Up to a word boundary,
+    for (; p + 8 <= end; p += 8) {                                           // then a word at a time
+        if (*(const uint64_t *)p != 0x6b6b6b6b6b6b6b6bULL) break;
+    }
+    for (; p < end; p++) if (*p != POISON) return p;
+    return NULL;
+}
 
 // The size class of a block of `size` bytes: the position of its highest set bit
 static unsigned class_of(size_t size) {
@@ -175,6 +201,7 @@ static bool grow_for(size_t need) {
     if (!expand_heap(more)) return false;
     size_t added = heap_end_virt - old_end;
 
+    poison((void *)old_end, added);            // Free memory, like the rest
     if (is_free(last_block)) {
         unlink_free(last_block);
         last_block->size = size_of(last_block) + added;
@@ -201,6 +228,7 @@ void kheap_init(void) {
     first_block->size = heap_end_virt - KHEAP_START_VIRT;
     first_block->prev_size = 0;
     insert_free(first_block);
+    poison(links(first_block) + 1, size_of(first_block) - MIN_BLOCK);
 
     kprintf("KHEAP Init: Virtual Range: %p - %p (Initial %zu KB)\n",
             (void *)KHEAP_START_VIRT, (void *)heap_end_virt, KHEAP_INITIAL_SIZE / 1024);
@@ -255,6 +283,17 @@ void *kmalloc(size_t size) {
     }
     b->size = size_of(b);                      // In use
     split(b, need);
+    // Everything handed out was free memory: still poisoned, but for the
+    // links at its start, unless someone wrote to it after freeing it
+    const uint8_t *damage = first_unpoisoned(links(b) + 1, size_of(b) - MIN_BLOCK);
+    if (damage) {
+        poison_damage++;
+        if (poison_damage_fatal) {
+            kprintf("kmalloc: the block at %p (%zu bytes) was written after it was freed: byte %zu is 0x%02x\n",
+                    (void *)(b + 1), size_of(b) - HEADER, (size_t)(damage - (const uint8_t *)(b + 1)), *damage);
+            panic("heap memory written after it was freed");
+        }
+    }
     total_allocated_bytes += size_of(b) - HEADER;
     spinlock_release_irqrestore(&heap_lock, flags);
     return b + 1;
@@ -272,19 +311,23 @@ void kfree(void *ptr) {
         return;
     }
     total_allocated_bytes -= size_of(b) - HEADER;
+    poison(links(b) + 1, size_of(b) - MIN_BLOCK);   // (The links are written below)
 
-    // Merge with a free neighbour on either side
+    // Merge with a free neighbour on either side. The header and links of
+    // the block that disappears inside the other become free memory too.
     block_t *n = next_block(b);
     if (n && is_free(n)) {
         unlink_free(n);
         if (n == last_block) last_block = b;
         b->size = size_of(b) + size_of(n);
+        poison(n, MIN_BLOCK);
     }
     block_t *p = prev_block(b);
     if (p && is_free(p)) {
         unlink_free(p);
         if (b == last_block) last_block = p;
         p->size = size_of(p) + size_of(b);
+        poison(b, MIN_BLOCK);
         b = p;
     }
     b->size = size_of(b);
@@ -307,6 +350,12 @@ void kfree(void *ptr) {
     spinlock_release_irqrestore(&heap_lock, flags);
 }
 
+#ifdef KERNEL_TESTS
+size_t kheap_poison_damage(void) { return poison_damage; }
+
+void kheap_poison_damage_is_fatal(bool fatal) { poison_damage_fatal = fatal; }
+#endif
+
 bool kheap_check(void) {
     uint64_t flags = spinlock_acquire_irqsave(&heap_lock);
     bool ok = first_block != NULL;
@@ -320,8 +369,12 @@ bool kheap_check(void) {
         size_t size = size_of(b);
         ok = size >= MIN_BLOCK && size % ALIGNMENT == 0 && b->prev_size == prev_size &&
              (uint64_t)b + size <= heap_end_virt && !(prev_free && is_free(b));
-        if (is_free(b)) free_blocks++;
-        else in_use_bytes += size - HEADER;
+        if (is_free(b)) {
+            free_blocks++;
+            ok = ok && first_unpoisoned(links(b) + 1, size - MIN_BLOCK) == NULL;   // Nobody wrote to it since
+        } else {
+            in_use_bytes += size - HEADER;
+        }
         prev_size = size;
         prev_free = is_free(b);
         if (b == last_block) ok = ok && (uint64_t)b + size == heap_end_virt;
