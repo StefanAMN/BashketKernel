@@ -2198,6 +2198,21 @@ static void check_shell_words(void) {
     CHECK(sh_prints("echo \"\" x ''", " x \n"));                       /* Empty words are words */
     CHECK(sh_prints("echo '/bin/s*' \"/bin/s\"*", "/bin/s* /bin/s*\n"));  /* Quoted: no wildcards */
     CHECK(sh_capture("echo 'unclosed", out, sizeof(out)) == 2);          /* A syntax error */
+
+    /* $(...): one word in double quotes, split outside them, nested,
+     * with lists and pipes inside; its output is never run as commands */
+    CHECK(sh_prints("echo [$(echo 'c   d')]", "[c d]\n"));                 /* Split: two words */
+    CHECK(sh_prints("echo \"$(echo '1  2')\"", "1  2\n"));               /* Blanks kept in quotes */
+    CHECK(sh_prints("echo x$(echo)y", "xy\n"));
+    CHECK(sh_prints("echo $(echo $(echo nested))", "nested\n"));
+    CHECK(sh_prints("echo $(true; echo listed) && echo after", "listed\nafter\n"));
+    CHECK(sh_prints("echo $(echo one two | wc)", "1 2 8\n"));
+    CHECK(sh_prints("echo $(echo '; echo injected')", "; echo injected\n"));
+    CHECK(sh_prints("$(false) ; echo status $?", "status 1\n"));        /* Nothing left to run: its status */
+    CHECK(sh_prints("echo out > $(echo /tmp/subst) && cat /tmp/subst && rm /tmp/subst", "out\n"));
+    CHECK(sh_capture("echo x > $(echo two words)", out, sizeof(out)) == 2);
+    CHECK(sh_capture("echo $(cat /bin/sh)", out, sizeof(out)) == 2);      /* More than 4 KiB */
+    CHECK(sh_capture("echo $(echo unclosed", out, sizeof(out)) == 2);
 }
 
 /* Feed every byte of `keys` to the editor; the result of the last one */
