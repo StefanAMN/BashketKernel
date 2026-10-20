@@ -729,7 +729,11 @@ out; the network tests unchanged.
 
 Proposed on 2026-10-20, after track G.
 
-### H1. Wildcards in the shell (S)
+### H1. Wildcards in the shell (S) — done
+
+Done as proposed (`user/lib/glob.c`); a shell line now takes 64 words in
+4 KiB. `"<"x` is still two words: the shell does not join quoted and
+unquoted parts of a word. The proposal:
 
 `ls *.c`, `rm /tmp/f?`: an unquoted word with `*` or `?` (and `[...]`) is
 replaced by the names it matches in its directory, sorted; a word that
