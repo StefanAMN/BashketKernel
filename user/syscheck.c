@@ -1894,6 +1894,83 @@ static void check_supplementary_groups(void) {
     CHECK(unlink("/tmp/staff.txt") == 0 && unlink("/tmp/bobs.txt") == 0);
 }
 
+/* As bob (1001, group 200) in /tmp, which is sticky: alice's file there
+ * cannot be removed or renamed away by him, nor replaced by a rename; his
+ * own can. In /tmp/open, writable by all and not sticky, hers can. */
+static void sticky_checks_as_bob(void) {
+    CHECK(unlink("/tmp/st-alice") == -EACCES);
+    CHECK(rename("/tmp/st-alice", "/tmp/st-moved") == -EACCES);
+    long fd = open("/tmp/st-bob", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(rename("/tmp/st-bob", "/tmp/st-alice") == -EEXIST);     /* Nothing is replaced */
+    CHECK(rename("/tmp/st-bob", "/tmp/st-bob2") == 0);
+    CHECK(unlink("/tmp/st-bob2") == 0);
+    CHECK(unlink("/tmp/open/alice") == 0);                      /* Not sticky: writing there is enough */
+}
+
+/* As bob (1001, group 200): a set-gid program of group 50 runs with 50 as
+ * its effective group and 200 as its real one; bob may go back to 200 but
+ * not take 50; his own file may be made set-gid only for a group he is in,
+ * and writing to it takes the bit away */
+static void setgid_checks_as_bob(void) {
+    static char out[128];
+    CHECK(getgid() == 200 && getegid() == 200);
+    CHECK(run_capture("/tmp/sgid-id", out, sizeof(out)) == 0 && contains(out, "gid 200\n") &&
+          contains(out, "effective gid 50\n"));
+    CHECK(setgid(50) == -EPERM && setgid(200) == 0);
+    long fd = open("/tmp/bob-tool", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(chmod("/tmp/bob-tool", 02755) == 0 && tmp_mode("bob-tool") == 02755);    /* His own group */
+    CHECK(chown("/tmp/bob-tool", KEEP_ID, 50) == -EPERM);
+    fd = open("/tmp/bob-tool", O_WRONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(tmp_mode("bob-tool") == 0755);                          /* Rewritten by him: no longer set-gid */
+    CHECK(chmod("/tmp/sgid-id", 02755) == -EPERM);                /* Not his */
+    CHECK(unlink("/tmp/bob-tool") == 0);
+}
+
+/* As alice (1000, group 100) without group 50: chmod of her file in group
+ * 50 with the set-gid bit keeps the rest and quietly leaves the bit off */
+static void setgid_checks_as_alice(void) {
+    CHECK(chmod("/tmp/st-alice", 02750) == 0 && tmp_mode("st-alice") == 0750);
+}
+
+static int sh_capture(const char *command, char *out, size_t size);   /* (Defined with the shell's checks) */
+
+/* The sticky bit (/tmp has it) and set-gid programs */
+static void check_sticky_and_setgid(void) {
+    static char out[512];
+    struct stat st;
+    CHECK(stat("/tmp", &st) == 0 && st.mode == 01777);
+    CHECK(sh_capture("ls -l / | grep ' tmp'", out, sizeof(out)) == 0 && strncmp(out, "drwxrwxrwt", 10) == 0);
+
+    long fd = open("/tmp/st-alice", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && close((int)fd) == 0);
+    CHECK(chown("/tmp/st-alice", 1000, 100) == 0);
+    CHECK(mkdir("/tmp/open") == 0 && chmod("/tmp/open", 0777) == 0);
+    fd = open("/tmp/open/alice", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && close((int)fd) == 0);
+    CHECK(chown("/tmp/open/alice", 1000, 100) == 0);
+    CHECK(as_user_in_group(1001, 200, sticky_checks_as_bob) == 0);
+    CHECK(tmp_mode("st-alice") == 0644);                          /* Still there, untouched */
+
+    /* Root's chown of the group comes first: it would take the bit away */
+    CHECK(copy_file("/bin/id", "/tmp/sgid-id") == 0);
+    CHECK(chown("/tmp/sgid-id", KEEP_ID, 50) == 0 && chmod("/tmp/sgid-id", 02755) == 0);
+    CHECK(tmp_mode("sgid-id") == 02755);
+    CHECK(sh_capture("ls -l /tmp | grep sgid-id", out, sizeof(out)) == 0 && strncmp(out, "-rwxr-sr-x", 10) == 0);
+    CHECK(as_user_in_group(1001, 200, setgid_checks_as_bob) == 0);
+    CHECK(chown("/tmp/st-alice", KEEP_ID, 50) == 0);
+    CHECK(as_user_in_group(1000, 100, setgid_checks_as_alice) == 0);
+    CHECK(chown("/tmp/sgid-id", KEEP_ID, 51) == 0 && tmp_mode("sgid-id") == 0755);   /* A new group did not ask for it */
+
+    CHECK(unlink("/tmp/st-alice") == 0 && unlink("/tmp/sgid-id") == 0);
+    CHECK(unlink("/tmp/open") == 0);
+}
+
 /* Permission bits as alice and bob, and root's freedom from them */
 static void check_users(void) {
     CHECK(getuid() == 0);                               /* The checks themselves run as root */
@@ -3045,6 +3122,7 @@ int main(void) {
     check_proc();
     check_groups_and_setuid();
     check_supplementary_groups();
+    check_sticky_and_setgid();
     check_pipes();
 
     if (failures == 0) {

@@ -30,8 +30,19 @@
  * file's group is any one of them. They are copied by fork and kept by
  * execve; a set-uid program keeps its caller's.
  *
- * Not done: set-gid and the sticky bit (/tmp instead has a rule of its
- * own: see auth_may_remove).
+ * Set-gid (02000) does for the group what set-uid does for the user: the
+ * program runs with the file's group as its effective group (the one every
+ * check uses), and the real group (getgid) says who started it. Both bits
+ * are taken away when anyone but root writes to the file or it changes
+ * owner or group.
+ *
+ * The sticky bit (01000) on a directory restricts removing: anyone may
+ * create in /tmp (mode 01777), but only the owner of an entry (or of the
+ * directory, or root) may delete or rename it away. Without the bit,
+ * permission to write in the directory is enough, as in Unix.
+ *
+ * Not done: set-gid on a directory (in Unix, new files there take the
+ * directory's group); here it is stored and shown, and means nothing.
  */
 
 #ifndef AUTH_H
@@ -51,7 +62,10 @@
 #define PERM_EXEC  1
 
 #define PERM_SETUID 04000        // Run with the file owner's user id
-#define PERM_ALL    04777        // Every bit chmod may set
+#define PERM_SETGID 02000        // Run with the file's group as the effective group
+#define PERM_STICKY 01000        // On a directory: only an entry's owner may remove it
+#define PERM_SET_IDS (PERM_SETUID | PERM_SETGID) // Taken away when the file is changed or given away
+#define PERM_ALL    07777        // Every bit chmod may set
 
 // New files and directories get these, less the creator's umask
 #define PERM_NEW_FILE 0666
@@ -93,9 +107,10 @@ bool auth_may_execute(uint32_t uid, const vnode_t *node);
 bool auth_may_search(uint32_t uid, const vnode_t *dir);
 
 /**
- * @brief May `uid` remove `child` from `dir`? Write access to the directory,
- *        and (so that /tmp can be writable by all) owning the entry or the
- *        directory.
+ * @brief May `uid` remove `child` from `dir` (unlink, or rename it away)?
+ *        Write access to the directory; and if the directory is sticky
+ *        (PERM_STICKY, as /tmp is), owning the entry or the directory.
+ *        Root may remove anything.
  */
 bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child);
 

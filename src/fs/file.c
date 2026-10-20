@@ -101,10 +101,11 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     if (!file) return -ENOMEM;
 
     if (writable && (flags & O_TRUNC)) vfs_truncate(node, 0);
-    // A set-uid program that anyone but root can rewrite would be a way to
-    // become its owner: opening it for writing takes the bit away
-    if (writable && uid != UID_ROOT && (node->mode & PERM_SETUID)) {
-        node->mode &= (uint16_t)~PERM_SETUID;
+    // A set-uid (or set-gid) program that anyone but root can rewrite would
+    // be a way to become its owner (or join its group): opening it for
+    // writing takes the bits away
+    if (writable && uid != UID_ROOT && (node->mode & PERM_SET_IDS)) {
+        node->mode &= (uint16_t)~PERM_SET_IDS;
         if (node->ops && node->ops->setattr) node->ops->setattr(node);
     }
     if (node->ops && node->ops->opened) {

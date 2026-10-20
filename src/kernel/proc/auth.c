@@ -64,6 +64,9 @@ bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child) {
     if (!dir || !child) return false;
     if (uid == UID_ROOT) return true;
     if (!auth_may_access(uid, dir, true)) return false;
+    // A sticky directory is shared, not common property: everyone may add
+    // to it, and each may take away only their own
+    if (!(dir->mode & PERM_STICKY)) return true;
     return child->uid == uid || dir->uid == uid;
 }
 

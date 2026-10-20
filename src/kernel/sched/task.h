@@ -83,7 +83,8 @@ typedef struct task {
     void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
     uint32_t uid;            // Effective user: whose rights this process has (0: root, may do anything)
     uint32_t ruid;           // Real user: who started it (differs from uid only in a set-uid program)
-    uint32_t gid;            // Its group
+    uint32_t gid;            // Effective group: the one permission checks use
+    uint32_t rgid;           // Real group: whoever started it (differs from gid only in a set-gid program)
     uint32_t groups[TASK_MAX_GROUPS]; // Supplementary groups: more whose members' rights it has (setgroups)
     uint32_t group_count;    // How many of groups[] are in use
     uint16_t umask;          // Permission bits removed from every file it creates
