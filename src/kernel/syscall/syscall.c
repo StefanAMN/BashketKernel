@@ -32,6 +32,7 @@
 #include "tcp.h"
 #include "shm.h"
 #include "hrtimer.h"
+#include "walltime.h"
 #include "power.h"
 #include "auth.h"
 
@@ -972,6 +973,11 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_SLEEP:   return sys_sleep(regs->rdi);
         case SYS_TIME:    return (int64_t)timer_ticks();
         case SYS_CLOCK_NS: return (int64_t)clock_ns();
+        case SYS_REALTIME: return (int64_t)walltime_ns();
+        case SYS_SETTIME:
+            // Every process's clock: root's alone to change
+            if (sched_get_current_task()->uid != UID_ROOT) return -EPERM;
+            return walltime_set(regs->rdi);
         case SYS_NANOSLEEP:
             if (regs->rdi > 3600ULL * 1000000000ULL) return -EINVAL;
             return nanosleep(regs->rdi) ? 0 : -EINTR;

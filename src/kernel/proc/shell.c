@@ -20,7 +20,7 @@
 #include "pit.h"
 #include "process.h"
 #include "kstring.h"
-#include "rtc.h"
+#include "walltime.h"
 #include "klog.h"
 #include "mount.h"
 #include "bench.h"
@@ -203,7 +203,7 @@ static void cmd_uptime(const char *arg) {
 static void cmd_date(const char *arg) {
     (void)arg;
     struct rtc_time t;
-    rtc_read_time(&t);
+    walltime_to_date(walltime_seconds(), &t);
     kprintf("Date (UTC): %d-%02d-%02d %02d:%02d:%02d\n", t.year, t.month, t.day, t.hour, t.minute, t.second);
 }
 

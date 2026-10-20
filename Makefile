@@ -39,16 +39,17 @@ ISO_ROOT = $(BUILD)/iso_root
 # Every user/*.c becomes /bin/<name> in the initrd, linked against the small
 # library in user/lib. User code may use floating point and SSE: the kernel
 # saves that state per task.
-USER_CFLAGS = -std=gnu17 -Wall -Wextra -O2 -g -pipe -Iuser/lib -Ilib/crypto \
+USER_CFLAGS = -std=gnu17 -Wall -Wextra -O2 -g -pipe -Iuser/lib -Ilib/crypto -Ilib/time \
               -ffreestanding -fno-stack-protector -fpie \
               -masm=intel -MMD -MP
 # Static position-independent executables: no dynamic linker, and no
 # relocations in the code itself (-z text makes that an error)
 USER_LDFLAGS = -nostdlib -static -pie --no-dynamic-linker -z text -T user/linker.ld -z max-page-size=0x1000
 
-# sha256.o is the kernel tree's own lib/crypto/sha256.c, compiled again for
-# user programs (login hashes passwords with it)
-USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/password.o
+# sha256.o and date.o are the kernel tree's own lib/crypto/sha256.c and
+# lib/time/date.c, compiled again for user programs (login hashes passwords
+# with the one; date and ls turn seconds into dates with the other)
+USER_LIB_OBJS = $(BUILD)/user/lib/crt0.o $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o $(BUILD)/user/lib/password.o
 USER_PROGS = $(patsubst user/%.c, $(BUILD)/initrd/bin/%, $(wildcard user/*.c))
 USER_ROOTFS = $(shell find user/rootfs -type f)
 INITRD = $(BUILD)/initrd.tar
@@ -67,9 +68,13 @@ $(BUILD)/user/lib/sha256.o: lib/crypto/sha256.c Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
+$(BUILD)/user/lib/date.o: lib/time/date.c Makefile
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
 $(BUILD)/initrd/bin/%: $(BUILD)/user/%.o $(USER_LIB_OBJS) user/linker.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o -o $@
+	$(LD) $(USER_LDFLAGS) $(BUILD)/user/lib/crt0.o $< $(BUILD)/user/lib/ulib.o $(BUILD)/user/lib/password.o $(BUILD)/user/lib/sha256.o $(BUILD)/user/lib/date.o -o $@
 
 # USTAR archive of bin/ plus the static files under user/rootfs
 $(INITRD): $(USER_PROGS) $(USER_ROOTFS)
@@ -396,13 +401,14 @@ test-login: iso
 		--expect 'motd: permission denied' --expect 'vda: permission denied' \
 		--expect 'Hello from ring 3' --expect 'uid 0 \(root\)' --forbid 'alice:1000' \
 		--expect 'su: incorrect name or password' --expect 'as-root-now\n\$$ id\nuid 0 \(root\)\ngid 0' \
+		--expect 'date: cannot set the time: operation not permitted' --expect '2030-01-01 00:00:0[0-9] UTC' \
 		--expect 'passwd: password changed for alice' --expect 'you may only change your own password' \
 		--expect 'passwd: the two do not match' --expect 'passwd: incorrect password' \
 		--expect 'old-password[\s\S]*login: incorrect name or password[\s\S]*new-password[\s\S]*uid 1000\ngid 100\n[\s\S]*done-as-alice' \
 		'!exec /bin/login alice' '~wrong\r' '@wait:1' '!exec /bin/login alice' '~alice\r' \
-		'id' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
+		'id' 'date -s "2030-01-01 00:00"' 'cat /etc/passwd' 'rm /bin/hello' 'echo x > /etc/motd' 'diskio size' \
 		'echo mine > /tmp/mine.txt' 'cat /tmp/mine.txt' 'hello' \
-		'!su' '~wrong\r' '@wait:1' '!su' '~root\r' 'echo as-root-now' 'id' 'exit' \
+		'!su' '~wrong\r' '@wait:1' '!su' '~root\r' 'echo as-root-now' 'id' 'date -s "2030-01-01 00:00"' 'exit' \
 		'!passwd' '~wrong\r' '@wait:1' '!passwd' '~alice\r' '~one-thing\r' '~another\r' '@wait:1' \
 		'!passwd bob' '@wait:1' '!passwd' '~alice\r' '~wonderland\r' '~wonderland\r' '@wait:1' 'exit' \
 		'exec /bin/echo old-password' '!exec /bin/login alice' '~alice\r' '@wait:1' \

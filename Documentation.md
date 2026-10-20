@@ -251,15 +251,18 @@ so the numbering has gaps.
 
 ---
 
-### 17. Real-Time Clock (RTC) Driver (Phase 17)
-**Status: real.** Reads date and time from CMOS, under a lock (the index and data ports are shared by every CPU) and twice until two reads agree (the clock updates its registers one at a time), in BCD or binary and 12- or 24-hour form, whichever the clock keeps (`rtc_decode`, tested for each). No time zone; the century is assumed to be 2000.
+### 17. Real-Time Clock (RTC) and the Time of Day (Phase 17, PLAN F1)
+**Status: real.** Reads date and time from CMOS, under a lock (the index and data ports are shared by every CPU) and twice until two reads agree (the clock updates its registers one at a time), in BCD or binary and 12- or 24-hour form, whichever the clock keeps (`rtc_decode`, tested for each). The kernel reads it once, as soon as the nanosecond clock is calibrated, and keeps the time of day from then on as that reading plus the nanosecond clock (`walltime.c`): programs read it with `time_ns()` and root sets it with `set_time()` (`/bin/date`, `date -s`); the CMOS chip itself is not written. File times on ext2 and FAT come from it, and the VFS keeps them as Unix seconds, which `ls -l` prints. UTC only: no time zones, no leap seconds; the CMOS century is assumed to be 2000, and the kernel accepts times from 1980 to 2105.
 
-**Goal:** Reading CMOS Real-Time Clock registers for system date and time.
+**Goal:** Reading CMOS Real-Time Clock registers for system date and time, and keeping the time of day without reading them again.
 
 - **Order of Learning:**
   1. **CMOS Real-Time Clock:**
      - **Concepts:** Reading CMOS ports `0x70/0x71`, BCD format decoding to UTC time struct.
      - Files to inspect: `src/drivers/char/rtc.h`, `src/drivers/char/rtc.c`
+  2. **The time of day:**
+     - **Concepts:** an offset from a monotonic clock; days and dates in the proleptic Gregorian calendar (Hinnant's algorithms, in `lib/time/date.c`, compiled into the kernel and the user library).
+     - Files to inspect: `src/kernel/time/walltime.h`, `src/kernel/time/walltime.c`, `user/date.c`, `tests/test_rtc.c`
 
 ---
 
