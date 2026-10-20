@@ -911,7 +911,7 @@ counted (as J1's test does); the unit tests otherwise unchanged.
 ### K2. `if`, `while` and `for` in the shell (M) — done
 
 Done as proposed, with `elif` and `break N` / `continue N`; a text is now
-parsed into a tree before it runs. Not done: `until`, `case`, functions,
+parsed into a tree before it runs (`until` followed). Not done: `case`, functions,
 `${NAME}`, redirections after `fi` / `done`, and `for NAME in` split over
 lines. Ctrl-C stops a loop only by killing the command it is running.
 The tests found `for 1 in a` accepted. The proposal:
