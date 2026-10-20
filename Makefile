@@ -669,7 +669,7 @@ test-jobs: iso
 	@# Tab completion: a program name, a directory, a file in it; two Tabs
 	@# list the names in /etc, sorted
 	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
-		--expect '\n/etc/motd\n' --expect '\ncompare.sh  demo.sh  motd  passwd  rc\n' \
+		--expect '\n/etc/motd\n' --expect '\ncompare.sh  demo.sh  group  motd  passwd  rc\n' \
 		'exec /bin/sh' '~ech^I/e^Imo^I\r' '@wait:1' '~ls /etc/^I^I^U\r' '@wait:1' 'exit' > $(BUILD)/completion.log 2>&1 \
 		&& echo "Tab completion: ok" || { echo "Tab completion: FAILED (see $(BUILD)/completion.log)"; exit 1; }
 	@# Compound commands at the prompt: the rest of an if is asked for with
