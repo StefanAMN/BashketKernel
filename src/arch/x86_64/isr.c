@@ -201,6 +201,28 @@ static bool try_grow_stack(struct registers *regs) {
     return process_grow_stack(cr2);
 }
 
+// NMIs taken since the last report, across all CPUs (see nmi_handler)
+static volatile uint64_t nmis_unreported;
+
+// Called by nmi_stub (isr_stubs.S), on the NMI stack, with GS already this
+// CPU's. An NMI can interrupt anything, a holder of the output locks
+// included, so nothing here takes a lock: it counts, and the next ordinary
+// interrupt reports it (report_nmis). What sent it is not looked into: on
+// QEMU it is the monitor's `nmi`; on a PC it would be a watchdog or a
+// hardware error (system control port B, 0x61, would say which).
+void nmi_handler(struct registers *regs) {
+    (void)regs;
+    this_cpu()->nmis++;
+    __atomic_add_fetch(&nmis_unreported, 1, __ATOMIC_SEQ_CST);
+}
+
+// Print what NMIs have arrived since the last report. Called from ordinary
+// interrupt handlers, where printing is allowed.
+static void report_nmis(void) {
+    uint64_t n = __atomic_exchange_n(&nmis_unreported, 0, __ATOMIC_SEQ_CST);
+    if (n) kprintf("NMI received (%lu since the last report); carrying on\n", n);
+}
+
 // Called by common_isr_stub (isr_stubs.S) for every vector, with interrupts
 // off and the interrupted registers in `regs`. Resolves the page faults that
 // are part of normal running (swap, copy-on-write, stack growth, promised
@@ -288,6 +310,8 @@ void isr_handler(struct registers *regs) {
         }
         outb(PIC1_COMMAND, 0x20);
 
+        if (nmis_unreported) report_nmis();
+
         // Hardware IRQ (32..47)
         uint8_t irq = regs->int_no - 32;
         for (int i = 0; i < HANDLERS_PER_IRQ && irq_handlers[irq][i] != NULL; i++) {
@@ -303,6 +327,7 @@ void isr_handler(struct registers *regs) {
         }
     } else if (regs->int_no == IPI_VECTOR_WAKE || regs->int_no == IPI_VECTOR_TIMER) {
         lapic_eoi(); // First, as above: the handler may switch tasks
+        if (nmis_unreported) report_nmis();
 
         if (regs->int_no == IPI_VECTOR_WAKE) smp_handle_ipi();
         else timer_interrupt();
