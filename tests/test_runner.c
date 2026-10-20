@@ -71,6 +71,7 @@ bool run_all_tests(void) {
     test_suite_dev();
     test_suite_bench();
     test_suite_lib();
+    test_suite_poll();
     
     kprintf("\n--- Test Summary ---\n");
     kprintf("Tests run: %d\n", tests_run);

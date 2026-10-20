@@ -10,6 +10,7 @@
 #include "spinlock.h"
 #include "kprintf.h"
 #include "kerrno.h"
+#include "poll.h"
 
 #define CTRL_D 0x04
 #define CTRL_U 0x15
@@ -108,6 +109,24 @@ void tty_set_raw(bool raw, uint32_t owner_pid) {
         input_escape = 0;
     }
     spinlock_release_irqrestore(&tty_lock, flags);
+}
+
+int tty_poll(void) {
+    if (raw_mode) return (keyboard_has_char() ? POLLIN : 0) | POLLOUT;
+
+    // Line mode: readable once a line is complete. The keys typed so far
+    // are still in the keyboard's buffer (a reader takes them through the
+    // line discipline as it reads): put them through it now, echo included,
+    // as a read would.
+    for (;;) {
+        uint64_t flags = spinlock_acquire_irqsave(&tty_lock);
+        bool ready = line_ready;
+        spinlock_release_irqrestore(&tty_lock, flags);
+        if (ready) return POLLIN | POLLOUT;
+        char c = keyboard_try_getchar();
+        if (c == 0) return POLLOUT;
+        tty_input(c);
+    }
 }
 
 bool tty_is_raw(void) {

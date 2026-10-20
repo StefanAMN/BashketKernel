@@ -32,6 +32,7 @@
 #include "kprintf.h"
 #include "kerrno.h"
 #include "random.h"
+#include "poll.h"
 
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
@@ -174,6 +175,13 @@ size_t tcp_sockets_in_use(void) {
 
 // --- Helpers (callers hold tcp_lock) -------------------------------------------
 
+// Wake whoever waits on a socket (its owner in read, write, connect or
+// accept) and anyone polling. Caller holds tcp_lock.
+static void wake(struct tcp_socket *sock) {
+    sched_wakeup(sock);
+    poll_notify();
+}
+
 // Tell tcpd there is something to send. Caller holds tcp_lock.
 static void kick_tcpd(void) {
     work_pending = true;
@@ -193,8 +201,8 @@ static void abort_connection(struct tcp_socket *sock, int error) {
     sock->state = TCP_CLOSED;
     sock->rto_deadline = 0;
     sock->ack_pending = false;
-    sched_wakeup(sock);
-    if (sock->listener) sched_wakeup(sock->listener);
+    wake(sock);
+    if (sock->listener) wake(sock->listener);
 
     // Nobody will ever ask about it: a connection never accepted, or one
     // whose owner has already closed it
@@ -525,7 +533,7 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
             if (!sock->user_open) { free_socket(sock); return; }
         }
     }
-    sched_wakeup(sock); // A writer may be waiting for room
+    wake(sock); // A writer may be waiting for room
 }
 
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
@@ -579,7 +587,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
             sock->retries = 0;
             sock->state = TCP_ESTABLISHED;
             sock->ack_pending = true;               // The third step of the handshake
-            sched_wakeup(sock);
+            wake(sock);
             kick_tcpd();
         }
         goto done;
@@ -616,7 +624,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         sock->rto_deadline = 0;
         sock->retries = 0;
         sock->state = TCP_ESTABLISHED;
-        if (sock->listener) sched_wakeup(sock->listener); // tcp_accept may be waiting
+        if (sock->listener) wake(sock->listener); // tcp_accept may be waiting
     } else if (SEQ_GT(ack, sock->snd_max)) {
         // Acknowledges something we never sent: say where we really are
         sock->ack_pending = true;
@@ -702,7 +710,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
     }
 
     sock->ack_pending = true;
-    sched_wakeup(sock);
+    wake(sock);
     kick_tcpd();
 
 done:
@@ -1035,6 +1043,26 @@ int tcp_shutdown(tcp_socket_t *sock) {
     }
     spinlock_release_irqrestore(&tcp_lock, irq);
     return result;
+}
+
+int tcp_poll(tcp_socket_t *sock) {
+    uint64_t irq = spinlock_acquire_irqsave(&tcp_lock);
+    int events = 0;
+    if (sock->state == TCP_LISTEN) {
+        // Readable: a connection is complete and waiting for tcp_accept
+        for (int i = 0; i < TCP_MAX_SOCKETS && !events; i++) {
+            struct tcp_socket *s = &sockets[i];
+            if (s->used && s->listener == sock && (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT)) events = POLLIN;
+        }
+    } else {
+        if (sock->rx_len > 0 || sock->peer_fin) events |= POLLIN;               // Data, or the end of it
+        if (sock->error) events |= POLLIN | POLLERR | POLLHUP;                  // A read returns the error at once
+        else if (sock->state == TCP_CLOSED) events |= POLLHUP;
+        if ((sock->state == TCP_ESTABLISHED || sock->state == TCP_CLOSE_WAIT) && !sock->error &&
+            sock->tx_len < TCP_BUFFER_SIZE) events |= POLLOUT;
+    }
+    spinlock_release_irqrestore(&tcp_lock, irq);
+    return events;
 }
 
 void tcp_peer(tcp_socket_t *sock, uint32_t *ip, uint16_t *port) {

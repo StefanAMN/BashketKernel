@@ -44,7 +44,13 @@ bool ps2_read_aux(uint8_t *byte);
 bool keyboard_has_char(void);
 
 /**
- * @brief Wake tasks sleeping in keyboard_getchar. Called by the keyboard and
+ * @brief The next character typed, if one is waiting (keyboard first, then
+ *        the serial line); 0 if none. Never sleeps.
+ */
+char keyboard_try_getchar(void);
+
+/**
+ * @brief Wake tasks sleeping in keyboard_getchar, and pollers. Called by the keyboard and
  *        serial interrupt handlers after they have buffered input.
  */
 void keyboard_input_arrived(void);
