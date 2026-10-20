@@ -40,7 +40,8 @@ import tempfile
 PROMPT = b"BashketOS> "
 CONTROL_KEYS = {"^C": b"\x03", "^D": b"\x04", "^S": b"\x13", "^Q": b"\x11", "^Z": b"\x1a",
                 # Line editing at the user shell's prompt (user/lib/lineedit.h)
-                "^A": b"\x01", "^E": b"\x05", "^K": b"\x0b", "^U": b"\x15", "^W": b"\x17", "^H": b"\x7f"}
+                "^A": b"\x01", "^E": b"\x05", "^K": b"\x0b", "^U": b"\x15", "^W": b"\x17", "^H": b"\x7f",
+                "^I": b"\t"}  # Tab
 USER_PROMPT = b"\n$ "  # /bin/sh, when a command starts it (e.g. 'exec /bin/sh')
 CRASH_END = b"=================================================\n"
 

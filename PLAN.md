@@ -743,7 +743,10 @@ needs. The matcher is a function of two strings, tested on its own.
 **Check:** syscheck tests of the matcher; a scripted shell session with
 files made for it, quoted patterns left alone.
 
-### H2. Tab completion at the prompt (S)
+### H2. Tab completion at the prompt (S) — done
+
+Done as proposed; a Tab after a word already complete lists the names of
+the current directory (as bash does). The proposal:
 
 Tab completes the word before the cursor: the first word from the
 programs in `$PATH` and the built-ins, the others from the names in the
