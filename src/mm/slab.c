@@ -12,7 +12,12 @@
 #include "spinlock.h"
 
 // A slab is one 4 KiB page: this header at its start, then as many objects
-// as fit. Free objects are chained through their own first 8 bytes.
+// as fit. Free objects are chained through their own first 8 bytes, and
+// the rest of a free object is poisoned: filled with POISON, and checked
+// when the object is handed out again. A kernel bug that writes to an
+// object after freeing it is caught there (by cache and offset) instead of
+// corrupting its next owner; one that reads after freeing sees 0x6b6b...
+// (The heap does the same for kmalloc: see heap.c.)
 typedef struct slab_page {
     struct kmem_cache *cache;   // The cache this page belongs to
     void *freelist;             // Linked list of free objects in this page
@@ -34,7 +39,12 @@ struct kmem_cache {
     struct kmem_cache *next;    // All caches, for diagnostics
 };
 
+#define POISON 0x6b                 // Fills free objects (as in the heap: Linux's POISON_FREE)
+#define LINK sizeof(void *)         // The free-list link at the start of a free object
+
 static kmem_cache_t *cache_chain = NULL;
+static size_t poison_damage = 0;    // Objects found written after they were freed
+static bool poison_damage_fatal = true;
 
 // One lock for all caches. Lock order: slab_lock, then the PMM lock.
 static spinlock_t slab_lock = SPINLOCK_RANKED("slab", LOCK_RANK_HEAP);
@@ -43,6 +53,22 @@ static spinlock_t slab_lock = SPINLOCK_RANKED("slab", LOCK_RANK_HEAP);
 // the start, so it is the object's address rounded down to a page.
 static slab_page_t *slab_of(const void *obj) {
     return (slab_page_t *)((uint64_t)obj & ~(uint64_t)(PAGE_SIZE - 1));
+}
+
+// Fill a free object of `cache`, past its free-list link, with POISON
+static void poison_object(const kmem_cache_t *cache, void *obj) {
+    memset((uint8_t *)obj + LINK, POISON, cache->aligned_size - LINK);
+}
+
+// The offset of the first byte past the link of free object `obj` that is
+// no longer POISON, or 0 if they all still are (0 is never such an offset:
+// the link is there)
+static size_t first_unpoisoned(const kmem_cache_t *cache, const void *obj) {
+    const uint8_t *p = (const uint8_t *)obj;
+    for (size_t i = LINK; i < cache->aligned_size; i++) {
+        if (p[i] != POISON) return i;
+    }
+    return 0;
 }
 
 // Take a frame from the frame allocator and make it a slab for `cache`: the
@@ -64,6 +90,7 @@ static slab_page_t *slab_page_create(kmem_cache_t *cache) {
         void *obj = page + cache->first_offset + (i - 1) * cache->aligned_size;
         *(void **)obj = slab->freelist;
         slab->freelist = obj;
+        poison_object(cache, obj);                 // Free, like every free object
     }
 
     cache->pages++;
@@ -134,6 +161,17 @@ void *kmem_cache_alloc(kmem_cache_t *cache) {
     slab->inuse++;
     cache->objects_in_use++;
 
+    // It was free: still poisoned past its link, unless written after freeing
+    size_t damage = first_unpoisoned(cache, obj);
+    if (damage) {
+        poison_damage++;
+        if (poison_damage_fatal) {
+            kprintf("kmem_cache_alloc: an object of cache \"%s\" at %p was written after it was freed: "
+                    "byte %zu is 0x%02x\n", cache->name, obj, damage, ((uint8_t *)obj)[damage]);
+            panic("slab object written after it was freed");
+        }
+    }
+
     if (slab->freelist == NULL) { // Page is now full
         cache->slabs_partial = slab->next;
         slab->next = cache->slabs_full;
@@ -167,6 +205,7 @@ bool kmem_cache_free(kmem_cache_t *cache, void *obj) {
 
     if (in_page && !already_free) {
         bool was_full = (slab->freelist == NULL);
+        poison_object(cache, obj);
         *(void **)obj = slab->freelist;
         slab->freelist = obj;
         slab->inuse--;
@@ -194,6 +233,12 @@ bool kmem_cache_free(kmem_cache_t *cache, void *obj) {
     spinlock_release_irqrestore(&slab_lock, flags);
     return ok;
 }
+
+#ifdef KERNEL_TESTS
+size_t kmem_cache_poison_damage(void) { return poison_damage; }
+
+void kmem_cache_poison_damage_is_fatal(bool fatal) { poison_damage_fatal = fatal; }
+#endif
 
 void kmem_cache_stats(const kmem_cache_t *cache, size_t *objects_in_use, size_t *pages, size_t *objects_per_page) {
     if (!cache) return;

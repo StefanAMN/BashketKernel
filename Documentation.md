@@ -55,7 +55,7 @@ so the numbering has gaps.
 ---
 
 ### 3. Memory Management: PMM, VMM & Kernel Heap (Phase 3)
-**Status: real.** Bitmap frame allocator, 4-level paging, and a heap with boundary tags and free lists by size class: `kmalloc` and `kfree` take the same time whatever the number of blocks in use (tested), and freed neighbours merge at once. Freed memory is filled with 0x6b and `kmalloc` checks that what it hands out still is: a write after free panics, naming the block and the offset, and a read after free sees an obvious pattern (`heap_catches_writes_after_free`). The slab caches are not covered. `kheap_check` verifies the whole structure for the tests.
+**Status: real.** Bitmap frame allocator, 4-level paging, and a heap with boundary tags and free lists by size class: `kmalloc` and `kfree` take the same time whatever the number of blocks in use (tested), and freed neighbours merge at once. Freed memory is filled with 0x6b and `kmalloc` checks that what it hands out still is: a write after free panics, naming the block and the offset, and a read after free sees an obvious pattern (`heap_catches_writes_after_free`). The slab caches do the same for their objects (K1). `kheap_check` verifies the whole structure for the tests.
 
 **Goal:** Physical frame bitmap allocator, 4-level x86_64 page tables, kernel heap allocator.
 
@@ -128,7 +128,7 @@ so the numbering has gaps.
 ---
 
 ### 7. Interactive Shell & Keyboard Input (Phase 7)
-**Status: real.** Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines, redirection and command lists (`;`, `&&`, `||`), wildcards (`*`, `?`, `[...]`), double and single quotes (parts of a word join, as in `"a b"c`), command substitution (`$(...)`), the usual text tools (`cp`, `head`, `tail`, `grep`, `sort`, reading lines of any length with `user/lib/lines.c`), and at the terminal line editing with a history and Tab completion (the arrow keys, Home, End, Ctrl-A/E/K/U/W; `user/lib/lineedit.c`), built only on system calls. Input comes from the PS/2 keyboard and the serial line at once; a machine with no PS/2 controller boots anyway, with the serial line as its only keyboard (`make test-kshell` boots one).
+**Status: real.** Two shells. The boot shell is a kernel thread with debugging commands. `/bin/sh` is a user program with pipelines, redirection and command lists (`;`, `&&`, `||`), `if`, `while` and `for` (nested, over several lines, with `break`, `continue` and a built-in `test` / `[`), wildcards (`*`, `?`, `[...]`), double and single quotes (parts of a word join, as in `"a b"c`), command substitution (`$(...)`), the usual text tools (`cp`, `head`, `tail`, `grep`, `sort`, `find`, `du`, reading lines of any length with `user/lib/lines.c`), and at the terminal line editing with a history and Tab completion (the arrow keys, Home, End, Ctrl-A/E/K/U/W; `user/lib/lineedit.c`), built only on system calls. Input comes from the PS/2 keyboard and the serial line at once; a machine with no PS/2 controller boots anyway, with the serial line as its only keyboard (`make test-kshell` boots one).
 
 **Goal:** PS/2 keyboard scancode decoding, interactive shell commands (`ls`, `cat`, `echo`).
 
@@ -143,7 +143,7 @@ so the numbering has gaps.
 ---
 
 ### 8. Advanced Memory Management (Phase 8)
-**Status: partial.** The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects. `fork` shares pages copy-on-write. `mmap` and `brk` only promise memory: a page gets its frame when it is first touched (so does the user stack, up to 8 MiB), and the calls fail when more would be promised than is free. A file can be mapped privately (`mmap` with a descriptor): each page is read from the file when first touched, and writes stay in the process. `munmap` can remove part of a mapping. Not done: shared file mappings and writing changes back, a page cache (two processes mapping one file each read their own copy), and loading executables this way. See `src/mm/region.h` and `region.c`, `src/mm/mmap.c`, `src/mm/cow.c`, and `try_promised_page` in `src/arch/x86_64/isr.c`.
+**Status: partial.** The slab allocator validates frees, honours alignment, returns empty pages, and backs open-file objects; freed objects are poisoned and checked when handed out again, so a write after free panics, naming the cache (`slab_catches_writes_after_free`). `fork` shares pages copy-on-write. `mmap` and `brk` only promise memory: a page gets its frame when it is first touched (so does the user stack, up to 8 MiB), and the calls fail when more would be promised than is free. A file can be mapped privately (`mmap` with a descriptor): each page is read from the file when first touched, and writes stay in the process. `munmap` can remove part of a mapping. Not done: shared file mappings and writing changes back, a page cache (two processes mapping one file each read their own copy), and loading executables this way. See `src/mm/region.h` and `region.c`, `src/mm/mmap.c`, `src/mm/cow.c`, and `try_promised_page` in `src/arch/x86_64/isr.c`.
 
 **Goal:** Slab object allocator, Copy-On-Write (COW), Anonymous memory mapping (`mmap`).
 
@@ -330,7 +330,7 @@ so the numbering has gaps.
 ---
 
 ### 24. Virtual Process Filesystem (/proc) (Phase 24)
-**Status: real.** `/proc/version`, `uptime`, `meminfo`, `tasks` and `cpuinfo` are generated from live kernel state on every read.
+**Status: real.** `/proc/version`, `uptime`, `meminfo`, `tasks`, `cpuinfo`, `kmsg` and `mounts` are generated from live kernel state on every read. `/proc/<pid>/` has a directory per task with `status` (name, state, user and group, parent, process group, heap and mapped memory) and `cmdline` (the arguments it was started with, NUL-separated); `/proc/self` is a link to the reader's own. The VFS keeps the whole tree in memory, so the directories are kept in step with the task list by a `refresh` operation on `/proc`, run on every lookup and listing there; the nodes hold only a pid and each read looks the task up under the scheduler lock, so a reaped task reads as ENOENT rather than through a freed pointer. Nothing under `/proc` can be removed. `ps` reads `/proc/<pid>/status` (`tests/test_procfs.c`, syscheck's `check_proc`).
 
 **Goal:** Virtual `/proc` filesystem exposing system diagnostics (`/proc/meminfo`, `/proc/cpuinfo`, `/proc/uptime`).
 

@@ -78,6 +78,16 @@ int swap_in(uint64_t *space, uint64_t virt);
  */
 void swap_relieve_pressure(void);
 
+/**
+ * @brief Called by fork: if free memory is below SWAP_LOW_FRAMES and there
+ *        is a swap disk, the calling process gives up pages of its own
+ *        until SWAP_HIGH_FRAMES are free (or it has none left to give).
+ *        Unlike swap_relieve_pressure it always looks: fork happens rarely,
+ *        and afterwards the pages are shared and can no longer go. May sleep.
+ * @return How many pages went.
+ */
+size_t swap_make_room_for_fork(void);
+
 // Slots are counted, because fork gives parent and child the same one.
 // Called by the address space code (vmm.c) as entries are copied and dropped.
 

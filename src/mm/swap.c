@@ -185,6 +185,15 @@ int swap_in(uint64_t *space, uint64_t virt) {
     return result;
 }
 
+size_t swap_make_room_for_fork(void) {
+    if (!active) return 0;
+    task_t *task = sched_get_current_task();
+    if (!task || !task->is_user) return 0;
+    size_t free_frames = pmm_get_free_frames();
+    if (free_frames >= SWAP_LOW_FRAMES) return 0;
+    return swap_out(vmm_space_from_phys((uint64_t)task->pml4_phys), &task->swap_cursor, SWAP_HIGH_FRAMES - free_frames);
+}
+
 void swap_relieve_pressure(void) {
     if (!active) return;
     task_t *task = sched_get_current_task();

@@ -35,7 +35,26 @@ typedef struct {
     char name[32];
     bool setuid;          // The file has the set-uid bit...
     uint32_t owner;       // ...and this owner
+    char cmdline[TASK_CMDLINE_MAX]; // The arguments, NUL after each (for /proc/<pid>/cmdline)
+    uint16_t cmdline_len;
 } user_image_t;
+
+// Keep the arguments `argv` (or, without any, `path`) as /proc shows them:
+// each followed by a NUL, as many as fit in TASK_CMDLINE_MAX bytes (the
+// last one cut short if need be). The strings are kernel memory.
+static void record_cmdline(user_image_t *image, const char *path, char *const argv[]) {
+    char *const just_path[] = { (char *)path, NULL };
+    if (!argv || !argv[0]) argv = just_path;
+    size_t len = 0;
+    for (int i = 0; argv[i] && len < TASK_CMDLINE_MAX; i++) {
+        size_t n = strlen(argv[i]);
+        if (n > TASK_CMDLINE_MAX - 1 - len) n = TASK_CMDLINE_MAX - 1 - len;
+        memcpy(image->cmdline + len, argv[i], n);
+        len += n;
+        image->cmdline[len++] = '\0';
+    }
+    image->cmdline_len = (uint16_t)len;
+}
 
 // Lay out the arguments and environment on the new program's stack the way
 // the System V AMD64 ABI specifies for process entry:
@@ -134,6 +153,7 @@ static bool load_user_image(const char *path, char *const argv[], char *const en
 // Build a complete user image for `path`. On failure nothing is left allocated.
 // load_user_image, with the file tree locked by the caller
 static bool load_user_image_locked(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
+    image->cmdline_len = 0;                    // (Recorded below once the image is complete)
     task_t *caller = sched_get_current_task();
     vnode_t *file = NULL;
     vfs_lookup_as(auth_current_uid(), caller ? caller->cwd : NULL, path, true, &file);   // (Refused: NULL)
@@ -178,6 +198,7 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
 
     strncpy(image->name, file->name, sizeof(image->name) - 1);
     image->name[sizeof(image->name) - 1] = '\0';
+    record_cmdline(image, path, argv);
     return true;
 }
 
@@ -196,6 +217,8 @@ static void apply_image(task_t *task, const user_image_t *image) {
     fpu_state_init(task->fpu_state); // A new program starts with clean FPU registers
     strncpy(task->name, image->name, sizeof(task->name) - 1);
     task->name[sizeof(task->name) - 1] = '\0';
+    task->cmdline_len = image->cmdline_len < TASK_CMDLINE_MAX ? image->cmdline_len : TASK_CMDLINE_MAX;
+    memcpy(task->cmdline, image->cmdline, task->cmdline_len);
 }
 
 // First code a new process runs, in ring 0 on its own kernel stack. The
@@ -336,6 +359,12 @@ pid_t process_fork(struct registers *regs) {
     task_t *parent = sched_get_current_task();
     if (!parent || !parent->is_user || !regs) return -1;
 
+    // Short of memory with a swap disk: make room from the caller's own
+    // pages first, while they are still its alone. Otherwise a fork could
+    // be refused below (the reserve) while other processes' pages, shared
+    // by their own fork and so unswappable, hold all the memory.
+    swap_make_room_for_fork();
+
     uint64_t *child_pml4 = vmm_create_address_space();
     if (!child_pml4) return -1;
 
@@ -379,6 +408,8 @@ pid_t process_fork(struct registers *regs) {
     memcpy(child->sig_flags, parent->sig_flags, sizeof(child->sig_flags));
     child->sig_blocked = parent->sig_blocked; // What is pending for the parent is the parent's alone
     child->sig_restorer = parent->sig_restorer;
+    memcpy(child->cmdline, parent->cmdline, parent->cmdline_len); // The same program, until it execs
+    child->cmdline_len = parent->cmdline_len;
     task_set_cwd(child, parent->cwd);
 
     // The parent is running, so its FPU registers are in the CPU, not in its
