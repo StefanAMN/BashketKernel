@@ -159,9 +159,11 @@ static void one_call(void) {
             break;
         case SYS_SYMLINK:
         case SYS_LINK:
-            /* What is linked to may be anything; the new name only under
-             * /tmp, or not a path at all */
-            a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
+            /* Both names only under /tmp, or not a path at all. Not just the
+             * new one: the other calls trust the names under /tmp, and a
+             * link from /tmp/fuzz-dir to /tmp (or /) would hand them the real
+             * thing to chmod and chown. (It did: /tmp ended up root's alone.) */
+            a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
             b = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
             break;
         case SYS_READLINK:
