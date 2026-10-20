@@ -336,6 +336,12 @@ pid_t process_fork(struct registers *regs) {
     task_t *parent = sched_get_current_task();
     if (!parent || !parent->is_user || !regs) return -1;
 
+    // Short of memory with a swap disk: make room from the caller's own
+    // pages first, while they are still its alone. Otherwise a fork could
+    // be refused below (the reserve) while other processes' pages, shared
+    // by their own fork and so unswappable, hold all the memory.
+    swap_make_room_for_fork();
+
     uint64_t *child_pml4 = vmm_create_address_space();
     if (!child_pml4) return -1;
 
