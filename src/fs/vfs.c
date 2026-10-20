@@ -315,39 +315,70 @@ static int vfs_unmount_dir_unlocked(vnode_t *node) {
     return 0;
 }
 
-// See vfs_find. Caller holds the tree lock.
-static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
-    if (!path) return NULL;
+// Walk `path` from `base` (or the root, for an absolute path or a NULL
+// base), following symbolic links: in every component, and in the last one
+// too if `follow_last` (or if a slash follows it: "link/" means the
+// directory). A link's target replaces the link in what is left to walk;
+// a relative target is walked from the directory that holds the link. At
+// most VFS_MAX_LINKS links per walk. Returns 0 and the node in *out, or
+// -ENOENT, -ENOTDIR (a component that should be a directory is not),
+// -ENAMETOOLONG, -ELOOP. Caller holds the tree lock.
+static int walk(vnode_t *base, const char *path, bool follow_last, vnode_t **out) {
+    char work[VFS_PATH_MAX];                 // What is left to walk
+    size_t len = strlen(path);
+    if (len >= sizeof(work)) return -ENAMETOOLONG;
+    memcpy(work, path, len + 1);
 
-    // An absolute path starts at the root whatever the caller's directory is
-    vnode_t *node = (relative_root && path[0] != '/') ? relative_root : vfs_root;
+    vnode_t *node = (base && work[0] != '/') ? base : vfs_root;
+    size_t pos = 0;
+    int links = 0;
+    for (;;) {
+        while (work[pos] == '/') pos++;      // Separators, repeated ones too
+        if (work[pos] == '\0') break;
 
-    while (*path != '\0') {
-        while (*path == '/') path++;          // Skip separators, including repeated ones
-        if (*path == '\0') break;
-
-        char token[128];
-        size_t len = 0;
-        while (path[len] != '\0' && path[len] != '/') len++;
-        if (len >= sizeof(token)) return NULL; // No name is that long
-        memcpy(token, path, len);
-        token[len] = '\0';
-        path += len;
+        char token[VFS_NAME_MAX];
+        size_t n = 0;
+        while (work[pos + n] != '\0' && work[pos + n] != '/') n++;
+        if (n >= sizeof(token)) return -ENAMETOOLONG;
+        memcpy(token, work + pos, n);
+        token[n] = '\0';
+        pos += n;
 
         // Only a directory can have something looked up inside it
-        if (node->type != VFS_DIRECTORY) return NULL;
-
-        if (strcmp(token, ".") == 0) {
-            continue;                          // The directory itself
-        } else if (strcmp(token, "..") == 0) {
-            if (node->parent) node = node->parent; // The root is its own parent
-        } else {
-            node = vfs_find_child(node, token);
-            if (!node) return NULL;
+        if (node->type != VFS_DIRECTORY) return -ENOTDIR;
+        if (strcmp(token, ".") == 0) continue;               // The directory itself
+        if (strcmp(token, "..") == 0) {                      // The root is its own parent
+            if (node->parent) node = node->parent;
+            continue;
         }
-    }
+        vnode_t *child = vfs_find_child_unlocked(node, token);
+        if (!child) return -ENOENT;
 
-    return node;
+        bool last = work[pos] == '\0';
+        if (child->type == VFS_SYMLINK && (!last || follow_last)) {
+            // The target, then whatever came after the link
+            if (++links > VFS_MAX_LINKS) return -ELOOP;
+            char next[VFS_PATH_MAX];
+            size_t target_len = child->size, rest_len = strlen(work + pos);
+            if (!child->data || target_len == 0 || target_len + rest_len >= sizeof(next)) return -ENAMETOOLONG;
+            memcpy(next, child->data, target_len);
+            memcpy(next + target_len, work + pos, rest_len + 1);
+            memcpy(work, next, target_len + rest_len + 1);
+            pos = 0;
+            if (work[0] == '/') node = vfs_root;              // (Relative: from `node`, the link's directory)
+            continue;
+        }
+        node = child;
+    }
+    *out = node;
+    return 0;
+}
+
+// See vfs_find. Caller holds the tree lock.
+static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
+    vnode_t *node = NULL;
+    if (!path) return NULL;
+    return walk(relative_root, path, true, &node) == 0 ? node : NULL;
 }
 
 // See vfs_read. Caller holds the tree lock unless the node has `ops`.
@@ -615,6 +646,77 @@ void vfs_truncate(vnode_t *file, size_t size) {
     vfs_lock();
     vfs_truncate_unlocked(file, size);
     vfs_unlock();
+}
+
+int vfs_lookup(vnode_t *base, const char *path, bool follow_last, vnode_t **out) {
+    if (!path || !out) return -EINVAL;
+    vfs_lock();
+    int result = walk(base, path, follow_last, out);
+    vfs_unlock();
+    return result;
+}
+
+int vfs_symlink(vnode_t *parent, const char *name, const char *target, vnode_t **out) {
+    if (!parent) parent = vfs_root;
+    size_t len = target ? strlen(target) : 0;
+    if (len == 0) return -ENOENT;
+    if (len >= VFS_PATH_MAX) return -ENAMETOOLONG;
+    vfs_lock();
+    int err = parent->type != VFS_DIRECTORY ? -ENOTDIR : check_new_name(name);
+    if (err == 0 && vfs_find_child_unlocked(parent, name)) err = -EEXIST;
+    if (err == 0 && parent->read_only) err = -EROFS;
+
+    vnode_t *node = NULL;
+    if (err == 0 && parent->ops) {
+        // On a disk: only a filesystem that can store a link
+        err = parent->ops->symlink ? parent->ops->symlink(parent, name, target, &node) : -EPERM;
+    } else if (err == 0) {
+        // In memory: the target is the node's contents
+        char *copy = kmalloc(len + 1);
+        node = copy ? vfs_attach_unlocked(parent, name, VFS_SYMLINK) : NULL;
+        if (!node) {
+            kfree(copy);
+            err = -ENOMEM;
+        } else {
+            memcpy(copy, target, len + 1);
+            node->data = copy;
+            node->owns_data = true;
+            node->size = len;
+            node->mode = 0777;                 // A link's own bits mean nothing: its target's count
+        }
+    }
+    vfs_unlock();
+    if (err == 0 && out) *out = node;
+    return err;
+}
+
+int vfs_link(vnode_t *existing, vnode_t *parent, const char *name) {
+    if (!existing || !parent) return -EINVAL;
+    vfs_lock();
+    int err = parent->type != VFS_DIRECTORY ? -ENOTDIR : check_new_name(name);
+    if (err == 0 && existing->type != VFS_FILE) err = -EPERM;          // Not directories (nor links)
+    if (err == 0 && vfs_find_child_unlocked(parent, name)) err = -EEXIST;
+    if (err == 0 && parent->read_only) err = -EROFS;
+    // Two names for one file need one filesystem that keeps files apart
+    // from their names: ext2. A file in memory is its node.
+    if (err == 0 && (!existing->parent || existing->parent->ops != parent->ops)) err = -EXDEV;
+    if (err == 0) err = (parent->ops && parent->ops->link) ? parent->ops->link(parent, name, existing) : -EPERM;
+    vfs_unlock();
+    return err;
+}
+
+int64_t vfs_readlink(vnode_t *node, char *buf, size_t size) {
+    vfs_lock();
+    int64_t result;
+    if (!node || node->type != VFS_SYMLINK || !node->data) {
+        result = -EINVAL;
+    } else {
+        size_t n = node->size < size ? node->size : size;   // Not terminated, as readlink() is not
+        memcpy(buf, node->data, n);
+        result = (int64_t)n;
+    }
+    vfs_unlock();
+    return result;
 }
 
 int vfs_unlink(vnode_t *parent, const char *name) {

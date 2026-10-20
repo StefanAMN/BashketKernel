@@ -622,7 +622,15 @@ channel when that may have changed.
 one of two pipes after a delay wakes a parent polling both, with the right
 one marked; `nc` relays in both directions in a scripted run.
 
-### F3. Links on ext2 (M)
+### F3. Links on ext2 (M) — done
+
+Done as proposed, with symbolic links in the tree kept in memory too (`/tmp`;
+hard links there are refused: a file in memory is its node). Each name of
+a hard-linked file has a node of its own; ext2 brings a node up to date
+from the inode whenever the file is opened, so an append through one name
+starts where a write through the other ended. On the way: the check at
+mount reached only files' and directories' blocks, so a long symbolic
+link's block would have been freed by it. The proposal:
 
 Hard links exist on disk (the driver counts them) but cannot be made, and
 symbolic links are skipped when a directory is read. Add `link`,

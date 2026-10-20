@@ -419,6 +419,61 @@ TEST(mount_points_in_memory) {
     EXPECT_TRUE(vfs_find(NULL, "/tmp/m") == NULL);
 }
 
+// Links on the disk: one the host made is followed; short and long symbolic
+// links and a hard link made here are still there when the directory is
+// read from the disk again; removing every name gives every block and
+// inode back
+TEST(ext2_links) {
+    // Made by mke2fs on the host (tools/mkroot.sh)
+    EXPECT_TRUE(test_file_is("/home/alice-notes", "Alice keeps her notes here.\n"));
+
+    vnode_t *root = vfs_find(NULL, "/root");
+    EXPECT_TRUE(root != NULL);
+    if (!root) return;
+    uint32_t blocks_before = ext2_free_blocks(), inodes_before = ext2_free_inodes();
+    file_t *file = NULL;
+    EXPECT_EQ(file_open("/root/linked.txt", O_WRONLY | O_CREAT, &file), 0);
+    if (file) { EXPECT_EQ(file_write(file, "one file", 8), 8); file_close(file); }
+
+    static const char long_target[] = "/root/./././././././././././././././././././././././././linked.txt";
+    _Static_assert(sizeof(long_target) - 1 > 59, "longer than fits in the inode");
+    EXPECT_EQ(vfs_symlink(root, "short", "linked.txt", NULL), 0);
+    EXPECT_EQ(vfs_symlink(root, "long", long_target, NULL), 0);
+    EXPECT_EQ(vfs_link(vfs_find(NULL, "/root/linked.txt"), root, "second-name"), 0);
+    EXPECT_EQ(vfs_link(vfs_find(NULL, "/root"), vfs_get_root(), "root-again"), -EPERM);   // Not directories
+    EXPECT_EQ(vfs_link(vfs_find(NULL, "/disk/readme.txt"), root, "from-fat"), -EXDEV);
+
+    // From the disk, not from memory
+    EXPECT_TRUE(vfs_forget_directory(root));
+    bcache_invalidate();
+    vnode_t *found = NULL;
+    EXPECT_EQ(vfs_lookup(NULL, "/root/short", false, &found), 0);
+    EXPECT_TRUE(found && found->type == VFS_SYMLINK && found->size == 10);
+    EXPECT_EQ(vfs_lookup(NULL, "/root/long", false, &found), 0);
+    EXPECT_TRUE(found && found->type == VFS_SYMLINK && found->size == sizeof(long_target) - 1);
+    EXPECT_TRUE(test_file_is("/root/short", "one file"));
+    EXPECT_TRUE(test_file_is("/root/long", "one file"));
+    EXPECT_TRUE(test_file_is("/root/second-name", "one file"));
+
+    // A write through one name is seen through the other, size included
+    EXPECT_EQ(file_open("/root/second-name", O_WRONLY | O_APPEND, &file), 0);
+    if (file) { EXPECT_EQ(file_write(file, ", two names", 11), 11); file_close(file); }
+    EXPECT_TRUE(test_file_is("/root/linked.txt", "one file, two names"));
+    // An append through the other name starts at the end as it is now, not
+    // as that name's node last knew it (the node is brought up to date at open)
+    EXPECT_EQ(file_open("/root/linked.txt", O_WRONLY | O_APPEND, &file), 0);
+    if (file) { EXPECT_EQ(file_write(file, "!", 1), 1); file_close(file); }
+    EXPECT_TRUE(test_file_is("/root/second-name", "one file, two names!"));
+
+    // One name gone, the file stays; the last one gone, it goes
+    EXPECT_EQ(test_remove("/root", "linked.txt"), 0);
+    EXPECT_TRUE(test_file_is("/root/second-name", "one file, two names!"));
+    EXPECT_EQ(test_remove("/root", "second-name"), 0);
+    EXPECT_EQ(test_remove("/root", "short"), 0);
+    EXPECT_EQ(test_remove("/root", "long"), 0);
+    EXPECT_TRUE(ext2_free_blocks() == blocks_before && ext2_free_inodes() == inodes_before);
+}
+
 void test_suite_ext2(void) {
     kprintf("Suite: ext2\n");
     if (!ext2_mounted()) {
@@ -430,6 +485,7 @@ void test_suite_ext2(void) {
     RUN_TEST(ext2_large_files_and_holes);
     RUN_TEST(ext2_directories);
     RUN_TEST(ext2_rename_and_move);
+    RUN_TEST(ext2_links);
     RUN_TEST(mount_points_cover_a_disk_directory);
     RUN_TEST(mount_points_in_memory);
     RUN_TEST(ext2_check_repairs_an_interrupted_write);

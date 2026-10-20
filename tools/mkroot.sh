@@ -23,6 +23,9 @@ trap 'rm -rf "$stage"' EXIT
 cp -a "$system/." "$stage/"
 mkdir -p "$stage/home" "$stage/root" "$stage/tmp" "$stage/dev" "$stage/proc" "$stage/disk"
 cp -a "$homes/." "$stage/home/"
+# A symbolic link made here, by the host, for the kernel to follow (its
+# links are checked the other way round, by e2fsck after test-home)
+ln -s alice/notes.txt "$stage/home/alice-notes"
 # Permission bits: what a checkout happens to have (the builder's umask) is
 # not what the system should. Directories 0755, files 0644, programs 0755;
 # then the exceptions.

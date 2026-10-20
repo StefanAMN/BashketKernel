@@ -87,6 +87,9 @@
 #define SYS_BIND        49   // (fd, port)
 #define SYS_REBOOT      310  // (int restart): root only; ends every process, marks the disks clean, switches the machine off (0) or restarts it (1); does not return
 #define SYS_FB_INFO     309  // (uint32_t info[4]): receives width, height, bytes per row and bits per pixel of the screen (/dev/fb0)
+#define SYS_LINK        86   // (existing, path): a second name for a file (ext2)
+#define SYS_SYMLINK     88   // (target, path): make path a symbolic link to target
+#define SYS_READLINK    89   // (path, buf, size): the target of a symbolic link, not NUL-terminated
 #define SYS_POLL        7    // (struct pollfd *fds, count, timeout_ms): wait until one is ready (poll.h); -1 ms: no limit
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105

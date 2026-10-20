@@ -59,8 +59,12 @@
 #define MODE_TYPE_MASK 0xF000
 #define MODE_REGULAR   0x8000
 #define MODE_DIRECTORY 0x4000
+#define MODE_SYMLINK   0xA000
 #define FT_REGULAR 1                 // File types as stored in directory entries
 #define FT_DIRECTORY 2
+#define FT_SYMLINK 7
+#define FAST_SYMLINK_MAX 59          // A target this long or shorter is kept in the inode itself, in
+                                     // the 60 bytes of block numbers (with room for a NUL, as Linux does)
 
 #define INODE_FLAG_INDEX 0x1000      // The directory has a hash index (which we do not maintain)
 
@@ -126,6 +130,7 @@ static uint8_t zero_block[MAX_BLOCK_SIZE];
 
 static const vnode_ops_t ext2_file_ops;
 static const vnode_ops_t ext2_dir_ops;
+static const vnode_ops_t ext2_symlink_ops;
 
 #define SB_STATE    58      // Superblock: 16 bits, the volume's state
 #define STATE_VALID 0x0001  // ...set: it was unmounted cleanly
@@ -538,22 +543,59 @@ static void apply_inode(vnode_t *node, const struct ext2_inode *inode) {
 // Put a node for inode `ino`, called `name`, into the VFS directory `dir`,
 // with this filesystem's operations and what the inode says. A directory
 // is left unread. Returns NULL if memory ran out (or the name is too long).
-static vnode_t *attach(vnode_t *dir, const char *name, uint32_t ino, const struct ext2_inode *inode) {
-    bool directory = (inode->mode & MODE_TYPE_MASK) == MODE_DIRECTORY;
+static vnode_t *attach(vnode_t *dir, const char *name, uint32_t ino, const struct ext2_inode *inode, char *target) {
+    uint16_t kind = inode->mode & MODE_TYPE_MASK;
+    bool directory = kind == MODE_DIRECTORY, link = kind == MODE_SYMLINK;
     ext2_node_t *info = kmalloc(sizeof(ext2_node_t));
     if (!info) return NULL;
     info->ino = ino;
 
-    vnode_t *node = vfs_attach(dir, name, directory ? VFS_DIRECTORY : VFS_FILE);
+    vnode_t *node = vfs_attach(dir, name, directory ? VFS_DIRECTORY : link ? VFS_SYMLINK : VFS_FILE);
     if (!node) {
         kfree(info);
         return NULL;
     }
-    node->ops = directory ? &ext2_dir_ops : &ext2_file_ops;
+    node->ops = directory ? &ext2_dir_ops : link ? &ext2_symlink_ops : &ext2_file_ops;
     node->private_data = (uint64_t)info;
     node->unloaded = directory; // Read when someone first looks inside
     apply_inode(node, inode);
+    if (link) {
+        // The node keeps the target (the VFS frees it with the node)
+        node->data = target;
+        node->owns_data = true;
+        node->size = strlen(target);
+    }
     return node;
+}
+
+// A symbolic link's target as a new NUL-terminated string (kmalloc), or
+// NULL if it cannot be read or is not a sensible length. A short one is in
+// the inode itself ("fast": no blocks), a longer one in its first block.
+// Caller holds ext2_mutex.
+static char *read_link_target(struct ext2_inode *inode) {
+    if (inode->size == 0 || inode->size >= VFS_PATH_MAX) return NULL;
+    char *target = kmalloc(inode->size + 1);
+    if (!target) return NULL;
+    if (inode->sectors == 0) {
+        if (inode->size > FAST_SYMLINK_MAX) { kfree(target); return NULL; }
+        memcpy(target, inode->block, inode->size);
+    } else {
+        bool error = false;
+        uint32_t block = file_block(inode, 0, false, 0, &error);
+        if (error || block == 0 || inode->size > vol.block_size || !read_block(block, data_block)) {
+            kfree(target);
+            return NULL;
+        }
+        memcpy(target, data_block, inode->size);
+    }
+    target[inode->size] = '\0';
+    if (strlen(target) != inode->size) { kfree(target); return NULL; }   // A NUL inside: not a path
+    return target;
+}
+
+// The type byte a directory entry gives for a node
+static uint8_t entry_type_of(const vnode_t *node) {
+    return node->type == VFS_DIRECTORY ? FT_DIRECTORY : node->type == VFS_SYMLINK ? FT_SYMLINK : FT_REGULAR;
 }
 
 // vnode_ops_t.load: read a directory's entries and attach a node for each
@@ -603,12 +645,14 @@ static int ext2_dir_load(vnode_t *dir) {
             name[name_len] = '\0';
             if (!printable || vfs_find_child(dir, name)) continue; // Not a possible name, or there twice
 
-            // Only files and directories: no links, devices or sockets
+            // Files, directories and symbolic links: no devices or sockets
             if (!read_inode(ino, &child)) continue;
             uint16_t type = child.mode & MODE_TYPE_MASK;
-            if (type != MODE_REGULAR && type != MODE_DIRECTORY) continue;
+            if (type != MODE_REGULAR && type != MODE_DIRECTORY && type != MODE_SYMLINK) continue;
             if (type == MODE_REGULAR && child.size_high != 0) continue; // 4 GiB and more
-            attach(dir, name, ino, &child);
+            char *target = NULL;
+            if (type == MODE_SYMLINK && !(target = read_link_target(&child))) continue;
+            if (!attach(dir, name, ino, &child, target)) kfree(target);
         }
     }
     if (!copy) result = -ENOMEM;
@@ -696,7 +740,7 @@ static int ext2_dir_create(vnode_t *dir, const char *name, bool directory, vnode
     mutex_unlock(&ext2_mutex);
     if (err != 0) return err;
 
-    vnode_t *node = attach(dir, name, ino, &inode);
+    vnode_t *node = attach(dir, name, ino, &inode, NULL);
     if (!node) return -ENOMEM; // (It exists on disk and will be found when the directory is next read.)
     node->unloaded = false;    // New and empty: nothing to read
     *out = node;
@@ -705,6 +749,8 @@ static int ext2_dir_create(vnode_t *dir, const char *name, bool directory, vnode
 
 // The last name of an inode has gone: give back what it occupied
 static void release_inode(uint32_t ino, struct ext2_inode *inode, bool directory) {
+    // A short link's target is where block numbers would be: not blocks to free
+    if ((inode->mode & MODE_TYPE_MASK) == MODE_SYMLINK && inode->sectors == 0) memset(inode->block, 0, sizeof(inode->block));
     free_contents(inode);
     inode->links = 0;
     inode->dtime = walltime_seconds(); // How e2fsck tells a deleted inode from a lost one
@@ -774,7 +820,7 @@ static int ext2_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, co
         if (!write_inode(ino, &inode)) err = -EIO;
         else raised = true;
     }
-    if (err == 0) err = dir_add(target, new_ino, new_name, ino, directory ? FT_DIRECTORY : FT_REGULAR);
+    if (err == 0) err = dir_add(target, new_ino, new_name, ino, entry_type_of(node));
     if (err == 0) {
         dir_change(&from, node->name, true, 0); // (dir_add may have grown `from` if it is also the target: same struct)
         uint32_t now = walltime_seconds();
@@ -940,10 +986,124 @@ static int ext2_file_truncate(vnode_t *node) {
     return err;
 }
 
+// vnode_ops_t.symlink: a symbolic link `name` in `dir` to `target`: its
+// inode (the target inside it when short, else in a block of its own),
+// then its entry, then its node. Returns 0, -EINVAL, -ENOSPC, -EIO, -ENOMEM.
+static int ext2_dir_symlink(vnode_t *dir, const char *name, const char *target, vnode_t **out) {
+    if (!valid_name(name)) return -EINVAL;
+    size_t len = strlen(target);
+    if (len == 0 || len >= VFS_PATH_MAX || len > vol.block_size) return -ENAMETOOLONG;
+    char *copy = kmalloc(len + 1);
+    if (!copy) return -ENOMEM;
+    memcpy(copy, target, len + 1);
+
+    uint32_t dir_ino = ino_of(dir);
+    struct ext2_inode parent, inode;
+    int err = 0;
+    mutex_lock(&ext2_mutex);
+    if (!read_inode(dir_ino, &parent)) err = -EIO;
+    uint32_t ino = err ? 0 : alloc_inode(group_of_inode(dir_ino), false);
+    if (err == 0 && !ino) err = -ENOSPC;
+    if (err == 0) {
+        uint32_t now = walltime_seconds();
+        memset(&inode, 0, sizeof(inode));
+        inode.mode = (uint16_t)(MODE_SYMLINK | 0777);   // A link's own bits are not used: its target's are
+        inode.links = 1;
+        inode.size = (uint32_t)len;
+        inode.atime = inode.ctime = inode.mtime = now;
+        if (len <= FAST_SYMLINK_MAX) {
+            memcpy(inode.block, target, len);           // In the inode: no block at all
+        } else {
+            bool error = false;
+            uint32_t block = file_block(&inode, 0, true, group_of_inode(ino), &error);
+            if (!block) err = -ENOSPC;
+            else {
+                memset(data_block, 0, vol.block_size);
+                memcpy(data_block, target, len);
+                if (!write_block(block, data_block)) err = -EIO;
+            }
+        }
+        if (err == 0 && !write_inode(ino, &inode)) err = -EIO;
+    }
+    // The inode first, then the name: a crash in between loses the link
+    if (err == 0) err = dir_add(&parent, dir_ino, name, ino, FT_SYMLINK);
+    if (err == 0) {
+        parent.mtime = parent.ctime = walltime_seconds();
+        if (!write_inode(dir_ino, &parent)) err = -EIO;
+    }
+    if (err != 0 && ino != 0) {
+        if (len <= FAST_SYMLINK_MAX) memset(inode.block, 0, sizeof(inode.block));
+        free_contents(&inode);
+        free_inode(ino, false);
+    }
+    mutex_unlock(&ext2_mutex);
+    if (err != 0) {
+        kfree(copy);
+        return err;
+    }
+    vnode_t *node = attach(dir, name, ino, &inode, copy);
+    if (!node) {
+        kfree(copy);
+        return -ENOMEM;                                  // (On the disk; found at the next read of the directory)
+    }
+    if (out) *out = node;
+    return 0;
+}
+
+// vnode_ops_t.link: `name` in `dir` as another name for the file `existing`:
+// its link count first, then the entry (a crash in between leaves a count
+// one too high, which the check at mount puts right). Returns 0, -EINVAL,
+// -EMLINK, -ENOSPC, -EIO, -ENOMEM.
+static int ext2_dir_link(vnode_t *dir, const char *name, vnode_t *existing) {
+    if (!valid_name(name)) return -EINVAL;
+    uint32_t dir_ino = ino_of(dir), ino = ino_of(existing);
+    struct ext2_inode parent, inode;
+    int err = 0;
+    bool raised = false;
+    mutex_lock(&ext2_mutex);
+    if (!read_inode(dir_ino, &parent) || !read_inode(ino, &inode)) err = -EIO;
+    if (err == 0 && inode.links >= 65000) err = -EMLINK;
+    if (err == 0) {
+        inode.links++;
+        inode.ctime = walltime_seconds();
+        if (!write_inode(ino, &inode)) err = -EIO;
+        else raised = true;
+    }
+    if (err == 0) err = dir_add(&parent, dir_ino, name, ino, FT_REGULAR);
+    if (err == 0) {
+        parent.mtime = parent.ctime = walltime_seconds();
+        if (!write_inode(dir_ino, &parent)) err = -EIO;
+    }
+    if (err != 0 && raised) {
+        inode.links--;
+        write_inode(ino, &inode);
+    }
+    mutex_unlock(&ext2_mutex);
+    if (err != 0) return err;
+    return attach(dir, name, ino, &inode, NULL) ? 0 : -ENOMEM;
+}
+
+// vnode_ops_t.opened: a file may have other names (hard links), each with a
+// node of its own, and a write through one leaves the others' sizes and
+// times behind. So whenever a file is opened, its node is brought up to
+// date from the inode. Returns 0 (or -EIO, refusing the open).
+static int ext2_file_opened(vnode_t *node, bool writable) {
+    (void)writable;
+    struct ext2_inode inode;
+    mutex_lock(&ext2_mutex);
+    bool ok = read_inode(ino_of(node), &inode);
+    if (ok) apply_inode(node, &inode);
+    mutex_unlock(&ext2_mutex);
+    return ok ? 0 : -EIO;
+}
+
 static const vnode_ops_t ext2_file_ops = { .read = ext2_file_read, .write = ext2_file_write,
-                                           .truncate = ext2_file_truncate, .setattr = ext2_setattr };
+                                           .truncate = ext2_file_truncate, .setattr = ext2_setattr,
+                                           .opened = ext2_file_opened };
 static const vnode_ops_t ext2_dir_ops = { .create = ext2_dir_create, .remove = ext2_dir_remove,
-                                          .rename = ext2_dir_rename, .load = ext2_dir_load, .setattr = ext2_setattr };
+                                          .rename = ext2_dir_rename, .load = ext2_dir_load, .setattr = ext2_setattr,
+                                          .symlink = ext2_dir_symlink, .link = ext2_dir_link };
+static const vnode_ops_t ext2_symlink_ops = { .setattr = ext2_setattr };
 
 // --- Putting right what a crash left behind -----------------------------------------
 //
@@ -1072,8 +1232,12 @@ int ext2_check(ext2_check_t *report) {
         bool directory = (inode.mode & MODE_TYPE_MASK) == MODE_DIRECTORY;
 
         // Its blocks. (Short symbolic links keep their text where the block
-        // numbers would be: those have no blocks at all.)
+        // numbers would be: those have no blocks at all. A longer one has
+        // its target in a block of its own, which is noted, nothing more.)
         bool regular = (inode.mode & MODE_TYPE_MASK) == MODE_REGULAR;
+        if ((inode.mode & MODE_TYPE_MASK) == MODE_SYMLINK && inode.sectors != 0) {
+            for (int i = 0; i < DIRECT_BLOCKS; i++) reach_tree(inode.block[i], 0, (uint64_t)i);
+        }
         if (regular || directory) {
             uint64_t p = vol.pointers_per_block;
             walk_blocks = 0;

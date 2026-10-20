@@ -12,9 +12,11 @@
 
 #define VFS_FILE      1
 #define VFS_DIRECTORY 2
+#define VFS_SYMLINK   3    // A symbolic link: `data` holds its target (`size` bytes, no NUL counted)
 
 #define VFS_NAME_MAX  128  // Size of a node's name, with its NUL: names are at most 127 bytes
 #define VFS_PATH_MAX  256  // Size of a path the kernel accepts, with its NUL
+#define VFS_MAX_LINKS 8    // Symbolic links followed in one lookup before ELOOP
 
 struct vnode;
 
@@ -33,6 +35,13 @@ typedef struct vnode_ops {
     // error number.
     int (*create)(struct vnode *dir, const char *name, bool directory, struct vnode **out);
     int (*remove)(struct vnode *dir, struct vnode *child);
+
+    // Make a symbolic link `name` in `dir` pointing at `target`, and attach
+    // its node (type VFS_SYMLINK, the target in `data`); make `name` in
+    // `dir` a second name for `existing`, a file of the same filesystem
+    // (attaching a node for it). 0 or a negative error number.
+    int (*symlink)(struct vnode *dir, const char *name, const char *target, struct vnode **out);
+    int (*link)(struct vnode *dir, const char *name, struct vnode *existing);
 
     // Give `node` (a child of old_dir) the name new_name in new_dir, which
     // belongs to the same filesystem. The VFS then moves the node itself.
@@ -259,6 +268,42 @@ size_t vfs_path_of(vnode_t *node, char *buf, size_t size);
  * @return The child, or NULL (also when `dir` is not a directory).
  */
 vnode_t *vfs_find_child(vnode_t *dir, const char *name);
+
+/**
+ * @brief Look a path up as vfs_find does (from `base`, NULL: the root),
+ *        following symbolic links on the way, and in the last component
+ *        only if `follow_last` (readlink and lstat-like uses say false).
+ * @return 0 and the node in *out; -ENOENT, -ENOTDIR, -ENAMETOOLONG, or
+ *         -ELOOP after VFS_MAX_LINKS links.
+ */
+int vfs_lookup(vnode_t *base, const char *path, bool follow_last, vnode_t **out);
+
+/**
+ * @brief Make `name` in `parent` (NULL: the root) a symbolic link to
+ *        `target`, which is stored as given and not checked (it may name
+ *        nothing yet). In memory, or on a disk whose filesystem can store
+ *        links (ext2; FAT cannot: -EPERM). No permission checks.
+ * @return 0 (the node in *out if not NULL), -EEXIST, -EINVAL for a bad
+ *         name, -ENOENT for an empty target, -ENAMETOOLONG, -EROFS,
+ *         -EPERM, -ENOSPC, -EIO, -ENOMEM.
+ */
+int vfs_symlink(vnode_t *parent, const char *name, const char *target, vnode_t **out);
+
+/**
+ * @brief Make `name` in `parent` a second name for the file `existing`
+ *        (a hard link). Only for files, not directories or links (-EPERM),
+ *        within one filesystem (-EXDEV), and one that keeps files apart
+ *        from their names: ext2 (in memory and on FAT: -EPERM).
+ * @return 0, or a negative error number (also -EEXIST, -EMLINK).
+ */
+int vfs_link(vnode_t *existing, vnode_t *parent, const char *name);
+
+/**
+ * @brief Copy a symbolic link's target into `buf` (up to `size` bytes, not
+ *        NUL-terminated, as readlink() does).
+ * @return Bytes copied, or -EINVAL if `node` is not a link.
+ */
+int64_t vfs_readlink(vnode_t *node, char *buf, size_t size);
 
 /**
  * @brief Remove the file or empty directory `name` from `parent` (NULL: the

@@ -28,6 +28,7 @@ long uptime_ticks(void);                     /* Timer ticks (10 ms each) since b
 unsigned long clock_ns(void);                /* Nanoseconds since boot */
 unsigned long time_ns(void);                 /* The time of day: nanoseconds since 1970-01-01 00:00 UTC */
 long set_time(unsigned long seconds);        /* Set the time of day (root only): 0, -EPERM, or -EINVAL outside 1980..2105 */
+long set_time_ns(unsigned long ns);          /* The same, to the nanosecond */
 void format_date(unsigned long seconds, char out[20]); /* Seconds since 1970 -> "2026-10-20 14:03:07" (UTC) */
 long parse_date(const char *text, unsigned long *seconds); /* "YYYY-MM-DD HH:MM[:SS]" -> seconds since 1970; 0 or -EINVAL */
 long sleep_ns(unsigned long nanoseconds);    /* Sleeps to within microseconds; -EINTR if a signal cut it short */
@@ -126,7 +127,10 @@ long poll(struct pollfd *fds, unsigned count, long timeout_ms); /* Wait until on
 long mkdir(const char *path); /* 0, or a negative error (-EEXIST, -ENOENT, -EACCES, -ENAMETOOLONG ...) */
 long chdir(const char *path); /* Change the working directory */
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
-long unlink(const char *path); /* Remove a file or an empty directory */
+long unlink(const char *path);
+long symlink(const char *target, const char *path); /* Make path a symbolic link to target */
+long link(const char *existing, const char *path);  /* A second name for a file (on the ext2 disk only) */
+long readlink(const char *path, char *buf, size_t size); /* A link's target (not NUL-terminated): its length, or -EINVAL if not a link */ /* Remove a file or an empty directory */
 long rename(const char *from, const char *to);  /* Within one filesystem; fails with -EEXIST rather than replace anything */
 
 /* Network. The machine is 10.0.2.15; QEMU's gateway (which also reaches the
