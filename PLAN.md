@@ -676,6 +676,42 @@ sent from the QEMU monitor (`nmi`) is reported and the system carries on.
 
 ---
 
+## Track G — The shell, as someone at the keyboard meets it
+
+Proposed on 2026-10-20, after track F. User-space work, with the kernel
+changes only where the shell cannot do without them.
+
+### G1. Command lists: `;`, `&&`, `||` (S)
+
+A line may hold several pipelines: `a ; b` runs both, `a && b` runs b only
+if a succeeded, `a || b` only if it failed. Scripts in `/etc` need it, and
+so does anyone who types more than one thing at a time.
+**Check:** `sh -c` runs of each form with programs that succeed and fail
+(`true`-like and `false`-like exits), and the exit status of the whole.
+
+### G2. Line editing and history at the prompt (M)
+
+The terminal's line discipline offers backspace and Ctrl-U; the arrow keys
+do nothing. When it reads from the terminal, the shell edits the line
+itself in raw mode: left and right, Home and End, Delete, Ctrl-A, Ctrl-E,
+Ctrl-K, Ctrl-U, Ctrl-W, and up and down through the lines entered before
+(the last 64, kept in memory). Programs the shell starts get line mode
+back, as now. The editing is a function of the keys alone, so it can be
+tested without a terminal.
+**Check:** unit tests of the editor (keys in, line and cursor out) from
+ring 3; a scripted session that recalls and edits a previous command.
+
+### G3. Neighbours that move (S)
+
+The ARP cache never forgets (repair 6): a machine that changes its
+hardware address, or a gateway replaced, stays unreachable. Entries older
+than a minute are asked about again by senders that may wait, and used as
+they are by the receive thread (which may not wait) until the answer comes.
+**Check:** a unit test that ages an entry and sees a fresh ARP request go
+out; the network tests unchanged.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -724,7 +760,9 @@ B2, B4, B5, C4                   as interest dictates
 D1 -> D2 -> D3 -> D4             the system on its disk (done)
 E (one area at a time)           done: every function documented
         |
-F1, F2, F3, F4, F5               next, in that order; independent of each other
+F1, F2, F3, F4, F5               done
+        |
+G1, G2, G3                       next
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
