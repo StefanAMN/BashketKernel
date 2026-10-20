@@ -1841,6 +1841,59 @@ static void check_groups_and_setuid(void) {
     CHECK(unlink("/tmp/group.txt") == 0 && unlink("/tmp/suid-id") == 0 && unlink("/tmp/root-only") == 0);
 }
 
+/* As bob (1001, group 100) with supplementary group 50: a file of group 50
+ * is readable through it, and bob may move a file of his into group 50 but
+ * not into 51; he may not change his groups */
+static void group_checks_as_bob(void) {
+    unsigned groups[4];
+    CHECK(getgroups(4, groups) == 1 && groups[0] == 50);
+    CHECK(setgroups(0, NULL) == -EPERM);                      /* Membership is root's to give */
+    long fd = open("/tmp/staff.txt", O_RDONLY);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(open("/tmp/staff.txt", O_WRONLY) == -EACCES);       /* The group's digit: r-- */
+    fd = open("/tmp/bobs.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0);
+    if (fd >= 0) close((int)fd);
+    CHECK(chown("/tmp/bobs.txt", KEEP_ID, 50) == 0);
+    CHECK(chown("/tmp/bobs.txt", KEEP_ID, 51) == -EPERM);
+}
+
+/* The same bob without the supplementary group: the others' digit (---) */
+static void group_checks_without_groups(void) {
+    CHECK(getgroups(0, NULL) == 0);
+    CHECK(open("/tmp/staff.txt", O_RDONLY) == -EACCES);
+}
+
+/* setgroups and getgroups: root only, at most 16, copied by fork, kept by
+ * execve, and counted by the permission check */
+static void check_supplementary_groups(void) {
+    static char out[128];
+    unsigned groups[17] = { 50, 51, 52 }, got[16];
+    CHECK(getgroups(0, NULL) == 0);
+    CHECK(setgroups(17, groups) == -EINVAL);                  /* More than 16 */
+    CHECK(setgroups(2, (const unsigned *)16) == -EFAULT);
+    CHECK(getgroups(0, NULL) == 0);                           /* Neither changed anything */
+    CHECK(setgroups(3, groups) == 0);
+    CHECK(getgroups(0, NULL) == 3 && getgroups(2, got) == -EINVAL);
+    CHECK(getgroups(16, got) == 3 && got[0] == 50 && got[1] == 51 && got[2] == 52);
+
+    long pid = fork();
+    if (pid == 0) exit(getgroups(16, got) == 3 && got[2] == 52 ? 0 : 1);
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);   /* Copied by fork */
+    CHECK(run_capture("/bin/id", out, sizeof(out)) == 0 && contains(out, "groups 50 51 52\n"));  /* Kept by execve */
+
+    long fd = open("/tmp/staff.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && close((int)fd) == 0);
+    CHECK(chmod("/tmp/staff.txt", 0640) == 0 && chown("/tmp/staff.txt", 1000, 50) == 0);
+    CHECK(setgroups(1, groups) == 0);
+    CHECK(as_user_in_group(1001, 100, group_checks_as_bob) == 0);
+    CHECK(setgroups(0, NULL) == 0);
+    CHECK(as_user_in_group(1001, 100, group_checks_without_groups) == 0);
+    CHECK(unlink("/tmp/staff.txt") == 0 && unlink("/tmp/bobs.txt") == 0);
+}
+
 /* Permission bits as alice and bob, and root's freedom from them */
 static void check_users(void) {
     CHECK(getuid() == 0);                               /* The checks themselves run as root */
@@ -2006,6 +2059,16 @@ static int run_quietly(const char *path, const char *a1, const char *a2, const c
     int status = -1;
     if (pid < 0 || waitpid(pid, &status, 0) != pid) return -1;
     return status;
+}
+
+/* /bin/dhcp's lease arithmetic (its own checks, -T: when to renew, rebind
+ * and give up, from what a server may send), and options it must refuse
+ * before touching the network */
+static void check_dhcp_lease_times(void) {
+    CHECK(run_quietly("/bin/dhcp", "-T", NULL, NULL) == 0);
+    CHECK(run_quietly("/bin/dhcp", "-t", "5", NULL) == 2);      /* Only with -d */
+    CHECK(run_quietly("/bin/dhcp", "-t", "x", NULL) == 2);
+    CHECK(run_quietly("/bin/dhcp", "-d", "-n", "0") == 2);
 }
 
 /* Whether two files hold the same bytes */
@@ -2283,6 +2346,103 @@ static void check_shell_redirects(void) {
     CHECK(sh_ends("echo q 2>&", "", 2));
     CHECK(sh_ends("echo q 2>", "", 2));
     CHECK(unlink("/tmp/redir") == 0);
+}
+
+/* The shell's variables: NAME=value (the shell's own, unseen by programs),
+ * export (seen), NAME=value program (for that program only), unset; the
+ * values expanded but not split, and names that are not names */
+static void check_shell_variables(void) {
+    CHECK(sh_prints("X=1; echo [$X]", "[1]\n"));
+    CHECK(sh_prints("X=hidden; sh -c 'echo [$X]'", "[]\n"));                 /* Not in the environment */
+    CHECK(sh_prints("X=shown; export X; sh -c 'echo [$X]'", "[shown]\n"));   /* ... until exported */
+    CHECK(sh_prints("export X=e; sh -c 'echo [$X]'", "[e]\n"));
+    CHECK(sh_prints("export X=a; X=b; sh -c 'echo [$X]'", "[b]\n"));         /* Exported stays exported */
+    CHECK(sh_prints("X=once sh -c 'echo [$X]'; echo [$X]", "[once]\n[]\n"));  /* For one program */
+    CHECK(sh_prints("export X=kept; X=tmp sh -c 'echo $X'; echo $X", "tmp\nkept\n"));
+    CHECK(sh_ends("PATH=/nowhere true", "", 127));                           /* The program's PATH is used */
+    CHECK(sh_prints("A=1 B=2; echo $A$B", "12\n"));
+
+    /* Values: expanded, neither split nor matched as wildcards */
+    CHECK(sh_prints("X=\"a  b\"; echo \"$X\"", "a  b\n"));
+    CHECK(sh_prints("X=$(echo 'p  q'); echo \"$X\"", "p  q\n"));
+    CHECK(sh_prints("X=/bin/s*; echo \"$X\"", "/bin/s*\n"));
+    CHECK(sh_prints("X=a=b; echo $X", "a=b\n"));
+    CHECK(sh_prints("X=; echo [$X]", "[]\n"));
+
+    /* The status: of the last $(...) in it, else 0; $? before it is still there */
+    CHECK(sh_ends("X=$(false)", "", 1));
+    CHECK(sh_prints("false; X=1; echo $?", "0\n"));
+    CHECK(sh_prints("false; X=$?; echo $X", "1\n"));
+
+    CHECK(sh_prints("X=1; export Y=2; unset X Y; echo [$X$Y]; sh -c 'echo [$Y]'", "[]\n[]\n"));
+    CHECK(sh_prints("for v in 1; do sh -c 'echo [$v]'; done; echo $v", "[]\n1\n"));   /* The shell's own */
+
+    /* Not assignments, or not names */
+    CHECK(sh_ends("1x=y", "", 127));                                        /* A command */
+    CHECK(sh_ends("\"X\"=1", "", 127));                                     /* Quoted: a command too */
+    CHECK(sh_prints("echo X=1", "X=1\n"));                                  /* After the name: a word */
+    CHECK(sh_ends("unset 1x", "", 1));
+    CHECK(sh_ends("export a-b=1", "", 1));
+    CHECK(sh_ends("X=1 | cat", "", 2));
+    CHECK(sh_ends("X=1 > /tmp/never", "", 2));
+}
+
+/* Make `path` hold `size` bytes of `text`; whether it worked */
+static int put_file(const char *path, const char *text, size_t size) {
+    long fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0) return 0;
+    int ok = write((int)fd, text, size) == (long)size;
+    close((int)fd);
+    return ok;
+}
+
+/* uniq, cut and tr: their basic forms, a line longer than any fixed buffer
+ * (two equal ones, then a last line without '\n'), and what they refuse */
+static void check_line_tools(void) {
+    static char out[128];
+    CHECK(put_file("/tmp/lt", "a\na\nb\na\nc\nc", 11));                  /* No '\n' at the end */
+    CHECK(sh_prints("uniq /tmp/lt", "a\nb\na\nc\n"));
+    CHECK(sh_prints("uniq -c /tmp/lt", "2 a\n1 b\n1 a\n2 c\n"));
+    CHECK(sh_prints("uniq -d /tmp/lt", "a\nc\n"));
+    CHECK(sh_prints("cat /tmp/lt | uniq -c -d", "2 a\n2 c\n"));
+
+    CHECK(put_file("/tmp/lt", "one:two:three:four\nplain\ntab\tsep", 32));
+    CHECK(sh_prints("cut -d : -f 2 /tmp/lt", "two\nplain\ntab\tsep\n"));    /* No ':': the whole line */
+    CHECK(sh_prints("cut -d : -f 3-,1,1 /tmp/lt", "one:three:four\nplain\ntab\tsep\n"));
+    CHECK(sh_prints("cut -d : -f -2 /tmp/lt | head -n 1", "one:two\n"));
+    CHECK(sh_prints("cut -f 2 /tmp/lt", "one:two:three:four\nplain\nsep\n"));  /* A tab by default */
+    CHECK(sh_prints("cut -c 2-4,1 /tmp/lt", "one:\nplai\ntab\t\n"));
+    CHECK(sh_prints("cut -c 9- /tmp/lt", "three:four\n\n\n"));
+
+    CHECK(sh_prints("echo Hello, World | tr a-z A-Z", "HELLO, WORLD\n"));
+    CHECK(sh_prints("echo hello | tr -d l", "heo\n"));
+    CHECK(sh_prints("echo hello | tr a-z x", "xxxxx\n"));                   /* SET2's last, repeated */
+    CHECK(sh_prints("echo a b c | tr ' ' '\\n'", "a\nb\nc\n"));
+
+    /* 6000 bytes, the same again, then "y" with no '\n' */
+    static char big[12003];
+    memset(big, 'x', sizeof(big));
+    big[6000] = '\n';
+    big[12001] = '\n';
+    big[12002] = 'y';
+    CHECK(put_file("/tmp/lt", big, sizeof(big)));
+    CHECK(sh_prints("uniq -c /tmp/lt | cut -c 1-4", "2 xx\n1 y\n"));
+    CHECK(sh_prints("cut -c 5999- /tmp/lt", "xx\nxx\n\n"));
+    CHECK(sh_prints("tr x z < /tmp/lt | cut -c 1,6000-", "zz\nzz\ny\n"));
+    CHECK(sh_prints("tr -d x < /tmp/lt", "\n\ny"));
+    big[3000] = 'w';                                       /* Equal length, not equal */
+    CHECK(put_file("/tmp/lt", big, sizeof(big)));
+    CHECK(sh_prints("uniq -c /tmp/lt | cut -c 1-2", "1 \n1 \n1 \n"));
+
+    CHECK(sh_capture("cut -c 0 /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("cut -c 3-1 /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("cut -d : -c 1 /tmp/lt", out, sizeof(out)) == 2);     /* -d goes with -f */
+    CHECK(sh_capture("cut -f 1 /no/such", out, sizeof(out)) == 1);
+    CHECK(sh_capture("tr z-a b < /tmp/lt", out, sizeof(out)) == 2);         /* A range backwards */
+    CHECK(sh_capture("tr -d < /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("uniq -x /tmp/lt", out, sizeof(out)) == 2);
+    CHECK(sh_capture("uniq /no/such", out, sizeof(out)) == 1);
+    CHECK(unlink("/tmp/lt") == 0);
 }
 
 /* The shell's if, while and for, break and continue, and test / [ */
@@ -2865,6 +3025,7 @@ int main(void) {
     check_network();
     check_tcp();
     check_netconfig_and_dns();
+    check_dhcp_lease_times();
     check_shared_memory();
     check_users();
     check_password_file();
@@ -2879,8 +3040,11 @@ int main(void) {
     check_shell_words();
     check_shell_control();
     check_shell_redirects();
+    check_shell_variables();
+    check_line_tools();
     check_proc();
     check_groups_and_setuid();
+    check_supplementary_groups();
     check_pipes();
 
     if (failures == 0) {

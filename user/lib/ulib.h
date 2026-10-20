@@ -18,6 +18,7 @@ long execv(const char *path, char *const argv[]);    /* Passes on our own enviro
 extern char **environ;
 const char *getenv(const char *name); /* The value of NAME in the environment, or NULL */
 int setenv(const char *name, const char *value);     /* 0, or -1 if out of memory */
+int unsetenv(const char *name);   /* Take NAME out of the environment (0; nothing to do is no error) */
 long waitpid(long pid, int *status, int options);  /* pid -1: any child. options: 0, or WNOHANG */
 long getpid(void); /* This process's id */
 long getppid(void); /* Its parent's id */
@@ -92,6 +93,8 @@ long geteuid(void);                          /* The effective user: whose rights
 long getgid(void); /* The group this process runs as */
 long setuid(unsigned uid);                   /* Root may become anyone; anyone else may only go back to their real user */
 long setgid(unsigned gid);                   /* Root only */
+long setgroups(unsigned long count, const unsigned *groups); /* Root only: also be in these groups (at most 16; 0, -EPERM, -EINVAL) */
+long getgroups(unsigned long size, unsigned *groups);        /* The groups set by setgroups: how many (size 0: only count them), -EINVAL if more than size */
 long umask(unsigned mask);                   /* Bits removed from the mode of files this process creates; returns the old mask */
 long chmod(const char *path, unsigned mode); /* Octal: owner, group, others; 4 read, 2 write, 1 execute. 04000: set-uid */
 long chown(const char *path, unsigned uid, unsigned gid); /* Root only (an owner may set their own group); KEEP_ID leaves one as it is */

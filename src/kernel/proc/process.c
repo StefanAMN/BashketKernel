@@ -399,6 +399,8 @@ pid_t process_fork(struct registers *regs) {
     child->uid = parent->uid;
     child->ruid = parent->ruid;
     child->gid = parent->gid;
+    memcpy(child->groups, parent->groups, sizeof(child->groups));
+    child->group_count = parent->group_count;
     child->umask = parent->umask;
     child->mmap_next = parent->mmap_next;
     region_fork(child, parent);
