@@ -647,7 +647,7 @@ test-jobs: iso
 		--expect '\n<a /tmp/w/b1 /tmp/w/b2 /tmp/w/c3 z>\n' --expect '\n< a3 b1 b2 /tmp/w/a3 >\n' \
 		--expect '\n< none\* >\n' --expect '\n</tmp/w/\*>\n' --expect '\nremoved: 0\n' \
 		'exec /bin/sh' 'mkdir /tmp/w' 'cd /tmp/w' 'echo > b2 ; echo > a3 ; echo > c3 ; echo > b1 ; echo > .hid' \
-		'echo "<a" /tmp/w/[bc]* "z>"' 'echo "<"[ab]* /tmp/w/a? ">"' 'echo "<"none* ">"' 'echo "</tmp/w/*>"' \
+		'echo "<a" /tmp/w/[bc]* "z>"' 'echo "<" [ab]* /tmp/w/a? ">"' 'echo "<" none* ">"' 'echo "</tmp/w/*>"' \
 		'rm * ; rm .hid ; cd / ; rm /tmp/w' 'echo removed: $$?' 'exit' > $(BUILD)/wildcards.log 2>&1 \
 		&& echo "wildcards: ok" || { echo "wildcards: FAILED (see $(BUILD)/wildcards.log)"; exit 1; }
 	@# Tab completion: a program name, a directory, a file in it; two Tabs
