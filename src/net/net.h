@@ -53,7 +53,10 @@ typedef struct {
 } net_config_t;
 
 #define UDP_PAYLOAD_MAX 1472   // 1500 (Ethernet payload) - 20 (IPv4 header) - 8 (UDP header)
-#define UDP_QUEUE_LEN 8        // Datagrams a socket holds before new ones are dropped
+#define UDP_QUEUE_BYTES 65536  // What a socket holds before new datagrams are dropped: each
+                               // costs its payload plus UDP_DATAGRAM_OVERHEAD, so that
+                               // empty ones are not free
+#define UDP_DATAGRAM_OVERHEAD 16
 #define UDP_MAX_SOCKETS 16
 
 typedef struct {
