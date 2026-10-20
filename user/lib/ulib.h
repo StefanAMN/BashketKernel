@@ -18,6 +18,7 @@ long execv(const char *path, char *const argv[]);    /* Passes on our own enviro
 extern char **environ;
 const char *getenv(const char *name); /* The value of NAME in the environment, or NULL */
 int setenv(const char *name, const char *value);     /* 0, or -1 if out of memory */
+int unsetenv(const char *name);   /* Take NAME out of the environment (0; nothing to do is no error) */
 long waitpid(long pid, int *status, int options);  /* pid -1: any child. options: 0, or WNOHANG */
 long getpid(void); /* This process's id */
 long getppid(void); /* Its parent's id */
