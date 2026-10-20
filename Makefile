@@ -130,7 +130,7 @@ QEMU_FLAGS = -m 2G -cdrom $(ISO) -boot d $(DISK_FLAGS) $(NET_FLAGS)
 
 comma := ,
 
-.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-kshell test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
+.PHONY: disks all clean iso run run-dev run-gdb test test-smp test-lowmem test-disk test-home test-rescue test-kshell test-nmi test-boot test-shutdown test-crash test-paint test-swap test-edit test-login test-jobs test-net fuzz check
 
 all: $(KERNEL)
 
@@ -571,6 +571,19 @@ test-kshell: iso
 		&& echo "no PS/2 controller (boots, input from the serial line): ok" \
 		|| { echo "no PS/2 controller: FAILED (see $(BUILD)/no-ps2.log)"; exit 1; }
 
+# NMIs: one, reported and survived; then thirty while /bin/syscheck makes
+# its system calls, so that some land in the instructions of a system call's
+# entry and exit where the CPU is in ring 0 with the user's GS base (the
+# NMI stub must decide swapgs from the GS base itself, not the saved CS).
+NMI_STORM = $(foreach n,1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30,'@monitor:nmi' '@wait:0.2')
+test-nmi: iso
+	@tools/qemu_shell.py --quiet --timeout 120 $(SHELL_CPU) \
+		--expect 'NMI received' --expect 'nmis: +1\n' --expect 'syscheck: all checks passed' \
+		'@monitor:nmi' '@wait:1' 'cat /proc/cpuinfo' '!exec /bin/syscheck' $(NMI_STORM) '@wait:30' \
+		'exec /bin/hello' > $(BUILD)/nmi.log 2>&1 \
+		&& echo "NMIs (reported; thirty during system calls, survived): ok" \
+		|| { echo "NMIs: FAILED (see $(BUILD)/nmi.log)"; exit 1; }
+
 # The rescue system: without a system disk the kernel runs from its boot
 # module, in memory. Everything must still work; nothing outside /disk lasts.
 test-rescue: iso
@@ -631,6 +644,7 @@ check:
 	@$(MAKE) --no-print-directory test-home
 	@$(MAKE) --no-print-directory test-rescue
 	@$(MAKE) --no-print-directory test-kshell
+	@$(MAKE) --no-print-directory test-nmi
 	@$(MAKE) --no-print-directory test-boot
 	@$(MAKE) --no-print-directory test-boot SMP=4
 	@$(MAKE) --no-print-directory test-shutdown

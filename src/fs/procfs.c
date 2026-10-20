@@ -142,15 +142,19 @@ static size_t gen_cpuinfo(char *buf, size_t size) {
         brand[48] = '\0';
     }
 
+    uint64_t nmis = 0;
+    for (uint32_t i = 0; i < smp_get_cpu_total(); i++) nmis += cpu_get(i)->nmis;
+
     return ksnprintf(buf, size,
                      "vendor_id:  %s\n"
                      "model name: %s\n"
                      "family:     %u\n"
                      "model:      %u\n"
                      "cpus:       %lu started, %u running tasks\n"
-                     "protection: %s\n",
+                     "protection: %s\n"
+                     "nmis:       %lu\n",
                      vendor, brand, family, model, (uint64_t)smp_get_cpu_count(), sched_running_count(),
-                     cpu_protection_summary());
+                     cpu_protection_summary(), nmis);
 }
 
 // /proc/mounts: the mount table (mount_describe)

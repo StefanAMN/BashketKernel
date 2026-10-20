@@ -78,3 +78,18 @@ task_start_trampoline:
     mov rsp, rbx
     xor ebx, ebx
     ret
+
+/*
+ * void call_on_stack(uint64_t stack_top, void (*fn)(void))
+ *
+ * Continue on another stack: RSP is set to stack_top (aligned down to 16
+ * bytes, as a call requires) and fn is called. fn must not return: what
+ * was on the old stack, this function's caller included, is left behind.
+ */
+.global call_on_stack
+call_on_stack:
+    mov rsp, rdi
+    and rsp, -16
+    xor ebp, ebp                // No frame above this one, for a backtrace
+    call rsi
+    ud2                         // fn returned: there is nowhere to go back to

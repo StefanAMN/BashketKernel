@@ -28,6 +28,7 @@ static struct gdt_ptr gdt_pointer;
 // same stack would fault again and reset the machine (triple fault). The
 // other CPUs get theirs from the stack allocator when they are started.
 static uint8_t double_fault_stack[16 * 1024] __attribute__((aligned(16)));
+static uint8_t nmi_stack[16 * 1024] __attribute__((aligned(16)));          // The same, for NMIs (IST2)
 
 // Fill segment descriptor `num` (Intel SDM Vol. 3A, 3.4.5). In long mode
 // base and limit are ignored for code and data; what counts is the access
@@ -94,7 +95,7 @@ void gdt_init(void) {
 
     // Per-CPU data and the task state segment for the boot CPU. (Must come
     // after gdt_flush: reloading the segment registers resets the GS base.)
-    cpu_init_this(0, (uint64_t)double_fault_stack + sizeof(double_fault_stack));
+    cpu_init_this(0, (uint64_t)double_fault_stack + sizeof(double_fault_stack), (uint64_t)nmi_stack + sizeof(nmi_stack));
 }
 
 void gdt_load_on_this_cpu(void) {

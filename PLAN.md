@@ -643,7 +643,13 @@ kept in address order for the rest.
 **Check:** the heap tests and leak checks still pass; `bench` shows
 allocation time no longer growing with the number of live blocks.
 
-### F5. Stacks for the moments the current one cannot be trusted (S)
+### F5. Stacks for the moments the current one cannot be trusted (S) — done
+
+Done as proposed. On QEMU the monitor's `nmi` reaches only the boot CPU
+(it arrives through each CPU's LINT1, which the firmware sets up there
+alone). PID 0's new stack is 16 KiB, against the bootloader's 128: the
+boot and every unit test fit, and if one ever does not, the guard page
+says so. The proposal:
 
 PID 0 runs on the boot stack, which has no guard page (repair 4), and an
 NMI arriving between `pop rsp` and `sysretq` would run on the user's stack
@@ -660,8 +666,9 @@ sent from the QEMU monitor (`nmi`) is reported and the system carries on.
 Known limits in code that is otherwise real, carried over from the previous
 plan:
 
-1. A fault between `pop rsp` and `sysretq` would run on the user stack;
-   harmless today, but an NMI handler needs an IST stack first.
+1. (Done in F5: NMIs have an IST stack and decide `swapgs` from the GS
+   base. Other exceptions in that window would still run on the user's
+   stack, and none can occur there.)
 2. A killed process can leak a kernel buffer if it dies inside a system call
    holding one. (The two examples once given no longer apply: FAT writes
    allocate nothing, and a `/proc` read does not sleep while it holds its
@@ -670,7 +677,7 @@ plan:
 3. With the periodic tick (the fallback for CPUs without a timestamp
    counter) a few ticks are lost under heavy console output, because drawing
    runs with interrupts off. One-shot mode reads the count off the clock.
-4. PID 0 runs on the boot stack, which has no guard page.
+4. (Done in F5: PID 0 moves to a guarded kernel stack at boot.)
 5. `kmalloc` and `kfree` are linear in the number of blocks.
 6. The ARP cache never expires entries; a socket's queue holds eight
    datagrams.

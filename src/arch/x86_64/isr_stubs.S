@@ -148,3 +148,66 @@ isr_stub_table:
     MAKE_ISR_TABLE_ENTRY %i
     .set i, i + 1
 .endr
+
+// The NMI (vector 2). It can arrive anywhere, including the few
+// instructions where the CPU is in ring 0 with the user's GS base (the
+// start of syscall_entry before its swapgs, the end of the return path
+// after its swapgs): the saved CS cannot say whether to swapgs. The GS base
+// itself can. A program's is always 0 (nothing lets one change it: see
+// percpu.h); this CPU's structure is a kernel address, with the top bit
+// set. So: swap if the base is not a kernel address, and swap back after.
+// It runs on its own stack (IST2), whatever the interrupted stack was.
+.section .text
+.extern nmi_handler
+.global nmi_stub
+nmi_stub:
+    push 0                      // Error code (none)
+    push 2                      // Vector
+    cld
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov ecx, 0xC0000101         // IA32_GS_BASE
+    rdmsr                       // EDX: its upper half
+    xor ebx, ebx                // RBX (kept across the call): 1 if we swapped
+    test edx, edx
+    js 1f                       // Top bit set: a kernel address, GS is ours already
+    swapgs
+    mov ebx, 1
+1:
+    mov rdi, rsp
+    call nmi_handler
+    test ebx, ebx
+    jz 2f
+    swapgs
+2:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16
+    iretq

@@ -17,7 +17,7 @@ cpu_t *cpu_get(uint32_t cpu_id) {
     return cpu_id < MAX_CPUS ? &cpus[cpu_id] : NULL;
 }
 
-void cpu_init_this(uint32_t cpu_id, uint64_t fault_stack_top) {
+void cpu_init_this(uint32_t cpu_id, uint64_t fault_stack_top, uint64_t nmi_stack_top) {
     cpu_t *cpu = &cpus[cpu_id];
     cpu->self = cpu;
     cpu->cpu_id = cpu_id;
@@ -29,10 +29,13 @@ void cpu_init_this(uint32_t cpu_id, uint64_t fault_stack_top) {
 
     // The task state segment tells the CPU which stacks to switch to: RSP0
     // when an interrupt arrives in ring 3 (set at every task switch), and
-    // IST1 for a double fault, whatever state the current stack is in
+    // IST1 for a double fault, whatever state the current stack is in, and
+    // IST2 for an NMI, which can arrive where the stack is not the
+    // kernel's (between `pop rsp` and `sysretq`, say)
     memset(&cpu->tss, 0, sizeof(cpu->tss));
     cpu->tss.iomap_base = sizeof(struct tss);
     cpu->tss.ist1 = fault_stack_top;
+    cpu->tss.ist2 = nmi_stack_top;
     gdt_install_tss(cpu_id, &cpu->tss);
 
     if (cpu_id == 0) lock_debug_enable(); // this_cpu() works from here on

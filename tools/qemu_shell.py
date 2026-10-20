@@ -63,6 +63,16 @@ def read_until(proc, buf, patterns, deadline):
             buf.extend(chunk)
 
 
+def send(proc, data):
+    """Type `data` into the guest. False if QEMU has gone (its input is closed)."""
+    try:
+        proc.stdin.write(data)
+        proc.stdin.flush()
+        return True
+    except BrokenPipeError:
+        return False
+
+
 def monitor_command(path, command):
     """Run one command in QEMU's monitor and wait until it has been carried out."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
@@ -167,8 +177,8 @@ def main():
                 if command.startswith("!"):
                     # Start something that will not return to a prompt by
                     # itself, and give it a moment to get going.
-                    proc.stdin.write(command[1:].encode() + b"\n")
-                    proc.stdin.flush()
+                    if not send(proc, command[1:].encode() + b"\n"):
+                        break
                     read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.5)
                     continue
                 if command.startswith("@") and not command.startswith("@wait:") and proc.poll() is not None:
@@ -203,13 +213,13 @@ def main():
                     keys = command[1:].replace("\\r", "\r").replace("\\e", "\x1b")
                     for name, byte in CONTROL_KEYS.items():
                         keys = keys.replace(name, byte.decode())
-                    proc.stdin.write(keys.encode())
-                    proc.stdin.flush()
+                    if not send(proc, keys.encode()):
+                        break
                     read_until(proc, buf, [b"CPU EXCEPTION", b"KERNEL PANIC"], time.monotonic() + 0.4)
                     continue
                 data = CONTROL_KEYS.get(command, command.encode() + b"\n")
-                proc.stdin.write(data)
-                proc.stdin.flush()
+                if not send(proc, data):
+                    break
                 hit = read_until(proc, buf, ready + [b"CPU EXCEPTION", b"KERNEL PANIC"],
                                  time.monotonic() + args.timeout)
                 if hit is None:
@@ -233,6 +243,10 @@ def main():
                 pass
         proc.kill()
         proc.wait()
+        try:
+            proc.stdin.close()      # (Typed input still buffered for a QEMU that has gone)
+        except (BrokenPipeError, OSError):
+            pass
 
     text = buf.decode("utf-8", errors="replace").replace("\r", "")
     if ended_by_itself is not None:
