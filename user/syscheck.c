@@ -454,7 +454,7 @@ static void check_directories(void) {
 
     CHECK(chdir("/no/such") == -ENOENT);
     CHECK(chdir("/etc/motd") == -ENOTDIR);
-    CHECK(chdir("/etc/motd/x") == -ENOENT);
+    CHECK(chdir("/etc/motd/x") == -ENOTDIR);
     CHECK(chdir((const char *)0xffffffff80000000) == -EFAULT);
 
     /* A child starts in its parent's directory, and changing it there does
@@ -1667,6 +1667,57 @@ static int contains(const char *text, const char *what) {
 
 static long shared_key_id;      /* A segment root made, for the others to be refused */
 
+/* Search permission, as alice: a directory closed to everyone else, with
+ * an ordinary readable file and a program in it */
+static void closed_directory_as_alice(void) {
+    CHECK(mkdir("/tmp/closed") == 0);
+    long fd = open("/tmp/closed/open.txt", O_WRONLY | O_CREAT);
+    CHECK(fd >= 0 && write((int)fd, "inside", 6) == 6);
+    close((int)fd);
+    CHECK(copy_file("/bin/false", "/tmp/closed/false") == 0 && chmod("/tmp/closed/false", 0755) == 0);
+    CHECK(chmod("/tmp/closed", 0700) == 0);
+    fd = open("/tmp/closed/open.txt", O_RDONLY);        /* The owner still gets in */
+    CHECK(fd >= 0);
+    close((int)fd);
+}
+
+/* Search permission, as bob: a readable file in a directory he may not
+ * search is out of reach by every path to it; with search (but not read)
+ * permission he can reach a name he knows, but not list the directory */
+static void closed_directory_as_bob(void) {
+    CHECK(open("/tmp/closed/open.txt", O_RDONLY) == -EACCES);
+    CHECK(open("/tmp/closed/../../etc/motd", O_RDONLY) == -EACCES);   /* Not a way through either */
+    CHECK(open("/tmp/closed/new.txt", O_WRONLY | O_CREAT) == -EACCES);
+    CHECK(mkdir("/tmp/closed/dir") == -EACCES);
+    CHECK(chdir("/tmp/closed") == -EACCES);
+    CHECK(chmod("/tmp/closed/open.txt", 0777) == -EACCES);
+    CHECK(symlink("/tmp/closed/open.txt", "/tmp/bob-link") == 0);     /* A link is no way round */
+    CHECK(open("/tmp/bob-link", O_RDONLY) == -EACCES);
+    CHECK(unlink("/tmp/bob-link") == 0);
+    long pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/tmp/closed/false", NULL };          /* (Run, it would exit with 1) */
+        exit(execv("/tmp/closed/false", args) == -EACCES ? 0 : 2);
+    }
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+}
+
+/* As alice again: 0711, search for everyone but no listing */
+static void closed_directory_opened_as_alice(void) {
+    CHECK(chmod("/tmp/closed", 0711) == 0);
+}
+
+/* As bob: a known name works now, the listing still does not */
+static void closed_directory_known_name_as_bob(void) {
+    long fd = open("/tmp/closed/open.txt", O_RDONLY);
+    char buf[8];
+    CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 6);
+    close((int)fd);
+    CHECK(open("/tmp/closed", O_RDONLY) == -EACCES);
+    CHECK(chdir("/tmp/closed") == 0 && chdir("/") == 0);
+}
+
 /* As alice, in group 100 */
 static void permission_checks_as_alice(void) {
     static char out[256];
@@ -1788,6 +1839,11 @@ static void check_users(void) {
 
     CHECK(as_user(1000, checks_as_alice) == 0);
     CHECK(as_user(1001, checks_as_bob) == 0);
+    CHECK(as_user(1000, closed_directory_as_alice) == 0);
+    CHECK(as_user(1001, closed_directory_as_bob) == 0);
+    CHECK(as_user(1000, closed_directory_opened_as_alice) == 0);
+    CHECK(as_user(1001, closed_directory_known_name_as_bob) == 0);
+    CHECK(unlink("/tmp/closed/open.txt") == 0 && unlink("/tmp/closed/false") == 0 && unlink("/tmp/closed") == 0);
 
     /* Still root here: the children's change of user did not touch us */
     CHECK(getuid() == 0);

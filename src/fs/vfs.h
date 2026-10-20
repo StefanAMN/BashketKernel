@@ -250,6 +250,13 @@ void vfs_truncate(vnode_t *file, size_t size);
 int vfs_find_parent_at(vnode_t *base, const char *path, vnode_t **parent, char leaf[VFS_NAME_MAX]);
 
 /**
+ * @brief vfs_find_parent_at on behalf of user `uid`: the directories on the
+ *        way and the parent itself must be searchable by them (UID_ROOT: no
+ *        check), or the result is -EACCES.
+ */
+int vfs_find_parent_as(uint32_t uid, vnode_t *base, const char *path, vnode_t **parent, char leaf[VFS_NAME_MAX]);
+
+/**
  * @brief vfs_find_parent_at from the root, returning just the directory
  *        (NULL for any of its errors).
  */
@@ -277,6 +284,13 @@ vnode_t *vfs_find_child(vnode_t *dir, const char *name);
  *         -ELOOP after VFS_MAX_LINKS links.
  */
 int vfs_lookup(vnode_t *base, const char *path, bool follow_last, vnode_t **out);
+
+/**
+ * @brief vfs_lookup on behalf of user `uid`: every directory the path
+ *        passes through, symbolic links included, must be searchable by
+ *        them (UID_ROOT: no check), or the result is -EACCES.
+ */
+int vfs_lookup_as(uint32_t uid, vnode_t *base, const char *path, bool follow_last, vnode_t **out);
 
 /**
  * @brief Make `name` in `parent` (NULL: the root) a symbolic link to

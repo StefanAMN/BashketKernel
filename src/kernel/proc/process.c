@@ -135,7 +135,8 @@ static bool load_user_image(const char *path, char *const argv[], char *const en
 // load_user_image, with the file tree locked by the caller
 static bool load_user_image_locked(const char *path, char *const argv[], char *const envp[], user_image_t *image) {
     task_t *caller = sched_get_current_task();
-    vnode_t *file = vfs_find(caller ? caller->cwd : NULL, path);
+    vnode_t *file = NULL;
+    vfs_lookup_as(auth_current_uid(), caller ? caller->cwd : NULL, path, true, &file);   // (Refused: NULL)
     if (!file || file->type != VFS_FILE || file->size == 0) return false;
     if (!auth_may_execute(auth_current_uid(), file)) return false;       // Marked as a program, for this user?
     if (!auth_may_access(auth_current_uid(), file, false)) return false; // Running a program means reading it

@@ -9,6 +9,7 @@
 #include "kprintf.h"
 #include "kstring.h"
 #include "kerrno.h"
+#include "auth.h"
 
 static vnode_t *vfs_root = NULL;
 
@@ -43,7 +44,7 @@ void vfs_lock(void) { mutex_lock(&vfs_mutex); }
 void vfs_unlock(void) { mutex_unlock(&vfs_mutex); }
 
 static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name);
-static int vfs_find_parent_at_unlocked(vnode_t *base, const char *path, vnode_t **parent_out, char *leaf_out);
+static int vfs_find_parent_at_unlocked(vnode_t *base, const char *path, uint32_t uid, vnode_t **parent_out, char *leaf_out);
 static size_t vfs_path_of_unlocked(vnode_t *node, char *buf, size_t size);
 static vnode_t * vfs_attach_unlocked(vnode_t *parent, const char *name, uint32_t type);
 static int vfs_create_unlocked(vnode_t *parent, const char *name, uint32_t type, vnode_t **out);
@@ -51,6 +52,7 @@ static vnode_t * vfs_create_dir_unlocked(vnode_t *parent, const char *name);
 static vnode_t * vfs_create_file_unlocked(vnode_t *parent, const char *name, const void *data, size_t size);
 static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, const vnode_ops_t *ops);
 static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path);
+static int walk(vnode_t *base, const char *path, bool follow_last, uint32_t uid, vnode_t **out);
 static void vfs_truncate_unlocked(vnode_t *file, size_t size);
 static int vfs_unlink_unlocked(vnode_t *parent, const char *name);
 static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void *buf);
@@ -90,7 +92,7 @@ static vnode_t * vfs_find_child_unlocked(vnode_t *dir, const char *name) {
 }
 
 // See vfs_find_parent_at. Caller holds the tree lock.
-static int vfs_find_parent_at_unlocked(vnode_t *base, const char *path, vnode_t **parent_out, char *leaf_out) {
+static int vfs_find_parent_at_unlocked(vnode_t *base, const char *path, uint32_t uid, vnode_t **parent_out, char *leaf_out) {
     if (!path || !parent_out || !leaf_out) return -EINVAL;
 
     // The leaf is what follows the last '/' that has something after it
@@ -115,9 +117,17 @@ static int vfs_find_parent_at_unlocked(vnode_t *base, const char *path, vnode_t 
     memcpy(parent_path, path, parent_len);
     parent_path[parent_len] = '\0';
 
-    // No directory part means "in the base directory"
-    vnode_t *parent = (parent_len == 0) ? (base ? base : vfs_root) : vfs_find(base, parent_path);
-    if (!parent || parent->type != VFS_DIRECTORY) return -ENOENT;
+    // No directory part means "in the base directory". The walk there is
+    // the caller's (search permission on the way), and the leaf is looked
+    // up in the parent, which needs it too.
+    vnode_t *parent = base ? base : vfs_root;
+    if (parent_len > 0) {
+        int err = walk(base, parent_path, true, uid, &parent);
+        if (err == -EACCES) return err;
+        if (err < 0) return -ENOENT;
+    }
+    if (parent->type != VFS_DIRECTORY) return -ENOENT;
+    if (uid != UID_ROOT && !auth_may_search(uid, parent)) return -EACCES;
 
     memcpy(leaf_out, leaf, leaf_len);
     leaf_out[leaf_len] = '\0';
@@ -320,10 +330,11 @@ static int vfs_unmount_dir_unlocked(vnode_t *node) {
 // too if `follow_last` (or if a slash follows it: "link/" means the
 // directory). A link's target replaces the link in what is left to walk;
 // a relative target is walked from the directory that holds the link. At
-// most VFS_MAX_LINKS links per walk. Returns 0 and the node in *out, or
-// -ENOENT, -ENOTDIR (a component that should be a directory is not),
-// -ENAMETOOLONG, -ELOOP. Caller holds the tree lock.
-static int walk(vnode_t *base, const char *path, bool follow_last, vnode_t **out) {
+// most VFS_MAX_LINKS links per walk. Every directory looked in must be
+// searchable by `uid` (UID_ROOT: no check). Returns 0 and the node in *out,
+// or -ENOENT, -ENOTDIR (a component that should be a directory is not),
+// -EACCES, -ENAMETOOLONG, -ELOOP. Caller holds the tree lock.
+static int walk(vnode_t *base, const char *path, bool follow_last, uint32_t uid, vnode_t **out) {
     char work[VFS_PATH_MAX];                 // What is left to walk
     size_t len = strlen(path);
     if (len >= sizeof(work)) return -ENAMETOOLONG;
@@ -344,8 +355,11 @@ static int walk(vnode_t *base, const char *path, bool follow_last, vnode_t **out
         token[n] = '\0';
         pos += n;
 
-        // Only a directory can have something looked up inside it
+        // Only a directory can have something looked up inside it, and only
+        // by someone who may search it (".." too: a directory closed to
+        // you is not a way back up either)
         if (node->type != VFS_DIRECTORY) return -ENOTDIR;
+        if (uid != UID_ROOT && !auth_may_search(uid, node)) return -EACCES;
         if (strcmp(token, ".") == 0) continue;               // The directory itself
         if (strcmp(token, "..") == 0) {                      // The root is its own parent
             if (node->parent) node = node->parent;
@@ -378,7 +392,7 @@ static int walk(vnode_t *base, const char *path, bool follow_last, vnode_t **out
 static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
     vnode_t *node = NULL;
     if (!path) return NULL;
-    return walk(relative_root, path, true, &node) == 0 ? node : NULL;
+    return walk(relative_root, path, true, UID_ROOT, &node) == 0 ? node : NULL;
 }
 
 // See vfs_read. Caller holds the tree lock unless the node has `ops`.
@@ -573,8 +587,12 @@ vnode_t *vfs_find_child(vnode_t *dir, const char *name) {
 }
 
 int vfs_find_parent_at(vnode_t *base, const char *path, vnode_t **parent, char leaf[VFS_NAME_MAX]) {
+    return vfs_find_parent_as(UID_ROOT, base, path, parent, leaf);
+}
+
+int vfs_find_parent_as(uint32_t uid, vnode_t *base, const char *path, vnode_t **parent, char leaf[VFS_NAME_MAX]) {
     vfs_lock();
-    int result = vfs_find_parent_at_unlocked(base, path, parent, leaf);
+    int result = vfs_find_parent_at_unlocked(base, path, uid, parent, leaf);
     vfs_unlock();
     return result;
 }
@@ -649,9 +667,13 @@ void vfs_truncate(vnode_t *file, size_t size) {
 }
 
 int vfs_lookup(vnode_t *base, const char *path, bool follow_last, vnode_t **out) {
+    return vfs_lookup_as(UID_ROOT, base, path, follow_last, out);
+}
+
+int vfs_lookup_as(uint32_t uid, vnode_t *base, const char *path, bool follow_last, vnode_t **out) {
     if (!path || !out) return -EINVAL;
     vfs_lock();
-    int result = walk(base, path, follow_last, out);
+    int result = walk(base, path, follow_last, uid, out);
     vfs_unlock();
     return result;
 }
