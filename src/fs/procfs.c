@@ -234,10 +234,10 @@ static int64_t read_status(vnode_t *node, size_t offset, void *buf, size_t count
         uint64_t heap = t->is_user ? t->brk_end - t->brk_start : 0;
         len = ksnprintf(text, PROC_TEXT_MAX,
                         "Name:\t%s\nState:\t%s\nPid:\t%u\nPPid:\t%u\nPgid:\t%u\n"
-                        "Uid:\t%u\nRuid:\t%u\nGid:\t%u\nKind:\t%s\nPriority:\t%u\n"
+                        "Uid:\t%u\nRuid:\t%u\nGid:\t%u\nRgid:\t%u\nKind:\t%s\nPriority:\t%u\n"
                         "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\n",
                         t->name, (unsigned)t->state < 5 ? state_words[t->state] : "?", t->pid, t->parent_pid, t->pgid,
-                        t->uid, t->ruid, t->gid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
+                        t->uid, t->ruid, t->gid, t->rgid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
                         t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->promised_pages * 4);
     }
     sched_unlock_irqrestore(flags);
