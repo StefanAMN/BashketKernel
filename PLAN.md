@@ -892,6 +892,52 @@ and as a user without the right.
 
 ---
 
+## Track K — Four at once
+
+Proposed on 2026-10-20, after track J, to be built in parallel (each item
+on its own branch, merged after one `make check` of all four).
+
+### K1. Poisoned slab objects (S)
+
+J1 left the slab caches out: a freed `file_t` keeps its contents and is
+handed out again unchecked. Freed objects are filled with a pattern
+(beyond the cache's free-list link) and checked when allocated again, as
+the heap does; a write after free panics, naming the cache and offset.
+**Check:** a unit test that writes into a freed object and sees it
+counted (as J1's test does); the unit tests otherwise unchanged.
+
+### K2. `if`, `while` and `for` in the shell (M)
+
+`if LIST; then LIST; [else LIST;] fi`, `while LIST; do LIST; done` and
+`for NAME in WORDS; do LIST; done`, on one line or over several lines of
+a script (and at the prompt, which asks for more with "> "). Nesting.
+`break`, `continue`. The condition is a command's exit status, so the
+shell also gains `test` / `[` as a built-in for strings, numbers and
+files (`-e`, `-f`, `-d`, `=`, `!=`, `-eq`, `-lt`...).
+**Check:** syscheck runs `sh -c` with each form, nested, with
+break/continue, false conditions, and syntax errors; a script file.
+
+### K3. `find` and `du` (S)
+
+`find [DIR] [-name PATTERN] [-type f|d]`: every path under DIR (lstat,
+not following links), filtered; `du [-s] [DIR]`: the space under each
+directory in KiB. Both refuse to loop (a directory reached twice by dev
+and inode is not entered again).
+**Check:** `make test-tools` runs both against a tree made for it; a
+loop made with a symbolic link is not followed.
+
+### K4. `/proc/<pid>/` (M)
+
+A directory per process, appearing and disappearing with it: `status`
+(name, state, user and group, parent, process group, memory in use) and
+`cmdline` (its arguments, NUL-separated). `/proc/self` for the reader's
+own. `ps` reads them instead of `/proc/tasks`.
+**Check:** unit tests (a task's directory appears, describes it, and is
+gone after it is reaped); syscheck reads its own `/proc/self/status` and
+a child's `cmdline`; `ps` unchanged in what it prints.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -956,6 +1002,8 @@ H1, H2, H3                       done
 I1 -> I2                         done
         |
 J1, J2 -> J3, J4                 done
+        |
+K1, K2, K3, K4                   in parallel
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
