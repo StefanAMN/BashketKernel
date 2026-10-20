@@ -771,6 +771,40 @@ and sees exactly the excess dropped; no leak afterwards.
 
 ---
 
+## Track I — Asking about a file, and the tools that need to
+
+Proposed on 2026-10-20, after track H. A program can learn a file's size,
+mode or owner today only by reading its directory; `cp`, `head`, `tail`,
+`grep` and `sort` do not exist.
+
+### I1. `stat`, `lstat` and `fstat` (S)
+
+One structure (type, permission bits, owner, group, size, link count,
+modification time, and the filesystem's inode or cluster number where it
+has one) filled from the node: by path, following a final symbolic link
+or not, and by descriptor (a pipe, a socket and the terminal report their
+type and no size). The permission rule is the one `open` applies to
+directories on the way; no right to read the file itself is needed, as in
+POSIX. `ls` uses `lstat` instead of what `readdir` happens to carry.
+**Check:** unit tests on the in-memory tree, FAT and ext2 (a hard link's
+count, a symbolic link with and without following); syscheck from ring 3,
+including a path through a directory the caller may not search (EACCES)
+and a bad pointer (EFAULT); `/bin/stat`.
+
+### I2. `cp`, `head`, `tail`, `grep`, `sort` (S)
+
+User programs, each reading files or standard input: `cp SRC DST` (or into
+a directory; the mode is copied, the owner is the caller's), `head -n N`,
+`tail -n N` (a file is read once, the last N lines kept in a ring),
+`grep [-v] [-c] TEXT` (fixed text, not regular expressions), `sort [-r]
+[-n]` (in memory, refusing input larger than it can hold rather than
+losing lines).
+**Check:** a scripted session that runs each against files with known
+answers, and `cp` of a large file compared with `cmp`-like reading in
+syscheck; the ext2 image passes `e2fsck` afterwards.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -831,6 +865,8 @@ F1, F2, F3, F4, F5               done
 G1, G2, G3                       done
         |
 H1, H2, H3                       done
+        |
+I1 -> I2                         next
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
