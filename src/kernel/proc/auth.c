@@ -36,6 +36,10 @@ bool auth_may_execute(uint32_t uid, const vnode_t *node) {
     return auth_permits(uid, group_for(uid), node, PERM_EXEC);
 }
 
+bool auth_may_search(uint32_t uid, const vnode_t *dir) {
+    return auth_permits(uid, group_for(uid), dir, PERM_EXEC);
+}
+
 bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child) {
     if (!dir || !child) return false;
     if (uid == UID_ROOT) return true;

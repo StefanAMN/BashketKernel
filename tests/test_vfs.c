@@ -5,6 +5,7 @@
 #include "file.h"
 #include "heap.h"
 #include "kerrno.h"
+#include "auth.h"
 
 // A file kept in memory, given its contents by pointer, found by a relative
 // path and read back. (In /tmp: on the system disk, a directory such as
@@ -267,6 +268,39 @@ TEST(initrd_stops_at_the_end_of_the_archive) {
 // Symbolic links in the tree kept in memory: followed in the middle of a
 // path and at its end, not at its end when asked; relative ones from the
 // link's directory; a loop is ELOOP, a link to nothing ENOENT
+// A lookup on someone's behalf needs search (execute) permission on every
+// directory it looks in, the last parent included; root and the kernel's
+// own lookups need none
+TEST(lookups_need_search_permission) {
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    vnode_t *dir = NULL, *file = NULL, *found = NULL, *parent = NULL;
+    char leaf[VFS_NAME_MAX];
+    EXPECT_EQ(vfs_create(tmp, "closed", VFS_DIRECTORY, &dir), 0);
+    EXPECT_EQ(vfs_create(dir, "f", VFS_FILE, &file), 0);
+    dir->uid = 1000;
+    dir->mode = 0700;
+
+    EXPECT_EQ(vfs_lookup_as(1001, NULL, "/tmp/closed/f", true, &found), -EACCES);
+    EXPECT_EQ(vfs_lookup_as(1001, tmp, "closed/./f", true, &found), -EACCES);
+    EXPECT_EQ(vfs_lookup_as(1001, dir, "f", true, &found), -EACCES);          // Starting inside is no way round
+    EXPECT_EQ(vfs_lookup_as(1001, NULL, "/tmp/closed", true, &found), 0);     // The directory itself: its parent is open
+    EXPECT_TRUE(found == dir);
+    EXPECT_EQ(vfs_find_parent_as(1001, NULL, "/tmp/closed/new", &parent, leaf), -EACCES);
+    EXPECT_EQ(vfs_find_parent_as(1001, NULL, "/tmp/closed/sub/new", &parent, leaf), -EACCES);
+
+    EXPECT_EQ(vfs_lookup_as(1000, NULL, "/tmp/closed/f", true, &found), 0);   // The owner
+    EXPECT_TRUE(found == file);
+    EXPECT_EQ(vfs_lookup_as(UID_ROOT, NULL, "/tmp/closed/f", true, &found), 0);
+    EXPECT_TRUE(vfs_find(NULL, "/tmp/closed/f") == file);                     // The kernel's own
+    dir->mode = 0701;                                                         // Search for others, nothing else
+    EXPECT_EQ(vfs_lookup_as(1001, NULL, "/tmp/closed/f", true, &found), 0);
+    EXPECT_EQ(vfs_find_parent_as(1001, NULL, "/tmp/closed/new", &parent, leaf), 0);
+    EXPECT_TRUE(parent == dir);
+
+    EXPECT_EQ(vfs_unlink(dir, "f"), 0);
+    EXPECT_EQ(vfs_unlink(tmp, "closed"), 0);
+}
+
 TEST(symbolic_links_in_memory) {
     vnode_t *tmp = vfs_find(NULL, "/tmp");
     vnode_t *dir = NULL, *file = NULL, *link = NULL;
@@ -318,4 +352,5 @@ void test_suite_vfs(void) {
     RUN_TEST(open_files_and_descriptors);
     RUN_TEST(initrd_stops_at_the_end_of_the_archive);
     RUN_TEST(symbolic_links_in_memory);
+    RUN_TEST(lookups_need_search_permission);
 }
