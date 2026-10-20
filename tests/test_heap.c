@@ -2,6 +2,7 @@
 #include "pmm.h"
 #include "heap.h"
 #include <string.h>
+#include "hrtimer.h"
 
 TEST(heap_allocation) {
     char *str = (char *)kmalloc(64);
@@ -77,9 +78,88 @@ TEST(heap_returns_memory_and_refuses_cleanly) {
     kfree(small);
 }
 
+// Many blocks of random sizes, allocated and freed in random order: every
+// block keeps its contents, and the heap's own bookkeeping stays consistent
+// (kheap_check walks all of it) and comes back to where it started
+TEST(heap_survives_random_use) {
+    static uint8_t *held[256];
+    static size_t sizes[256];
+    size_t bytes_before = kheap_get_allocated_bytes();
+    uint32_t seed = 12345;
+    for (int round = 0; round < 4000; round++) {
+        seed = seed * 1103515245u + 12345u;
+        int slot = (int)((seed >> 16) % 256);
+        if (held[slot]) {
+            for (size_t i = 0; i < sizes[slot]; i += 61) {
+                if (held[slot][i] != (uint8_t)(slot ^ i)) { EXPECT_TRUE(false); break; }
+            }
+            kfree(held[slot]);
+            held[slot] = NULL;
+        } else {
+            seed = seed * 1103515245u + 12345u;
+            sizes[slot] = 1 + (seed >> 16) % ((seed & 1) ? 64 : 9000);   // Mostly small, some large
+            held[slot] = kmalloc(sizes[slot]);
+            EXPECT_TRUE(held[slot] != NULL && ((uint64_t)held[slot] & 15) == 0);
+            if (held[slot]) for (size_t i = 0; i < sizes[slot]; i++) held[slot][i] = (uint8_t)(slot ^ i);
+        }
+        if (round % 500 == 0) EXPECT_TRUE(kheap_check());
+    }
+    for (int slot = 0; slot < 256; slot++) {
+        kfree(held[slot]);
+        held[slot] = NULL;
+    }
+    EXPECT_TRUE(kheap_check());
+    EXPECT_TRUE(kheap_get_allocated_bytes() == bytes_before);
+}
+
+// Freed neighbours merge on both sides, so the space can be used whole again;
+// freeing twice is refused rather than corrupting the lists
+TEST(heap_merges_neighbours) {
+    uint8_t *a = kmalloc(4000), *b = kmalloc(4000), *c = kmalloc(4000);
+    EXPECT_TRUE(a && b && c && b > a && c > b);
+    kfree(a);
+    kfree(c);
+    kfree(b);                                   // Merges with both
+    EXPECT_TRUE(kheap_check());
+    uint8_t *whole = kmalloc(12000);            // Fits in the merged space, where a was
+    EXPECT_TRUE(whole == a);
+    kfree(whole);
+    kfree(whole);                               // Reported and ignored
+    EXPECT_TRUE(kheap_check());
+}
+
+// The cost of kmalloc and kfree does not grow with the number of blocks in
+// use: the previous allocator walked every block in both
+TEST(heap_speed_does_not_depend_on_blocks_in_use) {
+    static void *held[3000];
+    // Time 2000 small kmalloc/kfree pairs with nothing extra held, then with
+    // 3000 more blocks in use; best of three each, against noise
+    uint64_t alone = (uint64_t)-1, crowded = (uint64_t)-1;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint64_t start = clock_ns();
+        for (int i = 0; i < 2000; i++) kfree(kmalloc(48));
+        uint64_t t = clock_ns() - start;
+        if (t < alone) alone = t;
+    }
+    for (int i = 0; i < 3000; i++) held[i] = kmalloc(48);
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint64_t start = clock_ns();
+        for (int i = 0; i < 2000; i++) kfree(kmalloc(48));
+        uint64_t t = clock_ns() - start;
+        if (t < crowded) crowded = t;
+    }
+    for (int i = 0; i < 3000; i++) kfree(held[i]);
+    kprintf("    2000 kmalloc/kfree: %lu us alone, %lu us with 3000 blocks in use\n", alone / 1000, crowded / 1000);
+    EXPECT_TRUE(crowded < 3 * alone + 2000000);  // (2 ms of slack for a slow host)
+    EXPECT_TRUE(kheap_check());
+}
+
 void test_suite_heap(void) {
     kprintf("Suite: Kernel Heap (kmalloc / kfree)\n");
     RUN_TEST(heap_allocation);
     RUN_TEST(heap_multiple_allocations);
     RUN_TEST(heap_returns_memory_and_refuses_cleanly);
+    RUN_TEST(heap_survives_random_use);
+    RUN_TEST(heap_merges_neighbours);
+    RUN_TEST(heap_speed_does_not_depend_on_blocks_in_use);
 }

@@ -635,7 +635,14 @@ made by `mke2fs -d` on the host are followed by the kernel; a loop of
 links gives `ELOOP`; removing one name of a hard-linked file leaves the
 other.
 
-### F4. A faster `kmalloc` (S)
+### F4. A faster `kmalloc` (S) — done
+
+Done differently from the proposal: not size classes on top of the slab
+allocator, but boundary tags (each block knows its own size and its
+predecessor's, so freeing merges both neighbours at once) and free lists
+by power-of-two size class (only the requested class is searched: any
+block in a higher one is big enough). 2000 allocations take the same time
+with 3000 blocks in use as with none. The proposal:
 
 `kmalloc` and `kfree` walk every block of the heap (repair 5). Size classes
 for small blocks (the slab allocator is already there) and a free list
@@ -678,7 +685,7 @@ plan:
    counter) a few ticks are lost under heavy console output, because drawing
    runs with interrupts off. One-shot mode reads the count off the clock.
 4. (Done in F5: PID 0 moves to a guarded kernel stack at boot.)
-5. `kmalloc` and `kfree` are linear in the number of blocks.
+5. (Done in F4: `kmalloc` and `kfree` no longer walk the heap.)
 6. The ARP cache never expires entries; a socket's queue holds eight
    datagrams.
 7. The forged-frame case of `sigreturn` has no targeted test (the frame is

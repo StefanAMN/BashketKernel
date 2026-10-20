@@ -1,9 +1,12 @@
 /**
  * @file heap.h
- * @brief Kernel Dynamic Heap Allocator (`kmalloc` / `kfree`) Interface
- * 
- * Provides dynamic memory allocation on the kernel heap starting at virtual 
- * address `0xFFFF900000000000`.
+ * @brief The kernel heap: kmalloc and kfree
+ *
+ * Blocks of any size from one stretch of kernel address space starting at
+ * KHEAP_START_VIRT, grown a page at a time and given back to the frame
+ * allocator when a large stretch at its end is free. Neither call depends
+ * on how many blocks are in use (heap.c says how). Safe from any CPU and
+ * from interrupt handlers; never sleeps.
  */
 
 #ifndef HEAP_H
@@ -20,21 +23,21 @@
 #define KHEAP_TRIM_KEEP (64 * 1024)          // Free space kept at the end after returning frames
 
 /**
- * @brief Initialize Kernel Heap Manager.
- * Maps initial virtual pages via VMM and PMM.
+ * @brief Map the heap's first KHEAP_INITIAL_SIZE bytes. Call once, after
+ *        the frame allocator and the page tables.
  */
 void kheap_init(void);
 
 /**
- * @brief Allocate dynamic memory from kernel heap.
- * @param size Number of payload bytes requested.
- * @return 16-byte aligned pointer to allocated memory block, or NULL if OOM.
+ * @brief Allocate `size` bytes (not cleared).
+ * @return A 16-byte aligned pointer, or NULL for 0 bytes, more than
+ *         KHEAP_MAX_ALLOC, or when no frames can be had to grow the heap.
  */
 void *kmalloc(size_t size);
 
 /**
- * @brief Free previously allocated heap block.
- * @param ptr Pointer to payload block returned by `kmalloc`.
+ * @brief Give back a block kmalloc returned (NULL is allowed). Freeing a
+ *        block twice is reported and ignored.
  */
 void kfree(void *ptr);
 
@@ -53,5 +56,12 @@ size_t kheap_get_mapped_bytes(void);
  * @brief Number of kmalloc calls refused for lack of memory since boot.
  */
 size_t kheap_get_failed_allocations(void);
+
+/**
+ * @brief For tests: walk every block and every free list and check that
+ *        they agree (sizes chain up, no two free blocks touch, each free
+ *        block is on the right list exactly once, the byte count is right).
+ */
+bool kheap_check(void);
 
 #endif // HEAP_H
