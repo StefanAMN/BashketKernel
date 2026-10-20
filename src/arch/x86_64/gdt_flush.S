@@ -43,3 +43,7 @@ tss_flush:
     mov ax, di
     ltr ax
     ret
+
+// No executable stack: without this note the linker assumes this object
+// needs one (and binutils older than 2.45 warns, failing the CI build)
+.section .note.GNU-stack,"",@progbits

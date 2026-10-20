@@ -93,3 +93,7 @@ call_on_stack:
     xor ebp, ebp                // No frame above this one, for a backtrace
     call rsi
     ud2                         // fn returned: there is nowhere to go back to
+
+// No executable stack: without this note the linker assumes this object
+// needs one (and binutils older than 2.45 warns, failing the CI build)
+.section .note.GNU-stack,"",@progbits
