@@ -7,6 +7,9 @@
  * only work if pages are pushed out to the swap disk and brought back
  * (src/mm/swap.h). Then it forks, and parent and child each check and
  * change pages that are on the disk at that moment: each must see its own.
+ * Last, it reads 4 MiB from /dev/zero into pages that are on the disk while
+ * less than that is free: the kernel has to push other pages out to bring
+ * the buffer back (and must not push out the buffer itself).
  *
  * Exits 0 if every value was right; 2 if the kernel would not promise the
  * memory (which is the right answer on a machine without a swap disk).
@@ -127,6 +130,31 @@ int main(int argc, char **argv) {
     }
     close(ends[0]);
     close(ends[1]);
+
+    /* A system call whose buffer is mostly on the disk and larger than the
+     * free memory: a quarter of the region, at most 4 MiB, from the start
+     * (the first pages went out again in the last pass). Its pages come
+     * back zeroed; the rest still hold what they held. */
+    unsigned long call_pages = pages / 4 < 1024 ? pages / 4 : 1024;
+    long free_kb = meminfo("MemFree:", 0);
+    long zero = open("/dev/zero", O_RDONLY);
+    long got = zero < 0 ? zero : read((int)zero, memory, call_pages * PAGE);
+    if (zero >= 0) close((int)zero);
+    if (got != (long)(call_pages * PAGE)) {
+        printf("swapper: FAILED, a read() into %lu kB of swapped memory returned %ld\n", call_pages * 4, got);
+        return 1;
+    }
+    unsigned long bad = 0;
+    for (unsigned long i = 0; i < pages; i++) {
+        const unsigned long *page = memory + i * (PAGE / sizeof(unsigned long));
+        if (i < call_pages ? (page[0] | page[255] | page[511]) != 0
+                           : page[0] != value_of(i, 2) || page[511] != i) bad++;
+    }
+    if (bad) {
+        printf("swapper: FAILED, %lu pages wrong after a read() into swapped memory\n", bad);
+        return 1;
+    }
+    printf("swapper: a read() of %lu kB into swapped-out memory with %ld kB free\n", call_pages * 4, free_kb);
 
     long out = meminfo("Swapped:", 0) - out_before, in = meminfo("Swapped:", 1) - in_before;
     munmap(memory, pages * PAGE);

@@ -537,9 +537,10 @@ test-swap: iso
 	tools/qemu_shell.py --quiet --mem 64M --timeout 300 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
 		--expect 'swap: disk [0-9], 16383 pages' \
 		--expect 'swapper: 80 MiB written and read back; [0-9]{5,} pages went out to disk, [0-9]{5,} came back' \
+		--expect 'swapper: a read\(\) of 4096 kB into swapped-out memory with ([0-9]{1,3}|[0-3][0-9]{3}) kB free' \
 		--expect 'syscheck: all checks passed' \
 		--expect 'SwapFree:   65532 kB' --forbid 'swapper: FAILED|could not be read back|out of memory' \
-		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[^\n]*\n[^\n]*){2}' \
+		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[\s\S]*){2}' \
 		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' '@wait:8' 'exit' \
 		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
 		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
