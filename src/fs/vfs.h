@@ -52,7 +52,11 @@ typedef struct vnode_ops {
     // Files
     int64_t (*read)(struct vnode *node, size_t offset, void *buf, size_t count);
     int64_t (*write)(struct vnode *node, size_t offset, const void *buf, size_t count);
-    int (*truncate)(struct vnode *node);   // Cut the file to zero length
+    // Cut the file to `size` bytes (less than it has): free what is past
+    // it, and zero the rest of the last block so that it reads as zeros if
+    // the file grows again. 0 or a negative error number. (Growing is done
+    // by the VFS, by writing zeros.)
+    int (*truncate)(struct vnode *node, size_t size);
 
     // Directories whose entries are stored somewhere (a disk). create makes
     // the entry and attaches the new node with vfs_attach; remove deletes
@@ -98,6 +102,10 @@ typedef struct vnode_ops {
     // the inode number) with what the filesystem stores. May read the disk.
     // 0 or a negative error number.
     int (*stat)(struct vnode *node, struct vfs_stat *st);
+
+    // Record node->mtime where the filesystem keeps it (utime). NULL: only
+    // in memory. 0 or a negative error number.
+    int (*touch)(struct vnode *node);
 } vnode_ops_t;
 
 typedef struct vnode {
@@ -263,10 +271,21 @@ size_t vfs_read(vnode_t *file, size_t offset, size_t count, void *buf);
 size_t vfs_write(vnode_t *file, size_t offset, size_t count, const void *buf);
 
 /**
- * @brief Cut a file to `size` bytes. Only shrinking is supported; a file on
- *        a disk can only be cut to nothing (its `truncate` operation).
+ * @brief Make a file `size` bytes long. Shorter: what was past the end is
+ *        gone (and reads as zeros if the file grows again). Longer: zeros
+ *        are added, all or nothing. Takes the tree lock; may sleep (a disk).
+ * @return 0; -EINVAL if `file` is not a file (or a device, or in /proc);
+ *         -ENOSPC (nothing changed) if the zeros do not fit; -EIO, -EFBIG
+ *         from the filesystem.
  */
-void vfs_truncate(vnode_t *file, size_t size);
+int vfs_truncate(vnode_t *file, size_t size);
+
+/**
+ * @brief Set a file's modification time (Unix seconds) and record it where
+ *        its filesystem keeps it (ops->touch). Takes the tree lock.
+ * @return 0 or a negative error number (-EIO).
+ */
+int vfs_set_mtime(vnode_t *node, uint32_t seconds);
 
 /**
  * @brief Find the directory that would contain `path`: absolute, or

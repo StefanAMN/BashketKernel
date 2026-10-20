@@ -310,7 +310,8 @@ test-disk: iso
 		'echo gone > temp.txt' 'rm temp.txt' 'rm notes/empty.txt' 'echo replaced > readme.txt' \
 		'echo long > "A name too long for eight and three.txt"' 'echo mixed > MixedCase.Txt' \
 		'mkdir "Project Files"' 'mv log.txt "Project Files/Log of events.txt"' 'mv work "Project Files/Work"' \
-		'echo doomed > "Remove me, please.txt"' 'rm "Remove me, please.txt"' 'mv MixedCase.Txt renamed.txt' 'exit' \
+		'echo doomed > "Remove me, please.txt"' 'rm "Remove me, please.txt"' 'mv MixedCase.Txt renamed.txt' \
+		'cat pattern.bin > cut.bin' 'truncate -s 5000 cut.bin' 'truncate -s 9000 cut.bin' 'touch -d 1000000000 note.txt' 'exit' \
 		> $(BUILD)/fs-boot1.log 2>&1 \
 		|| { echo "filesystem: FAILED in the first boot (see $(BUILD)/fs-boot1.log)"; exit 1; }
 	@if command -v fsck.fat >/dev/null; then fsck.fat -n $(BUILD)/fs-persist.img > $(BUILD)/fs-fsck.log 2>&1 \
@@ -320,9 +321,10 @@ test-disk: iso
 		--expect 'temp.txt: no such file' --forbid 'empty.txt' \
 		--expect 'long\nmixed\n' --expect 'Log of events.txt' --expect 'Work/' \
 		--forbid 'Remove me' --forbid 'MixedCase' --forbid '~1' \
+		--expect 'cut.bin\n  Type: file  Size: 9000 ' --expect 'Modified: 2001-09-09 01:46:40' \
 		'exec /bin/sh' 'cd /disk' 'cat note.txt "Project Files/Log of events.txt" "Project Files/Work/a.txt" readme.txt' \
 		'wc copy.bin' 'ls notes' 'cat temp.txt' 'cat "A name too long for eight and three.txt" renamed.txt' \
-		'ls' 'ls "Project Files"' 'exit' > $(BUILD)/fs-boot2.log 2>&1 \
+		'ls' 'ls "Project Files"' 'stat cut.bin note.txt' 'exit' > $(BUILD)/fs-boot2.log 2>&1 \
 		|| { echo "filesystem: FAILED, the second boot does not see the files (see $(BUILD)/fs-boot2.log)"; exit 1; }
 	@echo "disk persistence (files, checked by fsck.fat): ok"
 	@for kind in file-loop dir-loop dir-cycle fat-garbage huge-size bad-cluster; do \
@@ -434,7 +436,8 @@ test-home: iso
 		'chmod 600 kept.txt' 'mkdir projects' 'mv notes.txt projects/notes.txt' 'cat /bin/sh > projects/shell.bin' \
 		'echo gone > temp.txt' 'rm temp.txt' 'rm diary.txt' 'echo no > /home/bob/intruder.txt' 'cat /home/bob/hello.txt' \
 		'ln -s projects/notes.txt short-link' 'ln -s /home/alice/projects/./././././././././././././././notes.txt long-link' \
-		'ln projects/notes.txt notes-again' \
+		'ln projects/notes.txt notes-again' 'cat /bin/sh > cut.bin' 'truncate -s 400000 cut.bin' \
+		'truncate -s 300000 cut.bin' 'truncate -s 100000 cut.bin' 'truncate -s 1000 cut.bin' 'touch -d 1000000000 kept.txt' \
 		'exit' '!exec /bin/login bob' '~bob\r' 'cat /home/alice/kept.txt' \
 		'echo from bob > /home/bob/second.txt' 'exit' > $(BUILD)/home-boot1.log 2>&1 \
 		|| { echo "home: FAILED in the first boot (see $(BUILD)/home-boot1.log)"; exit 1; }; \
@@ -448,11 +451,12 @@ test-home: iso
 		--expect 'lrwxrwxrwx +1 +1000 +100 +18 [0-9-]+ [0-9:]+ short-link -> projects/notes.txt' \
 		--expect 'long-link -> /home/alice/projects/\./\./' --expect '(Alice keeps her notes here\.\n){3}' \
 		--forbid 'diary' --forbid 'temp.txt' --forbid 'intruder' \
+		--expect 'cut.bin\n  Type: file  Size: 1000 ' --expect 'kept.txt\n.*\n.*\n  Modified: 2001-09-09 01:46:40' \
 		'exec /bin/ls -l /home/alice' 'exec /bin/ls -l /home/bob' \
 		'exec /bin/cat /home/alice/kept.txt /home/alice/projects/notes.txt' \
 		'exec /bin/cat /home/alice/short-link /home/alice/long-link /home/alice/notes-again' \
 		'exec /bin/sh -c "wc /home/alice/projects/shell.bin > /tmp/a"' 'exec /bin/sh -c "wc /bin/sh > /tmp/b"' \
-		'exec /bin/sh /home/../etc/compare.sh' > $(BUILD)/home-boot2.log 2>&1 \
+		'exec /bin/sh /home/../etc/compare.sh' 'exec /bin/stat /home/alice/cut.bin /home/alice/kept.txt' > $(BUILD)/home-boot2.log 2>&1 \
 		|| { echo "home: FAILED, the second boot does not see the files as they were left (see $(BUILD)/home-boot2.log)"; exit 1; }; \
 	echo "home (ext2: owners and modes across a reboot, checked by e2fsck): ok"
 	@if [ -n "$(ROOT_FLAGS)" ]; then for kind in dir-reclen dir-overrun block-outside indirect-loop huge-size inode-table bitmap-full root-not-dir; do \

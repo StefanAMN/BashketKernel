@@ -872,7 +872,15 @@ longer than a line (4 KiB) is refused rather than cut.
 **Check:** a scripted session: in quotes and not, nested, a failing
 command (its status in `$?`), too much output.
 
-### J4. `truncate`, `ftruncate` and file times (S)
+### J4. `truncate`, `ftruncate` and file times (M) — done
+
+Done as proposed (system calls 317 to 319), and larger than the "S" it
+was given: cutting an ext2 file part way through its block tree, in an
+order that a crash can only leak from. The first tests grew files back
+with `truncate`, which writes zeros over the cut block's tail itself, so
+leaving the tail unzeroed went unnoticed; growing by one write at the far
+end exposes it, on both filesystems. Devices and `/proc` files have no
+length to change. The proposal:
 
 Two system calls to set a file's length (shorter: the end is gone;
 longer: zeros), on memory, FAT and ext2, permission as for writing;
@@ -947,7 +955,7 @@ H1, H2, H3                       done
         |
 I1 -> I2                         done
         |
-J1, J2 -> J3, J4                 next
+J1, J2 -> J3, J4                 done
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem

@@ -10,6 +10,7 @@
 #include "kstring.h"
 #include "kerrno.h"
 #include "auth.h"
+#include "walltime.h"
 
 static vnode_t *vfs_root = NULL;
 static uint64_t next_serial = 1;         // For vnode_t.serial (under the tree lock, but for the root)
@@ -55,7 +56,7 @@ static vnode_t * vfs_create_file_unlocked(vnode_t *parent, const char *name, con
 static vnode_t * vfs_create_device_unlocked(vnode_t *parent, const char *name, const vnode_ops_t *ops);
 static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path);
 static int walk(vnode_t *base, const char *path, bool follow_last, uint32_t uid, vnode_t **out);
-static void vfs_truncate_unlocked(vnode_t *file, size_t size);
+static int vfs_truncate_unlocked(vnode_t *file, size_t size);
 static int vfs_unlink_unlocked(vnode_t *parent, const char *name);
 static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void *buf);
 static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, const void *buf);
@@ -456,15 +457,37 @@ static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, con
 }
 
 // See vfs_truncate. Caller holds the tree lock.
-static void vfs_truncate_unlocked(vnode_t *file, size_t size) {
-    if (!file || file->type != VFS_FILE) return;
+static int vfs_truncate_unlocked(vnode_t *file, size_t size) {
+    if (!file || file->type != VFS_FILE) return -EINVAL;
+    // A node whose contents come from functions but which has no truncate
+    // is a device or a /proc file: it has no length to change (growing
+    // would write zeros to the device itself)
+    if (file->ops && !file->ops->truncate) return -EINVAL;
+    size_t old = file->size;
 
-    if (file->ops) {
-        // Only cutting to nothing is offered to filesystems
-        if (size == 0 && file->ops->truncate) file->ops->truncate(file);
-        return;
+    if (size < old) {
+        if (!file->ops) {                                  // In memory: a later write zeroes any gap
+            file->size = size;
+            file->mtime = walltime_seconds();
+            return 0;
+        }
+        return file->ops->truncate(file, size);
     }
-    if (size < file->size) file->size = size;
+
+    // Longer: write zeros up to the new end, through the filesystem's own
+    // write (which allocates and records the size), a page at a time
+    static const uint8_t zeros[4096];
+    size_t at = old;
+    while (at < size) {
+        size_t chunk = size - at < sizeof(zeros) ? size - at : sizeof(zeros);
+        size_t n = vfs_write_unlocked(file, at, chunk, zeros);
+        if (n == 0) {                                      // Full: back to how it was
+            vfs_truncate_unlocked(file, old);
+            return -ENOSPC;
+        }
+        at += n;
+    }
+    return 0;
 }
 
 // See vfs_unlink. Caller holds the tree lock.
@@ -664,10 +687,22 @@ vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
     return result;
 }
 
-void vfs_truncate(vnode_t *file, size_t size) {
+int vfs_truncate(vnode_t *file, size_t size) {
     vfs_lock();
-    vfs_truncate_unlocked(file, size);
+    int result = vfs_truncate_unlocked(file, size);
     vfs_unlock();
+    return result;
+}
+
+int vfs_set_mtime(vnode_t *node, uint32_t seconds) {
+    if (!node) return -EINVAL;
+    vfs_lock();
+    uint32_t old = node->mtime;
+    node->mtime = seconds;
+    int result = (node->ops && node->ops->touch) ? node->ops->touch(node) : 0;
+    if (result < 0) node->mtime = old;
+    vfs_unlock();
+    return result;
 }
 
 int vfs_lookup(vnode_t *base, const char *path, bool follow_last, vnode_t **out) {

@@ -60,6 +60,10 @@
 #define SYS_STAT     314
 #define SYS_LSTAT    315
 #define SYS_FSTAT    316
+#define SYS_TRUNCATE  317
+#define SYS_FTRUNCATE 318
+#define SYS_UTIME     319
+#define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
 #define SYS_SHMGET   29

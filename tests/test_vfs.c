@@ -74,8 +74,19 @@ TEST(vfs_write_semantics) {
     EXPECT_EQ(vfs_read(file, 1016, sizeof(buf), buf), 0u);   // At the end
     EXPECT_EQ(vfs_read(file, 5000, sizeof(buf), buf), 0u);   // Past the end
 
-    vfs_truncate(file, 4);
+    uint8_t first4[4];
+    EXPECT_EQ(vfs_read(file, 0, 4, first4), 4u);
+    EXPECT_EQ(vfs_truncate(file, 4), 0);
     EXPECT_EQ(file->size, 4u);
+    // Grown again: zeros where the cut data was, not the data
+    EXPECT_EQ(vfs_truncate(file, 1000), 0);
+    EXPECT_EQ(file->size, 1000u);
+    EXPECT_EQ(vfs_read(file, 0, sizeof(buf), buf), sizeof(buf));
+    EXPECT_EQ(memcmp(buf, first4, 4), 0);
+    bool zeros = true;
+    for (size_t i = 4; i < sizeof(buf); i++) if (buf[i] != 0) zeros = false;
+    EXPECT_TRUE(zeros);
+    EXPECT_EQ(vfs_truncate(tmp, 0), -EINVAL);                 // Not a file
 
     // Removing the file gives back the node and its buffer
     EXPECT_EQ(vfs_unlink(tmp, "vfs_write_test"), 0);

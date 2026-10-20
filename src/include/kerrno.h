@@ -29,8 +29,8 @@
 #define EMFILE  24   // Too many open files
 #define EFBIG   27   // File too large
 #define ENOSPC  28   // No space left
-#define ESPIPE  29
-#define EROFS   30   // Read-only filesystem   // Illegal seek
+#define ESPIPE  29   // Illegal seek
+#define EROFS   30   // Read-only filesystem
 #define EPIPE   32   // Broken pipe
 #define EMLINK  31   // Too many links to one file
 #define ENAMETOOLONG 36

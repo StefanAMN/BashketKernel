@@ -95,6 +95,9 @@
 #define SYS_STAT        314  // (path, struct vfs_stat *): describe what path names, following a final link
 #define SYS_LSTAT       315  // (path, struct vfs_stat *): the same, describing a final link itself
 #define SYS_FSTAT       316  // (fd, struct vfs_stat *): describe an open file (a pipe, a socket, the terminal too)
+#define SYS_TRUNCATE    317  // (path, length): make a file that long (shorter: cut; longer: zeros)
+#define SYS_FTRUNCATE   318  // (fd, length): the same for a file open for writing
+#define SYS_UTIME       319  // (path, seconds): set a file's modification time; UTIME_NOW: now
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105
 #define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen
