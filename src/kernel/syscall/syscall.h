@@ -98,6 +98,8 @@
 #define SYS_TRUNCATE    317  // (path, length): make a file that long (shorter: cut; longer: zeros)
 #define SYS_FTRUNCATE   318  // (fd, length): the same for a file open for writing
 #define SYS_UTIME       319  // (path, seconds): set a file's modification time; UTIME_NOW: now
+#define SYS_SETGROUPS   320  // (count, const uint32_t *list): root only; at most 16; the caller's supplementary groups
+#define SYS_GETGROUPS   321  // (size, uint32_t *list): the caller's supplementary groups; returns how many (size 0: only that)
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105
 #define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen

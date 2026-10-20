@@ -137,6 +137,31 @@ TEST(group_and_execute_bits) {
     EXPECT_EQ(process_spawn("/etc/passwd", NULL), -1);
 }
 
+// A process in several groups: the group digit applies when the file's
+// group is any one of them, and still only when it is not the owner
+TEST(supplementary_groups) {
+    vnode_t file = { .type = VFS_FILE, .uid = 1000, .gid = 50, .mode = 0640 };
+    const uint32_t groups[] = { 7, 50, 9 };
+
+    EXPECT_TRUE(!auth_permits(1001, 100, &file, PERM_READ));                      // Own group only: others' digit
+    EXPECT_TRUE(auth_permits_groups(1001, 100, groups, 3, &file, PERM_READ));      // 50 is the second of three
+    EXPECT_TRUE(!auth_permits_groups(1001, 100, groups, 3, &file, PERM_WRITE));    // The group's digit is r--
+    EXPECT_TRUE(!auth_permits_groups(1001, 100, groups, 1, &file, PERM_READ));     // Only the count is looked at
+    EXPECT_TRUE(auth_permits_groups(1001, 100, groups + 1, 1, &file, PERM_READ));
+    EXPECT_TRUE(!auth_permits_groups(1001, 100, NULL, 0, &file, PERM_READ));
+
+    // The owner's digit wins over a group that would allow more
+    file.mode = 0070;
+    EXPECT_TRUE(!auth_permits_groups(1000, 100, groups, 3, &file, PERM_READ));
+    // A file in "no group" matches nobody's list, even a list holding GID_NONE
+    const uint32_t none[] = { GID_NONE };
+    file.gid = GID_NONE;
+    EXPECT_TRUE(!auth_permits_groups(1001, GID_NONE, none, 1, &file, PERM_READ));
+
+    // A kernel thread (this test) is in root's group only
+    EXPECT_TRUE(auth_current_in_group(GID_ROOT) && !auth_current_in_group(50));
+}
+
 // Writing to a set-uid file takes the bit away, unless root is the writer
 TEST(setuid_bit_does_not_survive_a_rewrite) {
     file_t *file = NULL;
@@ -164,5 +189,6 @@ void test_suite_auth(void) {
     RUN_TEST(permission_rules);
     RUN_TEST(open_respects_permissions);
     RUN_TEST(group_and_execute_bits);
+    RUN_TEST(supplementary_groups);
     RUN_TEST(setuid_bit_does_not_survive_a_rewrite);
 }

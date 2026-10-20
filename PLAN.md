@@ -213,7 +213,7 @@ The promise limit does not cover fork or copy-on-write.
 - **Check:** `/bin/stress` variants; a program mapped from `/disk` whose
   untouched pages are never read from the disk.
 
-### B5. Permissions: the rest (M) — done, with one group per process
+### B5. Permissions: the rest (M) — done (supplementary groups: L4)
 
 Done: a group per process and per file with the group's permission digit,
 the execute bit (checked by `execve`), set-uid programs with real and
@@ -221,8 +221,8 @@ effective user ids, `umask`, `su` and `passwd`, salted PBKDF2 password
 hashes (checked against Python's implementation: `tools/mkpasswd.py` makes
 the lines `/bin/login` accepts), and owners for shared memory segments.
 
-Not done: supplementary groups, the execute ("search") bit on directories,
-set-gid and sticky bits. Owners for files on `/disk` wait for a filesystem
+Not done: set-gid and sticky bits. (Supplementary groups came with L4,
+search permission on directories with smaller repair 11.) Owners for files on `/disk` wait for a filesystem
 that can store them (C2), and a password changed with `passwd` is lost at
 reboot for the same reason: `/etc` is in the initrd.
 
@@ -998,7 +998,7 @@ with ranges (`a-z`). **Check:** `make test-tools` and syscheck, with
 input lines longer than any fixed buffer and input without a final
 newline.
 
-### L4. Supplementary groups (M)
+### L4. Supplementary groups (M) — done
 
 A process is in one group; a user in several groups (`/etc/group`) can
 only use one. Add a list of up to 16 more per process, copied by `fork`,
@@ -1008,6 +1008,12 @@ permission check counts a match with any of them. `/bin/login` and
 unit tests in `tests/` for the permission check; syscheck for the calls
 (non-root refused, too many refused, fork copies); `make test-login`: a
 user reads a file through a second group.
+Done as described: `setgroups` is 320, `getgroups` 321; `/etc/group` is
+`name:x:gid:members` (`user/lib/password.c` reads it); a file owner may
+also `chown` a file into any group they are in. The test file is
+`/srv/staff.txt` (0640, group staff, 50), made by `tools/mkroot.sh`.
+Sabotage: with the list ignored by the check, the unit test, syscheck
+and `test-login` failed; with `fork` not copying it, syscheck did.
 
 ### L5. DHCP lease renewal (S)
 
@@ -1091,7 +1097,7 @@ J1, J2 -> J3, J4                 done
 K1, K2, K3, K4                   done (in parallel)
         |
 L1                               done
-L2, L3, L4, L5                   in parallel
+L2, L3, L4, L5                   in parallel (L4 done)
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem
