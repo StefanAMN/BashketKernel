@@ -10,8 +10,10 @@
  * failed). A pipeline is one or more programs joined by '|'. Each may redirect
  * its input with "< file" and its output with "> file" or ">> file".
  * A program name without a '/' is looked up in the directories of $PATH.
- * An unquoted word with *, ? or [...] is replaced by the names it matches,
- * sorted (user/lib/glob.h); one that matches nothing stays as typed.
+ * A word may join plain, "double quoted" ($ expanded) and 'single quoted'
+ * (taken as it is) parts. A word with *, ? or [...] and no quoted part is
+ * replaced by the names it matches, sorted (user/lib/glob.h); one that
+ * matches nothing stays as typed.
  * $NAME expands to an environment variable and $? to the last exit status;
  * "export NAME=value" sets one for the shell and everything it starts.
  *
@@ -191,59 +193,75 @@ static int is_name_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
-/* The next word of the line at *cursor (quotes and $variables applied),
- * stored in word_storage from *used on; moves *cursor past it. NULL if no
- * word starts here (the end of the line, an operator), a quote is not
- * closed, or the line's words do not fit in word_storage. *was_quoted (if
- * not NULL) says whether it was in quotes, where wildcards are text. */
+/* Append the value of the variable at *p ($NAME or $?, *p just after the
+ * '$') to `word` (length *len, in word_storage from `used`), and move *p
+ * past its name. An unset variable is nothing. 0, or -1 if it does not fit. */
+static int append_variable(const char **p, char *word, size_t *len, size_t used) {
+    char name[32], status_text[12];
+    const char *value;
+    size_t n = 0;
+    if (**p == '?') {
+        (*p)++;
+        int v = last_status, digits = 0;
+        char tmp[12];
+        do { tmp[digits++] = (char)('0' + v % 10); v /= 10; } while (v > 0);
+        for (int i = 0; i < digits; i++) status_text[i] = tmp[digits - 1 - i];
+        status_text[digits] = '\0';
+        value = status_text;
+    } else {
+        while (is_name_char(**p) && n < sizeof(name) - 1) name[n++] = *(*p)++;
+        name[n] = '\0';
+        value = getenv(name);
+    }
+    for (; value && *value; value++) {
+        if (used + *len + 1 >= sizeof(word_storage)) return -1;
+        word[(*len)++] = *value;
+    }
+    return 0;
+}
+
+/* The next word of the line at *cursor, stored in word_storage from *used
+ * on; moves *cursor past it. A word runs to a blank or an operator outside
+ * quotes, and may be made of parts: plain text, "double quoted" ($NAME and
+ * $? expanded, blanks and operators kept) and 'single quoted' (everything
+ * kept as it is): `"a b"c` is one word, `a b c`. NULL if no word starts
+ * here (the end of the line, an operator), a quote is not closed, or the
+ * line's words do not fit in word_storage. *was_quoted (if not NULL) says
+ * whether any part was in quotes: such a word is not a wildcard pattern. */
 static char *next_word(const char **cursor, size_t *used, int *was_quoted) {
     const char *p = *cursor;
     while (is_blank(*p)) p++;
 
     char *word = word_storage + *used;
     size_t len = 0;
-    int quoted = (*p == '"');
-    if (quoted) p++;
-    if (was_quoted) *was_quoted = quoted;
-    const char *start = p;
-
-    while (*p != '\0' && (quoted ? *p != '"' : (!is_blank(*p) && !is_operator(*p)))) {
-        /* $NAME is replaced by the value of that environment variable
-         * (nothing, if it is not set); $? by the last exit status */
-        if (*p == '$' && (is_name_char(p[1]) || p[1] == '?')) {
-            char name[32], status_text[12];
-            const char *value;
-            size_t n = 0;
-            p++;
-            if (*p == '?') {
-                p++;
-                int v = last_status, digits = 0;
-                char tmp[12];
-                do { tmp[digits++] = (char)('0' + v % 10); v /= 10; } while (v > 0);
-                for (int i = 0; i < digits; i++) status_text[i] = tmp[digits - 1 - i];
-                status_text[digits] = '\0';
-                value = status_text;
-            } else {
-                while (is_name_char(*p) && n < sizeof(name) - 1) name[n++] = *p++;
-                name[n] = '\0';
-                value = getenv(name);
-            }
-            for (; value && *value; value++) {
-                if (*used + len + 1 >= sizeof(word_storage)) return NULL;
-                word[len++] = *value;
-            }
-            continue;
+    char quote = 0;                   /* The quote we are inside, or 0 */
+    int quoted = 0, any = 0;
+    for (;;) {
+        char c = *p;
+        if (c == '\0') {
+            if (quote) return NULL;   /* Missing closing quote */
+            break;
         }
-
-        if (*used + len + 1 >= sizeof(word_storage)) return NULL;
-        word[len++] = *p++;
+        if (!quote && (is_blank(c) || is_operator(c))) break;
+        any = 1;
+        if (!quote && (c == '"' || c == '\'')) {
+            quote = c;
+            quoted = 1;
+            p++;
+        } else if (quote && c == quote) {
+            quote = 0;
+            p++;
+        } else if (c == '$' && quote != '\'' && (is_name_char(p[1]) || p[1] == '?')) {
+            p++;
+            if (append_variable(&p, word, &len, *used) < 0) return NULL;
+        } else {
+            if (*used + len + 1 >= sizeof(word_storage)) return NULL;
+            word[len++] = c;
+            p++;
+        }
     }
-    if (quoted) {
-        if (*p != '"') return NULL; /* Missing closing quote */
-        p++;
-    } else if (p == start) {
-        return NULL;                /* No word here at all */
-    }
+    if (!any) return NULL;            /* No word here at all ("" is one: empty) */
+    if (was_quoted) *was_quoted = quoted;
 
     word[len] = '\0';
     *used += len + 1;
@@ -560,7 +578,8 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  prog args | prog2      pipe output into another program\n"
                "  a ; b, a && b, a || b  run b after a; only if a succeeded; only if it failed\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
-               "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not inside quotes)\n"
+               "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
+               "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
                "  cd [dir], pwd          change or print the current directory\n"
                "  export NAME=value      set an environment variable; $NAME uses it, $? is the last status\n"
                "  prog args &            run in the background; Ctrl-Z stops the running command\n"
@@ -576,7 +595,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
  * happened), '&&' (run it only if the last one succeeded) and '||' (only if
  * it failed). A part that is not run leaves the status as it was, so
  * "a && b || c" runs c when a or b fails. $? is up to date for each part.
- * Separators inside double quotes are text. Returns the status of the last
+ * Separators inside quotes (either kind) are text. Returns the status of the last
  * part run; stops at "exit". */
 static int run_line(const char *line, int *should_exit) {
     enum { ALWAYS, IF_OK, IF_FAILED } condition = ALWAYS;
@@ -588,7 +607,8 @@ static int run_line(const char *line, int *should_exit) {
         size_t n = 0;
         int quoted = 0, next = ALWAYS;
         for (; *p; p++) {
-            if (*p == '"') quoted = !quoted;
+            if (!quoted && (*p == '"' || *p == '\'')) quoted = *p;      /* Into a quote ... */
+            else if (quoted && *p == quoted) quoted = 0;                /* ... and out of it */
             if (!quoted && (*p == ';' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
             if (n + 1 < sizeof(part)) part[n++] = *p;
         }

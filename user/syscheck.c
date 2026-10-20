@@ -2155,6 +2155,51 @@ static void check_text_tools(void) {
     CHECK(unlink("/tmp/into/copy") == 0 && unlink("/tmp/into") == 0 && unlink("/tmp/copy") == 0);
 }
 
+/* Run `sh -c command` and collect what it prints (stdout); its exit status */
+static int sh_capture(const char *command, char *out, size_t size) {
+    int p[2];
+    if (pipe(p) != 0) return -1;
+    long pid = fork();
+    if (pid == 0) {
+        dup2(p[1], 1);
+        close(p[0]);
+        close(p[1]);
+        dup2((int)open("/dev/null", O_WRONLY), 2);
+        char *args[] = { "/bin/sh", "-c", (char *)command, NULL };
+        execv("/bin/sh", args);
+        exit(127);
+    }
+    close(p[1]);
+    size_t used = 0;
+    long n;
+    while (used < size - 1 && (n = read(p[0], out + used, size - 1 - used)) > 0) used += (size_t)n;
+    out[used] = '\0';
+    close(p[0]);
+    int status = -1;
+    waitpid(pid, &status, 0);
+    return status;
+}
+
+/* Whether `sh -c command` prints exactly `expected` and succeeds */
+static int sh_prints(const char *command, const char *expected) {
+    static char out[512];
+    return sh_capture(command, out, sizeof(out)) == 0 && strcmp(out, expected) == 0;
+}
+
+/* The shell's words: parts joined, single quotes literal, double quotes
+ * expanding variables, separators and operators kept inside quotes */
+static void check_shell_words(void) {
+    static char out[64];
+    CHECK(sh_prints("echo \"<\"x a\"b\"c", "<x abc\n"));
+    CHECK(sh_prints("export X=val; echo 'single $X' \"double $X\" plain$X",
+                    "single $X double val plainval\n"));
+    CHECK(sh_prints("echo 'a;b' \"c && d\" 'e || f' '|<>'", "a;b c && d e || f |<>\n"));
+    CHECK(sh_prints("echo \"it's\" 'say \"hi\"'", "it's say \"hi\"\n"));
+    CHECK(sh_prints("echo \"\" x ''", " x \n"));                       /* Empty words are words */
+    CHECK(sh_prints("echo '/bin/s*' \"/bin/s\"*", "/bin/s* /bin/s*\n"));  /* Quoted: no wildcards */
+    CHECK(sh_capture("echo 'unclosed", out, sizeof(out)) == 2);          /* A syntax error */
+}
+
 /* Feed every byte of `keys` to the editor; the result of the last one */
 static int type_keys(lineedit_t *e, const char *keys) {
     int result = LINEEDIT_MORE;
@@ -2587,6 +2632,7 @@ int main(void) {
     check_wildcards();
     check_stat();
     check_text_tools();
+    check_shell_words();
     check_groups_and_setuid();
     check_pipes();
 
