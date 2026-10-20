@@ -55,7 +55,7 @@ so the numbering has gaps.
 ---
 
 ### 3. Memory Management: PMM, VMM & Kernel Heap (Phase 3)
-**Status: real.** Bitmap frame allocator, 4-level paging, and a heap with boundary tags and free lists by size class: `kmalloc` and `kfree` take the same time whatever the number of blocks in use (tested), and freed neighbours merge at once. `kheap_check` verifies the whole structure for the tests.
+**Status: real.** Bitmap frame allocator, 4-level paging, and a heap with boundary tags and free lists by size class: `kmalloc` and `kfree` take the same time whatever the number of blocks in use (tested), and freed neighbours merge at once. Freed memory is filled with 0x6b and `kmalloc` checks that what it hands out still is: a write after free panics, naming the block and the offset, and a read after free sees an obvious pattern (`heap_catches_writes_after_free`). The slab caches are not covered. `kheap_check` verifies the whole structure for the tests.
 
 **Goal:** Physical frame bitmap allocator, 4-level x86_64 page tables, kernel heap allocator.
 

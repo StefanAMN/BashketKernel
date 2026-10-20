@@ -128,6 +128,36 @@ TEST(heap_merges_neighbours) {
     EXPECT_TRUE(kheap_check());
 }
 
+// Freed memory is poisoned: a read after kfree sees the pattern, and a write
+// after kfree is found by kheap_check and by the kmalloc that hands the
+// block out again (here counted; anywhere else it is a panic)
+TEST(heap_catches_writes_after_free) {
+    uint8_t *before = kmalloc(256), *victim = kmalloc(256), *after = kmalloc(256);
+    EXPECT_TRUE(before && victim && after);
+    for (int i = 0; i < 256; i++) victim[i] = 0x11;
+    kfree(victim);                                    // Its neighbours are in use: it stays a block of its own
+    EXPECT_TRUE(victim[100] == 0x6b && victim[255] == 0x6b);
+    EXPECT_TRUE(kheap_check());
+
+    victim[100] = 0;                                  // The bug
+    EXPECT_TRUE(!kheap_check());
+    size_t damage = kheap_poison_damage();
+    kheap_poison_damage_is_fatal(false);
+    uint8_t *again = kmalloc(256);                    // The same block, first on its list
+    kheap_poison_damage_is_fatal(true);
+    EXPECT_TRUE(again == victim);
+    EXPECT_EQ(kheap_poison_damage(), damage + 1);
+
+    kfree(again);                                     // Poisoned afresh: nothing to report any more
+    EXPECT_TRUE(kheap_check());
+    uint8_t *clean = kmalloc(256);
+    EXPECT_EQ(kheap_poison_damage(), damage + 1);
+    kfree(clean);
+    kfree(before);
+    kfree(after);
+    EXPECT_TRUE(kheap_check());
+}
+
 // The cost of kmalloc and kfree does not grow with the number of blocks in
 // use: the previous allocator walked every block in both
 TEST(heap_speed_does_not_depend_on_blocks_in_use) {
@@ -161,5 +191,6 @@ void test_suite_heap(void) {
     RUN_TEST(heap_returns_memory_and_refuses_cleanly);
     RUN_TEST(heap_survives_random_use);
     RUN_TEST(heap_merges_neighbours);
+    RUN_TEST(heap_catches_writes_after_free);
     RUN_TEST(heap_speed_does_not_depend_on_blocks_in_use);
 }
