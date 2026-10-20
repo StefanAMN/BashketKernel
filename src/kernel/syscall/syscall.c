@@ -1216,9 +1216,9 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_PIPE:    return sys_pipe(regs->rdi, 0);
         case SYS_PIPE2:   return sys_pipe(regs->rdi, regs->rsi);
         case SYS_POLL:    return sys_poll(regs->rdi, regs->rsi, (int64_t)(int32_t)regs->rdx);
-        case SYS_LINK:    return sys_link(regs->rdi, regs->rsi);
-        case SYS_SYMLINK: return sys_symlink(regs->rdi, regs->rsi);
-        case SYS_READLINK: return sys_readlink(regs->rdi, regs->rsi, (size_t)regs->rdx);
+        case SYS_LINK:    { vfs_lock(); int64_t r = sys_link(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_SYMLINK: { vfs_lock(); int64_t r = sys_symlink(regs->rdi, regs->rsi); vfs_unlock(); return r; } // Look up, then act: one step
+        case SYS_READLINK: { vfs_lock(); int64_t r = sys_readlink(regs->rdi, regs->rsi, (size_t)regs->rdx); vfs_unlock(); return r; } // Look up, then act: one step
         case SYS_DUP:     return sys_dup((int)regs->rdi);
         case SYS_DUP2:    return sys_dup2((int)regs->rdi, (int)regs->rsi);
         case SYS_FCNTL:   return sys_fcntl((int)regs->rdi, regs->rsi, regs->rdx);
