@@ -345,6 +345,70 @@ static int64_t sys_mkdir(uint64_t user_path) {
     return err;
 }
 
+// symlink(target, path): make `path` a symbolic link to `target`, which is
+// stored as given. The caller needs the right to write in the directory;
+// the link belongs to the caller.
+static int64_t sys_symlink(uint64_t user_target, uint64_t user_path) {
+    char target[PATH_MAX], path[PATH_MAX];
+    int64_t target_len = copy_string_from_user(target, user_target, sizeof(target));
+    if (target_len < 0) return target_len;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+
+    task_t *task = sched_get_current_task();
+    char name[VFS_NAME_MAX];
+    vnode_t *parent = NULL;
+    int found = vfs_find_parent_at(task->cwd, path, &parent, name);
+    if (found < 0) return found;
+    if (!auth_may_access(task->uid, parent, true)) return -EACCES;
+    vnode_t *link = NULL;
+    int err = vfs_symlink(parent, name, target, &link);
+    if (err == 0 && link) {
+        link->uid = task->uid;
+        link->gid = task->gid;
+        if (link->ops && link->ops->setattr) link->ops->setattr(link);
+    }
+    return err;
+}
+
+// link(existing, path): give a file a second name (ext2 only; see
+// vfs_link). The caller needs the right to write where the name goes.
+static int64_t sys_link(uint64_t user_existing, uint64_t user_path) {
+    char existing_path[PATH_MAX], path[PATH_MAX];
+    int64_t existing_len = copy_string_from_user(existing_path, user_existing, sizeof(existing_path));
+    if (existing_len < 0) return existing_len;
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+
+    task_t *task = sched_get_current_task();
+    vnode_t *existing = NULL, *parent = NULL;
+    char name[VFS_NAME_MAX];
+    int err = vfs_lookup(task->cwd, existing_path, false, &existing);  // A link to a link names the link: refused below
+    if (err == 0) err = vfs_find_parent_at(task->cwd, path, &parent, name);
+    if (err < 0) return err;
+    if (!auth_may_access(task->uid, parent, true)) return -EACCES;
+    return vfs_link(existing, parent, name);
+}
+
+// readlink(path, buf, size): the target of the symbolic link at `path`
+// (not followed), not NUL-terminated. Returns its length, or -EINVAL if
+// `path` is not a link.
+static int64_t sys_readlink(uint64_t user_path, uint64_t user_buf, size_t size) {
+    char path[PATH_MAX], target[PATH_MAX];
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+    vnode_t *node = NULL;
+    int err = vfs_lookup(sched_get_current_task()->cwd, path, false, &node);
+    if (err < 0) return err;
+    int64_t n = vfs_readlink(node, target, size < sizeof(target) ? size : sizeof(target));
+    if (n <= 0) return n;
+    if (!user_range_ok(user_buf, (size_t)n, true)) return -EFAULT;
+    user_access_begin();
+    memcpy((void *)user_buf, target, (size_t)n);
+    user_access_end();
+    return n;
+}
+
 // unlink(path): remove a file or an empty directory. Except for root, the
 // caller needs the right to write in the directory and must own the entry
 // or the directory (so that everyone may use /tmp, but not empty it).
@@ -1141,6 +1205,9 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_PIPE:    return sys_pipe(regs->rdi, 0);
         case SYS_PIPE2:   return sys_pipe(regs->rdi, regs->rsi);
         case SYS_POLL:    return sys_poll(regs->rdi, regs->rsi, (int64_t)(int32_t)regs->rdx);
+        case SYS_LINK:    return sys_link(regs->rdi, regs->rsi);
+        case SYS_SYMLINK: return sys_symlink(regs->rdi, regs->rsi);
+        case SYS_READLINK: return sys_readlink(regs->rdi, regs->rsi, (size_t)regs->rdx);
         case SYS_DUP:     return sys_dup((int)regs->rdi);
         case SYS_DUP2:    return sys_dup2((int)regs->rdi, (int)regs->rsi);
         case SYS_FCNTL:   return sys_fcntl((int)regs->rdi, regs->rsi, regs->rdx);
