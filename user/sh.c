@@ -9,7 +9,11 @@
  * after the other), '&&' (the next only if this one succeeded) or '||'
  * (only if it failed). A pipeline is one or more programs joined by '|'.
  * Each may redirect its input with "< file" and its output with "> file"
- * or ">> file". A program name without a '/' is looked up in the
+ * or ">> file"; a digit in front names another descriptor ("2> errors",
+ * "3< file"), and "N>&M" (or "N<&M") makes N a copy of M, so "2>&1"
+ * sends errors where the output goes. Redirections are applied left to
+ * right, after the pipe: "a 2>&1 | b" sends both to b, while
+ * "a > f 2>&1" and "a 2>&1 > f" differ. A program name without a '/' is looked up in the
  * directories of $PATH.
  *
  * Compound commands, on one line or over several (the prompt asks for the
@@ -51,15 +55,24 @@
 #include "lineedit.h"
 #include "glob.h"
 
-#define MAX_ARGS   64
-#define MAX_STAGES 8
+#define MAX_ARGS      64
+#define MAX_STAGES    8
+#define MAX_REDIRECTS 8
+
+enum { REDIRECT_IN, REDIRECT_OUT, REDIRECT_APPEND, REDIRECT_COPY };
+
+typedef struct {
+    int kind;           /* REDIRECT_* */
+    int fd;             /* The descriptor it changes */
+    int from;           /* REDIRECT_COPY: the descriptor copied */
+    char *path;         /* The others: the file opened */
+} redirect_t;
 
 typedef struct {
     char *argv[MAX_ARGS + 1];
     int argc;
-    char *in_path;      /* "< file", or NULL */
-    char *out_path;     /* "> file" or ">> file", or NULL */
-    int out_append;
+    redirect_t redirects[MAX_REDIRECTS];  /* In the order written: the order matters */
+    int redirect_count;
 } stage_t;
 
 /* Words are copied here while parsing, each followed by a NUL. Copying
@@ -457,6 +470,43 @@ static char *redirect_target(const char **p, size_t *used) {
     return n > 0 ? start : NULL;
 }
 
+/* Parse one redirection at *p, which is at '<' or '>' (or at the digit
+ * naming a descriptor before one), and add it to the stage, moving *p past
+ * it. 0, or -1 if it is malformed or the stage has too many. */
+static int parse_redirect(const char **p, size_t *used, stage_t *stage) {
+    const char *c = *p;
+    int fd = -1;
+    if (*c >= '0' && *c <= '9') fd = *c++ - '0';
+    if (stage->redirect_count >= MAX_REDIRECTS) return -1;
+    redirect_t *r = &stage->redirects[stage->redirect_count];
+
+    if (*c == '<') {
+        r->kind = REDIRECT_IN;
+        if (fd < 0) fd = 0;
+        c++;
+    } else {
+        r->kind = REDIRECT_OUT;
+        if (fd < 0) fd = 1;
+        c++;
+        if (*c == '>') { r->kind = REDIRECT_APPEND; c++; }
+    }
+    r->fd = fd;
+
+    if (*c == '&' && r->kind != REDIRECT_APPEND) {
+        /* "N>&M": one digit, and the word must end there ("2>&1x" is wrong) */
+        c++;
+        if (*c < '0' || *c > '9') return -1;
+        r->kind = REDIRECT_COPY;
+        r->from = *c++ - '0';
+        if (*c && !is_blank(*c) && !is_operator(*c) && *c != '\n') return -1;
+    } else {
+        if (!(r->path = redirect_target(&c, used))) return -1;
+    }
+    *p = c;
+    stage->redirect_count++;
+    return 0;
+}
+
 /* Split `line` into pipeline stages. Returns the number of stages, 0 for an
  * empty line, -1 on a syntax error. */
 static int parse(const char *line, stage_t *stages) {
@@ -475,14 +525,11 @@ static int parse(const char *line, stage_t *stages) {
             stage = &stages[++count];
             memset(stage, 0, sizeof(*stage));
             p++;
-        } else if (*p == '<') {
-            p++;
-            if (!(stage->in_path = redirect_target(&p, &used))) return -1;
-        } else if (*p == '>') {
-            p++;
-            stage->out_append = (*p == '>');
-            if (stage->out_append) p++;
-            if (!(stage->out_path = redirect_target(&p, &used))) return -1;
+        } else if (*p == '<' || *p == '>' ||
+                   (*p >= '0' && *p <= '9' && (p[1] == '<' || p[1] == '>'))) {
+            /* (A digit right before '<' or '>' names a descriptor, as in
+             * every Bourne shell: "echo 2>f" writes nothing to f) */
+            if (parse_redirect(&p, &used, stage) < 0) return -1;
         } else {
             if (stage->argc >= MAX_ARGS) return -1;
             int flags;
@@ -502,13 +549,15 @@ static int parse(const char *line, stage_t *stages) {
     return count + 1; /* argv arrays are NULL-terminated by the memset */
 }
 
-/* In the child: point fd `target` at `path`, or exit. */
+/* In the child: point fd `target` at `path` (opened with `flags`), or exit
+ * with status 1. */
 static void redirect_or_die(const char *path, int flags, int target) {
     long fd = open(path, flags);
     if (fd < 0) {
         fprintf(2, "sh: %s: %s\n", path, strerror(fd));
         exit(1);
     }
+    if (fd == target) return;   /* ("3> f" with 3 free: open chose 3 itself) */
     dup2((int)fd, target);
     close((int)fd);
 }
@@ -519,10 +568,18 @@ static void exec_stage(stage_t *stage) {
     ignore_interrupt(0); /* Unlike the shell, the program should die on Ctrl-C */
     if (script_fd >= 0) close(script_fd); /* The script is the shell's business, not the program's */
 
-    if (stage->in_path) redirect_or_die(stage->in_path, O_RDONLY, 0);
-    if (stage->out_path) {
-        redirect_or_die(stage->out_path,
-                        O_WRONLY | O_CREAT | (stage->out_append ? O_APPEND : O_TRUNC), 1);
+    for (int i = 0; i < stage->redirect_count; i++) {
+        redirect_t *r = &stage->redirects[i];
+        if (r->kind == REDIRECT_IN) {
+            redirect_or_die(r->path, O_RDONLY, r->fd);
+        } else if (r->kind == REDIRECT_OUT) {
+            redirect_or_die(r->path, O_WRONLY | O_CREAT | O_TRUNC, r->fd);
+        } else if (r->kind == REDIRECT_APPEND) {
+            redirect_or_die(r->path, O_WRONLY | O_CREAT | O_APPEND, r->fd);
+        } else if (dup2(r->from, r->fd) < 0) {
+            fprintf(2, "sh: %d: bad file descriptor\n", r->from);
+            exit(1);
+        }
     }
 
     const char *name = stage->argv[0];
