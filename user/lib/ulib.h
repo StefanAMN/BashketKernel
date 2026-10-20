@@ -28,6 +28,7 @@ long uptime_ticks(void);                     /* Timer ticks (10 ms each) since b
 unsigned long clock_ns(void);                /* Nanoseconds since boot */
 unsigned long time_ns(void);                 /* The time of day: nanoseconds since 1970-01-01 00:00 UTC */
 long set_time(unsigned long seconds);        /* Set the time of day (root only): 0, -EPERM, or -EINVAL outside 1980..2105 */
+long set_time_ns(unsigned long ns);          /* The same, to the nanosecond */
 void format_date(unsigned long seconds, char out[20]); /* Seconds since 1970 -> "2026-10-20 14:03:07" (UTC) */
 long parse_date(const char *text, unsigned long *seconds); /* "YYYY-MM-DD HH:MM[:SS]" -> seconds since 1970; 0 or -EINVAL */
 long sleep_ns(unsigned long nanoseconds);    /* Sleeps to within microseconds; -EINTR if a signal cut it short */
