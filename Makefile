@@ -696,6 +696,22 @@ test-tools: iso
 		'sort s' 'sort -n s' 'sort -r -n s' 'mkdir d ; cp a d' 'cat d/a' 'cp a /tmp/t/../t/a' 'wc a' \
 		'rm d/a ; rm d ; rm a ; rm b ; rm s ; cd / ; rm /tmp/t' 'exit' > $(BUILD)/tools.log 2>&1 \
 		&& echo "text tools (head, tail, grep, sort, cp): ok" || { echo "text tools: FAILED (see $(BUILD)/tools.log)"; exit 1; }
+	@# uniq, cut and tr in pipelines, as they are used: counting words
+	@# (sort | uniq -c), a column of /etc/passwd, case and deletion
+	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
+		--expect 'sort w \| uniq -c\n2 apple\n1 kiwi\n3 pear\n\$$ ' \
+		--expect 'uniq -d w2\napple\npear\n\$$ ' \
+		--expect 'cut -d : -f 1,2 /etc/passwd \| grep alice\nalice:1000\n\$$ ' \
+		--expect 'cut -c 1-3 w2 \| uniq\napp\nkiw\npea\n\$$ ' \
+		--expect 'echo Mixed Case \| tr a-z A-Z\nMIXED CASE\n\$$ ' \
+		--expect 'cat w \| tr -d aeiou \| head -n 2\npr\nppl\n\$$ ' \
+		--forbid 'not found|usage:' \
+		'exec /bin/sh' 'mkdir /tmp/u ; cd /tmp/u' \
+		'echo pear > w ; echo apple >> w ; echo pear >> w ; echo kiwi >> w ; echo apple >> w ; echo pear >> w' \
+		'sort w | uniq -c' 'sort w > w2' 'uniq -d w2' 'cut -d : -f 1,2 /etc/passwd | grep alice' \
+		'cut -c 1-3 w2 | uniq' 'echo Mixed Case | tr a-z A-Z' 'cat w | tr -d aeiou | head -n 2' \
+		'rm w ; rm w2 ; cd / ; rm /tmp/u' 'exit' > $(BUILD)/line-tools.log 2>&1 \
+		&& echo "line tools (uniq, cut, tr): ok" || { echo "line tools: FAILED (see $(BUILD)/line-tools.log)"; exit 1; }
 	@# find and du on a tree made for them: sizes in whole KiB, a link back up
 	@# (listed and counted, not followed), filters, and a chain of
 	@# directories deeper than they enter (34 levels; the limit is 32)
