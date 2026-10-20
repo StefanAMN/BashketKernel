@@ -777,7 +777,11 @@ Proposed on 2026-10-20, after track H. A program can learn a file's size,
 mode or owner today only by reading its directory; `cp`, `head`, `tail`,
 `grep` and `sort` do not exist.
 
-### I1. `stat`, `lstat` and `fstat` (S)
+### I1. `stat`, `lstat` and `fstat` (S) — done
+
+Done as proposed (system calls 314 to 316; a filesystem's `stat` op
+supplies the link count and inode number). It needed the search
+permission repair (11) first, which this item turned up. The proposal:
 
 One structure (type, permission bits, owner, group, size, link count,
 modification time, and the filesystem's inode or cluster number where it

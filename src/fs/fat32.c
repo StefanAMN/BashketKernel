@@ -1112,9 +1112,19 @@ static int fat_dir_rename(vnode_t *old_dir, vnode_t *node, vnode_t *new_dir, con
 
 static int fat_dir_load(vnode_t *dir);
 
-static const vnode_ops_t fat_file_ops = { .read = fat_file_read, .write = fat_file_write, .truncate = fat_file_truncate };
+// stat(): FAT has no inode numbers; the first cluster is the nearest thing
+// (0 for an empty file). FAT has no hard links: the count stands.
+static int fat_stat(vnode_t *node, struct vfs_stat *st) {
+    const fat_node_t *info = (const fat_node_t *)node->private_data;
+    st->dev = VFS_DEV_FAT;
+    st->ino = info ? info->first_cluster : 0;
+    return 0;
+}
+
+static const vnode_ops_t fat_file_ops = { .read = fat_file_read, .write = fat_file_write, .truncate = fat_file_truncate,
+                                          .stat = fat_stat };
 static const vnode_ops_t fat_dir_ops = { .create = fat_dir_create, .remove = fat_dir_remove,
-                                         .rename = fat_dir_rename, .load = fat_dir_load };
+                                         .rename = fat_dir_rename, .load = fat_dir_load, .stat = fat_stat };
 
 // --- Mounting -----------------------------------------------------------------
 

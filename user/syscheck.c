@@ -1543,6 +1543,8 @@ static void checks_as_alice(void) {
     CHECK(open("/etc/motd", O_WRONLY) == -EACCES);
     CHECK(open("/etc/motd", O_RDONLY | O_TRUNC) >= 0);  /* Truncation needs write access: ignored on a read-only open */
     CHECK(open("/etc/passwd", O_RDONLY) == -EACCES);
+    struct stat st;                                     /* Describing it needs no right to read it */
+    CHECK(stat("/etc/passwd", &st) == 0 && st.mode == 0600 && st.uid == 0);
     CHECK(open("/dev/vda", O_RDWR) == -EACCES);
     CHECK(open("/bin/evil", O_WRONLY | O_CREAT) == -EACCES);
     CHECK(open("/disk/evil.txt", O_WRONLY | O_CREAT) == -EACCES);
@@ -1691,6 +1693,8 @@ static void closed_directory_as_bob(void) {
     CHECK(mkdir("/tmp/closed/dir") == -EACCES);
     CHECK(chdir("/tmp/closed") == -EACCES);
     CHECK(chmod("/tmp/closed/open.txt", 0777) == -EACCES);
+    struct stat st;
+    CHECK(stat("/tmp/closed/open.txt", &st) == -EACCES);           /* Nor even described */
     CHECK(symlink("/tmp/closed/open.txt", "/tmp/bob-link") == 0);     /* A link is no way round */
     CHECK(open("/tmp/bob-link", O_RDONLY) == -EACCES);
     CHECK(unlink("/tmp/bob-link") == 0);
@@ -2022,7 +2026,11 @@ static void check_links(void) {
     CHECK(fd >= 0 && write((int)fd, "same", 4) == 4);
     close((int)fd);
     CHECK(link("/root/one", "/root/two") == 0);
+    struct stat one, two;                                         /* One inode, two names */
+    CHECK(stat("/root/one", &one) == 0 && stat("/root/two", &two) == 0);
+    CHECK(one.ino != 0 && one.ino == two.ino && one.links == 2 && two.size == 4);
     CHECK(unlink("/root/one") == 0);
+    CHECK(stat("/root/two", &two) == 0 && two.links == 1);
     fd = open("/root/two", O_RDONLY);
     CHECK(fd >= 0 && read((int)fd, buf, sizeof(buf)) == 4 && memcmp(buf, "same", 4) == 0);
     close((int)fd);
@@ -2031,6 +2039,51 @@ static void check_links(void) {
 clean_up:;
     static const char *const gone[] = { "/tmp/sym", "/tmp/rel", "/tmp/loop-a", "/tmp/loop-b", "/tmp/link-target" };
     for (unsigned i = 0; i < sizeof(gone) / sizeof(gone[0]); i++) CHECK(unlink(gone[i]) == 0);
+}
+
+/* stat, lstat and fstat: files, links, directories, and open files that
+ * are not files at all */
+static void check_stat(void) {
+    struct stat st, other;
+    static char text[64];
+    long fd = open("/etc/motd", O_RDONLY);
+    long n = fd >= 0 ? read((int)fd, text, sizeof(text)) : -1;
+    CHECK(stat("/etc/motd", &st) == 0);
+    CHECK(st.type == S_FILE && (long)st.size == n && st.mode == 0644 && st.uid == 0 && st.links == 1);
+    CHECK(fd >= 0 && fstat((int)fd, &other) == 0 && other.size == st.size && other.ino == st.ino);
+    close((int)fd);
+
+    CHECK(stat("/bin", &st) == 0 && st.type == S_DIR && st.links >= 2 && (st.mode & 0111) != 0);
+
+    /* A link is described itself by lstat, and as what it names by stat */
+    fd = open("/tmp/stat-target", O_WRONLY | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "twelve bytes", 12) == 12);
+    close((int)fd);
+    CHECK(symlink("stat-target", "/tmp/stat-link") == 0);
+    CHECK(lstat("/tmp/stat-link", &st) == 0 && st.type == S_LINK && st.size == 11);
+    CHECK(stat("/tmp/stat-link", &st) == 0 && st.type == S_FILE && st.size == 12);
+    CHECK(stat("/tmp/stat-target", &other) == 0 && other.ino == st.ino && other.dev == st.dev && st.dev == 1); /* The same file */
+    CHECK(stat("/tmp", &other) == 0 && other.ino != st.ino);
+    CHECK(unlink("/tmp/stat-link") == 0 && unlink("/tmp/stat-target") == 0);
+
+    /* Open files that are not files */
+    int p[2];
+    CHECK(pipe(p) == 0 && fstat(p[0], &st) == 0 && st.type == S_PIPE && st.size == 0 && st.dev == 0);
+    close(p[0]); close(p[1]);
+    fd = open("/dev/console", O_RDONLY);
+    CHECK(fd >= 0 && fstat((int)fd, &st) == 0 && st.type == S_TERMINAL);
+    close((int)fd);
+    fd = socket(SOCK_DGRAM);
+    CHECK(fd >= 0 && fstat((int)fd, &st) == 0 && st.type == S_SOCKET);
+    close((int)fd);
+
+    /* What is not there, and pointers that are not ours */
+    CHECK(stat("/no/such", &st) == -ENOENT);
+    CHECK(stat("/etc/motd/x", &st) == -ENOTDIR);
+    CHECK(fstat(99, &st) == -EBADF);
+    CHECK(stat("/etc/motd", (struct stat *)0xffffffff80000000) == -EFAULT);
+    CHECK(stat((const char *)0xffffffff80000000, &st) == -EFAULT);
+    CHECK(fstat(1, (struct stat *)8) == -EFAULT);
 }
 
 /* Feed every byte of `keys` to the editor; the result of the last one */
@@ -2463,6 +2516,7 @@ int main(void) {
     check_links();
     check_line_editing();
     check_wildcards();
+    check_stat();
     check_groups_and_setuid();
     check_pipes();
 
