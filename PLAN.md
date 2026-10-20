@@ -914,9 +914,9 @@ counted (as J1's test does); the unit tests otherwise unchanged.
 ### K2. `if`, `while` and `for` in the shell (M) — done
 
 Done as proposed, with `elif` and `break N` / `continue N`; a text is now
-parsed into a tree before it runs (`until` followed). Not done: `case`, functions,
-`${NAME}`, redirections after `fi` / `done`, and `for NAME in` split over
-lines. Ctrl-C stops a loop only by killing the command it is running.
+parsed into a tree before it runs (`until` followed; `case`, functions
+and `${NAME}` came with M2). Not done: redirections after `fi` / `done` / `}`,
+and `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
 The tests found `for 1 in a` accepted. The proposal:
 
 `if LIST; then LIST; [else LIST;] fi`, `while LIST; do LIST; done` and
@@ -1074,7 +1074,23 @@ modes. **Check:** unit tests for the rule; syscheck as bob against
 alice's file in `/tmp` (unlink, rename over it, rename it away: refused;
 his own: allowed); `make test-login` runs a set-gid program.
 
-### M2. `case`, functions and `${NAME}` in the shell (M)
+### M2. `case`, functions and `${NAME}` in the shell (M) — done
+
+Done as written, and `{ LIST; }` groups came with the function bodies.
+`;;` is a segment of its own when a text is cut up; a case's patterns are
+kept as written and expanded when it runs, a quoted `*`, `?` or `[`
+going to the matcher in brackets (`[*]`), which needed no change to the
+matcher beyond a variant without the hidden-name rule
+(`glob_match_text`: `*` matches `.x` in a case). A function keeps a copy
+of its tree, and each call runs a copy of that (a body may redefine the
+function it is running). A call is run by the shell itself when it is a
+command of its own, else by the child that a pipeline or a redirection
+makes; `break` inside a function does not reach the caller's loops.
+`"$@"` and `$@` both give one word per argument (an empty argument is
+dropped, unlike POSIX). The depth limit (64 calls) abandons the whole
+command text. Sabotage, one at a time: quoted pattern characters left as
+wildcards failed two checks; a call not putting back its caller's
+arguments failed one.
 
 `case WORD in PATTERN|PATTERN) LIST;; ... esac` with the wildcard
 matcher from `user/lib/glob.c`; functions (`name() { LIST; }`), called
@@ -1195,7 +1211,7 @@ K1, K2, K3, K4                   done (in parallel)
 L1                               done
 L2, L3, L4, L5                   done (in parallel)
         |
-M1, M2, M3, M4                   in parallel
+M1, M2, M3, M4                   in parallel (M2 done)
 ```
 
 If only one thing is done next, it should be **Track A**: every subsystem

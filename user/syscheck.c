@@ -2387,6 +2387,62 @@ static void check_shell_variables(void) {
     CHECK(sh_ends("X=1 > /tmp/never", "", 2));
 }
 
+/* The shell's case (patterns, quoted parts literal, | and the optional
+ * '(', empty and last items, over several lines), functions ($#, $1, "$@",
+ * return, run in the shell or in a child, a body that redefines itself,
+ * recursion and its limit, loops that stay the function's own) and ${NAME} */
+static void check_shell_case_functions(void) {
+    CHECK(sh_prints("x=hello; case $x in h*) echo H;; *) echo other;; esac", "H\n"));
+    CHECK(sh_prints("case abc in \"*\") echo quoted;; a*) echo glob;; esac", "glob\n"));
+    CHECK(sh_prints("case '*' in \"*\") echo star;; esac", "star\n"));
+    CHECK(sh_prints("p='a*'; case abc in \"$p\") echo q;; $p) echo u;; esac", "u\n"));
+    CHECK(sh_prints("case .x in *) echo dot;; esac", "dot\n"));                /* Not a file name */
+    CHECK(sh_prints("case z in a|z) echo alt;; esac", "alt\n"));
+    CHECK(sh_prints("case z in (z) echo paren;; esac", "paren\n"));
+    CHECK(sh_prints("false; case q in a) echo no;; esac; echo s=$?", "s=0\n"));
+    CHECK(sh_ends("case a in a) false;; esac", "", 1));
+    CHECK(sh_prints("case a in a) ;; esac; echo empty", "empty\n"));
+    CHECK(sh_prints("case b in\na)\n echo A\n ;;\nb)\n echo B1\n echo B2;;\nesac", "B1\nB2\n"));
+    CHECK(sh_prints("case x\nin x) echo last; esac", "last\n"));                /* No ;; before esac */
+    CHECK(sh_prints("for w in a b c; do case $w in b) continue;; esac; echo $w; done", "a\nc\n"));
+    CHECK(sh_ends("case a in a echo;; esac", "", 2));
+    CHECK(sh_ends("echo a;; echo b", "", 2));
+    CHECK(sh_ends("case a in a) echo x;;", "", 2));                            /* No esac */
+    CHECK(sh_ends("if true; then case a in a) echo x;; fi", "", 2));
+
+    CHECK(sh_prints("f() { echo $# [$1] [$2]; }; f a 'b c'", "2 [a] [b c]\n"));
+    CHECK(sh_prints("f() { return 3; echo never; }; f; echo s=$?", "s=3\n"));
+    CHECK(sh_prints("f() { false; return; }; f; echo s=$?", "s=1\n"));
+    CHECK(sh_prints("g() { for w in \"$@\"; do echo w=$w; done; }; g 1 '2 3'", "w=1\nw=2 3\n"));
+    CHECK(sh_prints("g() { for w in \"$@\"; do echo w=$w; done; echo end; }; g", "end\n"));   /* No words */
+    CHECK(sh_prints("f() {\n  echo multi\n}\nf", "multi\n"));
+    CHECK(sh_prints("f()\n{\n echo brace below\n}\nf", "brace below\n"));
+    CHECK(sh_prints("f() { X=set; }; f; echo $X", "set\n"));                    /* Run by the shell */
+    CHECK(sh_prints("f() { echo piped $1; }; f x | cat", "piped x\n"));         /* By a child */
+    CHECK(sh_prints("f() { echo out; }; f > /tmp/fn; cat /tmp/fn; rm /tmp/fn", "out\n"));
+    CHECK(sh_prints("f() { echo $X; }; X=pre f", "pre\n"));
+    CHECK(sh_prints("f() { echo $1; }; g() { f inner; echo $1; }; g mine", "inner\nmine\n"));
+    CHECK(sh_prints("f() { echo one; }; f() { echo two; }; f", "two\n"));
+    CHECK(sh_prints("f() { f() { echo redefined; }; echo first; }; f; f", "first\nredefined\n"));
+    CHECK(sh_prints("f() { break; }; for i in 1 2; do f; echo $i; done", "1\n2\n"));
+    CHECK(sh_prints("f() { for i in 1 2 3; do if [ $i = 2 ]; then return 7; fi; echo $i; done; echo no; }; f; echo s=$?",
+                    "1\ns=7\n"));
+    CHECK(sh_prints("r() { case $1 in xxx) echo deep $1;; *) r x$1;; esac; }; r ''", "deep xxx\n"));
+    CHECK(sh_ends("inf() { inf; }; inf; echo never", "", 2));                  /* The depth limit */
+    CHECK(sh_prints("sh -c 'inf() { inf; }; inf'; echo survived $?", "survived 2\n"));
+    CHECK(sh_prints("f() { echo fn; }; sh -c f; echo s=$?", "s=127\n"));        /* Programs do not see it */
+    CHECK(sh_ends("return", "", 1));
+    CHECK(sh_ends("f() { return x; }; f", "", 2));
+    CHECK(sh_ends("f() { }", "", 2));
+    CHECK(sh_ends("f() echo", "", 2));
+    CHECK(sh_prints("{ echo g; false; }; echo s=$?", "g\ns=1\n"));
+
+    CHECK(sh_prints("x=ab; echo ${x}c $xc. \"${x}\"", "abc . ab\n"));
+    CHECK(sh_prints("echo $0 $# [$1]", "sh 0 []\n"));
+    CHECK(sh_ends("echo ${x", "", 2));
+    CHECK(sh_ends("echo ${}", "", 2));
+}
+
 /* Make `path` hold `size` bytes of `text`; whether it worked */
 static int put_file(const char *path, const char *text, size_t size) {
     long fd = open(path, O_WRONLY | O_CREAT | O_TRUNC);
@@ -3095,6 +3151,7 @@ int main(void) {
     check_shell_control();
     check_shell_redirects();
     check_shell_variables();
+    check_shell_case_functions();
     check_line_tools();
     check_more_tools();
     check_proc();
