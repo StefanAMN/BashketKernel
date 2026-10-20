@@ -479,6 +479,7 @@ TEST(ext2_links) {
     EXPECT_EQ(vfs_stat(vfs_find(NULL, "/root/linked.txt"), &one), 0);
     EXPECT_EQ(vfs_stat(vfs_find(NULL, "/root/second-name"), &two), 0);
     EXPECT_TRUE(one.ino != 0 && one.ino == two.ino && one.links == 2 && two.links == 2 && one.size == 20);
+    EXPECT_TRUE(one.dev == VFS_DEV_EXT2 && two.dev == VFS_DEV_EXT2);
     EXPECT_EQ(vfs_lookup(NULL, "/root/short", false, &found), 0);
     EXPECT_EQ(vfs_stat(found, &link), 0);
     EXPECT_TRUE(link.type == VFS_SYMLINK && link.ino != one.ino && link.links == 1);

@@ -316,10 +316,12 @@ TEST(stat_describes_nodes) {
     file->mtime = 1792454400;
     EXPECT_EQ(vfs_stat(file, &st), 0);
     EXPECT_TRUE(st.type == VFS_FILE && st.size == 5 && st.uid == 1000 && st.gid == 100 && st.mode == 0640);
-    EXPECT_TRUE(st.links == 1 && st.mtime == 1792454400 && st.ino == 0);      // No inode numbers in memory
+    EXPECT_TRUE(st.links == 1 && st.mtime == 1792454400 && st.dev == VFS_DEV_MEMORY);
+    uint64_t file_ino = st.ino;
 
     EXPECT_EQ(vfs_stat(dir, &st), 0);
     EXPECT_TRUE(st.type == VFS_DIRECTORY && st.links == 2);
+    EXPECT_TRUE(st.ino != 0 && file_ino != 0 && st.ino != file_ino);           // Each node its own number
     EXPECT_EQ(vfs_create(dir, "sub1", VFS_DIRECTORY, NULL), 0);
     EXPECT_EQ(vfs_create(dir, "sub2", VFS_DIRECTORY, NULL), 0);
     EXPECT_EQ(vfs_stat(dir, &st), 0);

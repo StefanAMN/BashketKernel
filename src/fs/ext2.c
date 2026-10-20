@@ -1107,6 +1107,7 @@ static int ext2_stat(vnode_t *node, struct vfs_stat *st) {
     bool ok = read_inode(info->ino, &inode);
     mutex_unlock(&ext2_mutex);
     if (!ok) return -EIO;
+    st->dev = VFS_DEV_EXT2;
     st->ino = info->ino;
     st->links = inode.links;
     return 0;

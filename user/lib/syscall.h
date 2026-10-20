@@ -204,9 +204,11 @@ struct stat {
     uint32_t mode;      /* Permission bits (as in struct dirent) */
     uint32_t uid, gid;  /* Owner and group */
     uint64_t size;      /* Bytes; a link: its target's length; 0 for pipes, sockets and the terminal */
-    uint64_t ino;       /* The filesystem's number for it (ext2: inode; FAT: first cluster); 0: none */
+    uint64_t ino;       /* Its number on its filesystem (ext2: inode; FAT: first cluster); 0: none */
     uint32_t links;     /* Names it has; a directory: 2 plus its subdirectories */
     uint32_t mtime;     /* Last written: seconds since 1970, UTC (0 if not known) */
+    uint32_t dev;       /* Which filesystem: 1 memory, 2 FAT, 3 ext2; 0 for pipes, sockets, the terminal */
+    uint32_t reserved;  /* (Same dev and ino, nonzero: the same file) */
 };
 
 #define PROT_READ  1

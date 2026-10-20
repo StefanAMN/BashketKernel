@@ -45,7 +45,7 @@ TEST(fat32_tree_is_mounted) {
     // empty file, which has no cluster), and no file has a second name
     struct vfs_stat st, other;
     EXPECT_EQ(vfs_stat(hello, &st), 0);
-    EXPECT_TRUE(st.type == VFS_FILE && st.size == 26 && st.links == 1 && st.ino >= 2);
+    EXPECT_TRUE(st.type == VFS_FILE && st.size == 26 && st.links == 1 && st.ino >= 2 && st.dev == VFS_DEV_FAT);
     EXPECT_EQ(vfs_stat(readme, &other), 0);
     EXPECT_TRUE(other.ino >= 2 && other.ino != st.ino);
     EXPECT_EQ(vfs_stat(empty, &st), 0);

@@ -1116,6 +1116,7 @@ static int fat_dir_load(vnode_t *dir);
 // (0 for an empty file). FAT has no hard links: the count stands.
 static int fat_stat(vnode_t *node, struct vfs_stat *st) {
     const fat_node_t *info = (const fat_node_t *)node->private_data;
+    st->dev = VFS_DEV_FAT;
     st->ino = info ? info->first_cluster : 0;
     return 0;
 }
