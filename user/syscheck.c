@@ -2445,6 +2445,60 @@ static void check_line_tools(void) {
     CHECK(unlink("/tmp/lt") == 0);
 }
 
+/* tee, xargs, seq, basename and dirname: their forms, POSIX's edge cases
+ * for the two name tools, and xargs keeping every command line within
+ * what execve takes (32 arguments, 4096 bytes with the environment) */
+static void check_more_tools(void) {
+    static char out[128];
+    CHECK(sh_prints("basename /a/b.c .c; basename a/b/; basename /; basename //; basename ''",
+                    "b\nb\n/\n/\n\n"));
+    CHECK(sh_prints("basename .c .c; basename x/y.c y.c; basename a.c x.c", ".c\ny.c\na.c\n"));  /* Not the whole name */
+    CHECK(sh_prints("dirname /a//b; dirname /a; dirname a; dirname ///; dirname a/b/; dirname ''",
+                    "/a\n/\n.\n/\na\n.\n"));
+    CHECK(sh_ends("basename", "", 2));
+    CHECK(sh_ends("dirname a b", "", 2));
+
+    CHECK(sh_prints("seq 3; seq -1 1; seq 10 -4 1", "1\n2\n3\n-1\n0\n1\n10\n6\n2\n"));
+    CHECK(sh_prints("seq 0; seq 5 1", ""));                               /* Already past the end */
+    CHECK(sh_ends("seq 1 0 5", "", 2));
+    CHECK(sh_ends("seq 1x", "", 2));
+    CHECK(sh_ends("seq", "", 2));
+
+    CHECK(sh_prints("echo hi | tee /tmp/tee1 /tmp/tee2 && cat /tmp/tee1 /tmp/tee2", "hi\nhi\nhi\n"));
+    CHECK(sh_prints("echo more | tee -a /tmp/tee1 > /dev/null; cat /tmp/tee1", "hi\nmore\n"));
+    CHECK(sh_prints("echo x | tee /no/such/f /tmp/tee2 > /dev/null; echo $?; cat /tmp/tee2", "1\nx\n"));
+    CHECK(sh_ends("tee /tmp/tee1 < /bin/sh > /tmp/tee2", "", 0));          /* Many reads' worth */
+    CHECK(same_contents("/bin/sh", "/tmp/tee1") && same_contents("/bin/sh", "/tmp/tee2"));
+    CHECK(unlink("/tmp/tee1") == 0 && unlink("/tmp/tee2") == 0);
+
+    CHECK(sh_prints("seq 5 | xargs; seq 5 | xargs -n 2 echo n", "1 2 3 4 5\nn 1 2\nn 3 4\nn 5\n"));
+    CHECK(put_file("/tmp/xw", "a\tb\n\n  c d", 11));                      /* Blanks of every kind, no final '\n' */
+    CHECK(sh_prints("xargs < /tmp/xw", "a b c d\n"));
+    CHECK(sh_prints("echo | xargs echo never", ""));                       /* No words: nothing run */
+    CHECK(sh_prints("seq 100 | xargs | wc", "4 100 292\n"));               /* 31 words a line at most */
+    CHECK(sh_ends("echo a | xargs nosuch", "", 127));
+    CHECK(sh_ends("seq 3 | xargs false", "", 123));
+    CHECK(sh_ends("seq 3 | xargs -n 0", "", 2));
+
+    /* 40 words of 300 bytes: no line may pass 4096 bytes with the
+     * environment, or execve refuses it (and xargs ends with 126). With a
+     * 1000-byte variable, ten words fit and thirteen would without it. */
+    static char big[40 * 301];
+    for (size_t i = 0; i < sizeof(big); i++) big[i] = (i % 301 == 300) ? '\n' : 'w';
+    CHECK(put_file("/tmp/xw", big, sizeof(big)));
+    CHECK(sh_capture("xargs < /tmp/xw | wc", out, sizeof(out)) == 0 && strlen(out) > 10 &&
+          strcmp(out + strlen(out) - 10, " 40 12040\n") == 0 && out[0] >= '3' && out[0] <= '9');
+    static char value[1000];
+    memset(value, 'e', sizeof(value));
+    CHECK(put_file("/tmp/xe", value, sizeof(value)));
+    CHECK(sh_prints("export E=$(cat /tmp/xe); xargs < /tmp/xw | wc", "4 40 12040\n"));
+    CHECK(unlink("/tmp/xe") == 0);
+    for (size_t i = 4500; i < 9500; i++) big[i] = 'w';                     /* One word of over 5000 bytes */
+    CHECK(put_file("/tmp/xw", big, sizeof(big)));
+    CHECK(sh_capture("xargs < /tmp/xw", out, sizeof(out)) == 1);
+    CHECK(unlink("/tmp/xw") == 0);
+}
+
 /* The shell's if, while and for, break and continue, and test / [ */
 static void check_shell_control(void) {
     /* if: the branch taken; elif; nothing taken is status 0; the status of the branch */
@@ -3042,6 +3096,7 @@ int main(void) {
     check_shell_redirects();
     check_shell_variables();
     check_line_tools();
+    check_more_tools();
     check_proc();
     check_groups_and_setuid();
     check_supplementary_groups();
