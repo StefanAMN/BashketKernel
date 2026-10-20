@@ -2285,6 +2285,45 @@ static void check_shell_redirects(void) {
     CHECK(unlink("/tmp/redir") == 0);
 }
 
+/* The shell's variables: NAME=value (the shell's own, unseen by programs),
+ * export (seen), NAME=value program (for that program only), unset; the
+ * values expanded but not split, and names that are not names */
+static void check_shell_variables(void) {
+    CHECK(sh_prints("X=1; echo [$X]", "[1]\n"));
+    CHECK(sh_prints("X=hidden; sh -c 'echo [$X]'", "[]\n"));                 /* Not in the environment */
+    CHECK(sh_prints("X=shown; export X; sh -c 'echo [$X]'", "[shown]\n"));   /* ... until exported */
+    CHECK(sh_prints("export X=e; sh -c 'echo [$X]'", "[e]\n"));
+    CHECK(sh_prints("export X=a; X=b; sh -c 'echo [$X]'", "[b]\n"));         /* Exported stays exported */
+    CHECK(sh_prints("X=once sh -c 'echo [$X]'; echo [$X]", "[once]\n[]\n"));  /* For one program */
+    CHECK(sh_prints("export X=kept; X=tmp sh -c 'echo $X'; echo $X", "tmp\nkept\n"));
+    CHECK(sh_ends("PATH=/nowhere true", "", 127));                           /* The program's PATH is used */
+    CHECK(sh_prints("A=1 B=2; echo $A$B", "12\n"));
+
+    /* Values: expanded, neither split nor matched as wildcards */
+    CHECK(sh_prints("X=\"a  b\"; echo \"$X\"", "a  b\n"));
+    CHECK(sh_prints("X=$(echo 'p  q'); echo \"$X\"", "p  q\n"));
+    CHECK(sh_prints("X=/bin/s*; echo \"$X\"", "/bin/s*\n"));
+    CHECK(sh_prints("X=a=b; echo $X", "a=b\n"));
+    CHECK(sh_prints("X=; echo [$X]", "[]\n"));
+
+    /* The status: of the last $(...) in it, else 0; $? before it is still there */
+    CHECK(sh_ends("X=$(false)", "", 1));
+    CHECK(sh_prints("false; X=1; echo $?", "0\n"));
+    CHECK(sh_prints("false; X=$?; echo $X", "1\n"));
+
+    CHECK(sh_prints("X=1; export Y=2; unset X Y; echo [$X$Y]; sh -c 'echo [$Y]'", "[]\n[]\n"));
+    CHECK(sh_prints("for v in 1; do sh -c 'echo [$v]'; done; echo $v", "[]\n1\n"));   /* The shell's own */
+
+    /* Not assignments, or not names */
+    CHECK(sh_ends("1x=y", "", 127));                                        /* A command */
+    CHECK(sh_ends("\"X\"=1", "", 127));                                     /* Quoted: a command too */
+    CHECK(sh_prints("echo X=1", "X=1\n"));                                  /* After the name: a word */
+    CHECK(sh_ends("unset 1x", "", 1));
+    CHECK(sh_ends("export a-b=1", "", 1));
+    CHECK(sh_ends("X=1 | cat", "", 2));
+    CHECK(sh_ends("X=1 > /tmp/never", "", 2));
+}
+
 /* The shell's if, while and for, break and continue, and test / [ */
 static void check_shell_control(void) {
     /* if: the branch taken; elif; nothing taken is status 0; the status of the branch */
@@ -2879,6 +2918,7 @@ int main(void) {
     check_shell_words();
     check_shell_control();
     check_shell_redirects();
+    check_shell_variables();
     check_proc();
     check_groups_and_setuid();
     check_pipes();

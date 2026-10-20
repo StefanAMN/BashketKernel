@@ -977,17 +977,26 @@ test. The helper now starts the shell with 0, 1 and 2 only.
 
 ---
 
-### L2. Shell variables, and a setting for one command (S)
+### L2. Shell variables, and a setting for one command (S) — done
 
-`/bin/sh` knows only the environment (`export NAME=value`). Add
-`NAME=value` on its own (a variable of the shell, not passed to
-programs; `$NAME` finds it, the environment second), `unset`, and
-`NAME=value command` (in that command's environment only). Expansion
-is the same as for any word, so `X=$(date)` and `X="a b"` work.
-**Check:** syscheck (`check_shell_variables`): the three forms, that a
-plain variable is not seen by a child, that the prefix form does not
-outlive its command, `unset`, and names that are not names (`1x=y` is a
-command).
+`/bin/sh` knew only the environment (`export NAME=value`). Now
+`NAME=value` on its own sets a variable of the shell, not passed to
+programs (`$NAME` finds it, the environment second; a name is in one
+place at most, so setting an exported one changes the environment);
+`export NAME` moves one there, `unset` forgets either, and
+`NAME=value command` sets it in that command's environment only (its
+`PATH` too). The value is expanded like any word but not split or
+matched: `X=$(ls)` keeps the newlines, `X=*` is a star. The status is
+the last `$(...)`'s, as elsewhere (`X=$(false)` fails). A `for`
+variable is now the shell's own rather than exported. Before a
+built-in, the prefix form has no effect (none reads the environment).
+`unsetenv` joined the C library. **Check:** syscheck
+(`check_shell_variables`, 26 checks): the three forms, a plain variable
+unseen by a child until exported, the prefix form not outliving its
+command, values, statuses, `unset`, and names that are not names
+(`1x=y` and `"X"=1` are commands). Sabotage: looking only in the
+environment failed 13 checks (5 of them the existing `for` checks);
+splitting the value as an ordinary word failed one, the `$(...)` value.
 
 ### L3. `uniq`, `cut` and `tr` (S)
 
