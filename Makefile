@@ -518,6 +518,12 @@ test-paint: iso
 # Swap: a program that needs 80 MiB on a machine with 64. Without a swap
 # disk the kernel must refuse it the memory; with one, every page must come
 # back as it was written, and nothing may be left on the swap disk after.
+# Killed half way, it leaves no frame and no swap slot behind. (That this
+# happens as it dies, not when it is reaped, is a_zombie_holds_no_memory's
+# check: here both are reaped at once.) Ctrl-C kills its forked child as
+# well, which the kernel shell does not wait for, so the check waits (ten
+# seconds at most) until no swapper is left alive; without that it read
+# the dying child's share as lost about 1 run in 10.
 test-swap: iso
 	@if [ -z "$(MKSWAP)" ]; then echo "swap: skipped (no mkswap on this machine)"; exit 0; fi; \
 	tools/qemu_shell.py --quiet --mem 64M --timeout 120 $(SHELL_CPU) \
@@ -536,7 +542,9 @@ test-swap: iso
 	tools/qemu_shell.py --quiet --mem 64M --timeout 120 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
 		--expect 'MemFree:    [45][0-9]{4} kB\nPromised:   0 kB\nSwapTotal:  65532 kB\nSwapFree:   65532 kB' \
 		--expect 'Swapped:    [0-9]{4,} pages out' --forbid 'swapper: ' \
-		'!exec /bin/swapper 80' '@wait:6' '^C' 'cat /proc/meminfo' > $(BUILD)/swap-killed.log 2>&1 \
+		'!exec /bin/swapper 80' '@wait:6' '^C' 'exec /bin/sh' \
+		'for i in 1 2 3 4 5 6 7 8 9 10; do ps | grep -v zombie | grep swapper > /dev/null || break; sleep 1; done' \
+		'exit' 'cat /proc/meminfo' 'exec /bin/ps' > $(BUILD)/swap-killed.log 2>&1 \
 		|| { echo "swap: FAILED, a program killed while swapping did not give everything back at once (see $(BUILD)/swap-killed.log)"; exit 1; }; \
 	echo "swap (80 MiB used on a 64 MiB machine, then two programs of 45; refused without a swap disk): ok"
 
