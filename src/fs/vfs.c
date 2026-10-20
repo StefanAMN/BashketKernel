@@ -82,6 +82,8 @@ void vfs_load_dir(vnode_t *dir) {
         dir->unloaded = false;
         if (dir->ops && dir->ops->load) dir->ops->load(dir);
     }
+    // One whose contents change by themselves is brought up to date every time
+    if (dir && dir->ops && dir->ops->refresh) dir->ops->refresh(dir);
 }
 
 // See vfs_find_child. Caller holds the tree lock.
