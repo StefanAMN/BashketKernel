@@ -226,8 +226,6 @@ TEST(programs_are_read_page_by_page) {
     task_t *task = sched_find_task((uint32_t)pid);
     EXPECT_TRUE(task != NULL);
     if (!task) return;
-    TEST_WAIT(task->state == TASK_BLOCKED, 200);     // Asleep in nanosleep: it has run all it will for now
-
     size_t program_regions = 0, program_pages = 0;
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
         const mem_region_t *r = &task->regions[i];
@@ -237,6 +235,11 @@ TEST(programs_are_read_page_by_page) {
         program_pages += (r->end - r->start) / PAGE_SIZE;
     }
     EXPECT_TRUE(program_regions >= 1);                       // Its code at least
+
+    // Asleep in nanosleep: it has run all it will for now. ("Blocked" alone
+    // is not enough: once in make check the task was seen blocked before
+    // it had run its first instruction, with every program page untouched.)
+    TEST_WAIT(task->state == TASK_BLOCKED && task->promised_pages < program_pages, 200);
     EXPECT_TRUE(task->promised_pages > 0);                    // Pages of it never touched, so never read...
     EXPECT_TRUE(task->promised_pages < program_pages);        // ...and some that were (its first instruction)
     EXPECT_EQ(file->exec_count, exec_before + program_regions);
