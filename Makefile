@@ -226,16 +226,19 @@ NO_TSC_CPU = qemu64,-tsc
 # src/drivers/virtio/virtio_pci.h). By default QEMU's devices offer both and
 # the kernel uses the modern one. Each run also checks that the interface
 # in use is the one intended: a driver that quietly fell back to the other
-# would pass every other test.
+# would pass every other test. The same goes for how they interrupt: the
+# modern interface must use MSI-X (a vector per queue, sent to a CPU), the
+# legacy one its PCI line.
 VIRTIO ?=
 VIRTIO_OFF = $(if $(filter legacy,$(VIRTIO)),disable-modern=on,$(if $(filter modern,$(VIRTIO)),disable-legacy=on))
 VIRTIO_GLOBALS = $(if $(VIRTIO_OFF),-global virtio-blk-pci.$(VIRTIO_OFF) -global virtio-net-pci.$(VIRTIO_OFF))
 VIRTIO_UNWANTED = $(if $(filter legacy,$(VIRTIO)),modern,legacy) interface
+VIRTIO_UNWANTED_IRQ = interrupts: $(if $(filter legacy,$(VIRTIO)),MSI-X,line)
 
 QEMU_CPU = $(if $(CPU),-cpu $(CPU)) $(VIRTIO_GLOBALS)
 # SMP=n runs any of the scripted targets below on a machine with n CPUs
 SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-arg=-smp --qemu-arg=$(SMP)) \
-	$(foreach arg,$(VIRTIO_GLOBALS),--qemu-arg=$(arg)) --forbid '$(VIRTIO_UNWANTED)'
+	$(foreach arg,$(VIRTIO_GLOBALS),--qemu-arg=$(arg)) --forbid '$(VIRTIO_UNWANTED)' --forbid '$(VIRTIO_UNWANTED_IRQ)'
 
 # Build the test kernel, boot it headless, and turn its verdict into an exit
 # status. The kernel writes to the isa-debug-exit port when the tests finish;
@@ -250,6 +253,7 @@ test:
 	grep -E '^\s+\[FAIL\]|CPU EXCEPTION|KERNEL PANIC' build-test/test.log; \
 	sed -n '/--- Test Summary ---/,/^----------/p' build-test/test.log; \
 	if grep -aq '$(VIRTIO_UNWANTED)' build-test/test.log; then echo "TESTS FAILED: a device was driven through its $(VIRTIO_UNWANTED)"; exit 1; fi; \
+	if grep -aq '$(VIRTIO_UNWANTED_IRQ)' build-test/test.log; then echo "TESTS FAILED: a device was set up with '$(VIRTIO_UNWANTED_IRQ)'"; exit 1; fi; \
 	if [ $$status -eq 33 ]; then echo "TESTS PASSED"; \
 	elif [ $$status -eq 124 ]; then echo "TESTS TIMED OUT (see build-test/test.log)"; exit 1; \
 	else echo "TESTS FAILED (qemu exit $$status, see build-test/test.log)"; exit 1; fi
@@ -379,6 +383,9 @@ test-smp:
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
 	status=$$?; \
+	if grep -aq '$(VIRTIO_UNWANTED_IRQ)' build-test/test-smp.log; then echo "four CPUs: FAILED, a device was set up with '$(VIRTIO_UNWANTED_IRQ)'"; exit 1; fi; \
+	if [ "$(VIRTIO)" != legacy ] && ! grep -aq 'interrupts: MSI-X vector 0x[0-9a-f]* on CPU [1-9]' build-test/test-smp.log; then \
+		echo "four CPUs: FAILED, no device sends its interrupts to a CPU other than the first"; exit 1; fi; \
 	if [ $$status -eq 33 ] && grep -aq 'SMP: 4 CPUs scheduling' build-test/test-smp.log; then \
 		echo "four CPUs: all scheduling, unit tests pass"; \
 	else echo "four CPUs: FAILED (qemu exit $$status, see build-test/test-smp.log)"; \

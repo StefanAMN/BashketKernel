@@ -28,6 +28,23 @@ typedef void (*irq_handler_t)(struct registers *regs);
 #define HANDLERS_PER_IRQ 4
 static irq_handler_t irq_handlers[16][HANDLERS_PER_IRQ] = {0};
 
+// Message-signalled interrupts: one source per vector, so one handler, with
+// the argument its driver gave (register_msi_handler). Filled at boot,
+// before any device is told its vector, and never changed after.
+typedef struct {
+    const char *name;
+    void (*handler)(void *arg);
+    void *arg;
+} msi_slot_t;
+static msi_slot_t msi_slots[MSI_VECTOR_COUNT];
+static uint32_t msi_slots_used;
+
+// Interrupts delivered, per source and CPU, for /proc/interrupts. Each CPU
+// increments only its own column, with interrupts off: no lock is needed,
+// and a reader may see a count one behind.
+static uint64_t line_counts[16][MAX_CPUS];
+static uint64_t msi_counts[MSI_VECTOR_COUNT][MAX_CPUS];
+
 // Names of the 32 exception vectors (Intel SDM Vol. 3A, table 6-1)
 static const char *exception_messages[] = {
     "Division By Zero",
@@ -67,6 +84,66 @@ void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs)) 
         }
     }
     kprintf("IRQ %u: too many handlers, one was not registered\n", irq);
+}
+
+uint8_t register_msi_handler(const char *name, void (*handler)(void *arg), void *arg) {
+    if (!handler || msi_slots_used >= MSI_VECTOR_COUNT) return 0;
+    msi_slots[msi_slots_used] = (msi_slot_t){ name ? name : "?", handler, arg };
+    return (uint8_t)(MSI_VECTOR_FIRST + msi_slots_used++);
+}
+
+bool msi_message(uint32_t apic_id, uint8_t vector, uint64_t *address, uint32_t *data) {
+    if (apic_id > 0xFF || !address || !data) return false;
+    // Address (SDM 11.11.1): 0xFEE in bits 31:20, the destination APIC id
+    // in bits 19:12, RH (bit 3) and DM (bit 2) clear: send to exactly that
+    // one CPU, named by its physical APIC id
+    *address = 0xFEE00000ULL | ((uint64_t)apic_id << 12);
+    // Data (SDM 11.11.2): the vector in bits 7:0; delivery mode 000 (fixed)
+    // in bits 10:8; level (bit 14) and trigger mode (bit 15) 0: edge
+    *data = vector;
+    return true;
+}
+
+uint64_t msi_vector_count(uint8_t vector, uint32_t cpu) {
+    if (vector < MSI_VECTOR_FIRST || vector >= MSI_VECTOR_FIRST + MSI_VECTOR_COUNT) return 0;
+    uint64_t total = 0;
+    for (uint32_t c = 0; c < MAX_CPUS; c++) {
+        if (cpu == MSI_ALL_CPUS || cpu == c) total += __atomic_load_n(&msi_counts[vector - MSI_VECTOR_FIRST][c], __ATOMIC_RELAXED);
+    }
+    return total;
+}
+
+uint64_t irq_line_count(uint8_t irq) {
+    if (irq >= 16) return 0;
+    uint64_t total = 0;
+    for (int c = 0; c < MAX_CPUS; c++) total += __atomic_load_n(&line_counts[irq][c], __ATOMIC_RELAXED);
+    return total;
+}
+
+size_t interrupts_describe(char *buf, size_t size) {
+    if (!buf || size == 0) return 0;
+    uint32_t cpus = (uint32_t)smp_get_cpu_total();
+    if (cpus == 0) cpus = 1;
+    if (cpus > MAX_CPUS) cpus = MAX_CPUS;
+
+    // Columns nine wide, right-aligned (ksnprintf pads on the left only)
+    size_t len = ksnprintf(buf, size, "          ");
+    for (uint32_t c = 0; c < cpus && len + 1 < size; c++) len += ksnprintf(buf + len, size - len, " %7s%u", "CPU", c);
+    if (len + 1 < size) len += ksnprintf(buf + len, size - len, "\n");
+
+    // The lines that have a handler or had an interrupt, then every MSI vector handed out
+    for (int irq = 0; irq < 16 && len + 1 < size; irq++) {
+        if (!irq_handlers[irq][0] && irq_line_count((uint8_t)irq) == 0) continue;
+        len += ksnprintf(buf + len, size - len, "IRQ %2d    ", irq);
+        for (uint32_t c = 0; c < cpus && len + 1 < size; c++) len += ksnprintf(buf + len, size - len, " %8lu", line_counts[irq][c]);
+        if (len + 1 < size) len += ksnprintf(buf + len, size - len, "  line\n");
+    }
+    for (uint32_t i = 0; i < msi_slots_used && len + 1 < size; i++) {
+        len += ksnprintf(buf + len, size - len, "MSI 0x%2x  ", MSI_VECTOR_FIRST + i);
+        for (uint32_t c = 0; c < cpus && len + 1 < size; c++) len += ksnprintf(buf + len, size - len, " %8lu", msi_counts[i][c]);
+        if (len + 1 < size) len += ksnprintf(buf + len, size - len, "  MSI-X %s\n", msi_slots[i].name);
+    }
+    return len < size ? len : size - 1;
 }
 
 // The signal a program is killed with for exception `vector`, as Unix
@@ -337,6 +414,7 @@ void isr_handler(struct registers *regs) {
 
         // Hardware IRQ (32..47)
         uint8_t irq = regs->int_no - 32;
+        line_counts[irq][this_cpu()->cpu_id]++;
         for (int i = 0; i < HANDLERS_PER_IRQ && irq_handlers[irq][i] != NULL; i++) {
             irq_handlers[irq][i](regs);
         }
@@ -347,6 +425,22 @@ void isr_handler(struct registers *regs) {
         if ((regs->cs & 3) == 3) {
             sched_check_kill();
             signal_deliver(regs); // And for a signal handler to be entered
+        }
+    } else if (regs->int_no >= MSI_VECTOR_FIRST && regs->int_no < MSI_VECTOR_FIRST + MSI_VECTOR_COUNT) {
+        // A message-signalled interrupt: it went to the local APIC alone
+        // (the I/O APIC and the PIC never saw it), so only the local APIC
+        // is told it is done. Edge triggered: nothing to lower at the device.
+        lapic_eoi();
+        if (nmis_unreported) report_nmis();
+
+        uint32_t slot = (uint32_t)(regs->int_no - MSI_VECTOR_FIRST);
+        msi_counts[slot][this_cpu()->cpu_id]++;
+        if (slot < msi_slots_used) msi_slots[slot].handler(msi_slots[slot].arg);
+
+        // The same safe point as after a line interrupt
+        if ((regs->cs & 3) == 3) {
+            sched_check_kill();
+            signal_deliver(regs);
         }
     } else if (regs->int_no == IPI_VECTOR_WAKE || regs->int_no == IPI_VECTOR_TIMER) {
         lapic_eoi(); // First, as above: the handler may switch tasks

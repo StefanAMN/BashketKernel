@@ -345,16 +345,15 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   CPU's timer is off. Two threads that used to wake "in case" had to learn
   to sleep until there was work: the reaper (PID 0) and `tcpd`. Without a
   timestamp counter the kernel stays periodic, and `make check` runs that
-  too. Not done: device interrupts still all arrive on the boot CPU, and
-  the tick count is still the unit most of the kernel thinks in.
+  too. Not done: the tick count is still the unit most of the kernel
+  thinks in. (Device interrupts reach other CPUs since N3, by MSI-X.)
 - **virtio modern transport** — done (`src/drivers/virtio/virtio_pci.c`).
   Both drivers go through one layer that uses the modern interface
   (registers in memory, located by the PCI capability list) when a device
   offers it and the legacy I/O ports otherwise. Device registers are mapped
   uncached in a region of their own (`vmm_map_device`). Tested with devices
   offering both, legacy only and modern only (`VIRTIO=legacy|modern`).
-  Not done: MSI-X (interrupts still come over the shared PCI line), and
-  the packed virtqueue layout.
+  MSI-X came with N3. Not done: the packed virtqueue layout.
 - **PS/2 mouse and a framebuffer device** — done: `/dev/mouse`
   (`src/drivers/input/mouse.c`), `/dev/fb0`, and `/bin/paint`, which uses
   both. A program that opens the screen for writing owns it until it closes
@@ -1256,7 +1255,32 @@ file names). **Check:** unit tests for the text; syscheck reads its own
 maps after an `mmap` and a file mapping, and its fd list after `pipe`
 and `open`; bob cannot read root's.
 
-### N3. MSI-X for virtio devices (M)
+### N3. MSI-X for virtio devices (M) — done
+
+Done for the modern interface. Each disk, and the network card's receive
+queue, gets an MSI-X table entry and a CPU vector of its own (0x30 up,
+`register_msi_handler`), sent to one CPU's local APIC; devices are spread
+over the running CPUs, the boot CPU last since it takes every line. The
+transmit queue and configuration changes get no vector (nothing waits
+for them). The legacy interface keeps its line, on purpose: with MSI-X
+enabled its register layout moves by four bytes (virtio 1.2, 4.1.4.8), a
+second layout to maintain for no gain. If the device reads back
+`VIRTIO_MSI_NO_VECTOR` for a queue, MSI-X is switched off again and the
+line used, and the boot log says `interrupts: line IRQ n`, which every
+test run on the modern interface refuses (as it refuses the wrong
+interface); `test-smp` also requires a device sent to a CPU other than
+the first. Handlers may run on a CPU that has not joined the scheduler
+yet (disks are read during boot): that is safe, since spinlocks and
+`sched_wakeup` need only `this_cpu()`. `/proc/interrupts` counts lines
+and vectors per CPU. Sabotage: not writing the queue's vector made the
+device fall back to the line, and `make test` refused the boot log;
+messages that ignored the target APIC id failed the encoding test and
+`disk_interrupts_arrive_by_their_route` (counted on the wrong CPU) under
+`test-smp`. QEMU's `info irq` showed no I/O APIC interrupts on lines 10
+and 11 while the disks were read. Not done: APIC ids above 255 (x2APIC
+or interrupt remapping), more than 16 vectors, per-queue vectors on the
+legacy interface.
+
 
 Both virtio devices share one PCI interrupt line with each other (the
 lesson in CLAUDE.md); with MSI-X each queue gets a vector of its own,
@@ -1360,7 +1384,7 @@ L2, L3, L4, L5                   done (in parallel)
         |
 M1, M2, M3, M4                   done (in parallel)
         |
-N1, N2, N3, N4                   in parallel (N1 done)
+N1, N2, N3, N4                   done (in parallel)
 ```
 
 (Track A, once the recommended first step because everything built on
