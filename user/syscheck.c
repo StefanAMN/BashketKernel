@@ -2918,6 +2918,95 @@ static void check_proc(void) {
     CHECK(unlink("/proc/1/status") == -EPERM);                         /* Not even root's to remove */
 }
 
+/* "/proc/self/fd/N" into path[24] */
+static void self_fd_path(char path[24], int fd) {
+    memcpy(path, "/proc/self/fd/", 14);
+    size_t at = 14;
+    if (fd >= 10) path[at++] = (char)('0' + fd / 10);
+    path[at++] = (char)('0' + fd % 10);
+    path[at] = '\0';
+}
+
+/* Whether the directory `path` lists an entry called `name` */
+static int dir_lists(const char *path, const char *name) {
+    long fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    struct dirent entry;
+    int found = 0;
+    while (!found && readdir((int)fd, &entry) == 1) found = strcmp(entry.name, name) == 0;
+    close((int)fd);
+    return found;
+}
+
+/* /proc/<pid>/maps and /proc/<pid>/fd: this process's own after an
+ * anonymous and a file mapping, a pipe and an open file; each goes again
+ * when it is unmapped or closed; and they are the owner's alone */
+static void check_proc_maps_fd(void) {
+    static char text[4096];
+    CHECK(read_small("/proc/self/maps", text, sizeof(text)) > 0);
+    CHECK(has_text(text, " r-x program syscheck\n") && has_text(text, " rw- stack\n"));
+
+    char *anon = mmap_anon(3 * 4096);
+    long motd = open("/etc/motd", O_RDONLY);
+    char *mapped = motd >= 0 ? mmap_file((int)motd, 4096, 0, PROT_READ) : NULL;
+    CHECK(anon != NULL && mapped != NULL);
+    CHECK(read_small("/proc/self/maps", text, sizeof(text)) > 0);
+    CHECK(has_text(text, " rw- anonymous\n"));
+    CHECK(has_text(text, " r-- file /etc/motd +0\n"));
+    /* The anonymous line starts at the address mmap returned, 3 pages long */
+    {
+        static const char hex[] = "0123456789abcdef";
+        char line[40];
+        unsigned long a = (unsigned long)anon, b = a + 3 * 4096;
+        for (int i = 0; i < 12; i++) {
+            line[11 - i] = hex[(a >> (4 * i)) & 15];
+            line[24 - i] = hex[(b >> (4 * i)) & 15];
+        }
+        line[12] = '-';
+        memcpy(line + 25, " rw- anonymous", 15);
+        CHECK(has_text(text, line));
+    }
+
+    int ends[2];
+    CHECK(pipe(ends) == 0);
+    char path[24];
+    self_fd_path(path, (int)motd);
+    CHECK(read_small(path, text, sizeof(text)) > 0 && strcmp(text, "/etc/motd\n") == 0);
+    self_fd_path(path, ends[0]);
+    CHECK(read_small(path, text, sizeof(text)) > 0 && strcmp(text, "pipe (read end)\n") == 0);
+    self_fd_path(path, ends[1]);
+    CHECK(read_small(path, text, sizeof(text)) > 0 && strcmp(text, "pipe (write end)\n") == 0);
+    CHECK(read_small("/proc/self/fd/0", text, sizeof(text)) > 0 && strcmp(text, "console\n") == 0);
+    /* Descriptor 12 (listing the directory opens the lowest free one) */
+    CHECK(dup2(ends[1], 12) == 12 && dir_lists("/proc/self/fd", "12"));
+    CHECK(read_small("/proc/self/fd/12", text, sizeof(text)) > 0 && strcmp(text, "pipe (write end)\n") == 0);
+    close(12);
+    CHECK(read_small("/proc/self/fd/12", text, sizeof(text)) == -ENOENT);   /* Closed: gone */
+    CHECK(!dir_lists("/proc/self/fd", "12"));
+    close(ends[1]);
+    close(ends[0]);
+
+    CHECK(munmap(anon, 3 * 4096) == 0 && munmap(mapped, 4096) == 0);
+    close((int)motd);
+    CHECK(read_small("/proc/self/maps", text, sizeof(text)) > 0);
+    CHECK(!has_text(text, "anonymous") && !has_text(text, "/etc/motd"));
+
+    /* They name files: bob may read his own, not root's */
+    long pid = fork();
+    if (pid == 0) {
+        if (setgid(100) != 0 || setuid(1001) != 0) exit(9);
+        if (read_small("/proc/1/maps", text, sizeof(text)) != -EACCES) exit(1);
+        if (open("/proc/1/fd", O_RDONLY) != -EACCES) exit(2);
+        if (read_small("/proc/1/fd/0", text, sizeof(text)) != -EACCES) exit(3);
+        if (read_small("/proc/1/status", text, sizeof(text)) <= 0) exit(4);      /* status stays public */
+        if (read_small("/proc/self/maps", text, sizeof(text)) <= 0) exit(5);
+        if (read_small("/proc/self/fd/1", text, sizeof(text)) <= 0) exit(6);
+        exit(0);
+    }
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0);
+}
+
 /* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
 static void check_pipes(void) {
     int fds[2];
@@ -3232,6 +3321,7 @@ int main(void) {
     check_line_tools();
     check_more_tools();
     check_proc();
+    check_proc_maps_fd();
     check_groups_and_setuid();
     check_supplementary_groups();
     check_sticky_and_setgid();
