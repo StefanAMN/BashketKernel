@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "kstring.h"
+#include "interrupts.h"
 
 // A device's 256 bytes of PCI configuration space, as the tests want it
 static uint8_t space[256];
@@ -61,6 +62,86 @@ TEST(virtio_capabilities_are_found) {
     put_cap(0xB0, 0x00, 1, 2, 0x8000, 0x1000);
     EXPECT_TRUE(virtio_pci_parse_caps(fake8, fake32, NULL, &caps));
     EXPECT_TRUE(caps.common.bar == 4 && caps.common.offset == 0);
+}
+
+// An MSI-X capability at 0x98 (where sound_layout links one): a table of
+// `entries` in BAR `bar` at `offset`
+static void put_msix(uint16_t entries, uint8_t bar, uint32_t offset) {
+    space[0x98] = 0x11;
+    space[0x99] = 0x84;
+    space[0x9A] = (uint8_t)((entries - 1) & 0xFF);
+    space[0x9B] = (uint8_t)(((entries - 1) >> 8) & 0x07);
+    put32(0x9C, offset | bar);
+    put32(0xA0, 0x800 | bar);                           // Pending bits: not used here
+}
+
+TEST(msix_capability_is_found_and_not_believed) {
+    virtio_msix_cap_t cap;
+    sound_layout();
+    put_msix(3, 1, 0);
+    EXPECT_TRUE(virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+    EXPECT_TRUE(cap.offset == 0x98 && cap.entries == 3 && cap.bar == 1 && cap.table_offset == 0);
+
+    put_msix(2048, 4, 0x2000);                           // The largest table there can be
+    EXPECT_TRUE(virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+    EXPECT_TRUE(cap.entries == 2048 && cap.bar == 4 && cap.table_offset == 0x2000);
+
+    put_msix(3, 6, 0);                                   // BIR 6: reserved
+    EXPECT_TRUE(!virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+    put_msix(3, 7, 0);
+    EXPECT_TRUE(!virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+    put_msix(16, 1, 0xFFFFFFF8u);                        // The table would wrap around
+    EXPECT_TRUE(!virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+
+    sound_layout();
+    space[0x98] = 0x05;                                  // MSI, not MSI-X: nothing found
+    EXPECT_TRUE(!virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+    sound_layout();
+    space[0x06] = 0;                                     // No capability list
+    EXPECT_TRUE(!virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+    memset(space, 0xFF, sizeof(space));                  // No device at all
+    EXPECT_TRUE(!virtio_pci_parse_msix(fake8, fake32, NULL, &cap));
+}
+
+// The message a device writes to interrupt a CPU (Intel SDM Vol. 3A,
+// 11.11): address 0xFEE with the APIC id in bits 19:12, data the vector,
+// fixed delivery, edge triggered
+TEST(msi_messages_name_the_cpu_and_vector) {
+    uint64_t address = 0;
+    uint32_t data = 0;
+    EXPECT_TRUE(msi_message(0, 0x30, &address, &data));
+    EXPECT_TRUE(address == 0xFEE00000ULL && data == 0x30);
+    EXPECT_TRUE(msi_message(3, 0x3F, &address, &data));
+    EXPECT_TRUE(address == 0xFEE03000ULL && data == 0x3F);
+    EXPECT_TRUE(msi_message(0xFF, 0x31, &address, &data));
+    EXPECT_TRUE(address == 0xFEEFF000ULL);
+    EXPECT_TRUE(!msi_message(0x100, 0x30, &address, &data)); // Needs x2APIC
+}
+
+// A disk on MSI-X: a request is answered by its vector, on the CPU it was
+// sent to, and its line stays quiet. On the line (VIRTIO=legacy), by the
+// line. (Which of the two is expected is checked from the boot log: see
+// the Makefile's VIRTIO_UNWANTED.)
+TEST(disk_interrupts_arrive_by_their_route) {
+    if (virtio_blk_count() == 0) return;
+    uint8_t vector = 0, line = 0;
+    uint32_t cpu = 0;
+    bool msix = virtio_blk_interrupt_route(0, &vector, &cpu, &line);
+    uint64_t on_cpu = msix ? msi_vector_count(vector, cpu) : 0;
+    uint64_t on_line = irq_line_count(line);
+    uint64_t taken = virtio_blk_interrupts(0);
+
+    static uint8_t sector[512];
+    for (int i = 0; i < 8; i++) EXPECT_EQ(virtio_blk_read_dev(0, (uint64_t)i, sector, 1), 0);
+
+    EXPECT_TRUE(virtio_blk_interrupts(0) > taken);
+    if (msix) {
+        EXPECT_TRUE(vector >= MSI_VECTOR_FIRST && vector < MSI_VECTOR_FIRST + MSI_VECTOR_COUNT);
+        EXPECT_TRUE(msi_vector_count(vector, cpu) > on_cpu);
+        EXPECT_EQ(irq_line_count(line), on_line);
+    } else {
+        EXPECT_TRUE(irq_line_count(line) > on_line);
+    }
 }
 
 // The list is the device's to write, and a device can be wrong or hostile
@@ -156,4 +237,7 @@ void test_suite_virtio(void) {
     RUN_TEST(virtio_capabilities_are_found);
     RUN_TEST(virtio_capabilities_are_not_believed);
     RUN_TEST(device_memory_is_mapped_in_its_own_region);
+    RUN_TEST(msix_capability_is_found_and_not_believed);
+    RUN_TEST(msi_messages_name_the_cpu_and_vector);
+    RUN_TEST(disk_interrupts_arrive_by_their_route);
 }

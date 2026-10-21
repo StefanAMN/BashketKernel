@@ -111,6 +111,18 @@ static void virtio_blk_irq(struct registers *regs) {
     }
 }
 
+// One disk's MSI-X handler (`arg` is its blk_device_t). The vector is the
+// disk's own, so there is nothing to ask: its used ring changed. The ISR
+// register is not read (virtio 1.2, 4.1.4.5: with MSI-X it is not used).
+static void virtio_blk_msi(void *arg) {
+    blk_device_t *d = arg;
+    uint64_t flags = spinlock_acquire_irqsave(&d->lock);
+    d->interrupt_count++;
+    random_add_event(d->interrupt_count);
+    collect_finished(d);
+    spinlock_release_irqrestore(&d->lock, flags);
+}
+
 // Set disk `number` up from its PCI device: interface, features, request
 // queue, the slots' DMA pages, its size; register and route its interrupt
 // line unless that was just done for the previous disk. Returns 0 or -1
@@ -124,6 +136,17 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
     if (!virtio_open(&d->virtio, &dev) || !virtio_negotiate(&d->virtio, 0, NULL)) {
         kprintf("virtio-blk: device offers no interface this kernel can use\n");
         return -1;
+    }
+
+    // A vector of its own if the device can send messages (MSI-X), to a
+    // CPU of its own if there are several; else its line, below
+    static char names[VIRTIO_BLK_MAX_DEVICES][16];
+    ksnprintf(names[number], sizeof(names[number]), "virtio-blk %u", number);
+    if (virtio_msix_start(&d->virtio)) {
+        uint8_t vector = register_msi_handler(names[number], virtio_blk_msi, d);
+        if (!vector || !virtio_msix_assign(&d->virtio, 0, 0, vector, virtio_msix_next_cpu())) {
+            d->virtio.queue_vector[0] = VIRTIO_MSI_NO_VECTOR;   // virtio_msix_finish then goes back to the line
+        }
     }
 
     // Queue 0 is the request d->queue; each slot needs three descriptors
@@ -159,10 +182,10 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
 
     d->capacity_sectors = virtio_config64(&d->virtio, CONFIG_CAPACITY);
 
-    // The device's interrupt arrives on the ISA IRQ named in its
-    // configuration space
+    // Without MSI-X, the device's interrupt arrives on the ISA IRQ named in
+    // its configuration space
     uint8_t irq = d->virtio.irq;
-    if (irq > 0 && irq < 16 && !(*irq_registered && *registered_irq == irq)) {
+    if (!virtio_msix_finish(&d->virtio) && irq > 0 && irq < 16 && !(*irq_registered && *registered_irq == irq)) {
         register_irq_handler(irq, virtio_blk_irq); // One handler serves every disk on the line
         ioapic_route_isa_irq(irq);
         *irq_registered = true;
@@ -172,8 +195,10 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
     virtio_driver_ok(&d->virtio);
     d->present = true;
 
-    kprintf("virtio-blk: disk %u ready, %lu sectors (%lu MiB), queue size %u, IRQ %u, %s interface\n",
-            number, d->capacity_sectors, d->capacity_sectors / 2048, d->queue.size, irq, virtio_interface_name(&d->virtio));
+    char how[48];
+    virtio_describe_interrupts(&d->virtio, how, sizeof(how));
+    kprintf("virtio-blk: disk %u ready, %lu sectors (%lu MiB), queue size %u, %s interface, interrupts: %s\n",
+            number, d->capacity_sectors, d->capacity_sectors / 2048, d->queue.size, virtio_interface_name(&d->virtio), how);
     return 0;
 }
 
@@ -204,6 +229,15 @@ uint64_t virtio_blk_capacity_of(unsigned dev) { return dev < device_count ? devi
 
 uint64_t virtio_blk_requests(unsigned dev) { return dev < device_count ? devices[dev].completed_requests : 0; }
 uint64_t virtio_blk_interrupts(unsigned dev) { return dev < device_count ? devices[dev].interrupt_count : 0; }
+
+bool virtio_blk_interrupt_route(unsigned dev, uint8_t *vector, uint32_t *cpu, uint8_t *line) {
+    if (dev >= device_count) return false;
+    const virtio_device_t *v = &devices[dev].virtio;
+    if (vector) *vector = v->msix ? v->vector : 0;
+    if (cpu) *cpu = v->msix ? v->vector_cpu : 0;
+    if (line) *line = v->irq;
+    return v->msix;
+}
 
 uint32_t virtio_blk_peak_in_flight(void) {
     uint32_t peak = 0;

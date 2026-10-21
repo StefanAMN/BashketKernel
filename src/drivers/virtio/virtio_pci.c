@@ -10,6 +10,9 @@
 #include "vmm.h"
 #include "kprintf.h"
 #include "kstring.h"
+#include "interrupts.h"
+#include "percpu.h"
+#include "smp.h"
 
 // --- PCI configuration space (PCI Local Bus Specification 3.0, section 6) -----
 
@@ -17,6 +20,20 @@
 #define PCI_STATUS_CAP_LIST   (1u << 4)  // The device has a capability list
 #define PCI_CAPABILITIES      0x34       // Offset of its first entry
 #define PCI_CAP_ID_VENDOR     0x09       // An entry whose meaning the vendor defines
+#define PCI_CAP_ID_MSIX       0x11
+
+// The MSI-X capability (PCI 3.0, section 6.8.2), as offsets within it
+#define MSIX_CONTROL          2          // 16 bits: Message Control
+#define MSIX_TABLE            4          // 32 bits: table offset (bits 31:3) and BIR (bits 2:0)
+#define MSIX_CONTROL_SIZE     0x07FF     // Table size minus one
+#define MSIX_CONTROL_MASK_ALL (1u << 14) // Function Mask: no entry may send while set
+#define MSIX_CONTROL_ENABLE   (1u << 15) // MSI-X Enable: the INTx line is no longer used
+// A table entry (6.8.2.6 to 6.8.2.9): 16 bytes
+#define MSIX_ENTRY_SIZE       16
+#define MSIX_ENTRY_ADDR_LOW   0
+#define MSIX_ENTRY_ADDR_HIGH  4
+#define MSIX_ENTRY_DATA       8
+#define MSIX_ENTRY_CONTROL    12         // Bit 0: this entry is masked
 
 // A virtio capability (virtio 1.2, section 4.1.4), as offsets within the entry
 #define CAP_NEXT        1
@@ -34,6 +51,7 @@
 
 // The common configuration structure (section 4.1.4.3), as offsets
 #define COMMON_DEVICE_FEATURE_SELECT 0   // 32 bits: which half of the feature bits the next field shows
+#define COMMON_CONFIG_MSIX_VECTOR    16  // 16 bits: MSI-X entry for configuration changes
 #define COMMON_DEVICE_FEATURE        4   // 32 bits, read
 #define COMMON_DRIVER_FEATURE_SELECT 8
 #define COMMON_DRIVER_FEATURE        12  // 32 bits, write
@@ -42,7 +60,7 @@
 #define COMMON_CONFIG_GENERATION     21  // 8 bits: changes whenever the device configuration does
 #define COMMON_QUEUE_SELECT          22  // 16 bits: which queue the fields below are about
 #define COMMON_QUEUE_SIZE            24  // 16 bits
-#define COMMON_QUEUE_MSIX_VECTOR     26
+#define COMMON_QUEUE_MSIX_VECTOR     26  // 16 bits: MSI-X entry for the selected queue
 #define COMMON_QUEUE_ENABLE          28  // 16 bits
 #define COMMON_QUEUE_NOTIFY_OFF      30  // 16 bits, read
 #define COMMON_QUEUE_DESC            32  // 64 bits: physical address of the descriptor table
@@ -123,26 +141,59 @@ bool virtio_pci_parse_caps(uint8_t (*read8)(void *ctx, uint8_t offset), uint32_t
     return out->common.found && out->notify.found && out->isr.found && out->device.found;
 }
 
+bool virtio_pci_parse_msix(uint8_t (*read8)(void *ctx, uint8_t offset), uint32_t (*read32)(void *ctx, uint8_t offset),
+                           void *ctx, virtio_msix_cap_t *out) {
+    memset(out, 0, sizeof(*out));
+    if (!(read8(ctx, PCI_STATUS) & PCI_STATUS_CAP_LIST)) return false;
+
+    // The same walk as for the virtio capabilities, with the same limits
+    uint8_t at = read8(ctx, PCI_CAPABILITIES) & 0xFC;
+    for (int steps = 0; at >= 0x40 && steps < 64; steps++) {
+        if (read8(ctx, at) == PCI_CAP_ID_MSIX && at <= 256 - 12) {
+            uint16_t control = (uint16_t)(read32(ctx, at) >> 16);
+            uint32_t table = read32(ctx, (uint8_t)(at + MSIX_TABLE));
+            out->offset = at;
+            out->entries = (uint16_t)((control & MSIX_CONTROL_SIZE) + 1);
+            out->bar = (uint8_t)(table & 7);
+            out->table_offset = table & ~7u;
+            // BIR values 6 and 7 are reserved; the table must fit its BAR's
+            // 32-bit offset range without wrapping
+            out->found = out->bar <= 5 &&
+                         out->table_offset <= 0xFFFFFFFFu - (uint32_t)out->entries * MSIX_ENTRY_SIZE;
+            return out->found;
+        }
+        at = read8(ctx, (uint8_t)(at + CAP_NEXT)) & 0xFC;
+    }
+    return false;
+}
+
 // The real configuration space, for virtio_pci_parse_caps (`ctx` is the device)
 static uint8_t config_read8(void *ctx, uint8_t offset) { return pci_read8((const pci_device_t *)ctx, offset); }
 static uint32_t config_read32(void *ctx, uint8_t offset) { return pci_read32((const pci_device_t *)ctx, offset); }
 
-// Map one of the structures (it lies in one of the device's memory regions)
-// and return where it now is, or NULL
-static volatile uint8_t *map_structure(const pci_device_t *pci, const virtio_cap_t *cap) {
-    uint32_t bar = pci_read32(pci, (uint8_t)(PCI_BAR0 + cap->bar * 4));
+// Map `length` bytes at `offset` in memory BAR number `index` (0..5) and
+// return where they now are, or NULL
+static volatile uint8_t *map_bar(const pci_device_t *pci, uint8_t index, uint32_t offset, uint32_t length) {
+    if (index > 5) return NULL;
+    uint32_t bar = pci_read32(pci, (uint8_t)(PCI_BAR0 + index * 4));
     if (bar & 1) return NULL; // An I/O port region: allowed by the specification, not offered by anything we run on
 
     // Bits 2:1 of a memory BAR give its width: 2 means 64 bits, with the
     // upper half in the next BAR (PCI 3.0, section 6.2.5.1)
     uint64_t base = bar & ~0xFULL;
     if (((bar >> 1) & 3) == 2) {
-        if (cap->bar >= 5) return NULL;
-        base |= (uint64_t)pci_read32(pci, (uint8_t)(PCI_BAR0 + (cap->bar + 1) * 4)) << 32;
+        if (index >= 5) return NULL;
+        base |= (uint64_t)pci_read32(pci, (uint8_t)(PCI_BAR0 + (index + 1) * 4)) << 32;
     }
     if (base == 0) return NULL; // The firmware did not give the region an address
 
-    return (volatile uint8_t *)vmm_map_device(base + cap->offset, cap->length);
+    return (volatile uint8_t *)vmm_map_device(base + offset, length);
+}
+
+// Map one of the structures (it lies in one of the device's memory regions)
+// and return where it now is, or NULL
+static volatile uint8_t *map_structure(const pci_device_t *pci, const virtio_cap_t *cap) {
+    return map_bar(pci, cap->bar, cap->offset, cap->length);
 }
 
 // Write the device status register (VIRTIO_STATUS_* bits; 0 resets it)
@@ -159,6 +210,7 @@ static uint8_t get_status(virtio_device_t *dev) {
 bool virtio_open(virtio_device_t *dev, const pci_device_t *pci) {
     memset(dev, 0, sizeof(*dev));
     dev->pci = *pci;
+    for (int i = 0; i < VIRTIO_MAX_QUEUES; i++) dev->queue_vector[i] = VIRTIO_MSI_NO_VECTOR; // (0 is a real entry)
     dev->irq = pci_read8(pci, PCI_INTERRUPT_LINE);
 
     virtio_caps_t caps;
@@ -266,6 +318,103 @@ const char *virtio_interface_name(const virtio_device_t *dev) {
     return dev->modern ? "modern" : "legacy";
 }
 
+// --- MSI-X ------------------------------------------------------------------------
+
+bool virtio_msix_start(virtio_device_t *dev) {
+    if (!dev->modern) return false;
+    virtio_msix_cap_t cap;
+    if (!virtio_pci_parse_msix(config_read8, config_read32, (void *)&dev->pci, &cap)) return false;
+    volatile uint8_t *table = map_bar(&dev->pci, cap.bar, cap.table_offset, (uint32_t)cap.entries * MSIX_ENTRY_SIZE);
+    if (!table) return false;
+
+    // On, with the whole function masked while the entries are filled in
+    // (6.8.2.3): nothing can be sent half-written
+    uint16_t control = (uint16_t)(pci_read32(&dev->pci, cap.offset) >> 16);
+    pci_write16(&dev->pci, (uint8_t)(cap.offset + MSIX_CONTROL),
+                (uint16_t)(control | MSIX_CONTROL_ENABLE | MSIX_CONTROL_MASK_ALL));
+    for (uint16_t i = 0; i < cap.entries; i++) mmio_write32(table, (uint32_t)i * MSIX_ENTRY_SIZE + MSIX_ENTRY_CONTROL, 1);
+
+    // Configuration changes (a disk resized) are not acted on: no message for them
+    mmio_write16(dev->common, COMMON_CONFIG_MSIX_VECTOR, VIRTIO_MSI_NO_VECTOR);
+
+    dev->msix = true;
+    dev->msix_cap = cap.offset;
+    dev->msix_entries = cap.entries;
+    dev->msix_table = table;
+    return true;
+}
+
+bool virtio_msix_assign(virtio_device_t *dev, uint16_t queue, uint16_t entry, uint8_t vector, uint32_t cpu) {
+    if (!dev->msix || queue >= VIRTIO_MAX_QUEUES || entry >= dev->msix_entries) return false;
+    cpu_t *target = cpu_get(cpu);
+    uint64_t address;
+    uint32_t data;
+    if (!target || !msi_message(target->lapic_id, vector, &address, &data)) return false;
+
+    uint32_t at = (uint32_t)entry * MSIX_ENTRY_SIZE;
+    mmio_write32(dev->msix_table, at + MSIX_ENTRY_ADDR_LOW, (uint32_t)address);
+    mmio_write32(dev->msix_table, at + MSIX_ENTRY_ADDR_HIGH, (uint32_t)(address >> 32));
+    mmio_write32(dev->msix_table, at + MSIX_ENTRY_DATA, data);
+    dev->queue_vector[queue] = entry;
+    dev->vector = vector;
+    dev->vector_cpu = cpu;
+    return true;
+}
+
+// Give up on MSI-X: the device goes back to its line
+static void msix_stop(virtio_device_t *dev) {
+    uint16_t control = (uint16_t)(pci_read32(&dev->pci, dev->msix_cap) >> 16);
+    pci_write16(&dev->pci, (uint8_t)(dev->msix_cap + MSIX_CONTROL),
+                (uint16_t)(control & ~(MSIX_CONTROL_ENABLE | MSIX_CONTROL_MASK_ALL)));
+    dev->msix = false;
+    dev->vector = 0;
+}
+
+bool virtio_msix_finish(virtio_device_t *dev) {
+    if (!dev->msix) return false;
+    bool any = false;
+    for (uint16_t q = 0; q < VIRTIO_MAX_QUEUES; q++) {
+        if (dev->queue_vector[q] == VIRTIO_MSI_NO_VECTOR) continue;
+        mmio_write16(dev->common, COMMON_QUEUE_SELECT, q);
+        if (mmio16(dev->common, COMMON_QUEUE_MSIX_VECTOR) != dev->queue_vector[q]) {
+            kprintf("virtio: the device refused MSI-X entry %u for queue %u; using its line\n", dev->queue_vector[q], q);
+            msix_stop(dev);
+            return false;
+        }
+        any = true;
+    }
+    if (!any) {
+        msix_stop(dev);
+        return false;
+    }
+    for (uint16_t q = 0; q < VIRTIO_MAX_QUEUES; q++) {
+        if (dev->queue_vector[q] == VIRTIO_MSI_NO_VECTOR) continue;
+        mmio_write32(dev->msix_table, (uint32_t)dev->queue_vector[q] * MSIX_ENTRY_SIZE + MSIX_ENTRY_CONTROL, 0);
+    }
+    uint16_t control = (uint16_t)(pci_read32(&dev->pci, dev->msix_cap) >> 16);
+    pci_write16(&dev->pci, (uint8_t)(dev->msix_cap + MSIX_CONTROL), (uint16_t)(control & ~MSIX_CONTROL_MASK_ALL));
+    return true;
+}
+
+uint32_t virtio_msix_next_cpu(void) {
+    static uint32_t turn;
+    uint32_t total = (uint32_t)smp_get_cpu_total();
+    if (total <= 1) return 0;
+    // CPUs 1, 2, ..., total-1, 0, 1, ...: the boot CPU last, since it also
+    // takes every line interrupt
+    for (uint32_t tried = 0; tried < total; tried++) {
+        uint32_t cpu = (1 + turn++) % total;
+        cpu_t *c = cpu_get(cpu);
+        if (c && c->active) return cpu;
+    }
+    return 0;
+}
+
+void virtio_describe_interrupts(const virtio_device_t *dev, char *buf, size_t size) {
+    if (dev->msix) ksnprintf(buf, size, "MSI-X vector 0x%x on CPU %u", dev->vector, dev->vector_cpu);
+    else ksnprintf(buf, size, "line IRQ %u", dev->irq);
+}
+
 // --- Queues: the part of virtqueue_setup that differs ---------------------------
 
 uint16_t virtio_queue_size(virtio_device_t *dev, uint16_t index) {
@@ -297,6 +446,12 @@ bool virtio_queue_start(virtio_device_t *dev, uint16_t index, uint64_t desc_phys
     uint64_t notify_offset = (uint64_t)mmio16(dev->common, COMMON_QUEUE_NOTIFY_OFF) * dev->notify_multiplier;
     if (notify_offset + 2 > dev->notify_length) return false;
     *notify_address = (volatile uint16_t *)(dev->notify + notify_offset);
+
+    // Which MSI-X entry its interrupts go through, before it is enabled
+    // (4.1.5.1.2: the device reads back VIRTIO_MSI_NO_VECTOR if it cannot
+    // take it; virtio_msix_finish checks)
+    mmio_write16(dev->common, COMMON_QUEUE_MSIX_VECTOR,
+                 index < VIRTIO_MAX_QUEUES ? dev->queue_vector[index] : VIRTIO_MSI_NO_VECTOR);
 
     mmio_write64(dev->common, COMMON_QUEUE_DESC, desc_phys);
     mmio_write64(dev->common, COMMON_QUEUE_DRIVER, avail_phys);
