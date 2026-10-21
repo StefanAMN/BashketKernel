@@ -2340,8 +2340,9 @@ static int sh_capture(const char *command, char *out, size_t size) {
         dup2(p[1], 1);
         close(p[0]);
         close(p[1]);
-        int null = (int)open("/dev/null", O_WRONLY);
+        int null = (int)open("/dev/null", O_RDWR);
         dup2(null, 2);
+        dup2(null, 0);  /* A command that wrongly reads its input ends instead of waiting for the keyboard */
         close(null);    /* The shell starts with 0, 1 and 2 only, as from a terminal */
         char *args[] = { "/bin/sh", "-c", (char *)command, NULL };
         execv("/bin/sh", args);
@@ -2462,6 +2463,41 @@ static void check_shell_variables(void) {
     CHECK(sh_ends("export a-b=1", "", 1));
     CHECK(sh_ends("X=1 | cat", "", 2));
     CHECK(sh_ends("X=1 > /tmp/never", "", 2));
+}
+
+/* Redirections and pipes after compound commands: every kind redirected,
+ * piped from and into, 2>&1 after done, a pipe over two lines, the
+ * command running in a child (what it sets stays there), and what is
+ * still refused */
+static void check_shell_compound_redirects(void) {
+    CHECK(sh_prints("for x in a b; do echo $x; done > /tmp/cr; cat /tmp/cr", "a\nb\n"));
+    CHECK(sh_prints("while true; do echo w; break; done>/tmp/cr; cat /tmp/cr", "w\n"));
+    CHECK(sh_prints("until false; do echo u; break; done >> /tmp/cr; cat /tmp/cr", "w\nu\n"));
+    CHECK(sh_prints("if true; then echo i; fi > /tmp/cr; cat /tmp/cr", "i\n"));
+    CHECK(sh_prints("case x in x) echo c;; esac > /tmp/cr; cat /tmp/cr", "c\n"));
+    CHECK(sh_prints("{ echo g1; echo g2; } > /tmp/cr; cat /tmp/cr", "g1\ng2\n"));
+    CHECK(sh_prints("while true; do cat; break; done < /tmp/cr", "g1\ng2\n"));   /* Input too */
+    CHECK(sh_prints("for x in 1 2 3; do echo $x; done | wc", "3 3 6\n"));
+    CHECK(sh_prints("{ echo b; echo a; } | sort", "a\nb\n"));
+    CHECK(sh_prints("if true; then echo yes; fi | tr a-z A-Z", "YES\n"));
+    CHECK(sh_prints("echo in | while true; do cat; break; done", "in\n"));       /* Piped into */
+    CHECK(sh_prints("echo q | { cat; } | { cat; }", "q\n"));
+    CHECK(sh_prints("echo m | case a in a) cat;; esac | cat", "m\n"));
+    CHECK(sh_prints("for x in 1; do ls /no/such; done 2>&1 | grep -c such", "1\n"));
+    CHECK(sh_prints("for x in a b; do echo $x; done |\nsort -r", "b\na\n"));      /* The pipe ends a line */
+    CHECK(sh_prints("X=out; for x in in; do X=$x; done | cat; echo $X", "out\n")); /* Ran in a child */
+    CHECK(sh_prints("X=out; for x in in; do X=$x; done; echo $X", "in\n"));       /* ... unlike this */
+    CHECK(sh_ends("for x in 1; do false; done | cat", "", 0));                  /* The last one's status */
+    CHECK(sh_ends("{ echo a; } | false", "", 1));
+    CHECK(sh_prints("if true; then\n  for x in 1 2; do echo $x; done > /tmp/cr\nfi; cat /tmp/cr", "1\n2\n"));
+
+    CHECK(sh_ends("for x in 1; do echo z; done > /tmp/cr extra", "", 2));
+    CHECK(sh_ends("for x in 1; do echo z; done >", "", 2));
+    CHECK(sh_ends("for x in 1; do echo z; done junk", "", 2));
+    CHECK(sh_ends("f() { echo f; } > /tmp/cr", "", 2));                          /* Not on a definition */
+    CHECK(sh_ends("{ echo a; } | | cat", "", 2));
+    CHECK(sh_ends("{ echo a; } < /no/such", "", 1));
+    CHECK(unlink("/tmp/cr") == 0);
 }
 
 /* The shell's case (patterns, quoted parts literal, | and the optional
@@ -3294,6 +3330,7 @@ int main(void) {
     check_shell_redirects();
     check_shell_variables();
     check_shell_case_functions();
+    check_shell_compound_redirects();
     check_line_tools();
     check_hosts_file();
     check_more_tools();

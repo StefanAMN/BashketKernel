@@ -916,8 +916,8 @@ counted (as J1's test does); the unit tests otherwise unchanged.
 
 Done as proposed, with `elif` and `break N` / `continue N`; a text is now
 parsed into a tree before it runs (`until` followed; `case`, functions
-and `${NAME}` came with M2). Not done: redirections after `fi` / `done` / `}`,
-and `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
+and `${NAME}` came with M2; redirections and pipes after `fi` / `done` / `}`
+with N1). Not done: `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
 The tests found `for 1 in a` accepted. The proposal:
 
 `if LIST; then LIST; [else LIST;] fi`, `while LIST; do LIST; done` and
@@ -1203,7 +1203,7 @@ input than fits one command line.
 
 ## Track N — Interrupts of their own, and looking inside a process
 
-### N1. Redirections and pipes after compound commands (S)
+### N1. Redirections and pipes after compound commands (S) — done
 
 `for f in *; do cat $f; done > all` and `if ...; fi | wc` are refused:
 a compound command cannot take a redirection or join a pipeline (K2's
@@ -1213,6 +1213,20 @@ its redirections apply to everything inside; one without stays in the
 shell. **Check:** syscheck: each compound kind redirected, piped from and
 into, `2>&1` after `done`, and that a variable set inside a piped loop
 does not reach the shell (it ran in a child).
+
+Done as written (`check_shell_compound_redirects`). A closing keyword
+may now be followed by redirections or `|`, and a simple command's
+`|` followed by `if`, `while`, `until`, `for`, `case` or `{` divides
+it; a pipeline with a compound command in it, or a compound command
+with redirections, is a node of its own whose commands each run in a
+child, redirections applied after the pipe. A keyword now also ends at
+an operator (`done>f`). Not taken: redirections on a function
+definition (POSIX applies them at each call), and `&` after a compound
+command. Sabotage: ignoring the redirections failed 13 checks, and at
+first made syscheck hang instead: `cat` in a loop whose `< file` was
+lost read the terminal. `sh_capture` now gives the shell `/dev/null` as
+input, so a wrong read ends. Not splitting before `| while` failed the
+three piped-into checks.
 
 ### N2. `/proc/<pid>/maps` and `/proc/<pid>/fd` (S)
 
@@ -1329,7 +1343,7 @@ L2, L3, L4, L5                   done (in parallel)
         |
 M1, M2, M3, M4                   done (in parallel)
         |
-N1, N2, N3, N4                   in parallel
+N1, N2, N3, N4                   in parallel (N1 done)
 ```
 
 (Track A, once the recommended first step because everything built on
