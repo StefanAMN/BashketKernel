@@ -2565,6 +2565,58 @@ static int put_file(const char *path, const char *text, size_t size) {
     return ok;
 }
 
+/* The shell's $((...)) (precedence, signs, bases, wrapping, variables,
+ * && and || that skip, the errors) and read (fields, the rest, -r and
+ * backslashes, the end of input, from a file, a pipe and a loop) */
+static void check_shell_arith_read(void) {
+    CHECK(sh_prints("echo $((1 + 2 * 3)) $(( (1 + 2) * 3 )) $((10 - 4 - 3)) $((2 * 3 % 4))", "7 9 3 2\n"));
+    CHECK(sh_prints("echo $((-7 / 2)) $((-7 % 2)) $((- -3)) $((+4)) $((!0)) $((!5))", "-3 -1 3 4 1 0\n"));
+    CHECK(sh_prints("echo $((0x1f)) $((010)) $((1 < 2)) $((2 <= 1)) $((3 == 3)) $((3 != 3)) $((2 >= 2))",
+                    "31 8 1 0 1 0 1\n"));
+    CHECK(sh_prints("echo $((9223372036854775807 + 1)) $((-9223372036854775807 - 1 - 1))",
+                    "-9223372036854775808 9223372036854775807\n"));        /* Wraps, as said */
+    CHECK(sh_prints("echo $((-9223372036854775807 - 1)) $(((-9223372036854775807 - 1) / -1))",
+                    "-9223372036854775808 -9223372036854775808\n"));
+    CHECK(sh_prints("i=4; echo $((i * i)) $(($i + 1)) $((${i} - 1)) $((unset_x + 1))", "16 5 3 1\n"));
+    CHECK(sh_prints("n=-3; s=' 7 '; e=; echo $((n * 2)) $((s + 1)) $((e))", "-6 8 0\n"));
+    CHECK(sh_prints("i=0; while [ $i -lt 5 ]; do i=$((i + 1)); done; echo $i", "5\n"));
+    CHECK(sh_prints("f() { echo $(($1 + $2)) $(($#)); }; f 40 2", "42 2\n"));
+    CHECK(sh_prints("false; echo $(($? * 10))", "10\n"));
+    CHECK(sh_prints("echo \"[$((1+1))]\" x$((2))y", "[2] x2y\n"));
+    CHECK(sh_prints("x=0; echo $((x != 0 && 10 / x)) $((x == 0 || 10 / x))", "0 1\n"));  /* Not evaluated */
+    CHECK(sh_prints("x=abc; echo $((0 && x))", "0\n"));
+    CHECK(sh_prints("echo \"$(echo a)\"; echo b", "a\nb\n"));                /* ')' inside quotes */
+    CHECK(sh_ends("echo $((1 / 0))", "", 2));
+    CHECK(sh_ends("echo $((5 % 0))", "", 2));
+    CHECK(sh_ends("x=abc; echo $((x + 1))", "", 2));
+    CHECK(sh_ends("echo $((1 +))", "", 2));
+    CHECK(sh_ends("echo $((1 2))", "", 2));
+    CHECK(sh_ends("echo $(((1 + 2))", "", 2));
+    CHECK(sh_ends("echo $((08))", "", 2));
+    CHECK(sh_ends("echo $((99999999999999999999))", "", 2));
+    CHECK(sh_ends("echo $((1 / 0)) never; echo after", "after\n", 0));      /* Only that command fails */
+
+    static const char rd[] = "one two three four\n  lead  trail  \nlast";
+    CHECK(put_file("/tmp/rd", rd, strlen(rd)));
+    CHECK(sh_prints("read a b < /tmp/rd; echo [$a][$b]", "[one][two three four]\n"));
+    CHECK(sh_prints("read a b c d e < /tmp/rd; echo [$a][$d][$e]", "[one][four][]\n"));
+    CHECK(sh_prints("while read l; do echo [$l]; done < /tmp/rd", "[one two three four]\n[lead  trail]\n"));
+    CHECK(sh_prints("{ read x; read y z; read w; echo [$x][$y][$z][$w] $?; } < /tmp/rd",
+                    "[one two three four][lead][trail][last] 1\n"));            /* Last line, no '\n': 1 */
+    CHECK(sh_prints("echo 'a b' | { read p q; echo [$p][$q]; }", "[a][b]\n"));
+    CHECK(sh_prints("x=kept; echo new | read x; echo $x", "kept\n"));      /* In a child: lost */
+    CHECK(sh_prints("echo 'a\\ b c\\\\d' | { read p q; echo [$p][$q]; }", "[a b][c\\d]\n"));
+    CHECK(sh_prints("echo 'a\\ b c' | { read -r p q; echo [$p][$q]; }", "[a\\][b c]\n"));
+    CHECK(sh_prints("printf_free() { echo 'jo\\'; echo 'ined'; }; printf_free | { read v; echo $v; }", "joined\n"));
+    CHECK(sh_ends("read v; echo [$v]", "[]\n", 0));                         /* Empty input: the echo's status */
+    CHECK(sh_ends("read v", "", 1));
+    CHECK(sh_ends("read", "", 2));
+    CHECK(sh_ends("read 1x", "", 2));
+    CHECK(sh_ends("read v < /no/such", "", 1));
+    CHECK(sh_prints("read v < /no/such; read w < /tmp/rd; echo $w", "one two three four\n"));  /* Input put back */
+    CHECK(unlink("/tmp/rd") == 0);
+}
+
 /* uniq, cut and tr: their basic forms, a line longer than any fixed buffer
  * (two equal ones, then a last line without '\n'), and what they refuse */
 static void check_line_tools(void) {
@@ -3430,6 +3482,7 @@ int main(void) {
     check_shell_variables();
     check_shell_case_functions();
     check_shell_compound_redirects();
+    check_shell_arith_read();
     check_line_tools();
     check_hosts_file();
     check_more_tools();
