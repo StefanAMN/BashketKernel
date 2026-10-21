@@ -367,8 +367,13 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   on can be the one it has just pushed out, so the fault handler reads the
   faulting page back whatever kind of fault it was; and a process with
   nothing it may give up (a fresh fork child: every page still shared)
-  must not search its whole address space at every fault. Known limit:
-  a fork child cannot free memory until it has pages of its own. (A
+  must not search its whole address space at every fault. Known limits:
+  a fork child cannot free memory until it has pages of its own; and
+  nothing is fair between two processes swapping against each other
+  (each takes room only from itself, and whichever faults at the right
+  moment gets the frames): two 45 MiB programs once finished 20 seconds
+  apart after a change that only moved code in the C library. (Found by
+  `test-swap`, which had waited a fixed 8 seconds for the second.) (A
   system call that needed a swapped page when no frame was free used to
   fail rather than make room; M3 lifted that. Testing this showed that a dead process kept its
   memory until its parent collected it; it now gives it back as it dies.)

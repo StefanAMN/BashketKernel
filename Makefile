@@ -530,6 +530,10 @@ test-paint: iso
 # Swap: a program that needs 80 MiB on a machine with 64. Without a swap
 # disk the kernel must refuse it the memory; with one, every page must come
 # back as it was written, and nothing may be left on the swap disk after.
+# Two at once (one in the background) must both finish; "fg" waits for
+# the second rather than a fixed time, because which of two processes
+# swapping against each other gets ahead is chance (it once lagged by 20
+# seconds, after a change that only moved the C library's code).
 # Killed half way, it leaves no frame and no swap slot behind. (That this
 # happens as it dies, not when it is reaped, is a_zombie_holds_no_memory's
 # check: here both are reaped at once.) Ctrl-C kills its forked child as
@@ -549,7 +553,7 @@ test-swap: iso
 		--expect 'syscheck: all checks passed' \
 		--expect 'SwapFree:   65532 kB' --forbid 'swapper: FAILED|could not be read back|out of memory' \
 		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[\s\S]*){2}' \
-		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' '@wait:8' 'exit' \
+		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' 'fg' 'exit' \
 		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
 		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
 	tools/qemu_shell.py --quiet --mem 64M --timeout 120 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
