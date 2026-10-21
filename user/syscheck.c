@@ -1184,6 +1184,32 @@ static void check_lazy_memory(void) {
         CHECK(munmap(second, 4096) == 0);
     }
 
+    /* Mappings of one file share the page cache's frame, but stay private:
+     * a write gives the writer a copy (the other mapping, and the next one,
+     * see the file); a write to the file is seen by the next mapping, while
+     * a page already mapped keeps what it held */
+    fd = open("/tmp/cached.txt", O_RDWR | O_CREAT | O_TRUNC);
+    CHECK(fd >= 0 && write((int)fd, "first version", 13) == 13);
+    unsigned char *writable = mmap_file((int)fd, 13, 0, PROT_READ | PROT_WRITE);
+    unsigned char *readable = mmap_file((int)fd, 13, 0, PROT_READ);
+    CHECK(writable != NULL && readable != NULL);
+    if (writable && readable) {
+        CHECK(memcmp(writable, "first version", 13) == 0 && memcmp(readable, "first version", 13) == 0);
+        writable[0] = 'F';
+        CHECK(writable[0] == 'F' && readable[0] == 'f');
+        unsigned char *third = mmap_file((int)fd, 13, 0, PROT_READ);
+        CHECK(third != NULL && third[0] == 'f');
+        if (third) CHECK(munmap(third, 13) == 0);
+        CHECK(lseek((int)fd, 0, SEEK_SET) == 0 && write((int)fd, "SECOND", 6) == 6);
+        unsigned char *fourth = mmap_file((int)fd, 13, 0, PROT_READ);
+        CHECK(fourth != NULL && memcmp(fourth, "SECONDversion", 13) == 0);
+        CHECK(memcmp(readable, "first version", 13) == 0);
+        if (fourth) CHECK(munmap(fourth, 13) == 0);
+        CHECK(munmap(writable, 13) == 0 && munmap(readable, 13) == 0);
+    }
+    CHECK(close((int)fd) == 0 && unlink("/tmp/cached.txt") == 0);
+    CHECK(meminfo("Cached:") >= 0);
+
     /* A mapped file is in use: it can not be removed until it is unmapped */
     fd = open("/tmp/mapped.txt", O_RDWR | O_CREAT | O_TRUNC);
     CHECK(fd >= 0 && write((int)fd, "mapped text", 11) == 11);

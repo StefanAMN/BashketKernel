@@ -19,6 +19,7 @@
 #include "kstring.h"
 #include "kerrno.h"
 #include "swap.h"
+#include "pcache.h"
 
 static size_t promised_total = 0;
 
@@ -46,14 +47,23 @@ static void uncharge(struct task *task, size_t pages) {
     __atomic_sub_fetch(&promised_total, pages, __ATOMIC_RELAXED);
 }
 
-// May this many more pages be promised? Only what is free now, less what
-// has been promised already and the reserve fork insists on, can be.
-static bool can_promise(size_t pages) {
+// Whether `pages` more could be promised with what is free now (and on the
+// swap disk), less what is promised already and the reserve fork insists on
+static bool fits(size_t pages) {
     size_t free_frames = pmm_get_free_frames();
     size_t spoken_for = region_promised_pages() + PROCESS_FORK_RESERVE_FRAMES;
     // (With a swap disk, pages can also be kept there)
     free_frames += swap_free_pages();
     return free_frames > spoken_for && pages <= free_frames - spoken_for;
+}
+
+// May this many more pages be promised? If not with what is free, then
+// after the page cache has given back what is mapped nowhere (as good as
+// free, but only once it is asked).
+static bool can_promise(size_t pages) {
+    if (fits(pages)) return true;
+    pcache_reclaim(pages + PROCESS_FORK_RESERVE_FRAMES);
+    return fits(pages);
 }
 
 static mem_region_t *free_slot(struct task *task);
@@ -233,14 +243,37 @@ int region_fault(struct task *task, uint64_t addr) {
     }
     if (!found) return 0;
 
+    // Short of memory: cached pages nobody maps go first (they cost
+    // nothing to give back), before anything else has to
+    size_t free_frames = pmm_get_free_frames();
+    if (free_frames < SWAP_LOW_FRAMES) pcache_reclaim(SWAP_HIGH_FRAMES - free_frames);
+
     uint64_t flags = VMM_USER;
     if (prot & PROT_WRITE) flags |= VMM_WRITABLE;
     if (!(prot & PROT_EXEC)) flags |= VMM_NO_EXECUTE;
 
-    // A zeroed frame; then, for a file, as much of the file as lies on this
-    // page (past its end the zeros stay). The frame is filled through the
-    // kernel's own view of it, before the program can see it.
+    if (node && pcache_cacheable(node) && (file_offset & (PAGE_SIZE - 1)) == 0) {
+        // A page of a file: the frame the page cache holds for it, shared
+        // with every other mapping of that page. Never writable as it is: a
+        // writable private mapping gets it copy-on-write, and its first
+        // write makes the process a copy of its own.
+        uint64_t frame = pcache_get(node, file_offset / PAGE_SIZE);
+        if (!frame) return -1;
+        if (flags & VMM_WRITABLE) flags = (flags & ~VMM_WRITABLE) | VMM_COW;
+        if (!vmm_map_page(space, page, frame, flags | VMM_PRESENT)) {
+            pmm_unref_frame((void *)frame);  // The reference pcache_get gave us
+            return -1;
+        }
+        uncharge(task, 1);
+        return 1;
+    }
+
+    // A zeroed frame; then, for a file the cache does not keep, as much of
+    // it as lies on this page (past its end the zeros stay). The frame is
+    // filled through the kernel's own view of it, before the program can
+    // see it.
     void *frame_view = vmm_alloc_user_page(space, page, flags);
+    if (!frame_view && pcache_reclaim(16) > 0) frame_view = vmm_alloc_user_page(space, page, flags);
     if (!frame_view) return -1;
     if (node) vfs_read(node, file_offset, PAGE_SIZE, frame_view);
 
