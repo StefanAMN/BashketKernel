@@ -263,6 +263,10 @@ code comments and commit messages; `git log` is the full history.
   switching user programs to `-fpie`, the other build tree still held non-PIE
   objects and failed at link time with a confusing relocation error. User
   objects now depend on the Makefile.
+- **`iretq` and `sysretq` leave different registers behind.** `iretq` to
+  ring 3 clears data selectors holding kernel values; `sysretq` leaves them.
+  A kernel selector in GS was visible to a program only on a CPU that had
+  not yet done an `iretq`: one failure in many runs, on four CPUs.
 - **`1 / zero` does not divide** (GCC emits a compare for a constant
   dividend); make both operands volatile to raise `#DE`.
 - **Assertion macros must evaluate their arguments once.**
@@ -437,6 +441,11 @@ code comments and commit messages; `git log` is the full history.
   while data arriving before `accept` was being acknowledged and thrown
   away: both ends were ours and never sent early. The host's TCP did, on the
   first try.
+  But "the host" over QEMU's user-mode network is not the host's kernel:
+  the guest's TCP and IP peer is QEMU's own stack (slirp, from BSD). It
+  never offers window scaling, so a plan to measure scaling "against the
+  host's TCP" measured nothing. A packet capture (`filter-dump`) says
+  which options the other end really sends.
 - **Background teardown breaks counting tests.** A closed TCP connection
   frees its buffers two seconds later (TIME_WAIT), in whatever test happens
   to be running then. Every test now starts once the stack is quiet

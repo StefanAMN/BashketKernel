@@ -61,6 +61,7 @@ int test_remove(const char *dir, const char *name);
 bool run_all_tests(void);
 
 // The suites: one per file tests/test_<name>.c, each running its tests
+void test_suite_before_programs(void); /* What must hold before any program has run: the data selectors on every CPU */
 void test_suite_pmm(void);       /* Physical frames: one and many, sized from RAM, exhaustion and recovery */
 void test_suite_vmm(void);       /* Page tables: mapping and unmapping a page */
 void test_suite_heap(void);      /* kmalloc and kfree: blocks, memory given back, failure refused cleanly */

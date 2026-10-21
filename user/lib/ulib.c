@@ -674,6 +674,7 @@ const char *strerror(long err) {
         case EMSGSIZE:  return "message too long";
         case EADDRINUSE: return "port already in use";
         case ENETDOWN:  return "no network";
+        case ENETUNREACH: return "network unreachable";
         case ETIMEDOUT: return "timed out";
         case ECONNRESET: return "connection reset";
         case ECONNREFUSED: return "connection refused";

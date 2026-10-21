@@ -23,6 +23,7 @@ static size_t read_in_pieces(file_t *file, char *out, size_t size) {
     while (total + 1 < size && (n = file_read(file, out + total, (size - 1 - total) < 7 ? (size - 1 - total) : 7)) > 0) {
         total += (size_t)n;
     }
+
     out[total] = '\0';
     return total;
 }
@@ -291,9 +292,7 @@ static void status_reader_entry(void) {
         pid_t base = watched_pid;
         if (base <= 0) { sched_yield(); continue; }
         for (pid_t pid = base; pid < base + 4; pid++) {
-            // In one read, as cat does: each read makes the text afresh, so
-            // slurp's small pieces could come from two moments of a process
-            // that is changing (and tear the line apart)
+            // In one read, as cat does (reading in pieces has its own test)
             proc_path(path, pid, "status");
             file_t *file = NULL;
             if (file_open(path, O_RDONLY, &file) != 0) continue;     // Not there (yet, or any more)

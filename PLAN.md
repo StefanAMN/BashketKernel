@@ -1415,7 +1415,8 @@ constants (`0x1f`, `010`); a variable must hold a number (blanks and a
 sign allowed) or be empty; `&&` and `||` skip their right side, errors
 in it included (`x != 0 && 10 / x`); overflow wraps, `LONG_MIN / -1`
 too, instead of trapping. Not done: assignments inside (`=`, `+=`,
-`++`), the bit operators, `?:`, and `$(...)` inside `$((...))`. `read`
+`++`), the bit operators and `?:` (all three done in T3), and `$(...)`
+inside `$((...))`. `read`
 takes a byte at a time, so the rest of the input is left for the next
 reader; it runs in the shell itself (it sets the shell's variables),
 its redirections applied there and undone after, and in a child when it
@@ -1977,7 +1978,7 @@ check; `map_page` ignoring the offset failed two checks and the
 screenshots. (A mouse event and a typed line arriving together is only
 exercised by `paint` itself.)
 
-### S2. TCP window scaling (M)
+### S2. TCP window scaling (M) — done
 
 A connection's window stops at 64 KiB (no window scale option, RFC 7323
 section 2), which limits a transfer to one window per round trip. Offer
@@ -1987,6 +1988,40 @@ option (offered, accepted, refused when the other end does not offer it,
 a shift above 14 clamped); `make test-net` against the host's TCP (which
 scales), with the transfer time before and after written down; the
 reassembly and congestion tests of O1 and P1 keep passing.
+
+Done (`src/net/tcp.c`, `tcp_parse_options`). Every SYN we send offers a
+shift of 3 (256 KiB >> 3 fits the field); a SYN+ACK carries the option only
+if the SYN did, and scaling is used only when both carried it. Windows in
+SYNs are never scaled; the one we advertise is rounded down so it never
+offers room we lack; ssthresh starts at 65535 in the other end's units.
+The rings start at 8 KiB and double up to 256 KiB (64 KiB unscaled): the
+receive ring when the other end used all the window offered and the reader then emptied the ring, the send ring
+when it is full while both windows allow more in flight. `/proc/tcp` shows
+the shifts and ring sizes.
+
+The plan was wrong about the host: the guest's TCP peer is QEMU's
+user-mode network (slirp), not the host's kernel, and its SYN+ACK does not
+carry the option (seen in a capture: our SYN `wscale 3`, its answer `mss
+1460` only). So against the host every connection is unscaled, which at
+least exercises "the other end does not offer it" against a TCP we did
+not write. Times, 2 MiB echoed through `tcpecho` (`make test-net`, three
+runs each): before 0.09, 0.10, 0.11 s; after 0.12 s each. Over loopback,
+4 MiB with both rings grown to 256 KiB took 140 ms, and 149 ms with the
+rings held at 8 KiB. Neither path has latency to speak of, so a larger
+window buys almost nothing there. With a reader that takes what has
+arrived once a tick (standing in for a round trip), 4 MiB took 5,127 ms
+with the receive ring held at 8 KiB and 677 ms with it grown to 256 KiB.
+
+The first trigger for the receive ring ("it filled up") passed on one CPU
+and failed on four: there the reader empties the ring as data arrives, so
+it never fills even while the sender is held to a window per round trip.
+The trigger is now the one BSD uses: data reaching (within a segment) the
+right edge of the window last offered. Over loopback the send ring is
+never what holds a connection back (acknowledgements return at once), so
+its test plays the receiver by hand, offering 8192 << 5 bytes and
+acknowledging once a tick. Sabotage: rings that never grow (each trigger
+removed in turn), the other end's windows or ours left unscaled, and
+scaling assumed without the option each failed the new checks.
 
 ### S3. IPv4 fragments (M) — done
 
@@ -2039,6 +2074,130 @@ was caught only by a check that the shell's size stays the same over
 two empty strings that compared equal (it now wants a value).
 
 ---
+
+## Track T — Errors that reach the sender, losses repaired together, arithmetic that assigns
+
+Planned 2026-10-26, after track S, from limits written down earlier (each
+checked in the code first).
+
+### T1. ICMP errors, sent and taken in (M) — done
+
+A UDP datagram for a port nobody has open is counted and dropped in
+silence, and so is every ICMP message but echo: the sender of a datagram
+to a closed port waits for an answer that will never come, and a TCP
+connection the network reports unreachable runs out its retransmissions
+(about 20 s) instead of failing at once. S3 also left out the "reassembly
+time exceeded" message. Send "port unreachable" for UDP to a closed port
+and "protocol unreachable" for an unknown protocol (RFC 1122 3.2.2.1, a
+SHOULD), and "fragment reassembly time exceeded" when a datagram whose
+first fragment arrived is given up (3.3.2); never in answer to an ICMP
+error, a broadcast, or a fragment other than the first (RFC 1122
+3.2.2), and no more than a few per second (rate limit, RFC 1812 4.3.2.8).
+Take in "destination unreachable": codes 2 to 4 (protocol, port,
+fragmentation needed) are hard errors and end the TCP connection they
+quote (RFC 1122 4.2.3.9), the others are soft (remembered, reported if
+the connection then times out); the quoted header must match a
+connection's addresses, ports and a sequence number in flight (RFC 5927:
+forged errors). **Check:** unit tests (a datagram to a closed port
+answered, a broadcast one not, an error not answered, the rate limit,
+an error quoting a connecting socket ends it with ECONNREFUSED, one
+quoting a sequence number not in flight ignored); `tools/test_net.py`:
+QEMU's capture shows a correct port-unreachable message for a datagram
+from the host to a closed port, checked by a parser that is not ours.
+
+Done (`icmp_send_error` and the error branch of `icmp_input` in
+`src/net/net.c`, `tcp_icmp_error` in `tcp.c`; `ipfrag_expire` reports the
+first fragment's header). The quote is the datagram's header and its
+first 8 bytes; for a datagram put together from fragments, the last
+fragment's header made to describe the whole. Code 4 counts as hard, as
+RFC 1122 says, though with path MTU discovery (which this stack does not
+do) it would not. Errors about UDP are counted and go no further: sockets
+here are not connected, and an unconnected socket is not told. QEMU does
+not pass our port unreachable on to the host's socket (a connected socket
+there sees only timeouts), so `test_net.py` reads it from QEMU's capture
+with its own parser (checksums written from RFC 1071, the quote's
+addresses and port); `tcpdump` decodes the same packets as "udp port 9
+unreachable". The rule against errors about errors can only matter for a
+fragmented ICMP error given up in reassembly, so that is what its test
+sends. Sabotage: errors about broadcasts, any sequence number believed, no
+rate limit, the first fragment not kept, errors about errors, and no
+answer from UDP each failed a check; soft codes treated as hard passed
+until the test waited to see `connect` stay unanswered (a connection just
+ended is still found, closed, while its owner holds it).
+
+### T2. TCP selective acknowledgement (M) — done
+
+With NewReno a window with several losses is repaired one hole per round
+trip (O2, P1 wrote it down). Offer and accept SACK (RFC 2018: the option
+in the SYN, blocks of what arrived beyond a gap in each acknowledgement
+while a gap exists, the most recent first), and as a sender keep a
+scoreboard and retransmit the holes it shows in one round trip (RFC 6675
+loss recovery). **Check:** unit tests of the blocks sent and of the
+scoreboard; the lossy loopback transfer (`tcp_survives_lost_segments`)
+with fewer retransmission timeouts and less time than with SACK refused,
+both written down; a peer that does not offer it still served by
+NewReno (QEMU's own TCP does not).
+
+Done (`src/net/tcp.c`: `tcp_sack_blocks`, the scoreboard functions, the
+SACK branches of `send_what_is_due`, `process_ack` and the duplicate
+handling). Our SYN offers SACK-permitted; the SYN+ACK carries it only if
+the SYN did. A receiver holding data beyond a gap puts up to four blocks
+in every acknowledgement, the stretch with the latest segment first, and
+takes their room from the data it sends. As sender, blocks inside what is
+outstanding go on a scoreboard; on the third duplicate the window becomes
+ssthresh, and while pipe (outstanding, less what is reported held, less
+the holes below the highest report not yet sent again) is below it a
+segment goes: the next hole, then new data. Every hole below the highest
+block counts as lost, which is simpler than RFC 6675's IsLost and more
+eager. Duplicates in that recovery do not inflate the window, and a
+partial acknowledgement only moves pipe, unless the scoreboard shows no
+hole: a receiver that agreed to SACK and reports nothing then gets
+NewReno's resend. A timeout forgets the scoreboard. QEMU's TCP was not
+seen to offer SACK (its SYN+ACK carries only the segment size), so the
+host tests still run NewReno.
+
+Measured over loopback, 300 KiB with one segment in nine dropped (the same
+pseudo-random losses each time): without SACK 4,700 ms, 11 timer
+retransmissions and 18 fast ones; with SACK 1,720 ms, 6 timer
+retransmissions, 11 fast and 10 holes repaired from the scoreboard. A
+hand-played receiver reporting two holes after three duplicates gets both
+sent again before any further acknowledgement; with SACK refused, only
+the first. The numbers are from one sequence of losses; the test asserts
+that the scoreboard was used, not the times.
+
+Sabotage: holes never resent, the scoreboard never fed, no blocks sent,
+SACK used without the peer's consent, no pruning, the window inflated in
+recovery, and no fallback each failed a check. Pruning and inflation first
+passed, costing only time (3.3 s and 2.3 s), and a receiver sending no
+blocks took 10.9 s, worse than NewReno, until the fallback was written
+(now 4.3 s); exact checks were added (the scoreboard empty once all is
+acknowledged, the window unchanged by a fourth duplicate, a blockless
+partial acknowledgement answered within 100 ms). The fourth duplicate
+at first came 300 ms after the third, by when the retransmission timer had
+ended recovery: NewReno's window did not grow, which failed, and SACK's did
+not either, which proved nothing. It is now sent at once.
+
+### T3. Assignment and the remaining operators in `$(( ))` (S) — done
+
+The shell's arithmetic has no assignments (`=`, `+=` and the other
+compound forms, `++` and `--`), no bit operators (`& | ^ ~ << >>`) and
+no `?:`, all of which POSIX lists (XCU 2.6.4, from C). Add them with C's
+precedence; an assignment sets the shell variable and has its value; `?:`
+and `&& ||` evaluate only the side taken. **Check:** syscheck: each
+operator, precedence against the existing ones, `x=5` leaving x set,
+`i++` in a `while` loop, shifts by more than 63 defined as in the shell's
+64-bit integers (said so), errors (assigning to a number, `1 ? 2`).
+
+Done (`user/sh.c`, the `arith_` functions; syscheck's
+`check_shell_arith_read`). Shift counts are taken modulo 64, as the x86
+shift instructions and bash do, and `>>` keeps the sign. `++` and `--`
+apply to names only, so `--5` is still -(-5), and `$x++` is refused (a
+value, not a variable), as in bash. As in C, `c ? p = 1 : q = 2` does not
+parse (`(c ? p = 1 : q) = 2`): the branches that assign need parentheses.
+Sabotage: an assignment that stored nothing failed four checks; a postfix
+`++` giving the value after failed three; `&` taking the first half of
+`&&` failed three; `?:` evaluating its middle when the condition is false
+passed until a check with the condition false was added.
 
 ## Smaller repairs (any time, each S)
 
@@ -2106,6 +2265,14 @@ plan:
     process between 7-byte reads, `proc_snapshot_is_freed_with_the_file`
     counts heap bytes after a close and after a kill, and syscheck grows
     its own heap between reads of `/proc/self/status`.
+14. (Done 2026-10-30.) Every CPU started with the kernel's data selector
+    in DS, ES, FS and GS. `iretq` to ring 3 clears such selectors and
+    `sysretq` does not, so a program moved to a CPU that had not yet done an
+    `iretq` could read it: syscheck's "GS is 0" check failed once in a
+    `make check` on four CPUs. No harm to the kernel (the base registers are
+    what count), but kernel state in a program's hands. `gdt_flush` now
+    loads the null selector there. The unit test looks before any program
+    has run, since the first `iretq` hides it afterwards.
 
 ---
 
@@ -2156,8 +2323,10 @@ R2                               done
 R3                               done
         |
 S4                               done
-S1, S3                           done
-S2                               next (planned, not started)
+S1, S2, S3                       done
+T3                               done
+T1                               done
+T2                               done
 ```
 
 (Track A, once the recommended first step because everything built on

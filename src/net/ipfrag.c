@@ -32,6 +32,8 @@ typedef struct {
     size_t total;                  // The datagram's length, once the last fragment has said (0: not yet)
     size_t cost;                   // What it is charged against IPFRAG_MEMORY
     uint64_t deadline;             // Given up at this tick
+    size_t quote_len;              // The first fragment's header and first bytes, once it has come
+    uint8_t quote[IPFRAG_QUOTE_LEN];
 } reassembly_t;
 
 static reassembly_t slots[IPFRAG_SLOTS];
@@ -90,7 +92,7 @@ static uint8_t *assemble(const piece_t *pieces, size_t total) {
 }
 
 uint8_t *ipfrag_input(uint32_t src, uint32_t dst, uint8_t protocol, uint16_t id, size_t offset, bool more,
-                      const uint8_t *data, size_t len, uint64_t now, size_t *total, bool *started) {
+                      const void *header, const uint8_t *data, size_t len, uint64_t now, size_t *total, bool *started) {
     stats.fragments++;
     *started = false;
 
@@ -193,6 +195,15 @@ uint8_t *ipfrag_input(uint32_t src, uint32_t dst, uint8_t protocol, uint16_t id,
     piece = NULL;                                  // The datagram has it now
     r->received += len;
     r->cost += cost;
+    if (offset == 0) {
+        // For the error report if the rest never comes (options left out:
+        // the header is quoted as 20 bytes)
+        memcpy(r->quote, header, 20);
+        r->quote[0] = 0x45;
+        size_t n = len < 8 ? len : 8;
+        memcpy(r->quote + 20, data, n);
+        r->quote_len = 20 + n;
+    }
     memory_used += cost;
     if (!more) r->total = end;
 
@@ -223,15 +234,21 @@ out:
     return whole;
 }
 
-uint64_t ipfrag_expire(uint64_t now) {
+uint64_t ipfrag_expire(uint64_t now, ipfrag_report_t report) {
     piece_t *garbage = NULL;
     uint64_t next_deadline = 0;
+    uint8_t quotes[IPFRAG_SLOTS][IPFRAG_QUOTE_LEN];   // Reported after the lock
+    size_t quote_lens[IPFRAG_SLOTS], reports = 0;
 
     uint64_t flags = spinlock_acquire_irqsave(&frag_lock);
     for (int i = 0; i < IPFRAG_SLOTS; i++) {
         reassembly_t *r = &slots[i];
         if (!r->used) continue;
         if (r->deadline <= now) {
+            if (r->quote_len > 0) {
+                memcpy(quotes[reports], r->quote, r->quote_len);
+                quote_lens[reports++] = r->quote_len;
+            }
             release(r, &garbage);
             stats.timeouts++;
         } else if (next_deadline == 0 || r->deadline < next_deadline) {
@@ -241,5 +258,6 @@ uint64_t ipfrag_expire(uint64_t now) {
     spinlock_release_irqrestore(&frag_lock, flags);
 
     free_pieces(garbage);
+    for (size_t i = 0; report && i < reports; i++) report(quotes[i], quote_lens[i]);
     return next_deadline;
 }

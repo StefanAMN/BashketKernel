@@ -307,7 +307,7 @@ TEST(net_drops_malformed_frames) {
     uint64_t refused = ipfrag_stats()->refused;
     net_handle_frame(bad, len);
     EXPECT_TRUE(ipfrag_stats()->refused == refused + 1);
-    EXPECT_EQ(ipfrag_expire(timer_ticks()), 0);              // Nothing in progress
+    EXPECT_EQ(ipfrag_expire(timer_ticks(), NULL), 0);              // Nothing in progress
     uint64_t dropped_before;
 
     // ARP packets with wrong sizes or cut short
@@ -351,8 +351,10 @@ static size_t make_udp_datagram(uint8_t *out, uint16_t port, size_t n) {
 }
 
 // Hand the stack one fragment of `datagram` (bytes offset..offset+len; zeros
-// if it is NULL) as a frame from 10.0.2.77, with identification `id`
-static void send_fragment(uint16_t id, const uint8_t *datagram, size_t offset, size_t len, bool more) {
+// if it is NULL) as a frame from 10.0.2.77, with identification `id`, of
+// the IP protocol `protocol`
+static void send_fragment_protocol(uint16_t id, uint8_t protocol, const uint8_t *datagram, size_t offset,
+                                   size_t len, bool more) {
     static uint8_t frame[14 + 20 + 1480];
     uint8_t mac[6];
     virtio_net_get_mac(mac);
@@ -367,7 +369,7 @@ static void send_fragment(uint16_t id, const uint8_t *datagram, size_t offset, s
     ip[0] = 0x45; ip[2] = (uint8_t)(total >> 8); ip[3] = (uint8_t)total;
     ip[4] = (uint8_t)(id >> 8); ip[5] = (uint8_t)id;
     ip[6] = (uint8_t)(fragment >> 8); ip[7] = (uint8_t)fragment;
-    ip[8] = 64; ip[9] = 17;                                  // TTL, protocol UDP
+    ip[8] = 64; ip[9] = protocol;                            // TTL, protocol
     ip[12] = 10; ip[13] = 0; ip[14] = 2; ip[15] = 77;
     ip[16] = 10; ip[17] = 0; ip[18] = 2; ip[19] = 15;
     uint16_t sum = net_checksum(ip, 20);
@@ -375,6 +377,16 @@ static void send_fragment(uint16_t id, const uint8_t *datagram, size_t offset, s
     if (datagram) memcpy(ip + 20, datagram + offset, len);
     else memset(ip + 20, 0, len);
     net_handle_frame(frame, 14 + 20 + len);
+}
+
+// A UDP fragment (send_fragment_protocol with protocol 17)
+static void send_fragment(uint16_t id, const uint8_t *datagram, size_t offset, size_t len, bool more) {
+    send_fragment_protocol(id, 17, datagram, offset, len, more);
+}
+
+// send_fragment, but the datagram is ICMP (protocol 1) rather than UDP
+static void send_icmp_fragment(uint16_t id, const uint8_t *datagram, size_t offset, size_t len, bool more) {
+    send_fragment_protocol(id, 1, datagram, offset, len, more);
 }
 
 // Fragments put together in any order, duplicates ignored, overlaps and
@@ -452,9 +464,9 @@ TEST(ipv4_fragments_are_reassembled) {
     EXPECT_TRUE(fs->refused == refused + 6);
 
     EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);   // None of it got through
-    ipfrag_expire(UINT64_MAX);                               // What the refusals left started
+    ipfrag_expire(UINT64_MAX, NULL);                               // What the refusals left started
     udp_close(sock);
-    EXPECT_EQ(ipfrag_expire(timer_ticks()), 0);
+    EXPECT_EQ(ipfrag_expire(timer_ticks(), NULL), 0);
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
@@ -473,15 +485,15 @@ TEST(ipv4_fragments_time_out) {
     send_fragment(20, dgram, 0, 1024, true);
     send_fragment(20, dgram, 2048, n - 2048, false);
     uint64_t t1 = timer_ticks();
-    uint64_t next = ipfrag_expire(t0 + IPFRAG_TIMEOUT_TICKS - 1);
+    uint64_t next = ipfrag_expire(t0 + IPFRAG_TIMEOUT_TICKS - 1, NULL);
     EXPECT_TRUE(next >= t0 + IPFRAG_TIMEOUT_TICKS && next <= t1 + IPFRAG_TIMEOUT_TICKS);
     EXPECT_TRUE(fs->timeouts == timeouts);                   // Not yet
-    EXPECT_EQ(ipfrag_expire(t1 + IPFRAG_TIMEOUT_TICKS), 0);
+    EXPECT_EQ(ipfrag_expire(t1 + IPFRAG_TIMEOUT_TICKS, NULL), 0);
     EXPECT_TRUE(fs->timeouts == timeouts + 1);
     // The missing piece, too late: it begins a datagram of its own
     send_fragment(20, dgram, 1024, 1024, true);
     EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);
-    ipfrag_expire(UINT64_MAX);
+    ipfrag_expire(UINT64_MAX, NULL);
 
     // Nobody calls ipfrag_expire here: the receive thread learns of the new
     // deadline and gives the datagram up itself
@@ -493,7 +505,7 @@ TEST(ipv4_fragments_time_out) {
     ipfrag_test_timeout(0);
 
     udp_close(sock);
-    EXPECT_EQ(ipfrag_expire(timer_ticks()), 0);
+    EXPECT_EQ(ipfrag_expire(timer_ticks(), NULL), 0);
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
@@ -512,7 +524,7 @@ TEST(ipv4_fragments_memory_is_limited) {
     uint64_t evicted = fs->evicted;
     for (uint16_t id = 100; id < 100 + IPFRAG_SLOTS + 3; id++) send_fragment(id, dgram, 0, 1024, true);
     EXPECT_TRUE(fs->evicted == evicted + 3);
-    ipfrag_expire(UINT64_MAX);
+    ipfrag_expire(UINT64_MAX, NULL);
 
     // Eight datagrams of 60 KB, each missing its last piece: 480 KB, more
     // than the limit, so the oldest give way and the heap holds about the limit
@@ -534,7 +546,7 @@ TEST(ipv4_fragments_memory_is_limited) {
     EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 5), 60000);
     EXPECT_EQ(memcmp(buf, dgram + 8, 60000), 0);
 
-    ipfrag_expire(UINT64_MAX);
+    ipfrag_expire(UINT64_MAX, NULL);
     udp_close(sock);
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
@@ -649,6 +661,103 @@ TEST(net_unconfigured_broadcasts_and_listens) {
     EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
 }
 
+// --- ICMP errors (T1) ----------------------------------------------------------
+
+// The sender of a datagram nobody takes is told (port or protocol
+// unreachable, reassembly time exceeded), except where RFC 1122 says not
+// to: about a broadcast, about an error, about a fragment that was not the
+// first; and no more than ICMP's rate limit allows
+TEST(icmp_errors_are_sent_where_due) {
+    const net_stats_t *st = net_stats();
+    static uint8_t frame[256];
+    udp_socket_t *client = udp_open();
+    EXPECT_TRUE(client != NULL);
+
+    // To a closed port of our own: the error comes back to us too
+    uint64_t sent = st->icmp_errors_sent, received = st->icmp_errors_received;
+    EXPECT_EQ(udp_sendto(client, NET_LOCAL_IP, 7299, "x", 1), 1);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 1);
+    EXPECT_TRUE(st->icmp_errors_received == received + 1);
+
+    // From the network to a closed port: answered; to a broadcast address: not
+    size_t len = make_udp_frame(frame, 7298, "closed", 6);
+    sent = st->icmp_errors_sent;
+    net_handle_frame(frame, len);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 1);
+    len = build_udp_frame(frame, NET_BROADCAST);                 // For port 6800, where nobody is
+    net_handle_frame(frame, len);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 1);
+
+    // An unknown protocol (99): protocol unreachable
+    len = make_udp_frame(frame, 7298, "proto", 5);
+    frame[14 + 9] = 99;
+    frame[14 + 10] = frame[14 + 11] = 0;
+    uint16_t sum = net_checksum(frame + 14, 20);
+    frame[14 + 10] = (uint8_t)(sum >> 8); frame[14 + 11] = (uint8_t)sum;
+    net_handle_frame(frame, len);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 2);
+
+    // An error that arrives is taken in, never answered with another
+    static uint8_t error[14 + 20 + 8 + 28];
+    len = make_udp_frame(frame, 7298, "q", 1);
+    memcpy(error, frame, 14 + 20);                               // Ethernet and IP headers, from 10.0.2.77
+    uint8_t *ip = error + 14;
+    ip[3] = 20 + 8 + 28; ip[9] = 1;                              // ICMP, its length
+    ip[10] = ip[11] = 0;
+    sum = net_checksum(ip, 20);
+    ip[10] = (uint8_t)(sum >> 8); ip[11] = (uint8_t)sum;
+    uint8_t *icmp = ip + 20;
+    memset(icmp, 0, 8);
+    icmp[0] = 3; icmp[1] = 3;                                    // Port unreachable
+    memcpy(icmp + 8, frame + 14, 28);                            // Quoting a datagram (as if ours)
+    sum = net_checksum(icmp, 8 + 28);
+    icmp[2] = (uint8_t)(sum >> 8); icmp[3] = (uint8_t)sum;
+    received = st->icmp_errors_received;
+    net_handle_frame(error, sizeof(error));
+    EXPECT_TRUE(st->icmp_errors_received == received + 1);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 2);
+
+    // A datagram whose first fragment came is reported when it is given up;
+    // one whose first fragment never came is not (nothing to quote)
+    static uint8_t dgram[8 + 3000];
+    make_udp_datagram(dgram, 7298, 3000);
+    ipfrag_test_timeout(20);
+    uint64_t timeouts = ipfrag_stats()->timeouts;
+    send_fragment(40, dgram, 0, 1024, true);
+    TEST_WAIT(ipfrag_stats()->timeouts == timeouts + 1, 200);
+    EXPECT_TRUE(ipfrag_stats()->timeouts == timeouts + 1);
+    TEST_WAIT(st->icmp_errors_sent == sent + 3, 100);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 3);
+    send_fragment(41, dgram, 1024, 1024, true);
+    TEST_WAIT(ipfrag_stats()->timeouts == timeouts + 2, 200);
+    EXPECT_TRUE(ipfrag_stats()->timeouts == timeouts + 2);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 3);
+    // Nor is an ICMP error message that came in fragments and timed out
+    // (the one path on which an error could be about an error)
+    static uint8_t icmp_error[8 + 2000];
+    memset(icmp_error, 0, sizeof(icmp_error));
+    icmp_error[0] = 3; icmp_error[1] = 3;                       // Destination unreachable
+    send_icmp_fragment(42, icmp_error, 0, 1024, true);
+    TEST_WAIT(ipfrag_stats()->timeouts == timeouts + 3, 200);
+    EXPECT_TRUE(ipfrag_stats()->timeouts == timeouts + 3);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 3);
+    // While an echo request in the same position is reported
+    icmp_error[0] = 8; icmp_error[1] = 0;
+    send_icmp_fragment(43, icmp_error, 0, 1024, true);
+    TEST_WAIT(st->icmp_errors_sent == sent + 4, 200);
+    EXPECT_TRUE(st->icmp_errors_sent == sent + 4);
+    ipfrag_test_timeout(0);
+
+    // A flood of datagrams to a closed port: a limited number of answers
+    sent = st->icmp_errors_sent;
+    uint64_t limited = st->icmp_errors_limited;
+    for (int i = 0; i < 40; i++) udp_sendto(client, NET_LOCAL_IP, 7299, "x", 1);
+    uint64_t answered = st->icmp_errors_sent - sent;
+    EXPECT_TRUE(answered >= 1 && answered <= 20);               // Two seconds' worth at most
+    EXPECT_TRUE(st->icmp_errors_limited - limited == 40 - answered);
+    udp_close(client);
+}
+
 void test_suite_net(void) {
     kprintf("Suite: Network (virtio-net, ARP, IPv4 and its fragments, ICMP, UDP)\n");
     RUN_TEST(pci_finds_the_devices_qemu_provides);
@@ -662,6 +771,7 @@ void test_suite_net(void) {
     RUN_TEST(ipv4_fragments_are_reassembled);
     RUN_TEST(ipv4_fragments_time_out);
     RUN_TEST(ipv4_fragments_memory_is_limited);
+    RUN_TEST(icmp_errors_are_sent_where_due);
     RUN_TEST(net_configuration_can_be_changed);
     RUN_TEST(net_unconfigured_broadcasts_and_listens);
 }
