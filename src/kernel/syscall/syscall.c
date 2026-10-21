@@ -319,7 +319,8 @@ static int64_t sys_readdir(int fd, uint64_t user_entry) {
 }
 
 // mkdir(path): make a directory, owned by the caller, with 0777 less its
-// umask. The caller needs the right to write in the parent directory.
+// umask. The caller needs the right to write in the parent directory. In a
+// set-gid directory the new one takes the parent's group and the bit.
 static int64_t sys_mkdir(uint64_t user_path) {
     char path[PATH_MAX];
     int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
@@ -337,8 +338,9 @@ static int64_t sys_mkdir(uint64_t user_path) {
     int err = vfs_create(parent, name, VFS_DIRECTORY, &dir);
     if (err == 0 && (!parent->ops || !parent->ops->create || (dir->ops && dir->ops->setattr))) {
         dir->uid = task->uid;
-        dir->gid = task->gid;
+        dir->gid = auth_new_entry_group(parent, task->gid);
         dir->mode = (uint16_t)(PERM_NEW_DIR & ~task->umask);
+        if (parent->mode & PERM_SETGID) dir->mode |= PERM_SETGID;  // The rule passes down the tree
         if (dir->ops && dir->ops->setattr) dir->ops->setattr(dir);
     }
     return err;
@@ -346,7 +348,8 @@ static int64_t sys_mkdir(uint64_t user_path) {
 
 // symlink(target, path): make `path` a symbolic link to `target`, which is
 // stored as given. The caller needs the right to write in the directory;
-// the link belongs to the caller.
+// the link belongs to the caller (and to the directory's group if that is
+// set-gid).
 static int64_t sys_symlink(uint64_t user_target, uint64_t user_path) {
     char target[PATH_MAX], path[PATH_MAX];
     int64_t target_len = copy_string_from_user(target, user_target, sizeof(target));
@@ -364,7 +367,7 @@ static int64_t sys_symlink(uint64_t user_target, uint64_t user_path) {
     int err = vfs_symlink(parent, name, target, &link);
     if (err == 0 && link) {
         link->uid = task->uid;
-        link->gid = task->gid;
+        link->gid = auth_new_entry_group(parent, task->gid);
         if (link->ops && link->ops->setattr) link->ops->setattr(link);
     }
     return err;
@@ -431,6 +434,7 @@ static int64_t sys_fstat(int fd, uint64_t user_st) {
 // from a file changed by anyone but root. Caller holds the tree lock.
 static int64_t resize_file(vnode_t *node, uint64_t length, uint32_t uid) {
     if (length > 0x7FFFFFFFu) return -EFBIG;               // (What ext2 here can hold, and more than any disk)
+    if (node->exec_count > 0) return -ETXTBSY;              // A running program's file (see file_open_as)
     if (uid != UID_ROOT && (node->mode & PERM_SET_IDS)) {
         node->mode &= (uint16_t)~PERM_SET_IDS;
         if (node->ops && node->ops->setattr) node->ops->setattr(node);

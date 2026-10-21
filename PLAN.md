@@ -198,9 +198,10 @@ when it is touched (ten disk requests instead of 442 for one byte of a
 100 KiB file). The kernel gives a program's buffer its frames before using
 it, so its own accesses never fault.
 
-Not done: executables are still copied in whole by the loader, because
-sharing their pages between processes needs a page cache, and that is the
-larger half of this item. Shared file mappings and write-back likewise.
+Not done: sharing a file's pages between processes, which needs a page
+cache, the larger half of this item (programs are now read page by page,
+O2, but each process reads its own copy). Shared file mappings and
+write-back likewise.
 The promise limit does not cover fork or copy-on-write.
 
 - Demand-zero `mmap` and `brk` (pages appear on first touch), with an
@@ -221,8 +222,8 @@ effective user ids, `umask`, `su` and `passwd`, salted PBKDF2 password
 hashes (checked against Python's implementation: `tools/mkpasswd.py` makes
 the lines `/bin/login` accepts), and owners for shared memory segments.
 
-Not done: set-gid and sticky bits (done in M1, except set-gid on a
-directory). (Supplementary groups came with L4,
+Not done: set-gid and sticky bits (done in M1; set-gid directories in
+O4). (Supplementary groups came with L4,
 search permission on directories with smaller repair 11.) Owners for files on `/disk` wait for a filesystem
 that can store them (C2), and a password changed with `passwd` is lost at
 reboot for the same reason: `/etc` is in the initrd. (The password part no
@@ -1073,7 +1074,8 @@ or renaming an entry needs the caller to own the entry or the directory
 (or be root). `/tmp` is made 1777. Set-gid (02000) on an executable runs
 it with the file's group as the effective group, as set-uid does for the
 user (the bit is dropped by the same writes and owner changes); set-gid
-on directories (new files inherit the group) is left out and said so.
+on directories (new files inherit the group) is left out and said so
+(done later, in O4).
 `ls -l` and `stat` show `t` and `s`; `chmod` accepts the four-digit
 modes. **Check:** unit tests for the rule; syscheck as bob against
 alice's file in `/tmp` (unlink, rename over it, rename it away: refused;
@@ -1163,7 +1165,8 @@ once "could not be read back" in a fork child with no page of its own
 to give). A user-mode fault that finds no frame now makes more room and
 tries again, and when it has nothing to give, waits a tick for others
 (a quarter of a second at most) before giving up (`fault_may_retry` in
-`isr.c`). Afterwards: 8 of 8, and 3 of 3 with `SMP=4`.
+`isr.c`, since O2 `swap_may_retry` in `swap.c`, which system calls use
+too). Afterwards: 8 of 8, and 3 of 3 with `SMP=4`.
 
 The plan as written:
 
@@ -1317,6 +1320,136 @@ QEMU's DNS forwarder answers that name from the host.
 
 ---
 
+## Track O — TCP that recovers, programs loaded on demand
+
+### O1. TCP: reassembly and a measured retransmission time (M) — done
+
+Done as written (`src/net/tcp.c`; the limits in `tcp.h`). Data kept out
+of order needs no memory of its own: it is written into the free part
+of the receive ring at the place its sequence number gives it, and a
+list of at most eight stretches says what is there, so "memory
+returned" is true by construction (and the leak checks still pass). The
+receiver acknowledges each out-of-order segment on its own, since
+coalesced acknowledgements would never add up to the three duplicates.
+The RFC 6298 limits are changed for a virtual network (200 ms first
+timeout and floor, 3 s cap), and a timer expiry still sends everything
+from the oldest unacknowledged byte, since there is no congestion
+window. In the loss test (one segment in seven dropped, 300 KiB):
+before, 500 segments, 49 timer retransmissions, nothing kept; after,
+475 segments, 28 timer and 15 fast retransmissions, 94 segments kept.
+The first version of the hand-made reassembly test failed for a reason
+of its own: it acknowledged the server's SYN+ACK before tcpd had sent
+it, and an acknowledgement of something not yet sent is (rightly)
+answered rather than believed. Sabotage: keeping nothing out of order
+failed six checks (including the loss test's count); never fast
+retransmitting failed the loss test's count.
+
+A segment ahead of the expected one is dropped, and after a loss
+everything from it on is sent again; the retransmission time is fixed
+(`src/net/tcp.h`). Keep out-of-order segments (within the receive window,
+bounded memory, overlapping and duplicate segments trimmed) and deliver
+them when the gap fills; measure round trips and compute the timeout as
+RFC 6298 says (SRTT, RTTVAR, Karn's rule, the 1 s floor relaxed to what a
+virtual network needs, said so); fast retransmit on three duplicate
+acknowledgements (RFC 5681 3.2, without the congestion window, which
+stays out and is said so). **Check:** unit tests for the reassembly
+queue (orders, overlaps, a segment beyond the window, memory returned)
+and for the RTO arithmetic against RFC 6298's formulas; the existing
+loss-injection tests with the counters showing fewer retransmissions;
+`tools/test_net.py` against the host's TCP.
+
+### O2. Programs loaded page by page (M) — done
+
+`execve` copies every loadable segment in whole. Map file-backed
+segments as private file mappings instead (B4's mechanism), so a page of
+code is read when first run; `.bss` and the part of the last page past
+the file's data are zero-filled. Relocations (programs are static PIE)
+touch pages, which is fine: those become private copies. Without a page
+cache, two processes running one program each read their own copy (said
+so). **Check:** unit tests (a program whose untouched pages are never
+read: disk request counter before and after); every scripted target, as
+all programs now load this way; `make test-lowmem`, `make test-swap`,
+`make fuzz`; the loader's existing hostile-ELF tests.
+
+Done, for the read-only segments: `execve` lists the code and the
+constants as program regions of the file (`elf_load_program`, `region.h`)
+and reads them a page at a time at the first touch; the writable segment
+is still copied, because the relocations patch it and a page shared with
+`.bss` would need the file's bytes and zeros at once. The loader itself
+now reads the file only where it needs it (headers, that segment, the
+relocation table), not into a buffer of its size. A relocation aimed at a
+segment left to the file is refused (its page is not there, and patching
+it would be undone by the next read). Decided for a file that changes
+under a running program: it cannot. Program regions hold the file open
+(no removal: `EBUSY`) and count as running it (`exec_count`): opening it
+for writing or truncating it is `ETXTBSY`, and a file open for writing
+cannot be run, as in Unix. The untouched pages are promised, like mmap's,
+so `/proc/meminfo`'s Promised is no longer 0 on an idle system (init's
+code it has not run); `test-swap` and syscheck had assumed it was, and
+syscheck now touches its own program before measuring. The check is
+not a disk counter but the promise: a program asleep after starting
+still has pages of its program untouched, never read
+(`programs_are_read_page_by_page`).
+Found on the way: with more faults per process, two processes swapping
+against each other made a `read()` into swapped memory fail with `EFAULT`
+3 runs in 6 (`test-swap`): `process_populate` gave up after four tries
+to make room while the other process took it each time. It now waits as
+a page fault does (`swap_may_retry`, at most a quarter second); 10 runs in
+10 since. Sabotage: never leaving a segment to the file failed the two
+new unit tests and syscheck's `ETXTBSY` checks; dropping the `ETXTBSY`
+check on open failed four syscheck checks.
+
+### O3. `$((...))` and `read` in the shell (S) — done
+
+Arithmetic expansion with `+ - * / %`, comparisons, `&& || !`, parentheses
+and variables, in 64-bit integers, division by zero an error (not a
+crash); `read [-r] NAME...` assigning a line's fields (the last name takes
+the rest), status 1 at end of input. **Check:** syscheck: precedence,
+negative numbers, overflow wrapping as in C (said so), `$((x+1))` with
+unset `x` as 0, errors; `read` from a pipe and a file, in a `while read`
+loop.
+
+Done as written (`check_shell_arith_read`), with C's precedence and
+constants (`0x1f`, `010`); a variable must hold a number (blanks and a
+sign allowed) or be empty; `&&` and `||` skip their right side, errors
+in it included (`x != 0 && 10 / x`); overflow wraps, `LONG_MIN / -1`
+too, instead of trapping. Not done: assignments inside (`=`, `+=`,
+`++`), the bit operators, `?:`, and `$(...)` inside `$((...))`. `read`
+takes a byte at a time, so the rest of the input is left for the next
+reader; it runs in the shell itself (it sets the shell's variables),
+its redirections applied there and undone after, and in a child when it
+is part of a pipeline (`echo x | read v` sets nothing, as in other
+Bourne shells). Found on the way: cutting a text into commands counted
+the parentheses of `$(` but not quotes inside it, so `echo "$(echo a)";
+echo b` ran as one command; a `$(...)` is now taken whole. Sabotage:
+`&&` evaluating its right side failed two checks; `read` not giving
+the last name the rest of the line failed five.
+
+### O4. `mkdir -p`, `rmdir`, `rm -r`, and set-gid directories (S) — done
+
+`mkdir -p` makes missing parents and accepts existing ones; `rmdir`
+removes only empty directories; `rm -r` removes a tree without following
+symbolic links; a directory with the set-gid bit (stored since M1, without
+effect) gives new entries its group, and new subdirectories the bit.
+**Check:** syscheck (a deep `-p`, `rm -r` over a tree with a link to a
+directory outside it, which must survive; set-gid inheritance on memory
+and ext2 directories) and `make test-home` (the group on disk after a
+reboot).
+
+Done as written. The kernel part is one function, `auth_new_entry_group`,
+used where files, directories and links are made (`open` with `O_CREAT`,
+`mkdir`, `symlink`); `mkdir` also copies the bit. `rm -r` reads a whole
+directory before removing from it, refuses `/` and a last part `.` or
+`..`, and enters at most 64 levels; `unlink` already removes a link by
+its name, so `lstat` is the only care needed. `rmdir` refuses a link to
+a directory. Sabotage, one at a time: the group not inherited failed the
+rule on memory, as alice and on ext2 (three checks); `rm -r` with `stat`
+instead of `lstat` followed the link and emptied the directory outside
+(four checks); subdirectories not given the bit failed `test-home`'s
+listing after the reboot.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1390,6 +1523,8 @@ L2, L3, L4, L5                   done (in parallel)
 M1, M2, M3, M4                   done (in parallel)
         |
 N1, N2, N3, N4                   done (in parallel)
+        |
+O1, O2, O3, O4                   done (in parallel)
 ```
 
 (Track A, once the recommended first step because everything built on

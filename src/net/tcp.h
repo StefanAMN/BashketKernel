@@ -6,17 +6,32 @@
  * (three-way handshake), sequence and acknowledgement numbers, retransmission
  * on a timer with exponential back-off, flow control by the receiver's
  * advertised window (with a probe when it is zero), orderly close from
- * either side, and reset.
+ * either side, and reset. Also:
+ *  - Reassembly: a segment that arrives ahead of the one expected is kept
+ *    (in the free part of the receive ring, at the place its sequence number
+ *    gives it, so it costs no memory of its own) and delivered when the gap
+ *    before it fills. Up to TCP_OOO_RANGES separate stretches are kept;
+ *    one that would need more is dropped, as before.
+ *  - A retransmission time measured from round trips (RFC 6298): one
+ *    segment at a time is timed, never one that was sent twice (Karn's
+ *    rule), and the timeout is SRTT + 4 * RTTVAR.
+ *  - Fast retransmit (RFC 5681, 3.2): three duplicate acknowledgements
+ *    send the oldest unacknowledged segment again at once, without waiting
+ *    for the timer. The receiver acknowledges every out-of-order segment at
+ *    once, so that a sender (ours or another) gets its duplicates.
  *
  * What is not, and what follows from it:
- *  - No congestion control. The sender is limited only by the receiver's
- *    window. Harmless on QEMU's virtual network; not fit for a real one.
- *  - No reassembly: a segment that arrives ahead of the one expected is
- *    dropped and acknowledged again, and the sender's timer brings it back.
- *    After a loss, everything from the lost segment on is sent again
- *    ("go-back-N").
- *  - The retransmission time starts at a fixed value rather than being
- *    measured from round trips, and there is no fast retransmit.
+ *  - No congestion control (RFC 5681's congestion window, slow start, fast
+ *    recovery). The sender is limited only by the receiver's window.
+ *    Harmless on QEMU's virtual network; not fit for a real one. When the
+ *    timer runs out, everything from the oldest unacknowledged byte is
+ *    sent again ("go-back-N"), which with no congestion window means a
+ *    whole window at once.
+ *  - The RFC 6298 limits are changed for a virtual network: the first
+ *    timeout is 200 ms rather than 1 s (2.1), the floor is 200 ms rather
+ *    than 1 s (2.4), and the timeout (backed off or measured) is capped
+ *    at 3 s rather than at least 60 s (2.5), so a dead peer is given up
+ *    after about 20 s.
  *  - No options except the maximum segment size: no window scaling (so at
  *    most 64 KiB in flight), no timestamps, no selective acknowledgement.
  *  - No simultaneous open, no urgent data, no keep-alive.
@@ -41,8 +56,53 @@ typedef struct {
     uint64_t bad_segments;       // Short, or wrong checksum
     uint64_t resets_sent, resets_received;
     uint64_t out_of_order;       // Arrived ahead of or behind what was expected
+    uint64_t out_of_order_kept;  // ... ahead, and kept until the gap filled
+    uint64_t fast_retransmissions; // Sent again after three duplicate acknowledgements
+    uint64_t rtt_samples;        // Round trips measured
     uint64_t dropped_for_test;   // See tcp_test_drop_every
 } tcp_stats_t;
+
+// --- Pieces with no state of their own, public for the tests ---
+
+#define TCP_OOO_RANGES 8         // Separate stretches of data kept ahead of the gap
+
+// Received data beyond the next byte expected: sorted stretches of sequence
+// numbers [start, end), never touching or overlapping one another
+typedef struct {
+    struct { uint32_t start, end; } range[TCP_OOO_RANGES];
+    uint32_t count;
+} tcp_ooo_t;
+
+/**
+ * @brief Note that [start, end) has arrived (start before end, both ahead of
+ *        what is expected). Stretches it touches or overlaps are joined.
+ * @return false (and nothing changed) if it would need more than
+ *         TCP_OOO_RANGES stretches.
+ */
+bool tcp_ooo_add(tcp_ooo_t *q, uint32_t start, uint32_t end);
+
+/**
+ * @brief Everything up to `rcv_nxt` is in: forget the stretches it reaches,
+ * @return the next byte now expected (past any stretch that joins on).
+ */
+uint32_t tcp_ooo_take(tcp_ooo_t *q, uint32_t rcv_nxt);
+
+// The round-trip estimate of RFC 6298, in microseconds
+typedef struct {
+    uint32_t srtt_us, rttvar_us;
+    uint32_t rto_us;             // Clamped to the limits in tcp.c
+    bool measured;               // Whether there has been a sample yet
+} tcp_rtt_t;
+
+#define TCP_RTO_MIN_US 200000u   // Floor of the timeout (RFC 6298 2.4 says 1 s: see above)
+#define TCP_RTO_MAX_US 3000000u  // Cap (2.5 says at least 60 s: see above)
+#define TCP_CLOCK_GRANULARITY_US 10000u // G in RFC 6298: the timers run in 10 ms ticks
+
+/**
+ * @brief Fold one round-trip measurement `r_us` into the estimate (RFC 6298
+ *        2.2 for the first, 2.3 for the rest) and compute the timeout.
+ */
+void tcp_rtt_sample(tcp_rtt_t *t, uint32_t r_us);
 
 /**
  * @brief Start the TCP timer thread. Called by net_init.
@@ -136,5 +196,17 @@ size_t tcp_sockets_in_use(void);
  *        exercise retransmission.
  */
 void tcp_test_drop_every(uint32_t n);
+
+/**
+ * @brief For tests: of the connection between local_port and remote_port
+ *        (at our own address), the next sequence number it expects, and
+ *        the acknowledgement number its peer should send now (all it has
+ *        sent so far, so its SYN only once that has gone out), and the
+ *        oldest of its sequence numbers not yet acknowledged (its initial
+ *        sequence number until the handshake ends, sent or not). false if
+ *        there is no such connection.
+ */
+bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack,
+                        uint32_t *unacked);
 
 #endif // TCP_H
