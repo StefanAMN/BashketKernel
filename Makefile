@@ -226,16 +226,19 @@ NO_TSC_CPU = qemu64,-tsc
 # src/drivers/virtio/virtio_pci.h). By default QEMU's devices offer both and
 # the kernel uses the modern one. Each run also checks that the interface
 # in use is the one intended: a driver that quietly fell back to the other
-# would pass every other test.
+# would pass every other test. The same goes for how they interrupt: the
+# modern interface must use MSI-X (a vector per queue, sent to a CPU), the
+# legacy one its PCI line.
 VIRTIO ?=
 VIRTIO_OFF = $(if $(filter legacy,$(VIRTIO)),disable-modern=on,$(if $(filter modern,$(VIRTIO)),disable-legacy=on))
 VIRTIO_GLOBALS = $(if $(VIRTIO_OFF),-global virtio-blk-pci.$(VIRTIO_OFF) -global virtio-net-pci.$(VIRTIO_OFF))
 VIRTIO_UNWANTED = $(if $(filter legacy,$(VIRTIO)),modern,legacy) interface
+VIRTIO_UNWANTED_IRQ = interrupts: $(if $(filter legacy,$(VIRTIO)),MSI-X,line)
 
 QEMU_CPU = $(if $(CPU),-cpu $(CPU)) $(VIRTIO_GLOBALS)
 # SMP=n runs any of the scripted targets below on a machine with n CPUs
 SHELL_CPU = $(if $(CPU),--qemu-arg=-cpu --qemu-arg=$(CPU)) $(if $(SMP),--qemu-arg=-smp --qemu-arg=$(SMP)) \
-	$(foreach arg,$(VIRTIO_GLOBALS),--qemu-arg=$(arg)) --forbid '$(VIRTIO_UNWANTED)'
+	$(foreach arg,$(VIRTIO_GLOBALS),--qemu-arg=$(arg)) --forbid '$(VIRTIO_UNWANTED)' --forbid '$(VIRTIO_UNWANTED_IRQ)'
 
 # Build the test kernel, boot it headless, and turn its verdict into an exit
 # status. The kernel writes to the isa-debug-exit port when the tests finish;
@@ -250,6 +253,7 @@ test:
 	grep -E '^\s+\[FAIL\]|CPU EXCEPTION|KERNEL PANIC' build-test/test.log; \
 	sed -n '/--- Test Summary ---/,/^----------/p' build-test/test.log; \
 	if grep -aq '$(VIRTIO_UNWANTED)' build-test/test.log; then echo "TESTS FAILED: a device was driven through its $(VIRTIO_UNWANTED)"; exit 1; fi; \
+	if grep -aq '$(VIRTIO_UNWANTED_IRQ)' build-test/test.log; then echo "TESTS FAILED: a device was set up with '$(VIRTIO_UNWANTED_IRQ)'"; exit 1; fi; \
 	if [ $$status -eq 33 ]; then echo "TESTS PASSED"; \
 	elif [ $$status -eq 124 ]; then echo "TESTS TIMED OUT (see build-test/test.log)"; exit 1; \
 	else echo "TESTS FAILED (qemu exit $$status, see build-test/test.log)"; exit 1; fi
@@ -379,6 +383,9 @@ test-smp:
 		-display none -serial stdio -no-reboot \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 > build-test/test-smp.log 2>&1; \
 	status=$$?; \
+	if grep -aq '$(VIRTIO_UNWANTED_IRQ)' build-test/test-smp.log; then echo "four CPUs: FAILED, a device was set up with '$(VIRTIO_UNWANTED_IRQ)'"; exit 1; fi; \
+	if [ "$(VIRTIO)" != legacy ] && ! grep -aq 'interrupts: MSI-X vector 0x[0-9a-f]* on CPU [1-9]' build-test/test-smp.log; then \
+		echo "four CPUs: FAILED, no device sends its interrupts to a CPU other than the first"; exit 1; fi; \
 	if [ $$status -eq 33 ] && grep -aq 'SMP: 4 CPUs scheduling' build-test/test-smp.log; then \
 		echo "four CPUs: all scheduling, unit tests pass"; \
 	else echo "four CPUs: FAILED (qemu exit $$status, see build-test/test-smp.log)"; \
@@ -523,6 +530,10 @@ test-paint: iso
 # Swap: a program that needs 80 MiB on a machine with 64. Without a swap
 # disk the kernel must refuse it the memory; with one, every page must come
 # back as it was written, and nothing may be left on the swap disk after.
+# Two at once (one in the background) must both finish; "fg" waits for
+# the second rather than a fixed time, because which of two processes
+# swapping against each other gets ahead is chance (it once lagged by 20
+# seconds, after a change that only moved the C library's code).
 # Killed half way, it leaves no frame and no swap slot behind. (That this
 # happens as it dies, not when it is reaped, is a_zombie_holds_no_memory's
 # check: here both are reaped at once.) Ctrl-C kills its forked child as
@@ -542,7 +553,7 @@ test-swap: iso
 		--expect 'syscheck: all checks passed' \
 		--expect 'SwapFree:   65532 kB' --forbid 'swapper: FAILED|could not be read back|out of memory' \
 		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[\s\S]*){2}' \
-		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' '@wait:8' 'exit' \
+		'exec /bin/swapper 80' 'exec /bin/syscheck' 'exec /bin/sh' 'swapper 45 &' 'swapper 45' 'fg' 'exit' \
 		'cat /proc/meminfo' > $(BUILD)/swap-with.log 2>&1 \
 		|| { echo "swap: FAILED with a swap disk (see $(BUILD)/swap-with.log)"; exit 1; }; \
 	tools/qemu_shell.py --quiet --mem 64M --timeout 120 --swap-disk $(SWAP_IMG) $(SHELL_CPU) \
@@ -671,7 +682,7 @@ test-jobs: iso
 	@# Tab completion: a program name, a directory, a file in it; two Tabs
 	@# list the names in /etc, sorted
 	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
-		--expect '\n/etc/motd\n' --expect '\ncompare.sh  demo.sh  group  motd  passwd  rc\n' \
+		--expect '\n/etc/motd\n' --expect '\ncompare.sh  demo.sh  group  hosts  motd  passwd  rc\n' \
 		'exec /bin/sh' '~ech^I/e^Imo^I\r' '@wait:1' '~ls /etc/^I^I^U\r' '@wait:1' 'exit' > $(BUILD)/completion.log 2>&1 \
 		&& echo "Tab completion: ok" || { echo "Tab completion: FAILED (see $(BUILD)/completion.log)"; exit 1; }
 	@# Compound commands at the prompt: the rest of an if is asked for with

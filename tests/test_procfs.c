@@ -137,8 +137,67 @@ TEST(proc_pid_directories_follow_processes) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// /proc/<pid>/maps and fd/: a program's segments and stack, its three
+// console descriptors, the directories torn down with the process (fd/
+// included, though it has files of its own), and no memory left behind
+TEST(proc_pid_maps_and_fds) {
+    char path[48], text[1024];
+    vfs_find(NULL, "/proc/version");
+    size_t heap_before = kheap_get_allocated_bytes();
+
+    pid_t pid = process_spawn("/bin/spin", NULL);
+    EXPECT_TRUE(pid > 0);
+    if (pid <= 0) return;
+    proc_path(path, pid, "maps");
+    EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
+    EXPECT_TRUE(strstr(text, " r-x program spin\n") != NULL);
+    EXPECT_TRUE(strstr(text, " rw- stack\n") != NULL);
+    // Lowest first: the program (at 4 GiB and up) before the stack (near the top)
+    char *program = strstr(text, "program"), *stack = strstr(text, "stack");
+    EXPECT_TRUE(program && stack && program < stack);
+
+    proc_path(path, pid, "fd");
+    vnode_t *fds = vfs_find(NULL, path);
+    EXPECT_TRUE(fds != NULL && fds->type == VFS_DIRECTORY);
+    proc_path(path, pid, "fd/2");
+    EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
+    EXPECT_EQ(strcmp(text, "console\n"), 0);
+    proc_path(path, pid, "fd/3");
+    EXPECT_TRUE(vfs_find(NULL, path) == NULL);           // Not open
+
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    int status = 0;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    proc_path(path, pid, NULL);
+    EXPECT_TRUE(vfs_find(NULL, path) == NULL);
+    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
+}
+
+// A reference taken from a slot outlives the slot being emptied and its
+// file closed: what /proc's reader of another process's table relies on
+TEST(fd_slot_reference_outlives_close) {
+    file_t *fds[TASK_MAX_FDS] = { 0 };
+    file_t *file = NULL;
+    EXPECT_EQ(file_open("/proc/version", O_RDONLY, &file), 0);
+    if (!file) return;
+    EXPECT_EQ(fd_install(fds, file), 0);
+    EXPECT_EQ(fd_slot_mask(fds), 1u);
+
+    file_t *mine = fd_slot_dup(fds, 0);
+    EXPECT_TRUE(mine == file);
+    EXPECT_TRUE(fd_slot_dup(fds, 1) == NULL && fd_slot_dup(fds, -1) == NULL && fd_slot_dup(fds, TASK_MAX_FDS) == NULL);
+    file_close(fd_slot_set(fds, 0, NULL));                // The owner closes it
+    EXPECT_EQ(fd_slot_mask(fds), 0u);
+    char text[16];
+    EXPECT_TRUE(file_read(mine, text, sizeof(text)) > 0);    // Still a working file
+    EXPECT_EQ(mine->refs, 1u);
+    file_close(mine);
+}
+
 void test_suite_procfs(void) {
     kprintf("Suite: /proc\n");
     RUN_TEST(procfs_files_report_live_state);
     RUN_TEST(proc_pid_directories_follow_processes);
+    RUN_TEST(proc_pid_maps_and_fds);
+    RUN_TEST(fd_slot_reference_outlives_close);
 }

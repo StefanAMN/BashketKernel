@@ -12,6 +12,8 @@
 #define INTERRUPTS_H
 
 #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 
 // Value of int_no in a system call frame that must be restored completely
 // with iretq (see syscall_entry.S). A system call frame normally has 0 there.
@@ -44,5 +46,52 @@ struct registers {
  *        refused with a message. Called at boot, before the line is routed.
  */
 void register_irq_handler(uint8_t irq, void (*handler)(struct registers *regs));
+
+// Vectors handed out to message-signalled interrupts (MSI-X): above the 16
+// ISA lines (32..47) and below the inter-processor ones (0xF0, 0xF1) and
+// the local APIC's spurious vector (0xFF). A vector's upper four bits are
+// its priority class (Intel SDM Vol. 3A, 11.8.3); these all share class 3.
+#define MSI_VECTOR_FIRST 0x30
+#define MSI_VECTOR_COUNT 16
+
+/**
+ * @brief Take a free MSI vector and have `handler(arg)` called, with
+ *        interrupts off, every time it arrives (on whichever CPU the device
+ *        was told to send it to). Unlike a line, a vector belongs to one
+ *        source: the handler need not ask the device whether it was the
+ *        one. `name` is shown in /proc/interrupts. Called at boot.
+ * @return The vector, or 0 if all MSI_VECTOR_COUNT are taken.
+ */
+uint8_t register_msi_handler(const char *name, void (*handler)(void *arg), void *arg);
+
+/**
+ * @brief The address and data words that make a device's memory write
+ *        deliver `vector` to the local APIC with id `apic_id`: fixed
+ *        delivery, edge triggered, physical destination (Intel SDM Vol. 3A,
+ *        11.11.1 and 11.11.2).
+ * @return false if `apic_id` does not fit the 8-bit destination field
+ *         (larger ids need x2APIC or interrupt remapping, not done here).
+ */
+bool msi_message(uint32_t apic_id, uint8_t vector, uint64_t *address, uint32_t *data);
+
+/**
+ * @brief How many interrupts each line and each MSI vector has delivered,
+ *        per CPU: the text of /proc/interrupts.
+ */
+size_t interrupts_describe(char *buf, size_t size);
+
+#define MSI_ALL_CPUS 0xFFFFFFFFu
+
+/**
+ * @brief Interrupts that MSI vector `vector` has delivered on CPU number
+ *        `cpu`, or on all of them together for MSI_ALL_CPUS (0 for a vector
+ *        not handed out), for tests.
+ */
+uint64_t msi_vector_count(uint8_t vector, uint32_t cpu);
+
+/**
+ * @brief Interrupts that ISA line `irq` has delivered on all CPUs, for tests.
+ */
+uint64_t irq_line_count(uint8_t irq);
 
 #endif // INTERRUPTS_H

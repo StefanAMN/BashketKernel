@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include "region.h"
 #include "vmm.h"
+#include "elf.h"
 
 #define KERNEL_STACK_SIZE (16 * 1024) // 16 KiB kernel stack per task
 #define TASK_MAX_FDS 16               // Open file descriptors per process
@@ -72,6 +73,8 @@ typedef struct task {
     int exit_status;         // Valid once state is TASK_ZOMBIE
     uint64_t user_entry;     // Ring 3 entry point for a freshly created process
     uint64_t user_rsp;       // Initial ring 3 stack pointer
+    elf_segment_t image_segments[ELF_REPORTED_SEGMENTS]; // Where the program's segments were loaded (for /proc/<pid>/maps)
+    uint32_t image_segment_count; // How many of image_segments[] are in use
     uint64_t brk_start;      // First address after the loaded program image
     uint64_t brk_end;        // Current program break (heap end)
     uint64_t mmap_next;      // Next free address in the mmap region

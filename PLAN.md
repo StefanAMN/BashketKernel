@@ -345,16 +345,15 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   CPU's timer is off. Two threads that used to wake "in case" had to learn
   to sleep until there was work: the reaper (PID 0) and `tcpd`. Without a
   timestamp counter the kernel stays periodic, and `make check` runs that
-  too. Not done: device interrupts still all arrive on the boot CPU, and
-  the tick count is still the unit most of the kernel thinks in.
+  too. Not done: the tick count is still the unit most of the kernel
+  thinks in. (Device interrupts reach other CPUs since N3, by MSI-X.)
 - **virtio modern transport** — done (`src/drivers/virtio/virtio_pci.c`).
   Both drivers go through one layer that uses the modern interface
   (registers in memory, located by the PCI capability list) when a device
   offers it and the legacy I/O ports otherwise. Device registers are mapped
   uncached in a region of their own (`vmm_map_device`). Tested with devices
   offering both, legacy only and modern only (`VIRTIO=legacy|modern`).
-  Not done: MSI-X (interrupts still come over the shared PCI line), and
-  the packed virtqueue layout.
+  MSI-X came with N3. Not done: the packed virtqueue layout.
 - **PS/2 mouse and a framebuffer device** — done: `/dev/mouse`
   (`src/drivers/input/mouse.c`), `/dev/fb0`, and `/bin/paint`, which uses
   both. A program that opens the screen for writing owns it until it closes
@@ -368,8 +367,13 @@ after a crash it may have lost clusters, which `fsck.fat` reclaims.
   on can be the one it has just pushed out, so the fault handler reads the
   faulting page back whatever kind of fault it was; and a process with
   nothing it may give up (a fresh fork child: every page still shared)
-  must not search its whole address space at every fault. Known limit:
-  a fork child cannot free memory until it has pages of its own. (A
+  must not search its whole address space at every fault. Known limits:
+  a fork child cannot free memory until it has pages of its own; and
+  nothing is fair between two processes swapping against each other
+  (each takes room only from itself, and whichever faults at the right
+  moment gets the frames): two 45 MiB programs once finished 20 seconds
+  apart after a change that only moved code in the C library. (Found by
+  `test-swap`, which had waited a fixed 8 seconds for the second.) (A
   system call that needed a swapped page when no frame was free used to
   fail rather than make room; M3 lifted that. Testing this showed that a dead process kept its
   memory until its parent collected it; it now gives it back as it dies.)
@@ -916,8 +920,8 @@ counted (as J1's test does); the unit tests otherwise unchanged.
 
 Done as proposed, with `elif` and `break N` / `continue N`; a text is now
 parsed into a tree before it runs (`until` followed; `case`, functions
-and `${NAME}` came with M2). Not done: redirections after `fi` / `done` / `}`,
-and `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
+and `${NAME}` came with M2; redirections and pipes after `fi` / `done` / `}`
+with N1). Not done: `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
 The tests found `for 1 in a` accepted. The proposal:
 
 `if LIST; then LIST; [else LIST;] fi`, `while LIST; do LIST; done` and
@@ -1201,6 +1205,118 @@ input than fits one command line.
 
 ---
 
+## Track N — Interrupts of their own, and looking inside a process
+
+### N1. Redirections and pipes after compound commands (S) — done
+
+`for f in *; do cat $f; done > all` and `if ...; fi | wc` are refused:
+a compound command cannot take a redirection or join a pipeline (K2's
+"Not done"). A compound command followed by redirections or `|` runs in
+a child of the shell (as a function call in a pipeline already does), so
+its redirections apply to everything inside; one without stays in the
+shell. **Check:** syscheck: each compound kind redirected, piped from and
+into, `2>&1` after `done`, and that a variable set inside a piped loop
+does not reach the shell (it ran in a child).
+
+Done as written (`check_shell_compound_redirects`). A closing keyword
+may now be followed by redirections or `|`, and a simple command's
+`|` followed by `if`, `while`, `until`, `for`, `case` or `{` divides
+it; a pipeline with a compound command in it, or a compound command
+with redirections, is a node of its own whose commands each run in a
+child, redirections applied after the pipe. A keyword now also ends at
+an operator (`done>f`). Not taken: redirections on a function
+definition (POSIX applies them at each call), and `&` after a compound
+command. Sabotage: ignoring the redirections failed 13 checks, and at
+first made syscheck hang instead: `cat` in a loop whose `< file` was
+lost read the terminal. `sh_capture` now gives the shell `/dev/null` as
+input, so a wrong read ends. Not splitting before `| while` failed the
+three piped-into checks.
+
+### N2. `/proc/<pid>/maps` and `/proc/<pid>/fd` (S) — done
+
+Done, except shared memory in `maps`: `MAP_SHARED` and `shmat` map
+frames straight into the page tables and the process keeps no record
+of them, so `maps` shows the program (its segments, which the loader
+now reports), the heap, the stack's 8 MiB and the `mmap` regions. Two
+races had to be closed for reading another process's tables. A region
+was unpinned before its entry was cleared, so a reader could find a
+pointer to a file already removed; the entry now goes first, and the
+reader holds the tree lock. A descriptor slot could be emptied and its
+file freed while being described; slots are now emptied under a lock
+(`fd_slot_set`), under which the reader takes its own reference
+(`fd_slot_dup`). Sabotage: `fd_slot_dup` without the reference
+crashed the kernel in `vfs_path_of` during syscheck (a freed file);
+`maps` readable by everyone failed syscheck's check as bob. The first
+version of the test checked that a closed descriptor left the listing,
+and failed: opening the directory to list it takes the lowest free
+descriptor, the one just closed.
+
+What a process has mapped (start, end, permissions, kind: program,
+heap, stack, anonymous, file with its name, shared memory) and what its
+descriptors refer to (`/proc/<pid>/fd` lists numbers; reading
+`/proc/<pid>/fd/N` gives a description such as `pipe`, `socket`,
+`/tmp/x`). Readable by the process's owner and root only (they show
+file names). **Check:** unit tests for the text; syscheck reads its own
+maps after an `mmap` and a file mapping, and its fd list after `pipe`
+and `open`; bob cannot read root's.
+
+### N3. MSI-X for virtio devices (M) — done
+
+Done for the modern interface. Each disk, and the network card's receive
+queue, gets an MSI-X table entry and a CPU vector of its own (0x30 up,
+`register_msi_handler`), sent to one CPU's local APIC; devices are spread
+over the running CPUs, the boot CPU last since it takes every line. The
+transmit queue and configuration changes get no vector (nothing waits
+for them). The legacy interface keeps its line, on purpose: with MSI-X
+enabled its register layout moves by four bytes (virtio 1.2, 4.1.4.8), a
+second layout to maintain for no gain. If the device reads back
+`VIRTIO_MSI_NO_VECTOR` for a queue, MSI-X is switched off again and the
+line used, and the boot log says `interrupts: line IRQ n`, which every
+test run on the modern interface refuses (as it refuses the wrong
+interface); `test-smp` also requires a device sent to a CPU other than
+the first. Handlers may run on a CPU that has not joined the scheduler
+yet (disks are read during boot): that is safe, since spinlocks and
+`sched_wakeup` need only `this_cpu()`. `/proc/interrupts` counts lines
+and vectors per CPU. Sabotage: not writing the queue's vector made the
+device fall back to the line, and `make test` refused the boot log;
+messages that ignored the target APIC id failed the encoding test and
+`disk_interrupts_arrive_by_their_route` (counted on the wrong CPU) under
+`test-smp`. QEMU's `info irq` showed no I/O APIC interrupts on lines 10
+and 11 while the disks were read. Not done: APIC ids above 255 (x2APIC
+or interrupt remapping), more than 16 vectors, per-queue vectors on the
+legacy interface.
+
+
+Both virtio devices share one PCI interrupt line with each other (the
+lesson in CLAUDE.md); with MSI-X each queue gets a vector of its own,
+delivered to a chosen CPU's local APIC without the I/O APIC. Use it when
+the modern interface offers the capability, keep the shared line
+otherwise, and assert in the boot log which one is in use (the
+lesson about fallbacks). Spread the vectors over CPUs. **Check:**
+`make test-disk`, `make test-net` and `make test-smp` with both
+`VIRTIO=modern` (MSI-X) and `VIRTIO=legacy` (the line); `/proc/interrupts`
+(or `/proc/timers`'s neighbour) shows counts per vector and CPU; QEMU's
+`info pci` / `info irq` confirm the line is no longer used.
+
+### N4. `/etc/hosts` (S) — done
+
+Names are only resolved by DNS. Look in `/etc/hosts` first (address,
+then names, `#` comments), so `ping gateway` works with no DNS server.
+**Check:** syscheck (a name in the file, an alias, a comment, a line too
+long, a name that falls through to DNS), and `make test-net`.
+
+Done as written (`hosts_lookup` in `user/lib/ulib.c`, used by
+`resolve()`): the first line naming a name wins, names are compared
+without regard to case as the DNS does, a line that does not start with
+an address or is longer than 255 bytes is skipped whole. The file names
+QEMU's user-mode addresses (`localhost`, `gateway`, `dns`); after `dhcp`
+on another network they no longer apply, and nothing rewrites them.
+Sabotage: `resolve()` skipping the file failed two syscheck checks and
+`make test-net`. A check of `localhost` alone would not have noticed:
+QEMU's DNS forwarder answers that name from the host.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1272,12 +1388,13 @@ L1                               done
 L2, L3, L4, L5                   done (in parallel)
         |
 M1, M2, M3, M4                   done (in parallel)
+        |
+N1, N2, N3, N4                   done (in parallel)
 ```
 
-If only one thing is done next, it should be **Track A**: every subsystem
-added while "interrupts off" is the only lock makes the eventual SMP audit
-longer, and it is the one item that changes how all later code must be
-written.
+(Track A, once the recommended first step because everything built on
+"interrupts off" as the only lock would have had to be audited again, is
+done; the order above is now history plus what is next.)
 
 ## What "done" means for any item here
 

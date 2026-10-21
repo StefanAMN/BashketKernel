@@ -2340,8 +2340,9 @@ static int sh_capture(const char *command, char *out, size_t size) {
         dup2(p[1], 1);
         close(p[0]);
         close(p[1]);
-        int null = (int)open("/dev/null", O_WRONLY);
+        int null = (int)open("/dev/null", O_RDWR);
         dup2(null, 2);
+        dup2(null, 0);  /* A command that wrongly reads its input ends instead of waiting for the keyboard */
         close(null);    /* The shell starts with 0, 1 and 2 only, as from a terminal */
         char *args[] = { "/bin/sh", "-c", (char *)command, NULL };
         execv("/bin/sh", args);
@@ -2464,6 +2465,41 @@ static void check_shell_variables(void) {
     CHECK(sh_ends("X=1 > /tmp/never", "", 2));
 }
 
+/* Redirections and pipes after compound commands: every kind redirected,
+ * piped from and into, 2>&1 after done, a pipe over two lines, the
+ * command running in a child (what it sets stays there), and what is
+ * still refused */
+static void check_shell_compound_redirects(void) {
+    CHECK(sh_prints("for x in a b; do echo $x; done > /tmp/cr; cat /tmp/cr", "a\nb\n"));
+    CHECK(sh_prints("while true; do echo w; break; done>/tmp/cr; cat /tmp/cr", "w\n"));
+    CHECK(sh_prints("until false; do echo u; break; done >> /tmp/cr; cat /tmp/cr", "w\nu\n"));
+    CHECK(sh_prints("if true; then echo i; fi > /tmp/cr; cat /tmp/cr", "i\n"));
+    CHECK(sh_prints("case x in x) echo c;; esac > /tmp/cr; cat /tmp/cr", "c\n"));
+    CHECK(sh_prints("{ echo g1; echo g2; } > /tmp/cr; cat /tmp/cr", "g1\ng2\n"));
+    CHECK(sh_prints("while true; do cat; break; done < /tmp/cr", "g1\ng2\n"));   /* Input too */
+    CHECK(sh_prints("for x in 1 2 3; do echo $x; done | wc", "3 3 6\n"));
+    CHECK(sh_prints("{ echo b; echo a; } | sort", "a\nb\n"));
+    CHECK(sh_prints("if true; then echo yes; fi | tr a-z A-Z", "YES\n"));
+    CHECK(sh_prints("echo in | while true; do cat; break; done", "in\n"));       /* Piped into */
+    CHECK(sh_prints("echo q | { cat; } | { cat; }", "q\n"));
+    CHECK(sh_prints("echo m | case a in a) cat;; esac | cat", "m\n"));
+    CHECK(sh_prints("for x in 1; do ls /no/such; done 2>&1 | grep -c such", "1\n"));
+    CHECK(sh_prints("for x in a b; do echo $x; done |\nsort -r", "b\na\n"));      /* The pipe ends a line */
+    CHECK(sh_prints("X=out; for x in in; do X=$x; done | cat; echo $X", "out\n")); /* Ran in a child */
+    CHECK(sh_prints("X=out; for x in in; do X=$x; done; echo $X", "in\n"));       /* ... unlike this */
+    CHECK(sh_ends("for x in 1; do false; done | cat", "", 0));                  /* The last one's status */
+    CHECK(sh_ends("{ echo a; } | false", "", 1));
+    CHECK(sh_prints("if true; then\n  for x in 1 2; do echo $x; done > /tmp/cr\nfi; cat /tmp/cr", "1\n2\n"));
+
+    CHECK(sh_ends("for x in 1; do echo z; done > /tmp/cr extra", "", 2));
+    CHECK(sh_ends("for x in 1; do echo z; done >", "", 2));
+    CHECK(sh_ends("for x in 1; do echo z; done junk", "", 2));
+    CHECK(sh_ends("f() { echo f; } > /tmp/cr", "", 2));                          /* Not on a definition */
+    CHECK(sh_ends("{ echo a; } | | cat", "", 2));
+    CHECK(sh_ends("{ echo a; } < /no/such", "", 1));
+    CHECK(unlink("/tmp/cr") == 0);
+}
+
 /* The shell's case (patterns, quoted parts literal, | and the optional
  * '(', empty and last items, over several lines), functions ($#, $1, "$@",
  * return, run in the shell or in a child, a body that redefines itself,
@@ -2576,6 +2612,71 @@ static void check_line_tools(void) {
     CHECK(sh_capture("uniq -x /tmp/lt", out, sizeof(out)) == 2);
     CHECK(sh_capture("uniq /no/such", out, sizeof(out)) == 1);
     CHECK(unlink("/tmp/lt") == 0);
+}
+
+/* /etc/hosts: the lookup on a file written for it (the first line naming a
+ * name wins; case, comments, tabs, a carriage return, a line that does not
+ * start with an address, one too long to hold, a last line without '\n'),
+ * then resolve() on the real file and, for a name not in it, falling
+ * through to the DNS: a server in a child, made the configured one */
+static void check_hosts_file(void) {
+    static char text[700];
+    uint32_t ip = 0;
+    size_t len = 0;
+    const char *head = "# 10.6.6.6 commented\n10.9.8.7 alpha beta # gamma\nnot-an-address delta\n"
+                       "10.9.8.6 alpha\n\t10.5.5.5\tTabbed\r\n10.1.1.1 ";
+    memcpy(text, head, strlen(head));
+    len += strlen(head);
+    memset(text + len, 'x', 300);                            /* A name too long for any line buffer */
+    len += 300;
+    const char *tail = " zeta\n10.4.4.4 last";              /* No '\n' at the end */
+    memcpy(text + len, tail, strlen(tail));
+    len += strlen(tail);
+    CHECK(put_file("/tmp/hosts", text, len));
+    CHECK(hosts_lookup("/tmp/hosts", "alpha", &ip) == 0 && ip == parse_ip("10.9.8.7"));  /* The first one */
+    CHECK(hosts_lookup("/tmp/hosts", "BETA", &ip) == 0 && ip == parse_ip("10.9.8.7"));
+    CHECK(hosts_lookup("/tmp/hosts", "tabbed", &ip) == 0 && ip == parse_ip("10.5.5.5"));
+    CHECK(hosts_lookup("/tmp/hosts", "last", &ip) == 0 && ip == parse_ip("10.4.4.4"));
+    CHECK(hosts_lookup("/tmp/hosts", "gamma", &ip) == -ENOENT);       /* In a comment */
+    CHECK(hosts_lookup("/tmp/hosts", "commented", &ip) == -ENOENT);
+    CHECK(hosts_lookup("/tmp/hosts", "delta", &ip) == -ENOENT);       /* No address before it */
+    CHECK(hosts_lookup("/tmp/hosts", "zeta", &ip) == -ENOENT);        /* On a line too long */
+    CHECK(hosts_lookup("/tmp/hosts", "10.9.8.7", &ip) == -ENOENT);    /* An address is not a name */
+    CHECK(hosts_lookup("/tmp/hosts", "", &ip) == -ENOENT);
+    CHECK(hosts_lookup("/no/such", "alpha", &ip) == -ENOENT);
+    CHECK(unlink("/tmp/hosts") == 0);
+
+    /* The system's file, through resolve() */
+    CHECK(resolve("localhost", &ip) == 0 && ip == parse_ip("127.0.0.1"));
+
+    /* A name the file does not have goes to the configured DNS server: one
+     * on this machine, answering one question with 198.51.100.4. A name the
+     * file has must not reach it (or the server's answer would be taken). */
+    struct net_config config, here;
+    CHECK(netconfig(&config, NULL) == 0);
+    long server = socket(SOCK_DGRAM);
+    CHECK(server >= 3 && bind((int)server, 53) == 0);
+    long pid = fork();
+    if (pid == 0) {
+        static uint8_t msg[512];
+        struct net_address from;
+        long n = recvfrom((int)server, msg, sizeof(msg) - 16, &from, 5000);
+        if (n < 12) exit(1);
+        static const uint8_t answer[] = { 0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 198, 51, 100, 4 };
+        msg[2] = 0x81; msg[3] = 0x80;                     /* An answer, no error */
+        msg[6] = 0; msg[7] = 1;                           /* One answer record */
+        memcpy(msg + n, answer, sizeof(answer));
+        exit(sendto((int)server, msg, (size_t)n + sizeof(answer), from.ip, from.port) > 0 ? 0 : 2);
+    }
+    here = config;
+    here.dns = OUR_IP;
+    CHECK(netconfig(NULL, &here) == 0);
+    CHECK(resolve("gateway", &ip) == 0 && ip == parse_ip("10.0.2.2"));              /* From the file */
+    CHECK(resolve("fallthrough.test", &ip) == 0 && ip == parse_ip("198.51.100.4")); /* From the server */
+    CHECK(netconfig(NULL, &config) == 0);
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    CHECK(close((int)server) == 0);
 }
 
 /* tee, xargs, seq, basename and dirname: their forms, POSIX's edge cases
@@ -2872,6 +2973,16 @@ static int has_text(const char *text, const char *part) {
     return 0;
 }
 
+/* /proc/interrupts: a column per CPU, and each disk either on its own
+ * MSI-X vector or on a line (which one is the kernel's choice, checked by
+ * the boot log; here only that the table says one of them) */
+static void check_proc_interrupts(void) {
+    static char text[2048];
+    CHECK(read_small("/proc/interrupts", text, sizeof(text)) > 0);
+    CHECK(has_text(text, "CPU0"));
+    CHECK(has_text(text, "  MSI-X virtio-blk 0\n") || has_text(text, "  line\n"));
+}
+
 /* /proc/<pid>: this process's own status through /proc/self, a child's
  * exact arguments once it has exec'd, ENOENT once it has been reaped */
 static void check_proc(void) {
@@ -2916,6 +3027,95 @@ static void check_proc(void) {
     CHECK(read_small(path, text, sizeof(text)) == -ENOENT);            /* Reaped: gone */
     CHECK(read_small("/proc/999999/status", text, sizeof(text)) == -ENOENT);
     CHECK(unlink("/proc/1/status") == -EPERM);                         /* Not even root's to remove */
+}
+
+/* "/proc/self/fd/N" into path[24] */
+static void self_fd_path(char path[24], int fd) {
+    memcpy(path, "/proc/self/fd/", 14);
+    size_t at = 14;
+    if (fd >= 10) path[at++] = (char)('0' + fd / 10);
+    path[at++] = (char)('0' + fd % 10);
+    path[at] = '\0';
+}
+
+/* Whether the directory `path` lists an entry called `name` */
+static int dir_lists(const char *path, const char *name) {
+    long fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    struct dirent entry;
+    int found = 0;
+    while (!found && readdir((int)fd, &entry) == 1) found = strcmp(entry.name, name) == 0;
+    close((int)fd);
+    return found;
+}
+
+/* /proc/<pid>/maps and /proc/<pid>/fd: this process's own after an
+ * anonymous and a file mapping, a pipe and an open file; each goes again
+ * when it is unmapped or closed; and they are the owner's alone */
+static void check_proc_maps_fd(void) {
+    static char text[4096];
+    CHECK(read_small("/proc/self/maps", text, sizeof(text)) > 0);
+    CHECK(has_text(text, " r-x program syscheck\n") && has_text(text, " rw- stack\n"));
+
+    char *anon = mmap_anon(3 * 4096);
+    long motd = open("/etc/motd", O_RDONLY);
+    char *mapped = motd >= 0 ? mmap_file((int)motd, 4096, 0, PROT_READ) : NULL;
+    CHECK(anon != NULL && mapped != NULL);
+    CHECK(read_small("/proc/self/maps", text, sizeof(text)) > 0);
+    CHECK(has_text(text, " rw- anonymous\n"));
+    CHECK(has_text(text, " r-- file /etc/motd +0\n"));
+    /* The anonymous line starts at the address mmap returned, 3 pages long */
+    {
+        static const char hex[] = "0123456789abcdef";
+        char line[40];
+        unsigned long a = (unsigned long)anon, b = a + 3 * 4096;
+        for (int i = 0; i < 12; i++) {
+            line[11 - i] = hex[(a >> (4 * i)) & 15];
+            line[24 - i] = hex[(b >> (4 * i)) & 15];
+        }
+        line[12] = '-';
+        memcpy(line + 25, " rw- anonymous", 15);
+        CHECK(has_text(text, line));
+    }
+
+    int ends[2];
+    CHECK(pipe(ends) == 0);
+    char path[24];
+    self_fd_path(path, (int)motd);
+    CHECK(read_small(path, text, sizeof(text)) > 0 && strcmp(text, "/etc/motd\n") == 0);
+    self_fd_path(path, ends[0]);
+    CHECK(read_small(path, text, sizeof(text)) > 0 && strcmp(text, "pipe (read end)\n") == 0);
+    self_fd_path(path, ends[1]);
+    CHECK(read_small(path, text, sizeof(text)) > 0 && strcmp(text, "pipe (write end)\n") == 0);
+    CHECK(read_small("/proc/self/fd/0", text, sizeof(text)) > 0 && strcmp(text, "console\n") == 0);
+    /* Descriptor 12 (listing the directory opens the lowest free one) */
+    CHECK(dup2(ends[1], 12) == 12 && dir_lists("/proc/self/fd", "12"));
+    CHECK(read_small("/proc/self/fd/12", text, sizeof(text)) > 0 && strcmp(text, "pipe (write end)\n") == 0);
+    close(12);
+    CHECK(read_small("/proc/self/fd/12", text, sizeof(text)) == -ENOENT);   /* Closed: gone */
+    CHECK(!dir_lists("/proc/self/fd", "12"));
+    close(ends[1]);
+    close(ends[0]);
+
+    CHECK(munmap(anon, 3 * 4096) == 0 && munmap(mapped, 4096) == 0);
+    close((int)motd);
+    CHECK(read_small("/proc/self/maps", text, sizeof(text)) > 0);
+    CHECK(!has_text(text, "anonymous") && !has_text(text, "/etc/motd"));
+
+    /* They name files: bob may read his own, not root's */
+    long pid = fork();
+    if (pid == 0) {
+        if (setgid(100) != 0 || setuid(1001) != 0) exit(9);
+        if (read_small("/proc/1/maps", text, sizeof(text)) != -EACCES) exit(1);
+        if (open("/proc/1/fd", O_RDONLY) != -EACCES) exit(2);
+        if (read_small("/proc/1/fd/0", text, sizeof(text)) != -EACCES) exit(3);
+        if (read_small("/proc/1/status", text, sizeof(text)) <= 0) exit(4);      /* status stays public */
+        if (read_small("/proc/self/maps", text, sizeof(text)) <= 0) exit(5);
+        if (read_small("/proc/self/fd/1", text, sizeof(text)) <= 0) exit(6);
+        exit(0);
+    }
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && status == 0);
 }
 
 /* Pipes: data, end of file, a closed reader (EPIPE), a full pipe */
@@ -3229,9 +3429,13 @@ int main(void) {
     check_shell_redirects();
     check_shell_variables();
     check_shell_case_functions();
+    check_shell_compound_redirects();
     check_line_tools();
+    check_hosts_file();
     check_more_tools();
     check_proc();
+    check_proc_maps_fd();
+    check_proc_interrupts();
     check_groups_and_setuid();
     check_supplementary_groups();
     check_sticky_and_setgid();

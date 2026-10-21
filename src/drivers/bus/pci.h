@@ -50,6 +50,12 @@ uint16_t pci_read16(const pci_device_t *dev, uint8_t offset);
 uint8_t pci_read8(const pci_device_t *dev, uint8_t offset);
 
 /**
+ * @brief Write the 16 bits at (even) `offset`, keeping the rest of the
+ *        32-bit register it is part of.
+ */
+void pci_write16(const pci_device_t *dev, uint8_t offset, uint16_t value);
+
+/**
  * @brief Let a device use its I/O ports and do DMA (command register bits
  *        0 and 2).
  */

@@ -181,6 +181,29 @@ int64_t file_seek(file_t *file, int64_t offset, int whence);
 int file_readdir(file_t *file, struct dirent_info *out);
 
 /**
+ * @brief Store `file` (or NULL) in slot `fd` of a descriptor table and
+ *        return what was there, under the lock that lets /proc read other
+ *        processes' tables (fd_slot_dup). Every emptying or replacing of a
+ *        slot goes through this; close the returned file afterwards.
+ */
+file_t *fd_slot_set(file_t *fds[TASK_MAX_FDS], int fd, file_t *file);
+
+/**
+ * @brief A reference to the file in slot `fd` of any process's table
+ *        (file_close it when done), or NULL if the slot is empty or out
+ *        of range. For another process's table the caller keeps the task
+ *        alive: it holds the scheduler lock (this takes a spinlock ranked
+ *        above it, and does not sleep).
+ */
+file_t *fd_slot_dup(file_t *fds[TASK_MAX_FDS], int fd);
+
+/**
+ * @brief Which slots of a table are in use, bit n for descriptor n: a
+ *        moment's picture, for listing them. Does not sleep.
+ */
+uint32_t fd_slot_mask(file_t *fds[TASK_MAX_FDS]);
+
+/**
  * @brief Put `file` in the lowest free slot of a descriptor table.
  * @return The descriptor, or -EMFILE if the table is full.
  */

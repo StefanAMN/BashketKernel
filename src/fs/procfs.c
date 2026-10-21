@@ -6,7 +6,9 @@
  * writes the current state as text; a read runs the generator and returns
  * the requested slice of what it produced.
  *
- * /proc/<pid>/ has a directory per task, with `status` and `cmdline`. They
+ * /proc/<pid>/ has a directory per task, with `status`, `cmdline`, `maps`
+ * (what its address space holds) and `fd/` (a file per open descriptor,
+ * which reads as what the descriptor refers to). They
  * are kept in step with the task list by the /proc directory's refresh
  * operation, which the VFS runs every time anything looks inside /proc: it
  * adds directories for new tasks and removes those of tasks that are gone
@@ -14,7 +16,13 @@
  * time). The nodes hold only a pid; every read finds the task by that pid
  * under the scheduler lock, so a node never points at a freed task. A task
  * that has been reaped reads as ENOENT. /proc/self is a symbolic link
- * whose target is rewritten with the reader's pid at each refresh.
+ * whose target is rewritten with the reader's pid at each refresh. `fd/`
+ * is refreshed the same way, against the task's descriptor table.
+ *
+ * `maps` and `fd/` name files, so only the task's owner (and root) may
+ * read them. Reading them looks at another task's memory regions and
+ * descriptors, which that task changes without the scheduler lock; see
+ * read_maps and read_fd for what makes that safe.
  */
 
 #include "procfs.h"
@@ -33,6 +41,10 @@
 #include "klog.h"
 #include "mount.h"
 #include "smp.h"
+#include "file.h"
+#include "mmap.h"
+#include "process.h"
+#include "interrupts.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -172,6 +184,12 @@ static size_t gen_mounts(char *buf, size_t size) {
     return mount_describe(buf, size);
 }
 
+// /proc/interrupts: interrupts delivered per line or MSI vector and CPU
+// (interrupts_describe)
+static size_t gen_interrupts(char *buf, size_t size) {
+    return interrupts_describe(buf, size);
+}
+
 // One read function and one ops table per file: read_<name> serves
 // gen_<name>'s text, ops_<name> is what the node is created with
 #define PROC_FILE(name) \
@@ -188,6 +206,7 @@ PROC_FILE(meminfo);
 PROC_FILE(tasks);
 PROC_FILE(cpuinfo);
 PROC_FILE(mounts);
+PROC_FILE(interrupts);
 
 // --- /proc/<pid> ----------------------------------------------------------------
 
@@ -268,8 +287,157 @@ static int64_t read_cmdline(vnode_t *node, size_t offset, void *buf, size_t coun
     return result;
 }
 
+// One line of /proc/<pid>/maps, as copied from the task
+typedef struct {
+    uint64_t start, end;
+    int prot;
+    const char *kind;          // "program", "heap", "stack", "anonymous", "file"
+    vnode_t *node;             // "file": the file (alive while the tree lock is held: see read_maps)
+    uint64_t offset;           // "file": where in it `start` is
+} map_line_t;
+
+#define MAPS_MAX_LINES (TASK_MAX_REGIONS + ELF_REPORTED_SEGMENTS + 2)
+#define MAPS_TEXT_MAX  16384   // Every line with a file name of VFS_PATH_MAX fits
+
+// Copy the address-space layout of task `t` into `lines` (room for
+// MAPS_MAX_LINES) and its name into `name`; returns how many lines.
+// Caller holds the scheduler lock.
+static size_t copy_maps(const task_t *t, map_line_t *lines, char name[32]) {
+    size_t n = 0;
+    if (!t->is_user || t->state == TASK_ZOMBIE) return 0;  // A zombie has given its memory back
+    memcpy(name, t->name, 31);
+    name[31] = '\0';
+    for (uint32_t i = 0; i < t->image_segment_count && i < ELF_REPORTED_SEGMENTS; i++) {
+        const elf_segment_t *seg = &t->image_segments[i];
+        lines[n++] = (map_line_t){ seg->start, seg->end, seg->prot, "program", NULL, 0 };
+    }
+    if (t->brk_end > t->brk_start) {
+        lines[n++] = (map_line_t){ t->brk_start, t->brk_end, PROT_READ | PROT_WRITE, "heap", NULL, 0 };
+    }
+    if (t->stack_top >= USER_STACK_MAX) {
+        lines[n++] = (map_line_t){ t->stack_top - USER_STACK_MAX, t->stack_top, PROT_READ | PROT_WRITE, "stack", NULL, 0 };
+    }
+    for (int i = 0; i < TASK_MAX_REGIONS; i++) {
+        const mem_region_t *r = &t->regions[i];
+        if (r->end == 0) continue;
+        lines[n++] = (map_line_t){ r->start, r->end, r->prot, r->node ? "file" : "anonymous", r->node, r->file_offset };
+    }
+    return n;
+}
+
+// /proc/<pid>/maps: one line per piece of the address space, lowest first:
+//   start-end perms kind [name]
+// with the program's segments (named after it), the heap (brk), the stack
+// (the whole 8 MiB it may grow into), and each mmap region: "anonymous",
+// or "file" with the file's path and "+offset" (hex). Shared memory
+// (MAP_SHARED, shmat) is not recorded by the task and is not shown.
+// -ENOENT once the task is gone.
+//
+// The regions are the task's to change, without the scheduler lock, and a
+// file region holds a pointer to the file's node. The tree lock is held
+// across the copy and the formatting: a region's file is unpinned (under
+// the tree lock) only after its entry is cleared (region.c), and a pinned
+// node cannot be removed, so every node seen here is alive until the end.
+static int64_t read_maps(vnode_t *node, size_t offset, void *buf, size_t count) {
+    map_line_t *lines = kmalloc(MAPS_MAX_LINES * sizeof(map_line_t));
+    char *text = kmalloc(MAPS_TEXT_MAX);
+    char *path = kmalloc(VFS_PATH_MAX);
+    if (!lines || !text || !path) {
+        kfree(lines);
+        kfree(text);
+        kfree(path);
+        return -ENOMEM;
+    }
+    char name[32] = "";
+    size_t n = 0, len = 0;
+
+    vfs_lock();
+    uint64_t flags = sched_lock_irqsave();
+    task_t *t = sched_find_task_locked(pid_of(node));
+    bool found = t != NULL;
+    if (t) n = copy_maps(t, lines, name);
+    sched_unlock_irqrestore(flags);
+
+    // Lowest first (insertion sort: a few dozen lines at most)
+    for (size_t i = 1; i < n; i++) {
+        map_line_t line = lines[i];
+        size_t j = i;
+        while (j > 0 && lines[j - 1].start > line.start) {
+            lines[j] = lines[j - 1];
+            j--;
+        }
+        lines[j] = line;
+    }
+    for (size_t i = 0; i < n && len < MAPS_TEXT_MAX - 1; i++) {
+        const map_line_t *l = &lines[i];
+        len += ksnprintf(text + len, MAPS_TEXT_MAX - len, "%012lx-%012lx %c%c%c %s",
+                         l->start, l->end, (l->prot & PROT_READ) ? 'r' : '-', (l->prot & PROT_WRITE) ? 'w' : '-',
+                         (l->prot & PROT_EXEC) ? 'x' : '-', l->kind);
+        if (len >= MAPS_TEXT_MAX - 1) break;
+        if (l->node) {
+            if (vfs_path_of(l->node, path, VFS_PATH_MAX) == 0) memcpy(path, "?", 2);
+            len += ksnprintf(text + len, MAPS_TEXT_MAX - len, " %s +%lx\n", path, l->offset);
+        } else if (strcmp(l->kind, "program") == 0) {
+            len += ksnprintf(text + len, MAPS_TEXT_MAX - len, " %s\n", name);
+        } else {
+            len += ksnprintf(text + len, MAPS_TEXT_MAX - len, "\n");
+        }
+    }
+    vfs_unlock();
+    if (len > MAPS_TEXT_MAX - 1) len = MAPS_TEXT_MAX - 1;
+
+    int64_t result = found ? serve_slice(text, len, offset, buf, count) : -ENOENT;
+    kfree(lines);
+    kfree(text);
+    kfree(path);
+    return result;
+}
+
+// The descriptor number a /proc/<pid>/fd/N node stands for
+static int fd_of(const vnode_t *node) { return (int)(node->private_data >> 32); }
+
+// Describe an open file in `text` (`size` bytes, NUL-terminated), one
+// line: a path for a file or directory, else what kind of thing it is.
+// Returns the length. May sleep (takes the tree lock).
+static size_t describe_file(const file_t *file, char *text, size_t size) {
+    switch (file->kind) {
+        case FILE_CONSOLE: return ksnprintf(text, size, "console\n");
+        case FILE_PIPE:    return ksnprintf(text, size, file->readable ? "pipe (read end)\n" : "pipe (write end)\n");
+        case FILE_SOCKET:  return ksnprintf(text, size, "socket (UDP)\n");
+        case FILE_TCP:     return ksnprintf(text, size, "socket (TCP)\n");
+        case FILE_VNODE:   break;
+    }
+    // An open node cannot be removed (its open count pins it)
+    size_t len = vfs_path_of(file->node, text, size - 1);
+    if (len == 0) len = ksnprintf(text, size - 1, "?");
+    text[len++] = '\n';
+    text[len] = '\0';
+    return len;
+}
+
+// /proc/<pid>/fd/N: what descriptor N of the task refers to, one line.
+// -ENOENT once the task is gone or the descriptor closed. The task can
+// close it at any moment; the file is taken with a reference of our own
+// under the slot lock (fd_slot_dup), so it cannot be freed while it is
+// described, and that reference is dropped after (the last one, if the
+// task closed it meanwhile: then the file is closed here).
+static int64_t read_fd(vnode_t *node, size_t offset, void *buf, size_t count) {
+    uint64_t flags = sched_lock_irqsave();
+    task_t *t = sched_find_task_locked(pid_of(node));
+    file_t *file = t ? fd_slot_dup(t->fds, fd_of(node)) : NULL;
+    sched_unlock_irqrestore(flags);
+    if (!file) return -ENOENT;
+
+    char text[VFS_PATH_MAX + 2];
+    size_t len = describe_file(file, text, sizeof(text));
+    file_close(file);
+    return serve_slice(text, len, offset, buf, count);
+}
+
 static const vnode_ops_t ops_status = { .read = read_status };
 static const vnode_ops_t ops_cmdline = { .read = read_cmdline };
+static const vnode_ops_t ops_maps = { .read = read_maps };
+static const vnode_ops_t ops_fd = { .read = read_fd };
 
 // vnode_ops_t.remove for /proc and its pid directories: nothing there is
 // anyone's to remove (EPERM, root included), except procfs's own clearing
@@ -293,16 +461,83 @@ static vnode_t *pid_dir(vnode_t *dir, uint32_t pid) {
     return NULL;
 }
 
-// Attach a file `name` to the pid directory `d`, read with `ops`
-static void add_pid_file(vnode_t *d, const char *name, const vnode_ops_t *ops) {
-    vnode_t *f = vfs_attach(d, name, VFS_FILE);
-    if (!f) return;
+// Attach a node `name` of `type` to the directory `d` (in /proc/<pid>),
+// with `ops`, permission bits `mode` and d's owner; private_data is d's
+// pid plus `extra` (the descriptor number, for fd/N). Returns it, or NULL.
+static vnode_t *add_pid_node(vnode_t *d, const char *name, uint32_t type, const vnode_ops_t *ops,
+                             uint16_t mode, uint64_t extra) {
+    vnode_t *f = vfs_attach(d, name, type);
+    if (!f) return NULL;
     f->ops = ops;
-    f->private_data = d->private_data;
-    f->mode = 0444;
+    f->private_data = (uint32_t)d->private_data | extra;
+    f->mode = mode;
     f->uid = d->uid;
     f->gid = d->gid;
+    return f;
 }
+
+// Attach a file `name` to the pid directory `d`, read with `ops`, readable
+// by everyone
+static void add_pid_file(vnode_t *d, const char *name, const vnode_ops_t *ops) {
+    add_pid_node(d, name, VFS_FILE, ops, 0444, 0);
+}
+
+// Remove `n` from `parent`, with everything under it. Caller holds the tree
+// lock and has set tearing_down (the remove ops refuse otherwise), during a
+// refresh (so that looking inside fd/ does not refresh it meanwhile).
+// false if something could not go.
+static bool remove_pid_node(vnode_t *parent, vnode_t *n) {
+    while (n->children) {
+        if (!remove_pid_node(n, n->children)) return false;
+    }
+    return vfs_unlink(parent, n->name) == 0;
+}
+
+// vnode_ops_t.refresh for /proc/<pid>/fd: a file for each open descriptor
+// of the task, named by its number (none once the task is gone). Those of
+// descriptors closed since go, unless open themselves (then they read as
+// ENOENT and go at a later refresh). Caller holds the tree lock.
+static void fd_dir_refresh(vnode_t *dir) {
+    if (refreshing) return;                    // Our own changes inside it, or /proc's
+    refreshing = true;
+
+    uint32_t mask = 0, uid = dir->uid, gid = dir->gid;
+    uint64_t flags = sched_lock_irqsave();
+    task_t *t = sched_find_task_locked(pid_of(dir));
+    if (t) {
+        mask = fd_slot_mask(t->fds);
+        uid = t->uid;
+        gid = t->gid;
+    }
+    sched_unlock_irqrestore(flags);
+
+    dir->uid = uid;
+    dir->gid = gid;
+    tearing_down = true;
+    for (vnode_t *c = dir->children; c;) {
+        vnode_t *next = c->next;
+        if (!(mask & (1u << fd_of(c))) && !c->open_count) {
+            vfs_unlink(dir, c->name);
+        } else {
+            c->uid = uid;
+            c->gid = gid;
+        }
+        c = next;
+    }
+    tearing_down = false;
+    for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
+        if (!(mask & (1u << fd))) continue;
+        bool present = false;
+        for (vnode_t *c = dir->children; c && !present; c = c->next) present = fd_of(c) == fd;
+        if (present) continue;
+        char name[4];
+        ksnprintf(name, sizeof(name), "%d", fd);
+        add_pid_node(dir, name, VFS_FILE, &ops_fd, 0400, (uint64_t)fd << 32);
+    }
+    refreshing = false;
+}
+
+static const vnode_ops_t fd_dir_ops;
 
 // Make /proc/<pid> for a task, with its files. Caller holds the tree lock.
 static void add_pid_dir(vnode_t *dir, const proc_entry_t *e) {
@@ -317,18 +552,25 @@ static void add_pid_dir(vnode_t *dir, const proc_entry_t *e) {
     d->gid = e->gid;
     add_pid_file(d, "status", &ops_status);
     add_pid_file(d, "cmdline", &ops_cmdline);
+    add_pid_node(d, "maps", VFS_FILE, &ops_maps, 0400, 0);      // They name files: the owner's only
+    add_pid_node(d, "fd", VFS_DIRECTORY, &fd_dir_ops, 0500, 0);
 }
 
-// Remove the directory `d` of a task that is gone, and its files, unless
-// one of them is open (or someone's working directory): then it stays,
-// reading as ENOENT, and the next refresh tries again. Caller holds the
-// tree lock.
+// Whether `n` or anything under it is open (or someone's working directory)
+static bool pid_node_in_use(const vnode_t *n) {
+    if (n->open_count) return true;
+    for (const vnode_t *c = n->children; c; c = c->next) if (pid_node_in_use(c)) return true;
+    return false;
+}
+
+// Remove the directory `d` of a task that is gone, and everything in it,
+// unless any of it is open (or someone's working directory): then it
+// stays, reading as ENOENT, and the next refresh tries again. Caller holds
+// the tree lock, during a refresh of /proc.
 static void remove_pid_dir(vnode_t *dir, vnode_t *d) {
-    if (d->open_count) return;
-    for (vnode_t *f = d->children; f; f = f->next) if (f->open_count) return;
+    if (pid_node_in_use(d)) return;
     tearing_down = true;
-    while (d->children && vfs_unlink(d, d->children->name) == 0) { }
-    if (!d->children) vfs_unlink(dir, d->name);
+    remove_pid_node(dir, d);
     tearing_down = false;
 }
 
@@ -394,6 +636,7 @@ static void proc_refresh(vnode_t *dir) {
 
 static const vnode_ops_t proc_dir_ops = { .refresh = proc_refresh, .remove = refuse_remove };
 static const vnode_ops_t pid_dir_ops = { .remove = refuse_remove };
+static const vnode_ops_t fd_dir_ops = { .refresh = fd_dir_refresh, .remove = refuse_remove };
 
 // /proc/kmsg: the kernel message log. Too large for serve_text's buffer, and
 // already stored as text, so it is read straight from the log.
@@ -418,6 +661,7 @@ void procfs_init(void) {
     vfs_create_device(proc_dir, "cpuinfo", &ops_cpuinfo);
     vfs_create_device(proc_dir, "kmsg", &ops_kmsg);
     vfs_create_device(proc_dir, "mounts", &ops_mounts);
+    vfs_create_device(proc_dir, "interrupts", &ops_interrupts);
 
     // /proc/self, a link whose target is rewritten at each refresh, and the
     // per-task directories that refresh keeps in step (from now on)

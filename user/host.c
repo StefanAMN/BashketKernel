@@ -1,6 +1,6 @@
-/* host: look a name up in the DNS and print its address.
+/* host: look a name up and print its address.
  *
- *   host NAME                  ask the configured server (see dhcp)
+ *   host NAME                  /etc/hosts, then the configured server (see dhcp)
  *   host NAME SERVER [PORT]    ask this one instead
  */
 #include "ulib.h"
