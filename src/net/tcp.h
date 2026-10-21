@@ -19,14 +19,25 @@
  *    send the oldest unacknowledged segment again at once, without waiting
  *    for the timer. The receiver acknowledges every out-of-order segment at
  *    once, so that a sender (ours or another) gets its duplicates.
+ *  - Congestion control (RFC 5681): the sender keeps no more than the
+ *    smaller of the receiver's window and its own congestion window in
+ *    flight. That window starts at three or four segments (3.1, eq. 1),
+ *    grows by a segment per acknowledgement in slow start (eq. 2) and by
+ *    about one per round trip above ssthresh (eq. 3). A timeout sets it
+ *    to one segment and ssthresh to half of what was in flight (eq. 4);
+ *    fast retransmit sets ssthresh the same way and starts fast recovery,
+ *    in NewReno's form (RFC 6582): a partial acknowledgement sends the
+ *    next hole at once and recovery ends only when everything sent before
+ *    it began is acknowledged. /proc/tcp shows each connection's window.
  *
  * What is not, and what follows from it:
- *  - No congestion control (RFC 5681's congestion window, slow start, fast
- *    recovery). The sender is limited only by the receiver's window.
- *    Harmless on QEMU's virtual network; not fit for a real one. When the
- *    timer runs out, everything from the oldest unacknowledged byte is
- *    sent again ("go-back-N"), which with no congestion window means a
- *    whole window at once.
+ *  - No limited transmit (RFC 3042) and no selective acknowledgement: in
+ *    a window with several losses, NewReno repairs one hole per round
+ *    trip. After a timeout, everything from the oldest unacknowledged
+ *    byte is sent again ("go-back-N"), but at the pace slow start allows.
+ *  - No congestion window validation (RFC 7661): a connection limited by
+ *    the receiver's window keeps growing its congestion window, up to
+ *    TCP_CWND_MAX.
  *  - The RFC 6298 limits are changed for a virtual network: the first
  *    timeout is 200 ms rather than 1 s (2.1), the floor is 200 ms rather
  *    than 1 s (2.4), and the timeout (backed off or measured) is capped
@@ -59,6 +70,9 @@ typedef struct {
     uint64_t out_of_order_kept;  // ... ahead, and kept until the gap filled
     uint64_t fast_retransmissions; // Sent again after three duplicate acknowledgements
     uint64_t rtt_samples;        // Round trips measured
+    uint64_t recoveries;         // Fast recoveries begun (RFC 5681 3.2)
+    uint64_t partial_acks;       // Partial acknowledgements in recovery (RFC 6582)
+    uint64_t cwnd_timeouts;      // Timer expiries that set a congestion window to one segment
     uint64_t dropped_for_test;   // See tcp_test_drop_every
 } tcp_stats_t;
 
@@ -103,6 +117,54 @@ typedef struct {
  *        2.2 for the first, 2.3 for the rest) and compute the timeout.
  */
 void tcp_rtt_sample(tcp_rtt_t *t, uint32_t r_us);
+
+// Congestion control (RFC 5681), with NewReno's fast recovery (RFC 6582).
+// Sizes in bytes; smss is the sender's maximum segment size.
+typedef struct {
+    uint32_t cwnd;               // Congestion window
+    uint32_t ssthresh;           // Slow start below it, congestion avoidance at or above
+    bool in_recovery;            // Between a fast retransmit and the full acknowledgement
+    uint32_t recover;            // RFC 6582: highest sequence number sent when recovery (or a timeout) began
+} tcp_cc_t;
+
+#define TCP_CWND_MAX (4u * 65535u) // Grown no further: no window beyond 64 KiB can be used (no scaling)
+
+/**
+ * @brief A connection is established: the initial window (RFC 5681 3.1,
+ *        eq. 1), an "arbitrarily high" ssthresh (the largest window the
+ *        other end can advertise), recover = iss (RFC 6582 3.2).
+ */
+void tcp_cc_init(tcp_cc_t *cc, uint32_t smss, uint32_t iss);
+
+/**
+ * @brief New data acknowledged: `acked` bytes, so that the acknowledgement
+ *        is now `ack` and `flight` bytes are still outstanding. Grows the
+ *        window (slow start or congestion avoidance), or in recovery deals
+ *        with a partial or full acknowledgement (RFC 6582 3.2, 5 and 6).
+ * @return true for a partial acknowledgement: the segment it points at must
+ *         be sent again at once.
+ */
+bool tcp_cc_new_ack(tcp_cc_t *cc, uint32_t smss, uint32_t acked, uint32_t ack, uint32_t flight);
+
+/**
+ * @brief A duplicate acknowledgement of `ack`, the `count`th in a row, with
+ *        snd_max one past the highest byte sent and `flight` outstanding.
+ *        In recovery each one inflates the window by a segment (RFC 5681
+ *        3.2, 4); the third outside it starts recovery, unless `ack` does
+ *        not go beyond `recover` (RFC 6582 3.2, 1 and 2).
+ * @return true when the segment at `ack` must be sent again now (fast
+ *         retransmit).
+ */
+bool tcp_cc_dup_ack(tcp_cc_t *cc, uint32_t smss, uint32_t count, uint32_t ack, uint32_t snd_max, uint32_t flight);
+
+/**
+ * @brief The retransmission timer expired with `flight` outstanding and
+ *        snd_max one past the highest byte sent: the window becomes one
+ *        segment (RFC 5681 3.1), ssthresh half the flight if `first`
+ *        (only the first expiry for a segment changes it, eq. 4), and any
+ *        recovery ends, with recover moved to snd_max - 1 (RFC 6582 3.2, 4).
+ */
+void tcp_cc_timeout(tcp_cc_t *cc, uint32_t smss, uint32_t flight, uint32_t snd_max, bool first);
 
 /**
  * @brief Start the TCP timer thread. Called by net_init.
@@ -185,6 +247,14 @@ void tcp_peer(tcp_socket_t *sock, uint32_t *ip, uint16_t *port);
 const tcp_stats_t *tcp_stats(void);
 
 /**
+ * @brief Describe every connection as text into buf (at most size bytes,
+ *        NUL-terminated): ports, peer, state, congestion window, ssthresh,
+ *        smoothed round trip and timeout. For /proc/tcp.
+ * @return the length written.
+ */
+size_t tcp_describe(char *buf, size_t size);
+
+/**
  * @brief Number of sockets in use, including connections still closing in
  *        the background.
  */
@@ -208,5 +278,20 @@ void tcp_test_drop_every(uint32_t n);
  */
 bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack,
                         uint32_t *unacked);
+
+#define TCP_TRACE_MAX 1024
+
+/**
+ * @brief For tests: record the congestion window of connections to remote
+ *        port `port` each time it changes (TCP_TRACE_MAX values at most,
+ *        after which recording stops); 0 stops, and starting clears.
+ */
+void tcp_test_trace_cwnd(uint16_t port);
+
+/**
+ * @brief For tests: copy up to `max` recorded values into out.
+ * @return how many there are.
+ */
+size_t tcp_test_cwnd_trace(uint32_t *out, size_t max);
 
 #endif // TCP_H

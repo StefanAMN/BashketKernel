@@ -121,6 +121,7 @@ struct tcp_socket {
 
     uint8_t dupacks;                // Duplicate acknowledgements of snd_una in a row
     bool retransmit_one;            // Fast retransmit: send the segment at snd_una again, alone
+    tcp_cc_t cc;                    // Congestion window (set up when the handshake ends)
 
     // Receiving. The ring holds data not yet read by the owner, then (in
     // the part that is free) data kept out of order: the byte with sequence
@@ -173,6 +174,9 @@ static tcp_stats_t stats;
 static uint16_t next_ephemeral = TCP_EPHEMERAL_FIRST;
 static bool work_pending = false;   // tcp_input left something for tcpd to send
 static uint32_t drop_every = 0, drop_counter = 0;
+static uint16_t trace_port = 0;     // tcp_test_trace_cwnd
+static uint32_t trace[TCP_TRACE_MAX];
+static size_t trace_len = 0;
 
 // One lock for all of the above. Never held across net_ipv4_send().
 static spinlock_t tcp_lock = SPINLOCK_RANKED("tcp", LOCK_RANK_NET + 1);
@@ -200,6 +204,45 @@ bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv
     }
     spinlock_release_irqrestore(&tcp_lock, flags);
     return found;
+}
+
+void tcp_test_trace_cwnd(uint16_t port) {
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    trace_port = port;
+    if (port) trace_len = 0;
+    spinlock_release_irqrestore(&tcp_lock, flags);
+}
+
+size_t tcp_test_cwnd_trace(uint32_t *out, size_t max) {
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    size_t n = trace_len < max ? trace_len : max;
+    for (size_t i = 0; i < n; i++) out[i] = trace[i];
+    spinlock_release_irqrestore(&tcp_lock, flags);
+    return n;
+}
+
+size_t tcp_describe(char *buf, size_t size) {
+    static const char *const state_names[] = {
+        "closed", "listen", "syn-sent", "syn-received", "established", "fin-wait-1",
+        "fin-wait-2", "close-wait", "closing", "last-ack", "time-wait",
+    };
+    size_t len = ksnprintf(buf, size, "local  remote                state         cwnd  ssthresh  srtt(us)  rto(ms)\n");
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    for (int i = 0; i < TCP_MAX_SOCKETS && len + 1 < size; i++) {
+        const struct tcp_socket *s = &sockets[i];
+        if (!s->used) continue;
+        uint32_t ip = s->remote_ip;
+        const char *state = (unsigned)s->state < sizeof(state_names) / sizeof(state_names[0])
+                          ? state_names[s->state] : "?";
+        bool has_window = s->syn_acked && s->state != TCP_LISTEN;
+        len += ksnprintf(buf + len, size - len, "%5u  %u.%u.%u.%u:%u  %s  %u  %u  %u  %u\n",
+                         (unsigned)s->local_port, ip >> 24, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
+                         (unsigned)s->remote_port, state, has_window ? s->cc.cwnd : 0,
+                         has_window ? s->cc.ssthresh : 0, s->rtt.measured ? s->rtt.srtt_us : 0,
+                         s->rto * TCP_US_PER_TICK / 1000);
+    }
+    spinlock_release_irqrestore(&tcp_lock, flags);
+    return len;
 }
 
 size_t tcp_sockets_in_use(void) {
@@ -268,7 +311,98 @@ void tcp_rtt_sample(tcp_rtt_t *t, uint32_t r) {
     t->rto_us = (uint32_t)rto;
 }
 
+// Half of what is in flight, but at least two segments: the new ssthresh
+// after a loss (RFC 5681 3.1, eq. 4)
+static uint32_t half_flight(uint32_t smss, uint32_t flight) {
+    uint32_t half = flight / 2;
+    return half > 2 * smss ? half : 2 * smss;
+}
+
+// A window grown by `by`, no further than TCP_CWND_MAX
+static uint32_t grown(uint32_t cwnd, uint32_t by) {
+    if (cwnd >= TCP_CWND_MAX) return TCP_CWND_MAX;
+    return by > TCP_CWND_MAX - cwnd ? TCP_CWND_MAX : cwnd + by;
+}
+
+void tcp_cc_init(tcp_cc_t *cc, uint32_t smss, uint32_t iss) {
+    // RFC 5681 3.1, eq. 1: IW = 2, 3 or 4 segments as smss is large or small
+    if (smss > 2190) cc->cwnd = 2 * smss;
+    else if (smss > 1095) cc->cwnd = 3 * smss;
+    else cc->cwnd = 4 * smss;
+    cc->ssthresh = 65535;          // "Arbitrarily high": the largest window without scaling
+    cc->in_recovery = false;
+    cc->recover = iss;             // RFC 6582 3.2: initialised to the ISS
+}
+
+bool tcp_cc_new_ack(tcp_cc_t *cc, uint32_t smss, uint32_t acked, uint32_t ack, uint32_t flight) {
+    if (cc->in_recovery) {
+        if (SEQ_GT(ack, cc->recover)) {
+            // Full acknowledgement (RFC 6582 3.2, 6, first option): deflate
+            // to min(ssthresh, max(FlightSize, SMSS) + SMSS), which avoids a
+            // burst if little is outstanding
+            uint32_t floor = (flight > smss ? flight : smss) + smss;
+            cc->cwnd = cc->ssthresh < floor ? cc->ssthresh : floor;
+            cc->in_recovery = false;
+            return false;
+        }
+        // Partial acknowledgement (3.2, 5): the next hole is sent again at
+        // once; the window loses what was acknowledged and gains back one
+        // segment if at least that much was, so about ssthresh stays in flight
+        cc->cwnd = cc->cwnd > acked ? cc->cwnd - acked : 0;
+        if (acked >= smss) cc->cwnd += smss;
+        if (cc->cwnd < smss) cc->cwnd = smss;
+        return true;
+    }
+    if (cc->cwnd < cc->ssthresh) {
+        cc->cwnd = grown(cc->cwnd, acked < smss ? acked : smss);       // Slow start (eq. 2)
+    } else {
+        uint32_t step = (uint32_t)((uint64_t)smss * smss / cc->cwnd); // Congestion avoidance (eq. 3)
+        cc->cwnd = grown(cc->cwnd, step > 0 ? step : 1);
+    }
+    return false;
+}
+
+bool tcp_cc_dup_ack(tcp_cc_t *cc, uint32_t smss, uint32_t count, uint32_t ack, uint32_t snd_max, uint32_t flight) {
+    if (cc->in_recovery) {
+        cc->cwnd = grown(cc->cwnd, smss);  // Each one means a segment has left the network (RFC 5681 3.2, 4)
+        return false;
+    }
+    if (count != 3) return false;
+    // RFC 6582 3.2, 2: duplicates of an acknowledgement that does not go
+    // beyond recover answer data sent before the last timeout or recovery,
+    // and start nothing. ("Covers more than recover" read as ack > recover,
+    // the same test as for a full acknowledgement.)
+    if (!SEQ_GT(ack, cc->recover)) return false;
+    cc->ssthresh = half_flight(smss, flight);       // Eq. 4
+    cc->cwnd = grown(cc->ssthresh, 3 * smss);       // 3.2, 3: the three that left the network
+    cc->recover = snd_max - 1;                      // The highest byte sent
+    cc->in_recovery = true;
+    return true;
+}
+
+void tcp_cc_timeout(tcp_cc_t *cc, uint32_t smss, uint32_t flight, uint32_t snd_max, bool first) {
+    if (first) cc->ssthresh = half_flight(smss, flight);  // Eq. 4, once per segment
+    cc->cwnd = smss;                                      // The loss window (RFC 5681 3.1)
+    cc->in_recovery = false;
+    cc->recover = snd_max - 1;                            // RFC 6582 3.2, 4
+}
+
 // --- Helpers (callers hold tcp_lock) -------------------------------------------
+
+// The congestion window may have changed: record it if a test traces this
+// connection (tcp_test_trace_cwnd). Caller holds tcp_lock.
+static void cwnd_changed(struct tcp_socket *sock) {
+    if (trace_port == 0 || sock->remote_port != trace_port || trace_len >= TCP_TRACE_MAX) return;
+    if (trace_len > 0 && trace[trace_len - 1] == sock->cc.cwnd) return;
+    trace[trace_len++] = sock->cc.cwnd;
+}
+
+// The handshake is over and the other end's segment size known: start the
+// congestion window. Caller holds tcp_lock.
+static void start_congestion_control(struct tcp_socket *sock) {
+    tcp_cc_init(&sock->cc, sock->mss, sock->iss);
+    cwnd_changed(sock);
+}
 
 // The timeout to start from, in ticks (rounded up): the measured one once
 // there is a measurement, else the initial guess. Caller holds tcp_lock.
@@ -482,7 +616,18 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
             uint32_t offset = sock->snd_nxt - sock->snd_una;
             size_t unsent = sock->tx_len > offset ? sock->tx_len - offset : 0;
             uint32_t in_flight = offset;
-            size_t usable = sock->snd_wnd > in_flight ? sock->snd_wnd - in_flight : 0;
+            // No more in flight than both windows allow: the receiver's, and
+            // the congestion window (RFC 5681 3: min(cwnd, rwnd)). On the
+            // first and second duplicate acknowledgement one new segment
+            // each may go beyond it (limited transmit, RFC 3042, as RFC
+            // 5681 3.2 step 1 recommends): in a small window those are what
+            // can bring the third duplicate, rather than a timeout.
+            uint32_t congestion = sock->cc.cwnd;
+            if (!sock->cc.in_recovery && sock->dupacks > 0 && sock->dupacks < 3) {
+                congestion += (uint32_t)sock->dupacks * sock->mss;
+            }
+            uint32_t window = sock->snd_wnd < congestion ? sock->snd_wnd : congestion;
+            size_t usable = window > in_flight ? window - in_flight : 0;
 
             // The other end has no room and nothing is on its way that would
             // make it say when it has: send one byte to get an answer
@@ -661,6 +806,17 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
     sock->dupacks = 0;
     sock->retransmit_one = false;   // What it would have sent may be acknowledged now
 
+    // The congestion window grows, or (in recovery) a partial
+    // acknowledgement points at the next hole: send that at once (RFC 6582)
+    if (tcp_cc_new_ack(&sock->cc, sock->mss, acked, ack, sock->snd_max - ack)) {
+        stats.partial_acks++;
+        if (sock->tx_len > 0) {
+            sock->retransmit_one = true;
+            sock->timing = false;   // Karn: what is timed may be the one sent again
+        }
+    }
+    cwnd_changed(sock);
+
     // Progress: restart the timer for whatever is still outstanding (RFC
     // 6298 5.3), with the current timeout. That stays backed off until a
     // segment sent only once is timed (Karn's rule).
@@ -728,6 +884,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
             sock->syn_acked = true;
             sock->snd_wnd = swap16(tcp->window);
             sock->mss = mss_from_options(segment + TCP_HEADER_LEN, header_len - TCP_HEADER_LEN);
+            start_congestion_control(sock);
             sock->rto = TCP_RTO_INITIAL;
             ack_timed(sock, ack);                   // The SYN's round trip, unless it was sent twice
             sock->rto_deadline = 0;
@@ -767,6 +924,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         }
         sock->snd_una = ack;
         sock->syn_acked = true;
+        start_congestion_control(sock);
         sock->rto = TCP_RTO_INITIAL;
         ack_timed(sock, ack);                       // The SYN+ACK's round trip
         sock->rto_deadline = 0;
@@ -786,13 +944,16 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         // A duplicate acknowledgement (RFC 5681, 2: nothing new acknowledged,
         // no data, the window the same, data outstanding). The third in a
         // row says the segment at snd_una was lost while later ones arrived:
-        // send it again now (3.2). Later duplicates change nothing, since
-        // there is no congestion window to inflate (tcp.h).
-        if (++sock->dupacks == TCP_DUP_ACKS) {
+        // send it again now and start fast recovery (3.2); in recovery each
+        // further one lets a new segment out (tcp_cc_dup_ack).
+        if (sock->dupacks < 255) sock->dupacks++;
+        if (tcp_cc_dup_ack(&sock->cc, sock->mss, sock->dupacks, ack, sock->snd_max, sock->snd_max - sock->snd_una)) {
+            stats.recoveries++;
             sock->retransmit_one = true;
             sock->timing = false;                   // Karn: what is timed may be the one sent again
-            kick_tcpd();
         }
+        cwnd_changed(sock);
+        kick_tcpd();
     }
 
     // Any acceptable segment shows the other end is alive and tells us its window
@@ -940,6 +1101,17 @@ static void run_timers(struct tcp_socket *sock, uint64_t now) {
         // Go back to the oldest thing not acknowledged and send from there
         // again; wait twice as long for the answer this time
         stats.retransmissions++;
+        if (sock->syn_acked && sock->snd_wnd != 0) {
+            // One segment at a time from here, slow start up again (RFC
+            // 5681 3.1); ssthresh halves only at the first expiry since the
+            // other end last answered (`retries` restarts at any answer).
+            // Not when the receiver's window is closed: then what is
+            // outstanding is a probe of it, which says nothing about
+            // congestion (RFC 9293 3.8.6.1, RFC 1122 4.2.2.17)
+            tcp_cc_timeout(&sock->cc, sock->mss, sock->snd_max - sock->snd_una, sock->snd_max, sock->retries == 1);
+            stats.cwnd_timeouts++;
+            cwnd_changed(sock);
+        }
         sock->timing = false;                       // Karn's rule: nothing sent twice is timed
         sock->dupacks = 0;
         sock->retransmit_one = false;               // Everything from snd_una goes again anyway

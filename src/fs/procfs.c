@@ -45,6 +45,7 @@
 #include "mmap.h"
 #include "process.h"
 #include "interrupts.h"
+#include "tcp.h"
 
 #define PROC_TEXT_MAX 4096
 
@@ -190,6 +191,11 @@ static size_t gen_interrupts(char *buf, size_t size) {
     return interrupts_describe(buf, size);
 }
 
+// /proc/tcp: each TCP connection with its congestion window (tcp_describe)
+static size_t gen_tcp(char *buf, size_t size) {
+    return tcp_describe(buf, size);
+}
+
 // One read function and one ops table per file: read_<name> serves
 // gen_<name>'s text, ops_<name> is what the node is created with
 #define PROC_FILE(name) \
@@ -207,6 +213,7 @@ PROC_FILE(tasks);
 PROC_FILE(cpuinfo);
 PROC_FILE(mounts);
 PROC_FILE(interrupts);
+PROC_FILE(tcp);
 
 // --- /proc/<pid> ----------------------------------------------------------------
 
@@ -662,6 +669,7 @@ void procfs_init(void) {
     vfs_create_device(proc_dir, "kmsg", &ops_kmsg);
     vfs_create_device(proc_dir, "mounts", &ops_mounts);
     vfs_create_device(proc_dir, "interrupts", &ops_interrupts);
+    vfs_create_device(proc_dir, "tcp", &ops_tcp);
 
     // /proc/self, a link whose target is rewritten at each refresh, and the
     // per-task directories that refresh keeps in step (from now on)
@@ -675,5 +683,5 @@ void procfs_init(void) {
     }
     proc_dir->ops = &proc_dir_ops;
     mount_register("/proc", "proc", "kernel");
-    kprintf("ProcFS Init: /proc/version, uptime, timers, meminfo, tasks, cpuinfo, kmsg, mounts, self, <pid>/\n");
+    kprintf("ProcFS Init: /proc/version, uptime, timers, meminfo, tasks, cpuinfo, kmsg, mounts, interrupts, tcp, self, <pid>/\n");
 }
