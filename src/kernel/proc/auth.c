@@ -70,6 +70,10 @@ bool auth_may_remove(uint32_t uid, const vnode_t *dir, const vnode_t *child) {
     return child->uid == uid || dir->uid == uid;
 }
 
+uint32_t auth_new_entry_group(const vnode_t *dir, uint32_t creator_gid) {
+    return (dir && (dir->mode & PERM_SETGID)) ? dir->gid : creator_gid;
+}
+
 bool auth_may_signal(uint32_t uid, uint32_t target_uid) {
     return uid == UID_ROOT || uid == target_uid;
 }

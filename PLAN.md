@@ -221,8 +221,8 @@ effective user ids, `umask`, `su` and `passwd`, salted PBKDF2 password
 hashes (checked against Python's implementation: `tools/mkpasswd.py` makes
 the lines `/bin/login` accepts), and owners for shared memory segments.
 
-Not done: set-gid and sticky bits (done in M1, except set-gid on a
-directory). (Supplementary groups came with L4,
+Not done: set-gid and sticky bits (done in M1; set-gid directories in
+O4). (Supplementary groups came with L4,
 search permission on directories with smaller repair 11.) Owners for files on `/disk` wait for a filesystem
 that can store them (C2), and a password changed with `passwd` is lost at
 reboot for the same reason: `/etc` is in the initrd. (The password part no
@@ -1073,7 +1073,8 @@ or renaming an entry needs the caller to own the entry or the directory
 (or be root). `/tmp` is made 1777. Set-gid (02000) on an executable runs
 it with the file's group as the effective group, as set-uid does for the
 user (the bit is dropped by the same writes and owner changes); set-gid
-on directories (new files inherit the group) is left out and said so.
+on directories (new files inherit the group) is left out and said so
+(done later, in O4).
 `ls -l` and `stat` show `t` and `s`; `chmod` accepts the four-digit
 modes. **Check:** unit tests for the rule; syscheck as bob against
 alice's file in `/tmp` (unlink, rename over it, rename it away: refused;
@@ -1374,7 +1375,7 @@ echo b` ran as one command; a `$(...)` is now taken whole. Sabotage:
 `&&` evaluating its right side failed two checks; `read` not giving
 the last name the rest of the line failed five.
 
-### O4. `mkdir -p`, `rmdir`, `rm -r`, and set-gid directories (S)
+### O4. `mkdir -p`, `rmdir`, `rm -r`, and set-gid directories (S) — done
 
 `mkdir -p` makes missing parents and accepts existing ones; `rmdir`
 removes only empty directories; `rm -r` removes a tree without following
@@ -1384,6 +1385,18 @@ effect) gives new entries its group, and new subdirectories the bit.
 directory outside it, which must survive; set-gid inheritance on memory
 and ext2 directories) and `make test-home` (the group on disk after a
 reboot).
+
+Done as written. The kernel part is one function, `auth_new_entry_group`,
+used where files, directories and links are made (`open` with `O_CREAT`,
+`mkdir`, `symlink`); `mkdir` also copies the bit. `rm -r` reads a whole
+directory before removing from it, refuses `/` and a last part `.` or
+`..`, and enters at most 64 levels; `unlink` already removes a link by
+its name, so `lstat` is the only care needed. `rmdir` refuses a link to
+a directory. Sabotage, one at a time: the group not inherited failed the
+rule on memory, as alice and on ext2 (three checks); `rm -r` with `stat`
+instead of `lstat` followed the link and emptied the directory outside
+(four checks); subdirectories not given the bit failed `test-home`'s
+listing after the reboot.
 
 ---
 
@@ -1461,7 +1474,7 @@ M1, M2, M3, M4                   done (in parallel)
         |
 N1, N2, N3, N4                   done (in parallel)
         |
-O1, O2, O3, O4                   in parallel (O3 done)
+O1, O2, O3, O4                   in parallel (O3, O4 done)
 ```
 
 (Track A, once the recommended first step because everything built on
