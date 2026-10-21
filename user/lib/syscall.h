@@ -126,6 +126,7 @@
 #define ETIMEDOUT   110
 #define ECONNREFUSED 111
 #define EHOSTUNREACH 113
+#define ETXTBSY 26
 #define EFBIG 27
 #define EMLINK 31
 #define ENAMETOOLONG 36

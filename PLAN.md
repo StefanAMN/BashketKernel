@@ -198,9 +198,10 @@ when it is touched (ten disk requests instead of 442 for one byte of a
 100 KiB file). The kernel gives a program's buffer its frames before using
 it, so its own accesses never fault.
 
-Not done: executables are still copied in whole by the loader, because
-sharing their pages between processes needs a page cache, and that is the
-larger half of this item. Shared file mappings and write-back likewise.
+Not done: sharing a file's pages between processes, which needs a page
+cache, the larger half of this item (programs are now read page by page,
+O2, but each process reads its own copy). Shared file mappings and
+write-back likewise.
 The promise limit does not cover fork or copy-on-write.
 
 - Demand-zero `mmap` and `brk` (pages appear on first touch), with an
@@ -1163,7 +1164,8 @@ once "could not be read back" in a fork child with no page of its own
 to give). A user-mode fault that finds no frame now makes more room and
 tries again, and when it has nothing to give, waits a tick for others
 (a quarter of a second at most) before giving up (`fault_may_retry` in
-`isr.c`). Afterwards: 8 of 8, and 3 of 3 with `SMP=4`.
+`isr.c`, since O2 `swap_may_retry` in `swap.c`, which system calls use
+too). Afterwards: 8 of 8, and 3 of 3 with `SMP=4`.
 
 The plan as written:
 
@@ -1335,7 +1337,7 @@ and for the RTO arithmetic against RFC 6298's formulas; the existing
 loss-injection tests with the counters showing fewer retransmissions;
 `tools/test_net.py` against the host's TCP.
 
-### O2. Programs loaded page by page (M)
+### O2. Programs loaded page by page (M) — done
 
 `execve` copies every loadable segment in whole. Map file-backed
 segments as private file mappings instead (B4's mechanism), so a page of
@@ -1347,6 +1349,34 @@ so). **Check:** unit tests (a program whose untouched pages are never
 read: disk request counter before and after); every scripted target, as
 all programs now load this way; `make test-lowmem`, `make test-swap`,
 `make fuzz`; the loader's existing hostile-ELF tests.
+
+Done, for the read-only segments: `execve` lists the code and the
+constants as program regions of the file (`elf_load_program`, `region.h`)
+and reads them a page at a time at the first touch; the writable segment
+is still copied, because the relocations patch it and a page shared with
+`.bss` would need the file's bytes and zeros at once. The loader itself
+now reads the file only where it needs it (headers, that segment, the
+relocation table), not into a buffer of its size. A relocation aimed at a
+segment left to the file is refused (its page is not there, and patching
+it would be undone by the next read). Decided for a file that changes
+under a running program: it cannot. Program regions hold the file open
+(no removal: `EBUSY`) and count as running it (`exec_count`): opening it
+for writing or truncating it is `ETXTBSY`, and a file open for writing
+cannot be run, as in Unix. The untouched pages are promised, like mmap's,
+so `/proc/meminfo`'s Promised is no longer 0 on an idle system (init's
+code it has not run); `test-swap` and syscheck had assumed it was, and
+syscheck now touches its own program before measuring. The check is
+not a disk counter but the promise: a program asleep after starting
+still has pages of its program untouched, never read
+(`programs_are_read_page_by_page`).
+Found on the way: with more faults per process, two processes swapping
+against each other made a `read()` into swapped memory fail with `EFAULT`
+3 runs in 6 (`test-swap`): `process_populate` gave up after four tries
+to make room while the other process took it each time. It now waits as
+a page fault does (`swap_may_retry`, at most a quarter second); 10 runs in
+10 since. Sabotage: never leaving a segment to the file failed the two
+new unit tests and syscheck's `ETXTBSY` checks; dropping the `ETXTBSY`
+check on open failed four syscheck checks.
 
 ### O3. `$((...))` and `read` in the shell (S)
 

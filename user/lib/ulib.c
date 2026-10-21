@@ -649,6 +649,7 @@ const char *strerror(long err) {
         case ENOMEM:    return "out of memory";
         case EFAULT:    return "bad address";
         case EBUSY:     return "file is in use";
+        case ETXTBSY:   return "a running program's file, or a program open for writing";
         case EEXIST:    return "file exists";
         case ENOTDIR:   return "not a directory";
         case EXDEV:     return "not on the same filesystem";

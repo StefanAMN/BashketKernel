@@ -77,16 +77,66 @@ typedef struct {
     int prot;
 } elf_segment_t;
 
-#define ELF_REPORTED_SEGMENTS 4   // How many segments elf_load_segments reports (the first ones)
+#define ELF_REPORTED_SEGMENTS 4   // How many segments elf_load_program reports (the first ones)
+
+struct vnode;
+
+// Where the loader reads a program from. Either the whole file is in
+// memory (`data`: the initrd, or a buffer), or it is read a piece at a time
+// from `node`, a file with its own operations (a disk file), as needed.
+// `node` may also be given with `data` (a file kept in memory): segments
+// can then still be left to be read from it page by page. Untrusted either
+// way: every read is checked against `size`.
+typedef struct {
+    const uint8_t *data;
+    struct vnode *node;
+    size_t size;
+} elf_source_t;
 
 /**
- * @brief As elf_load, and also report where the segments went.
- * @param segments Receives up to ELF_REPORTED_SEGMENTS segments, in the
- *        order of the program headers.
- * @param segment_count Receives how many were stored.
+ * @brief Read [offset, offset + len) of a program into `out`.
+ * @return false if the range is not inside the file or the read fell short.
+ *         Reading `node` may sleep (a disk); with `data` it never does.
  */
-bool elf_load_segments(uint64_t *pml4, const void *elf_data, size_t size, uint64_t *out_entry,
-                       uint64_t *out_image_end, elf_segment_t *segments, uint32_t *segment_count);
+bool elf_source_read(const elf_source_t *src, uint64_t offset, uint64_t len, void *out);
+
+// A segment the loader did not load: [start, end) (page-aligned) is to show
+// the file from `file_offset` (page-aligned), page by page as the program
+// touches it, with these PROT_* bits. Only read-only segments whose pages
+// they share with no other segment, and whose memory is all file contents
+// (no zero-filled tail), are left like this.
+typedef struct {
+    uint64_t start, end, file_offset;
+    int prot;
+} elf_lazy_t;
+
+#define ELF_LAZY_SEGMENTS 4   // At most this many segments are left to be read later; others are loaded
+
+// What elf_load_program reports about a program it loaded
+typedef struct {
+    uint64_t entry;
+    uint64_t image_end;                             // Highest address of any segment (the heap starts after it)
+    elf_segment_t segments[ELF_REPORTED_SEGMENTS];  // For /proc/<pid>/maps
+    uint32_t segment_count;
+    elf_lazy_t lazy[ELF_LAZY_SEGMENTS];             // Not loaded: the caller maps them from the file
+    uint32_t lazy_count;
+} elf_program_t;
+
+/**
+ * @brief Load a program from `src` into `pml4` at a random address (if it
+ *        is position-independent).
+ *
+ * With `src->node` set, read-only segments are not copied but listed in
+ * `out->lazy`: the caller must map them from that file (region.h) before
+ * the program runs, or the program faults on its first instruction. The
+ * writable segment is loaded and relocated as before (every relocation
+ * must land in it: one aimed at a page not loaded is refused). Without
+ * `node` everything is loaded. Reads the file through elf_source_read
+ * only where it needs it (headers, the writable segment, the relocation
+ * table), so it may sleep. On failure the address space may be partly
+ * populated; the caller destroys it.
+ */
+bool elf_load_program(uint64_t *pml4, const elf_source_t *src, elf_program_t *out);
 
 // Position-independent executables are placed at a random page-aligned
 // address in [ELF_PIE_BASE_MIN, ELF_PIE_BASE_MIN + (ELF_PIE_RANDOM_MASK + 1) pages)

@@ -103,6 +103,20 @@ void swap_relieve_pressure(void);
 size_t swap_make_room_for_call(void);
 
 /**
+ * @brief A page fault from user mode, or a system call giving its buffers
+ *        their frames (process_populate), needed a frame and found none:
+ *        the room made for it was taken by another process since. Should
+ *        it try again? Yes after making more room from the process's own
+ *        pages (swap_make_room_for_call); when it has none it may give (a
+ *        fork child whose pages are all still shared), after waiting a
+ *        tick for other processes, which make room at their own faults,
+ *        for a quarter of a second at most. Never without a swap disk.
+ * @param attempt Counts from 0.
+ * Interrupts must be on and no lock held: this may sleep.
+ */
+bool swap_may_retry(int attempt);
+
+/**
  * @brief Called by fork: if free memory is below SWAP_LOW_FRAMES and there
  *        is a swap disk, the calling process gives up pages of its own
  *        until SWAP_HIGH_FRAMES are free (or it has none left to give).
