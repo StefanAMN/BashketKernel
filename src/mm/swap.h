@@ -117,12 +117,13 @@ size_t swap_make_room_for_call(void);
 bool swap_may_retry(int attempt);
 
 /**
- * @brief Called by fork: if free memory is below SWAP_LOW_FRAMES and there
- *        is a swap disk, the calling process gives up pages of its own
- *        until SWAP_HIGH_FRAMES are free (or it has none left to give).
+ * @brief Called by fork: if free memory is below SWAP_LOW_FRAMES, the page
+ *        cache gives back what nobody maps; if that was not enough and
+ *        there is a swap disk, the calling process gives up pages of its
+ *        own until SWAP_HIGH_FRAMES are free (or it has none left to give).
  *        Unlike swap_relieve_pressure it always looks: fork happens rarely,
  *        and afterwards the pages are shared and can no longer go. May sleep.
- * @return How many pages went.
+ * @return How many pages went (to the disk, or out of the cache).
  */
 size_t swap_make_room_for_fork(void);
 

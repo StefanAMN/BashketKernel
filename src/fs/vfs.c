@@ -11,6 +11,7 @@
 #include "kerrno.h"
 #include "auth.h"
 #include "walltime.h"
+#include "pcache.h"
 
 static vnode_t *vfs_root = NULL;
 static uint64_t next_serial = 1;         // For vnode_t.serial (under the tree lock, but for the root)
@@ -424,6 +425,7 @@ static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, con
     if (!file || file->type != VFS_FILE || !buf || count == 0) return 0;
     if (file->ops) {
         int64_t n = file->ops->write ? file->ops->write(file, offset, buf, count) : 0;
+        if (n > 0) pcache_drop_file(file);     // Its cached pages say what it said before
         return n > 0 ? (size_t)n : 0;
     }
 
@@ -454,6 +456,7 @@ static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, con
     }
     memcpy(data + offset, buf, count);
     if (end > file->size) file->size = end;
+    pcache_drop_file(file);
 
     return count;
 }
@@ -520,6 +523,7 @@ static int vfs_unlink_unlocked(vnode_t *parent, const char *name) {
         while (*link && *link != curr) link = &(*link)->next;
         if (*link) *link = curr->next;
 
+        pcache_drop_file(curr);                // No page may stay cached under a node that is gone
         if (curr->owns_data) kfree((void *)curr->data);
         kfree(curr);
         return 0;
@@ -597,6 +601,7 @@ bool vfs_forget_directory(vnode_t *dir) {
             continue;
         }
         *link = c->next;
+        pcache_drop_file(c);
         kfree((void *)c->private_data); // The filesystem's record of the entry (a plain kmalloc block)
         kfree(c);
     }
@@ -692,6 +697,7 @@ vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
 int vfs_truncate(vnode_t *file, size_t size) {
     vfs_lock();
     int result = vfs_truncate_unlocked(file, size);
+    pcache_drop_file(file);
     vfs_unlock();
     return result;
 }

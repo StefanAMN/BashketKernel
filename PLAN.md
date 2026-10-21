@@ -189,7 +189,7 @@ and stopping a background job that reads the terminal (`SIGTTIN`).
 - **Check:** new sections in `/bin/syscheck`; a scripted shell session with
   background jobs.
 
-### B4. Memory: lazy and file-backed mappings (M) — done, without the page cache
+### B4. Memory: lazy and file-backed mappings (M) — done (the page cache came with P2)
 
 Done: `mmap` and `brk` record a region and give each page its frame on first
 touch; the pages promised and not yet touched are counted, and a call that
@@ -198,10 +198,9 @@ when it is touched (ten disk requests instead of 442 for one byte of a
 100 KiB file). The kernel gives a program's buffer its frames before using
 it, so its own accesses never fault.
 
-Not done: sharing a file's pages between processes, which needs a page
-cache, the larger half of this item (programs are now read page by page,
-O2, but each process reads its own copy). Shared file mappings and
-write-back likewise.
+Sharing a file's pages between processes came with the page cache (P2):
+programs are read page by page (O2) into frames every process running
+them maps. Not done: shared file mappings and write-back.
 The promise limit does not cover fork or copy-on-write.
 
 - Demand-zero `mmap` and `brk` (pages appear on first touch), with an
@@ -922,7 +921,8 @@ counted (as J1's test does); the unit tests otherwise unchanged.
 Done as proposed, with `elif` and `break N` / `continue N`; a text is now
 parsed into a tree before it runs (`until` followed; `case`, functions
 and `${NAME}` came with M2; redirections and pipes after `fi` / `done` / `}`
-with N1). Not done: `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
+with N1; here-documents and `&` after a compound command with P3). Not
+done: `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
 The tests found `for 1 in a` accepted. The proposal:
 
 `if LIST; then LIST; [else LIST;] fi`, `while LIST; do LIST; done` and
@@ -1334,7 +1334,7 @@ coalesced acknowledgements would never add up to the three duplicates.
 The RFC 6298 limits are changed for a virtual network (200 ms first
 timeout and floor, 3 s cap), and a timer expiry still sends everything
 from the oldest unacknowledged byte, since there is no congestion
-window. In the loss test (one segment in seven dropped, 300 KiB):
+window (P1 added one). In the loss test (one segment in seven dropped, 300 KiB):
 before, 500 segments, 49 timer retransmissions, nothing kept; after,
 475 segments, 28 timer and 15 fast retransmissions, 94 segments kept.
 The first version of the hand-made reassembly test failed for a reason
@@ -1366,7 +1366,7 @@ code is read when first run; `.bss` and the part of the last page past
 the file's data are zero-filled. Relocations (programs are static PIE)
 touch pages, which is fine: those become private copies. Without a page
 cache, two processes running one program each read their own copy (said
-so). **Check:** unit tests (a program whose untouched pages are never
+so; P2 lifted that). **Check:** unit tests (a program whose untouched pages are never
 read: disk request counter before and after); every scripted target, as
 all programs now load this way; `make test-lowmem`, `make test-swap`,
 `make fuzz`; the loader's existing hostile-ELF tests.
@@ -1450,6 +1450,159 @@ listing after the reboot.
 
 ---
 
+## Track P — Sharing what is read, and a TCP that backs off
+
+### P1. TCP congestion control (M) — done
+
+O1 left the congestion window out: the sender is limited only by the
+receiver's window. Add RFC 5681: slow start, congestion avoidance, the
+reaction to a timeout (cwnd to one segment, ssthresh halved) and fast
+recovery after fast retransmit (RFC 5681 3.2, or NewReno, RFC 6582, if
+partial acknowledgements need it; say which). `/proc/net/tcp` or the
+existing statistics show cwnd and ssthresh per connection. **Check:**
+unit tests on the window arithmetic against the RFC's formulas; the
+loss-injection test shows the window falling and growing again (a trace
+of cwnd); `make test-net` against the host; no transfer slower than
+before by more than a stated factor on the loss-free tests.
+
+Done, with NewReno: with one segment in seven lost there are several
+losses per window, and partial acknowledgements do occur (3 in the loss
+test). The arithmetic is four functions with no state of their own
+(`tcp_cc_*`, checked against the RFCs' equations worked by hand); each
+connection's window is in `/proc/tcp` (not `/proc/net/tcp`: there is no
+`/proc/net`). Two things the first runs added. A timer expiry while the
+receiver's window is closed is a probe of that window, not a loss (RFC
+9293 3.8.6.1), and must not shrink the congestion window: the loss-free
+test's receiver sleeps before reading, and every transfer had dropped to
+one segment at that point. And with windows of a few segments, three
+duplicates rarely follow a loss, so most losses waited for the timer
+(4 fast retransmits, 46 timeouts) until limited transmit (RFC 3042,
+recommended by RFC 5681 3.2) let one new segment out on each of the
+first two duplicates (15 fast, 32 timeouts). Times, 300 KiB over the
+loopback: loss-free 309 ms before, 305 to 310 ms after; one segment in
+seven lost (in both directions) 8.2 s before, 18.5 s after. That is the
+point of congestion control at a 14% loss rate: the window stays at one
+to five segments, so a lost acknowledgement or a lost retransmission
+ends in a 200 ms timeout more often. Not done: selective
+acknowledgement, early retransmit (RFC 5827), congestion window
+validation (RFC 7661; the window is capped at `TCP_CWND_MAX` instead).
+Sabotage: a sender that ignored the congestion window failed the new
+hand-played test (it sent all 8000 bytes, not the four segments of the
+initial window); counting a window probe as a loss failed the slow-start
+check of the loss-free transfer.
+
+### P2. A page cache for read-only file pages (L) — done
+
+Two processes running one program each read and hold their own copy of
+every page (O2's limit), and so do private file mappings. Keep file pages
+in a cache keyed by (vnode, page index): a read-only mapping maps the
+cached frame directly, counted; a private writable mapping copies on its
+first write (as fork's COW). A file's cached pages are dropped when it
+is written or truncated (or the writes go through the cache: choose and
+say why), and the cache gives frames back under memory pressure (pages
+mapped nowhere first). Swap does not take shared cache pages (as today
+for shared COW pages). **Check:** unit tests (two mappings, one frame;
+a write to the file seen by a new mapping; reclaim); a second `sh` costs
+fewer frames than the first (`/proc/meminfo`); `make test-swap`,
+`make test-lowmem` and `make fuzz` keep passing.
+
+Done (`src/mm/pcache.c`), as decided before the code:
+- *Coherence: dropping, not writing through.* Writes go to the file as
+  before, and the file's cached pages are dropped after each write and
+  truncation (and before its node is freed). Writing through would need
+  every filesystem's write to go through the cache, for a gain only to
+  mappings, which are private here anyway: a page already mapped keeps
+  what it held, as before. A running program's file cannot be written
+  (O2), so its pages never go stale. A generation number per file,
+  raised by every drop, keeps a page that was being read while the file
+  changed from going in afterwards.
+- *Ownership: the frame sharing counts* (`cow.h`). The cache holds one
+  reference and each mapping one more; a frame with one owner is mapped
+  nowhere, and only such frames are ever freed by the cache. A frame
+  still mapped when its file changes is let go by the cache and freed,
+  as before, by its last mapping, so no frame is reused while a page
+  table points at it and no shootdown of the cache's own is needed. A
+  writable private mapping maps the cached frame copy-on-write, and the
+  existing fault path makes its copy (taking the frame outright once the
+  cache has let go of it).
+- *Lock:* one spinlock, ranked 73 (above the heap and kernel stacks,
+  below the page tables), held only to look up, insert and take out;
+  under it only frame sharing counts are touched. Files are read, and
+  frames and entries allocated and freed, outside it; a racing reader's
+  page is used if it went in first.
+- *Eviction:* pages mapped nowhere, least recently used first, when the
+  cache passes 1/32 of memory (at least 128 pages), and on demand
+  (`pcache_reclaim`) where frames are about to be needed: a user page
+  fault with memory low, mmap and brk before they refuse, fork before
+  its reserve check, and before swap pushes anything out. Swap does not
+  take cached pages (they are shared with the cache). Kernel allocations
+  do not reclaim (they happen under locks the cache ranks below); the
+  cap bounds what they can find missing.
+- *What is cached:* files in memory and files of a disk filesystem; not
+  devices or `/proc` (nodes with operations and no truncate).
+
+Measured: a second and a third `sh` cost 124 kB each, against 176 kB
+with the cache switched off (13 pages of code shared); `/proc/meminfo`
+gains a "Cached" line. Leak checks count pages mapped nowhere as free
+(`test_free_frames`). Sabotage: never dropping on a write failed
+syscheck's check that a new mapping sees the file's new contents, and
+showed why the drop before a node is freed matters: a new file in `/tmp`,
+given the freed node's address, read the old file's cached page, and
+the kernel then crashed touching the freed node during reclaim. Mapping
+a writable private mapping's page writable (no copy-on-write) failed
+three syscheck checks (the other mappings saw the write; the existing
+check, which reads the file back, did not notice). A lookup that never
+hits failed ten unit checks.
+
+### P3. Here-documents and `&` after compound commands (S) — done
+
+Done as written (`check_shell_heredocs`, and a scenario in `test-jobs`).
+The lines of a here-document are taken out of the command text when it
+is cut into segments, the "<<WORD" replaced by a mark; the node made
+from the command keeps the bodies, so a loop or a function expands them
+again each time. A body reaches the command through a pipe: written at
+once when the pipe holds it (4 KiB), by a process of its own otherwise
+(the child of a child that exits, so init reaps it). A `-c` text or a
+script command cannot carry more than 4 KiB of here-document (the
+argument and pending-line limits), though expansion can make it longer.
+A compound command ending in `&` runs as a job; outside the terminal it
+is refused, as for a program. Sabotage: expansion turned off failed six
+checks; `<<-` not taking tabs off failed one; dropping the `&` made the
+`test-jobs` scenario fail. The first large-body check passed a 6000-byte
+`-c` argument, which the kernel refuses (4 KiB of arguments): the text
+is now made long by expanding a variable.
+
+`cat <<EOF ... EOF` (with `$` expanded unless the word is quoted, and
+`<<-` stripping leading tabs), in scripts and at the prompt (the prompt
+asks for the lines with "> "); and `while ...; done &` as a background
+job. **Check:** syscheck: expansion and quoting, `<<-`, two here-
+documents on one line, one in a pipeline and a loop; `make test-jobs`
+for a backgrounded loop stopped and continued.
+
+### P4. Options for the text tools (S) — done
+
+`grep -i -n -c -l -v` (combinations), `sort -n -r -u -k N -t C`,
+`head -c N`, `tail -c N`, `wc -l -w -c`, `uniq -i`. POSIX's meanings, one
+option parser in `user/lib` used by all of them. **Check:** syscheck and
+`make test-tools`, including `sort -k` on fields of different widths and
+`-n` with negative numbers and blanks.
+
+Done as written (`user/lib/opts.c`, `check_tool_options`, and a "tool
+options" scenario in `make test-tools`). The parser follows POSIX's
+utility syntax guidelines: grouped letters, values joined or apart, `--`,
+`-` an operand. `sort -n` compares numbers as text (sign, whole part with
+leading zeros dropped, fraction), so numbers longer than a `long` order
+correctly; `sort -k` without `-t` keeps the blanks before a field, as
+POSIX says, so `-t` or `-n` is the way to sort columns of different
+widths; `sort` now takes several files. `grep -l` wins over `-c` (as in
+GNU grep). `wc` with one file still prints the counts alone (scripts
+here read "N N N"); several files are named, with a total. Not done:
+`sort -b`, `-f`, `-k` with character positions (`2.3`), and several
+`-k` keys. Sabotage: `sort -n` ignoring the sign failed three checks; the
+parser reading only the first letter of a group failed seven.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1525,6 +1678,8 @@ M1, M2, M3, M4                   done (in parallel)
 N1, N2, N3, N4                   done (in parallel)
         |
 O1, O2, O3, O4                   done (in parallel)
+        |
+P1, P2, P3, P4                   done (in parallel)
 ```
 
 (Track A, once the recommended first step because everything built on
