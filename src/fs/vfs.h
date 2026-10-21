@@ -52,6 +52,13 @@ typedef struct vnode_ops {
     // Files
     int64_t (*read)(struct vnode *node, size_t offset, void *buf, size_t count);
     int64_t (*write)(struct vnode *node, size_t offset, const void *buf, size_t count);
+    // Files whose text is made when it is read (/proc), instead of `read`:
+    // the whole current text, in a kmalloc buffer the caller frees, through
+    // *text; returns its length, or a negative error number (*text is then
+    // NULL). An open file keeps the text from its first read until it is
+    // closed (file_read), so small reads all see one moment. May take the
+    // tree lock; must not sleep in a way a kill can cut short.
+    int64_t (*snapshot)(struct vnode *node, char **text);
     // Cut the file to `size` bytes (less than it has): free what is past
     // it, and zero the rest of the last block so that it reads as zeros if
     // the file grows again. 0 or a negative error number. (Growing is done
@@ -270,7 +277,9 @@ vnode_t *vfs_create_device(vnode_t *parent, const char *name, const vnode_ops_t 
  * @brief Read up to `count` bytes of a file from `offset` into the kernel
  *        buffer `buf`. A node with `ops` is read through them, outside the
  *        tree lock (it may sleep: a terminal, a disk); the caller must have
- *        it open so it cannot be removed meanwhile.
+ *        it open so it cannot be removed meanwhile. A node with a
+ *        `snapshot` operation makes its text afresh for each call: a reader
+ *        taking it in pieces should use file_read, which keeps one text.
  * @return Bytes read; 0 at or past the end, for a directory, and also when
  *         the node's read operation failed (callers that must tell an error
  *         from the end call ops->read themselves, as file_read does).

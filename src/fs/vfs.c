@@ -406,6 +406,17 @@ static vnode_t * vfs_find_unlocked(vnode_t *relative_root, const char *path) {
 // See vfs_read. Caller holds the tree lock unless the node has `ops`.
 static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void *buf) {
     if (!file || file->type != VFS_FILE || !buf) return 0;
+    if (file->ops && file->ops->snapshot) {
+        char *text = NULL;
+        int64_t len = file->ops->snapshot(file, &text);
+        size_t n = 0;
+        if (len > 0 && offset < (size_t)len) {
+            n = (size_t)len - offset < count ? (size_t)len - offset : count;
+            memcpy(buf, text + offset, n);
+        }
+        kfree(text);
+        return n;
+    }
     if (file->ops) {
         int64_t n = file->ops->read ? file->ops->read(file, offset, buf, count) : 0;
         return n > 0 ? (size_t)n : 0;

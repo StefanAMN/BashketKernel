@@ -14,12 +14,10 @@
 #include "timer.h"
 #include "hrtimer.h"
 
-// Read a whole /proc file through the open-file layer, in small pieces so
-// the offset handling is exercised too.
-static size_t slurp(const char *path, char *out, size_t size) {
-    file_t *file = NULL;
-    if (file_open(path, O_RDONLY, &file) != 0) return 0;
-
+// Read the rest of an open file from its position into `out` (`size`
+// bytes, NUL-terminated) in 7-byte pieces, so the offset handling is
+// exercised too. Returns the bytes read.
+static size_t read_in_pieces(file_t *file, char *out, size_t size) {
     size_t total = 0;
     int64_t n;
     while (total + 1 < size && (n = file_read(file, out + total, (size - 1 - total) < 7 ? (size - 1 - total) : 7)) > 0) {
@@ -27,22 +25,16 @@ static size_t slurp(const char *path, char *out, size_t size) {
     }
 
     out[total] = '\0';
-    file_close(file);
     return total;
 }
 
-// The same in one read, for the status of a process that is running: each
-// read makes the text afresh, and slurp's small pieces could come from two
-// moments of it (a State that changes length shifts every line after it;
-// "Pid:" was once lost that way and the search found "PPid:" instead).
-// PLAN.md lists that tearing as a limit.
-static size_t slurp_live(const char *path, char *out, size_t size) {
+// Read a whole /proc file through the open-file layer, in small pieces
+// (read_in_pieces); 0 if it cannot be opened
+static size_t slurp(const char *path, char *out, size_t size) {
     file_t *file = NULL;
     if (file_open(path, O_RDONLY, &file) != 0) return 0;
-    int64_t n = file_read(file, out, size - 1);
+    size_t total = read_in_pieces(file, out, size);
     file_close(file);
-    size_t total = n > 0 ? (size_t)n : 0;
-    out[total] = '\0';
     return total;
 }
 
@@ -120,7 +112,7 @@ TEST(proc_pid_directories_follow_processes) {
     vnode_t *dir = vfs_find(NULL, path);
     EXPECT_TRUE(dir != NULL && dir->type == VFS_DIRECTORY);
     proc_path(path, pid, "status");
-    EXPECT_TRUE(slurp_live(path, text, sizeof(text)) > 0);
+    EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
     EXPECT_TRUE(strstr(text, "Name:\tspin\n") != NULL && strstr(text, "Kind:\tuser\n") != NULL);
     EXPECT_EQ(number_after(text, "Pid:\t"), (int64_t)pid);
     EXPECT_EQ(number_after(text, "Uid:\t"), 0);
@@ -227,7 +219,7 @@ TEST(proc_pid_status_names_the_system_call) {
     if (task) TEST_WAIT(task->in_syscall == SYS_SLEEP + 1, 300);
 
     proc_path(path, pid, "status");
-    EXPECT_TRUE(slurp_live(path, text, sizeof(text)) > 0);
+    EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
     EXPECT_EQ(number_after(text, "Syscall:\t"), (int64_t)SYS_SLEEP);
     EXPECT_TRUE(number_after(text, "Size:\t") > 0);              // Its program at least
 
@@ -300,9 +292,7 @@ static void status_reader_entry(void) {
         pid_t base = watched_pid;
         if (base <= 0) { sched_yield(); continue; }
         for (pid_t pid = base; pid < base + 4; pid++) {
-            // In one read, as cat does: each read makes the text afresh, so
-            // slurp's small pieces could come from two moments of a process
-            // that is changing (and tear the line apart)
+            // In one read, as cat does (reading in pieces has its own test)
             proc_path(path, pid, "status");
             file_t *file = NULL;
             if (file_open(path, O_RDONLY, &file) != 0) continue;     // Not there (yet, or any more)
@@ -344,12 +334,123 @@ TEST(status_of_exiting_and_execing_processes) {
     TEST_WAIT((reaped += sched_reap()) >= 1, 300);
 }
 
+// Times `needle` occurs in `text`
+static int occurrences(const char *text, const char *needle) {
+    int count = 0;
+    for (const char *p = strstr(text, needle); p; p = strstr(p + 1, needle)) count++;
+    return count;
+}
+
+// Rename the task `pid` (under the scheduler lock, as the status reader
+// reads the name): a stand-in for a State that changes length between two
+// reads, which is how the tearing was first seen. Whether it was found.
+static bool rename_task(pid_t pid, const char *name) {
+    uint64_t flags = sched_lock_irqsave();
+    task_t *t = sched_find_task_locked((uint32_t)pid);
+    if (t) {
+        memset(t->name, 0, sizeof(t->name));
+        memcpy(t->name, name, strlen(name) < sizeof(t->name) - 1 ? strlen(name) : sizeof(t->name) - 1);
+    }
+    sched_unlock_irqrestore(flags);
+    return t != NULL;
+}
+
+// A status read in 7-byte pieces while the process changes is one moment
+// of it: the name it had at the first read, every line once. Made afresh
+// at each read, the pieces after the rename came from a text 19 bytes
+// longer and repeated part of it ("State:" twice). Reading again from the
+// start (lseek to 0) shows the present.
+TEST(proc_status_read_in_pieces_is_one_moment) {
+    char path[48], text[1024];
+    char *argv[] = { "/bin/sleep", "30", NULL };
+    pid_t pid = process_spawn("/bin/sleep", argv);
+    EXPECT_TRUE(pid > 0);
+    if (pid <= 0) return;
+
+    file_t *file = NULL;
+    proc_path(path, pid, "status");
+    EXPECT_EQ(file_open(path, O_RDONLY, &file), 0);
+    if (file) {
+        size_t first = 0;
+        for (int i = 0; i < 3; i++) {                     // "Name:\tsleep\nState:\tbl": past the name
+            int64_t n = file_read(file, text + first, 7);
+            EXPECT_EQ(n, 7);
+            if (n > 0) first += (size_t)n;
+        }
+        EXPECT_TRUE(rename_task(pid, "sleep-with-a-longer-name"));
+        read_in_pieces(file, text + first, sizeof(text) - first);
+        EXPECT_TRUE(strstr(text, "Name:\tsleep\n") == text);
+        EXPECT_EQ(occurrences(text, "State:\t"), 1);
+        EXPECT_EQ(occurrences(text, "\n"), 21);           // Every line of the status, once
+        EXPECT_EQ(number_after(text, "\nPid:\t"), (int64_t)pid);
+        EXPECT_TRUE(strstr(text, "\nSyscall:\t") != NULL);
+
+        EXPECT_EQ(file_seek(file, 0, SEEK_SET), 0);
+        read_in_pieces(file, text, sizeof(text));
+        EXPECT_TRUE(strstr(text, "Name:\tsleep-with-a-longer-name\n") == text);
+        EXPECT_EQ(occurrences(text, "\n"), 21);
+        file_close(file);
+    }
+
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    int status = 0;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+}
+
+// The text kept with an open /proc file is freed with it: at close, and
+// when the process holding it is killed (its files are closed as it dies)
+TEST(proc_snapshot_is_freed_with_the_file) {
+    char path[48], text[16];
+    vfs_find(NULL, "/proc/version");
+    size_t heap_before = kheap_get_allocated_bytes();
+
+    file_t *file = NULL;
+    EXPECT_EQ(file_open("/proc/kmsg", O_RDONLY, &file), 0);
+    if (file) {
+        EXPECT_EQ(file_read(file, text, 7), 7);
+        EXPECT_TRUE(kheap_get_allocated_bytes() > heap_before);   // The log's copy
+        file_close(file);
+    }
+    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
+
+    char *argv[] = { "/bin/sleep", "30", NULL };
+    pid_t pid = process_spawn("/bin/sleep", argv);
+    EXPECT_TRUE(pid > 0);
+    if (pid <= 0) return;
+    file = NULL;
+    proc_path(path, pid, "status");
+    EXPECT_EQ(file_open(path, O_RDONLY, &file), 0);
+    if (file) {
+        size_t heap_open = kheap_get_allocated_bytes();
+        EXPECT_EQ(file_read(file, text, 7), 7);
+        EXPECT_TRUE(kheap_get_allocated_bytes() > heap_open);
+
+        // Hand the open file to the process, in a descriptor it does not
+        // use: this reference is now its own
+        uint64_t flags = sched_lock_irqsave();
+        task_t *t = sched_find_task_locked((uint32_t)pid);
+        file_t *old = t ? fd_slot_set(t->fds, TASK_MAX_FDS - 1, file) : NULL;
+        sched_unlock_irqrestore(flags);
+        EXPECT_TRUE(t != NULL && old == NULL);
+        if (!t) file_close(file);
+    }
+
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    int status = 0;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+    proc_path(path, pid, NULL);
+    EXPECT_TRUE(vfs_find(NULL, path) == NULL);           // Its directory goes at the next look
+    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
+}
+
 void test_suite_procfs(void) {
     kprintf("Suite: /proc\n");
     RUN_TEST(procfs_files_report_live_state);
     RUN_TEST(proc_pid_directories_follow_processes);
     RUN_TEST(proc_pid_maps_and_fds);
     RUN_TEST(fd_slot_reference_outlives_close);
+    RUN_TEST(proc_status_read_in_pieces_is_one_moment);
+    RUN_TEST(proc_snapshot_is_freed_with_the_file);
     RUN_TEST(proc_pid_status_names_the_system_call);
     RUN_TEST(proc_cpuinfo_counts_busy_ticks_per_cpu);
     RUN_TEST(status_of_exiting_and_execing_processes);
