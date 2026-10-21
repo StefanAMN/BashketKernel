@@ -87,7 +87,7 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
         // set what it shows for every file.)
         if (!parent->ops || !parent->ops->create || (node->ops && node->ops->setattr)) {
             node->uid = uid;
-            node->gid = (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT;
+            node->gid = auth_new_entry_group(parent, (uid == auth_current_uid()) ? auth_current_gid() : GID_ROOT);
             node->mode = (uint16_t)(PERM_NEW_FILE & ~auth_current_umask());
             if (node->ops && node->ops->setattr) node->ops->setattr(node);
         }
