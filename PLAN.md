@@ -1319,7 +1319,27 @@ QEMU's DNS forwarder answers that name from the host.
 
 ## Track O — TCP that recovers, programs loaded on demand
 
-### O1. TCP: reassembly and a measured retransmission time (M)
+### O1. TCP: reassembly and a measured retransmission time (M) — done
+
+Done as written (`src/net/tcp.c`; the limits in `tcp.h`). Data kept out
+of order needs no memory of its own: it is written into the free part
+of the receive ring at the place its sequence number gives it, and a
+list of at most eight stretches says what is there, so "memory
+returned" is true by construction (and the leak checks still pass). The
+receiver acknowledges each out-of-order segment on its own, since
+coalesced acknowledgements would never add up to the three duplicates.
+The RFC 6298 limits are changed for a virtual network (200 ms first
+timeout and floor, 3 s cap), and a timer expiry still sends everything
+from the oldest unacknowledged byte, since there is no congestion
+window. In the loss test (one segment in seven dropped, 300 KiB):
+before, 500 segments, 49 timer retransmissions, nothing kept; after,
+475 segments, 28 timer and 15 fast retransmissions, 94 segments kept.
+The first version of the hand-made reassembly test failed for a reason
+of its own: it acknowledged the server's SYN+ACK before tcpd had sent
+it, and an acknowledgement of something not yet sent is (rightly)
+answered rather than believed. Sabotage: keeping nothing out of order
+failed six checks (including the loss test's count); never fast
+retransmitting failed the loss test's count.
 
 A segment ahead of the expected one is dropped, and after a loss
 everything from it on is sent again; the retransmission time is fixed
@@ -1445,7 +1465,7 @@ M1, M2, M3, M4                   done (in parallel)
         |
 N1, N2, N3, N4                   done (in parallel)
         |
-O1, O2, O3, O4                   in parallel
+O1, O2, O3, O4                   in parallel (O1 done)
 ```
 
 (Track A, once the recommended first step because everything built on
