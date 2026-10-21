@@ -9,6 +9,7 @@
  */
 
 #include "elf.h"
+#include "mmap.h"
 #include "elf_dyn.h"
 #include "random.h"
 #include "vmm.h"
@@ -72,13 +73,31 @@ static uint64_t random_load_base(void) {
     return ELF_PIE_BASE_MIN + ((uint64_t)(get_random_u32() & ELF_PIE_RANDOM_MASK) << 12);
 }
 
+static bool load_image(uint64_t *pml4, const void *elf_data, size_t size, uint64_t requested_base,
+                       uint64_t *out_entry, uint64_t *out_image_end, uint64_t *out_base,
+                       elf_segment_t *segments, uint32_t *segment_count);
+
 bool elf_load(uint64_t *pml4, const void *elf_data, size_t size, uint64_t *out_entry, uint64_t *out_image_end) {
-    return elf_load_at(pml4, elf_data, size, 0, out_entry, out_image_end, NULL);
+    return load_image(pml4, elf_data, size, 0, out_entry, out_image_end, NULL, NULL, NULL);
+}
+
+bool elf_load_segments(uint64_t *pml4, const void *elf_data, size_t size, uint64_t *out_entry,
+                       uint64_t *out_image_end, elf_segment_t *segments, uint32_t *segment_count) {
+    return load_image(pml4, elf_data, size, 0, out_entry, out_image_end, NULL, segments, segment_count);
 }
 
 bool elf_load_at(uint64_t *pml4, const void *elf_data, size_t size, uint64_t requested_base,
                  uint64_t *out_entry, uint64_t *out_image_end, uint64_t *out_base) {
+    return load_image(pml4, elf_data, size, requested_base, out_entry, out_image_end, out_base, NULL, NULL);
+}
+
+// elf_load_at, and (if `segments` is not NULL) a record of the first
+// ELF_REPORTED_SEGMENTS loaded segments, their number in *segment_count
+static bool load_image(uint64_t *pml4, const void *elf_data, size_t size, uint64_t requested_base,
+                       uint64_t *out_entry, uint64_t *out_image_end, uint64_t *out_base,
+                       elf_segment_t *segments, uint32_t *segment_count) {
     if (!pml4 || !elf_data || !out_entry) return false;
+    uint32_t reported = 0;
 
     if (size < sizeof(Elf64_Ehdr)) {
         kprintf("ELF: file too small for an ELF header\n");
@@ -127,6 +146,12 @@ bool elf_load_at(uint64_t *pml4, const void *elf_data, size_t size, uint64_t req
 
         uint64_t seg_end = phdr[i].p_vaddr + bias + phdr[i].p_memsz;
         if (seg_end > image_end) image_end = seg_end;
+        if (segments && reported < ELF_REPORTED_SEGMENTS && phdr[i].p_memsz > 0) {
+            elf_segment_t *seg = &segments[reported++];
+            seg->start = (phdr[i].p_vaddr + bias) & ~(uint64_t)(PAGE_SIZE - 1);
+            seg->end = (seg_end + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+            seg->prot = PROT_READ | ((phdr[i].p_flags & PF_W) ? PROT_WRITE : 0) | ((phdr[i].p_flags & PF_X) ? PROT_EXEC : 0);
+        }
     }
 
     if (ehdr->e_type == ET_DYN && !elf_apply_relocations(pml4, elf_data, size, bias, NULL)) {
@@ -144,6 +169,7 @@ bool elf_load_at(uint64_t *pml4, const void *elf_data, size_t size, uint64_t req
     }
 
     *out_entry = entry;
+    if (segment_count) *segment_count = reported;
     if (out_image_end) *out_image_end = image_end;
     if (out_base) *out_base = bias;
     return true;
