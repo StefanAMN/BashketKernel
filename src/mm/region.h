@@ -9,7 +9,9 @@
  * and uses three pages costs three frames.
  *
  * A region may also stand for part of a file: the page then starts out with
- * the file's contents, read when the page is first touched. Such a mapping
+ * the file's contents, read when the page is first touched. execve uses
+ * this for a program's code and constants (`program` regions), so a page
+ * of code is read when it first runs. Such a mapping
  * is private: writing to it changes the process's copy, never the file, and
  * later changes to the file do not show in pages already read.
  *
@@ -35,13 +37,15 @@
 struct task;
 struct vnode;
 
-#define TASK_MAX_REGIONS 32
+#define TASK_MAX_REGIONS 36   // 32 for mmap, and the segments execve leaves to be read later (ELF_LAZY_SEGMENTS)
 
 typedef struct {
     uint64_t start, end;        // Page-aligned; end == 0 marks an unused entry
     int prot;                   // PROT_READ | PROT_WRITE | PROT_EXEC
     struct vnode *node;         // The file behind it, or NULL for zero-filled memory
     uint64_t file_offset;       // Where in the file `start` is
+    bool program;               // Part of the program itself (execve), not of mmap: while it
+                                // exists the file may not be written (vnode exec_count)
 } mem_region_t;
 
 /**
@@ -89,5 +93,34 @@ void region_release_all(struct task *task);
  * @brief Pages promised to all processes and not yet touched.
  */
 size_t region_promised_pages(void);
+
+/**
+ * @brief Promise `pages` pages before there is a task to promise them to
+ *        (execve builds the new program's address space first). Refused,
+ *        as mmap would be, if that many cannot be promised. Give them to a
+ *        task with region_adopt, or back with region_unreserve.
+ */
+bool region_reserve(size_t pages);
+
+/**
+ * @brief Take back pages region_reserve promised and nobody adopted.
+ */
+void region_unreserve(size_t pages);
+
+/**
+ * @brief Count `node` as the file of `by` (+1 or -1) more program regions:
+ *        open (it cannot be removed) and running (it cannot be opened for
+ *        writing or truncated: ETXTBSY). Takes the tree lock (which nests).
+ */
+void region_hold_program(struct vnode *node, int by);
+
+/**
+ * @brief Give `task` the program regions execve built: `count` entries,
+ *        whose files are already held (region_hold_program) and whose
+ *        `pages` untouched pages were reserved (region_reserve); both now
+ *        belong to the task. The task must have room for them: a new task,
+ *        or one whose regions were just released.
+ */
+void region_adopt(struct task *task, const mem_region_t *regions, uint32_t count, size_t pages);
 
 #endif // REGION_H

@@ -123,6 +123,8 @@ typedef struct vnode {
                                 // (false: it points into the initrd or a constant)
     size_t capacity;            // Size of that buffer when owns_data
     uint32_t open_count;        // Open file descriptions referring to this node
+    uint32_t exec_count;        // Program regions reading it page by page: it may not be written (ETXTBSY)
+    uint32_t write_count;       // Open file descriptions that may write it: it may not be run (ETXTBSY)
     const vnode_ops_t *ops;     // Non-NULL for a node whose contents come from functions (/dev, /proc, files on disk)
     uint64_t private_data;      // For whoever provides ops (the FAT driver keeps the first cluster here)
     bool read_only;             // Nothing may be created, removed or opened for writing here

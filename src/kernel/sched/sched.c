@@ -300,6 +300,7 @@ void task_set_cwd(task_t *task, vnode_t *dir) {
 void task_free(task_t *t) {
     if (!t) return;
     file_close_all(t->fds); // Normally already empty: closed when it died
+    region_release_all(t);  // Likewise (but a task that never ran still holds its program's file)
     task_set_cwd(t, NULL);
     if (t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
         vmm_destroy_address_space(vmm_space_from_phys((uint64_t)t->pml4_phys));

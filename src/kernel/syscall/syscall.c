@@ -434,6 +434,7 @@ static int64_t sys_fstat(int fd, uint64_t user_st) {
 // from a file changed by anyone but root. Caller holds the tree lock.
 static int64_t resize_file(vnode_t *node, uint64_t length, uint32_t uid) {
     if (length > 0x7FFFFFFFu) return -EFBIG;               // (What ext2 here can hold, and more than any disk)
+    if (node->exec_count > 0) return -ETXTBSY;              // A running program's file (see file_open_as)
     if (uid != UID_ROOT && (node->mode & PERM_SET_IDS)) {
         node->mode &= (uint16_t)~PERM_SET_IDS;
         if (node->ops && node->ops->setattr) node->ops->setattr(node);

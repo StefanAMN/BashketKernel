@@ -216,6 +216,15 @@ size_t swap_make_room_for_call(void) {
     return give_up(task, free_frames < SWAP_HIGH_FRAMES ? SWAP_HIGH_FRAMES - free_frames : 1);
 }
 
+#define FRAME_WAIT_TICKS 25   // How long swap_may_retry lets a fault or call wait for others to free a frame
+
+bool swap_may_retry(int attempt) {
+    if (!active || attempt >= FRAME_WAIT_TICKS) return false;
+    if (swap_make_room_for_call() > 0) return true;
+    sched_sleep_ticks(1);
+    return true;
+}
+
 void swap_relieve_pressure(void) {
     if (!active) return;
     task_t *task = sched_get_current_task();
