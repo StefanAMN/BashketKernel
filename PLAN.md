@@ -922,7 +922,8 @@ counted (as J1's test does); the unit tests otherwise unchanged.
 Done as proposed, with `elif` and `break N` / `continue N`; a text is now
 parsed into a tree before it runs (`until` followed; `case`, functions
 and `${NAME}` came with M2; redirections and pipes after `fi` / `done` / `}`
-with N1). Not done: `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
+with N1; here-documents and `&` after a compound command with P3). Not
+done: `for NAME in` split over lines. Ctrl-C stops a loop only by killing the command it is running.
 The tests found `for 1 in a` accepted. The proposal:
 
 `if LIST; then LIST; [else LIST;] fi`, `while LIST; do LIST; done` and
@@ -1480,7 +1481,23 @@ a write to the file seen by a new mapping; reclaim); a second `sh` costs
 fewer frames than the first (`/proc/meminfo`); `make test-swap`,
 `make test-lowmem` and `make fuzz` keep passing.
 
-### P3. Here-documents and `&` after compound commands (S)
+### P3. Here-documents and `&` after compound commands (S) — done
+
+Done as written (`check_shell_heredocs`, and a scenario in `test-jobs`).
+The lines of a here-document are taken out of the command text when it
+is cut into segments, the "<<WORD" replaced by a mark; the node made
+from the command keeps the bodies, so a loop or a function expands them
+again each time. A body reaches the command through a pipe: written at
+once when the pipe holds it (4 KiB), by a process of its own otherwise
+(the child of a child that exits, so init reaps it). A `-c` text or a
+script command cannot carry more than 4 KiB of here-document (the
+argument and pending-line limits), though expansion can make it longer.
+A compound command ending in `&` runs as a job; outside the terminal it
+is refused, as for a program. Sabotage: expansion turned off failed six
+checks; `<<-` not taking tabs off failed one; dropping the `&` made the
+`test-jobs` scenario fail. The first large-body check passed a 6000-byte
+`-c` argument, which the kernel refuses (4 KiB of arguments): the text
+is now made long by expanding a variable.
 
 `cat <<EOF ... EOF` (with `$` expanded unless the word is quoted, and
 `<<-` stripping leading tabs), in scripts and at the prompt (the prompt

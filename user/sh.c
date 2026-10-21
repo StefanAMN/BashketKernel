@@ -31,7 +31,15 @@
  * ".x") that matches the word; quoted parts of a pattern match themselves.
  * A compound command may be redirected and piped like a program
  * ("for ...; done > f 2>&1", "{ a; b; } | sort", "echo x | while ...");
- * it then runs in a child of the shell, so what it sets stays there.
+ * it then runs in a child of the shell, so what it sets stays there. At
+ * the terminal it may also end with '&' ("while ...; done &"): a job.
+ *
+ * Here-documents: "cat <<WORD" gives the command the lines after its own
+ * line, up to one that is WORD alone, as its input ("<<-WORD" takes the
+ * tabs off the start of each). They are expanded ($NAME, $(...), $((...)),
+ * and \ before $, `, \ and a newline) unless some part of WORD is quoted
+ * ('EOF', "EOF", \EOF). At the prompt the lines are asked for with "> ".
+ * Several may follow one line, in the order of their "<<".
  *
  * Functions: "NAME() { LIST; }" defines one, and NAME then runs as a
  * command, with its words as $1 .. $9 (${10} on), $# and $@ ("$@" gives
@@ -88,13 +96,13 @@
 #define MAX_REDIRECTS 8
 #define MAX_ASSIGNMENTS 8
 
-enum { REDIRECT_IN, REDIRECT_OUT, REDIRECT_APPEND, REDIRECT_COPY };
+enum { REDIRECT_IN, REDIRECT_OUT, REDIRECT_APPEND, REDIRECT_COPY, REDIRECT_HEREDOC };
 
 typedef struct {
     int kind;           /* REDIRECT_* */
     int fd;             /* The descriptor it changes */
     int from;           /* REDIRECT_COPY: the descriptor copied */
-    char *path;         /* The others: the file opened */
+    char *path;         /* REDIRECT_HEREDOC: the body (see heredoc_open); the others: the file opened */
 } redirect_t;
 
 typedef struct {
@@ -933,6 +941,170 @@ static int add_fields(char *word, stage_t *stage) {
     }
 }
 
+/* --- Here-documents --------------------------------------------------------
+ *
+ * "cat <<WORD" takes the lines that follow the command, up to a line that
+ * is WORD alone, as the command's input ("<<-WORD": leading tabs are taken
+ * off every line, WORD's included). Unless some part of WORD was quoted,
+ * the lines are expanded when the command runs: $NAME and the other
+ * variables, $(...), $((...)), and a backslash before $, `, \ or a
+ * newline. cut_segments takes the lines out of the command text while it
+ * cuts it, leaving "<\x02" and a letter in place of the redirection; the
+ * node made from the text keeps the bodies (node->docs), and the letter
+ * says which. A body is stored with a first character saying how it is
+ * taken: '\'' as it is, '"' expanded. */
+
+#define HEREDOC_MARK   '\x02'
+#define HEREDOC_DIRECT 4096    /* The kernel's pipe holds 4 KiB (src/fs/pipe.h): a body this size is written at once */
+
+/* The bodies of the node whose command is being parsed and run
+ * (parse_redirect looks the letters up here), or NULL */
+static char *const *active_docs;
+static int active_doc_count;
+
+/* Text being built, malloc'd and growing */
+typedef struct {
+    char *s;
+    size_t len, cap;
+} text_t;
+
+/* Add `n` bytes at `from` to `t`. 0, or -1 if memory ran out. */
+static int text_add(text_t *t, const char *from, size_t n) {
+    if (t->len + n + 1 > t->cap) {
+        size_t cap = t->cap ? t->cap : 256;
+        while (t->len + n + 1 > cap) cap *= 2;
+        char *grown = malloc(cap);
+        if (!grown) return -1;
+        if (t->s) memcpy(grown, t->s, t->len);
+        free(t->s);
+        t->s = grown;
+        t->cap = cap;
+    }
+    memcpy(t->s + t->len, from, n);
+    t->len += n;
+    t->s[t->len] = '\0';
+    return 0;
+}
+
+/* The text a here-document's body gives: a malloc'd copy, expanded unless
+ * it was marked as taken as it is. NULL (a message printed) if a $(...)
+ * or $((...)) in it fails, a "${" is malformed, or memory ran out. */
+static char *heredoc_text(const char *body) {
+    text_t out = { 0 };
+    if (text_add(&out, "", 0) < 0) return NULL;
+    if (body[0] == '\'') {
+        if (text_add(&out, body + 1, strlen(body + 1)) < 0) { free(out.s); return NULL; }
+        return out.s;
+    }
+    static char value[sizeof(word_storage)];      /* A variable's or a $(...)'s text */
+    for (const char *t = body + 1; *t;) {
+        int failed = 0;
+        if (t[0] == '\\' && t[1] && strchr("$`\\\n", t[1])) {
+            if (t[1] != '\n') failed = text_add(&out, t + 1, 1);   /* (A backslash and a newline join two lines) */
+            t += 2;
+        } else if (t[0] == '$' && t[1] == '(' && t[2] == '(') {
+            const char *end = arith_end(t + 3);
+            char expr[256], number[24];
+            long v;
+            if (!end || (size_t)(end - (t + 3)) >= sizeof(expr)) {
+                fprintf(2, "sh: here-document: a $(( is not closed\n");
+                failed = 1;
+            } else {
+                memcpy(expr, t + 3, (size_t)(end - (t + 3)));
+                expr[end - (t + 3)] = '\0';
+                if (arith_eval(expr, &v) < 0) {
+                    failed = 1;
+                } else {
+                    long_text(v, number);
+                    failed = text_add(&out, number, strlen(number));
+                }
+                t = end + 2;
+            }
+        } else if (t[0] == '$' && t[1] == '(') {
+            const char *end = closing_paren(t + 2);
+            char command[256];
+            if (!end || (size_t)(end - (t + 2)) >= sizeof(command)) {
+                fprintf(2, "sh: here-document: a $( is not closed\n");
+                failed = 1;
+            } else {
+                memcpy(command, t + 2, (size_t)(end - (t + 2)));
+                command[end - (t + 2)] = '\0';
+                long n = substitute(command, value, sizeof(value));
+                failed = n < 0 || text_add(&out, value, (size_t)n) < 0;
+                t = end + 1;
+            }
+        } else if (t[0] == '$' && (is_name_char(t[1]) || t[1] == '?' || t[1] == '#' || t[1] == '@' || t[1] == '{')) {
+            /* As inside double quotes: append_variable writes into `value`
+             * (bounded by word_storage's size, as for a word), $@ with
+             * FIELD_BREAKs between the arguments, made blanks here */
+            const char *q = t + 1;
+            size_t len = 0;
+            int split = 0;
+            if (append_variable(&q, value, &len, 0, '"', &split) < 0) {
+                fprintf(2, "sh: here-document: a ${ is malformed\n");
+                failed = 1;
+            } else {
+                for (size_t i = 0; i < len; i++) if (value[i] == FIELD_BREAK) value[i] = ' ';
+                failed = text_add(&out, value, len);
+                t = q;
+            }
+        } else {
+            failed = text_add(&out, t, 1);
+            t++;
+        }
+        if (failed) { free(out.s); return NULL; }
+    }
+    return out.s;
+}
+
+/* Write all `n` bytes at `text` to `fd` (as much as a closed reader allows) */
+static void write_all(int fd, const char *text, size_t n) {
+    while (n > 0) {
+        long done = write(fd, text, n);
+        if (done == -EINTR) continue;
+        if (done <= 0) return;
+        text += done;
+        n -= (size_t)done;
+    }
+}
+
+/* A descriptor to read a here-document's text from: the read end of a
+ * pipe. A text the pipe can hold is written into it at once; a longer one
+ * by a process of its own, or the command would wait for a reader that is
+ * itself. (That process is the child of a child that exits at once, so
+ * nobody has to wait for it: init does.) -1 (a message printed) if it
+ * cannot be made. */
+static long heredoc_open(const char *body) {
+    char *text = heredoc_text(body);
+    if (!text) return -1;
+    size_t n = strlen(text);
+    int p[2];
+    if (pipe(p) != 0) {
+        fprintf(2, "sh: cannot create pipe\n");
+        free(text);
+        return -1;
+    }
+    if (n <= HEREDOC_DIRECT) {
+        write_all(p[1], text, n);
+    } else {
+        long pid = fork();
+        if (pid == 0) {
+            if (fork() == 0) {
+                close(p[0]);
+                write_all(p[1], text, n);
+                exit(0);
+            }
+            exit(0);
+        }
+        int status;
+        if (pid > 0) while (waitpid(pid, &status, 0) == -EINTR) { }
+        else fprintf(2, "sh: fork failed: %s\n", strerror(pid));
+    }
+    close(p[1]);
+    free(text);
+    return p[0];
+}
+
 /* The word after '<' or '>': one name, even from a $(...) (whose output
  * may not be several words, nor none). NULL if there is no such word. */
 static char *redirect_target(const char **p, size_t *used) {
@@ -957,6 +1129,17 @@ static int parse_redirect(const char **p, size_t *used, stage_t *stage) {
     if (stage->redirect_count >= MAX_REDIRECTS) return -1;
     redirect_t *r = &stage->redirects[stage->redirect_count];
 
+    if (c[0] == '<' && c[1] == HEREDOC_MARK) {
+        /* A here-document cut_segments took out: its body, by letter */
+        int k = c[2] - 'A';
+        if (!active_docs || k < 0 || k >= active_doc_count || !active_docs[k]) return -1;
+        r->kind = REDIRECT_HEREDOC;
+        r->fd = fd < 0 ? 0 : fd;
+        r->path = active_docs[k];
+        *p = c + 3;
+        stage->redirect_count++;
+        return 0;
+    }
     if (*c == '<') {
         r->kind = REDIRECT_IN;
         if (fd < 0) fd = 0;
@@ -1075,6 +1258,13 @@ static void apply_redirects(stage_t *stage) {
             redirect_or_die(r->path, O_WRONLY | O_CREAT | O_TRUNC, r->fd);
         } else if (r->kind == REDIRECT_APPEND) {
             redirect_or_die(r->path, O_WRONLY | O_CREAT | O_APPEND, r->fd);
+        } else if (r->kind == REDIRECT_HEREDOC) {
+            long fd = heredoc_open(r->path);
+            if (fd < 0) exit(1);
+            if (fd != r->fd) {
+                dup2((int)fd, r->fd);
+                close((int)fd);
+            }
         } else if (dup2(r->from, r->fd) < 0) {
             fprintf(2, "sh: %d: bad file descriptor\n", r->from);
             exit(1);
@@ -1305,10 +1495,12 @@ static int run_read(stage_t *stage) {
         saved[done] = dup(r->fd);                /* (Negative if it was not open) */
         long fd;
         if (r->kind == REDIRECT_COPY) fd = r->from;
+        else if (r->kind == REDIRECT_HEREDOC) fd = heredoc_open(r->path);
         else if (r->kind == REDIRECT_IN) fd = open(r->path, O_RDONLY);
         else fd = open(r->path, O_WRONLY | O_CREAT | (r->kind == REDIRECT_APPEND ? O_APPEND : O_TRUNC));
         if (fd < 0 || dup2((int)fd, r->fd) < 0) {
             if (r->kind == REDIRECT_COPY) fprintf(2, "sh: %d: bad file descriptor\n", r->from);
+            else if (r->kind == REDIRECT_HEREDOC) { }      /* (heredoc_open said why) */
             else fprintf(2, "sh: %s: %s\n", r->path, strerror(fd < 0 ? fd : -EBADF));
             if (fd >= 0 && r->kind != REDIRECT_COPY) close((int)fd);
             done++;
@@ -1478,7 +1670,8 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  case $x in a*|b) cmd;; *) other;; esac      f() { echo $1 $#; return 2; }; f x\n"
                "  [ -f FILE ], [ $x = y ], [ 3 -lt 4 ], [ ! ... ]   conditions (test); break, continue\n"
                "  prog < in > out        redirect input and output (>> appends)\n"
-               "  for ...; done > f      a whole if/while/for/case/{ } too, or in a pipe (in a child)\n"
+               "  cat <<EOF ... EOF      the lines up to EOF as input ($ expanded unless 'EOF'; <<- drops tabs)\n"
+               "  for ...; done > f      a whole if/while/for/case/{ } too, or in a pipe (in a child), or with &\n"
                "  ls *.c /tmp/f?         wildcards: * ? [abc] [a-z] [!x] (not in a word with quotes)\n"
                "  \"$HOME/x\" '$HOME'     double quotes expand $NAME, single quotes take it as it is\n"
                "  echo $(date)           the output of a command, in place (up to 4 KiB)\n"
@@ -1527,6 +1720,8 @@ typedef struct segment {
     int join_next;            /* JOIN_*: what its end separator says about the next command */
 } segment_t;
 
+#define MAX_NODE_DOCS 8       /* Here-documents in one command */
+
 typedef struct node node_t;
 typedef struct {
     node_t **items;
@@ -1549,6 +1744,9 @@ struct node {
     case_item_t *items;       /* NODE_CASE: the PATTERN) LIST;; items, in order */
     int item_count;
     char *redirs;             /* In a NODE_PIPELINE's body: the redirections after a compound command, as written */
+    char *docs[MAX_NODE_DOCS];  /* The here-documents its text or redirs name ("<\x02A" is docs[0]) */
+    int doc_count;
+    int background;           /* NODE_PIPELINE: ended with '&' */
 };
 
 static segment_t *segs;       /* The segments being parsed, and where the parser is */
@@ -1560,6 +1758,84 @@ static int call_depth;        /* Functions being run */
 static int interrupted;       /* A command was ended by Ctrl-C: loops stop */
 static int tail_waiting;      /* A closing keyword had redirections or '|' after it, left in its segment */
 static int pipe_waiting;      /* The command just parsed is followed by '|': the segment holds what comes after */
+
+/* The here-documents of the text being cut, in the order their "<<WORD"
+ * appear: the word, how it is read, and (once the lines after the command
+ * have been taken) the body, until a node adopts it */
+#define MAX_HEREDOCS 16
+
+typedef struct {
+    char delim[64];           /* WORD, its quotes taken off */
+    int strip;                /* "<<-": leading tabs go */
+    int quoted;               /* Some part of WORD was quoted: the body is not expanded */
+    char *body;               /* malloc'd (see heredoc_text for its first character), or NULL */
+} heredoc_t;
+
+static heredoc_t heredocs[MAX_HEREDOCS];
+static int heredoc_count;     /* "<<WORD"s met */
+static int heredoc_read;      /* Of them, those whose lines have been taken */
+
+/* Read the WORD of a "<<WORD" or "<<-WORD" (`q` just after the "<<") into
+ * a new entry of `heredocs`. Where the word ends, or NULL if there is no
+ * word, a quote in it is not closed, it is too long, or the table is full. */
+static const char *take_heredoc_word(const char *q) {
+    if (heredoc_count >= MAX_HEREDOCS) return NULL;
+    heredoc_t *h = &heredocs[heredoc_count];
+    memset(h, 0, sizeof(*h));
+    if (*q == '-') { h->strip = 1; q++; }
+    while (is_blank(*q)) q++;
+    size_t n = 0;
+    char quote = 0;
+    for (; *q; q++) {
+        if (quote) {
+            if (*q == quote) { quote = 0; continue; }
+        } else if (*q == '"' || *q == '\'') {
+            quote = *q;
+            h->quoted = 1;
+            continue;
+        } else if (*q == '\\' && q[1] && q[1] != '\n') {
+            h->quoted = 1;                                  /* \EOF: quoted too */
+            q++;
+        } else if (is_blank(*q) || *q == '\n' || *q == ';' || *q == '&' || *q == '|' || *q == '<' || *q == '>' ||
+                   *q == '(' || *q == ')') {
+            break;
+        }
+        if (n + 1 >= sizeof(h->delim)) return NULL;
+        h->delim[n++] = *q;
+    }
+    if (quote || n == 0) return NULL;
+    h->delim[n] = '\0';
+    heredoc_count++;
+    return q;
+}
+
+/* At the start of a line (*pp): take the lines of the here-documents whose
+ * "<<WORD" came before it and have none yet, each up to the line that is
+ * its WORD, and move *pp past them. 0; 1 if the text ended before a WORD
+ * line (more lines are needed); -1 if memory ran out. */
+static int read_heredoc_bodies(const char **pp) {
+    const char *p = *pp;
+    while (heredoc_read < heredoc_count) {
+        heredoc_t *h = &heredocs[heredoc_read];
+        text_t body = { 0 };
+        char how = h->quoted ? '\'' : '"';
+        if (text_add(&body, &how, 1) < 0) return -1;
+        for (;;) {
+            if (!*p) { free(body.s); *pp = p; return 1; }
+            const char *line = p, *end = strchr(p, '\n');
+            if (!end) end = p + strlen(p);
+            p = *end ? end + 1 : end;
+            if (h->strip) while (line < end && *line == '\t') line++;
+            size_t n = (size_t)(end - line);
+            if (n == strlen(h->delim) && memcmp(line, h->delim, n) == 0) break;
+            if (text_add(&body, line, n) < 0 || text_add(&body, "\n", 1) < 0) { free(body.s); return -1; }
+        }
+        h->body = body.s;
+        heredoc_read++;
+    }
+    *pp = p;
+    return 0;
+}
 
 /* Add a segment: `storage` (malloc'd, now the segment's), whose text
  * starts at `text`, followed by `join`. 0, or -1 (storage freed) if memory
@@ -1585,11 +1861,15 @@ static int add_segment(char *storage, char *text, int join, int *cap) {
  * PARSE_SYNTAX for an empty command before '&&' or '||' (or no memory), or
  * PARSE_INCOMPLETE for a text that ends with '&&' or '||'. A '#' starting a
  * word outside quotes comments out the rest of its line. The ";;" that
- * ends a case item is a segment of its own. */
+ * ends a case item is a segment of its own. A "<<WORD" is replaced by a
+ * mark naming an entry of `heredocs`, and the lines after its line, up to
+ * WORD, are taken out of the text as its body; a text that ends before
+ * WORD is PARSE_INCOMPLETE. */
 static int cut_segments(const char *text) {
     int cap = 0, join = JOIN_ALWAYS;
     seg_count = seg_pos = 0;
     segs = NULL;
+    heredoc_count = heredoc_read = 0;
     const char *p = text;
     while (*p) {
         char quoted = 0;
@@ -1612,15 +1892,27 @@ static int cut_segments(const char *text) {
                 p--;                                        /* (The loop moves on) */
                 continue;
             }
+            if (!quoted && p[0] == '<' && p[1] == '<') {
+                /* A here-document: "<\x02" and its letter in its place (no
+                 * longer than "<<W"), its lines taken at the end of the line */
+                const char *after = take_heredoc_word(p + 2);
+                if (!after) { free(buf); return PARSE_SYNTAX; }
+                buf[n++] = '<';
+                buf[n++] = HEREDOC_MARK;
+                buf[n++] = (char)('A' + heredoc_count - 1);
+                p = after - 1;                              /* (The loop moves on) */
+                continue;
+            }
             if (!quoted && (*p == '"' || *p == '\'')) quoted = *p;
             else if (quoted && *p == quoted) quoted = 0;
             if (!quoted && (*p == ';' || *p == '\n' || (p[0] == '&' && p[1] == '&') || (p[0] == '|' && p[1] == '|'))) break;
             buf[n++] = *p;
         }
         buf[n] = '\0';
-        int next = JOIN_ALWAYS, case_end = 0;
+        int next = JOIN_ALWAYS, case_end = 0, line_end = 0;
         if (p[0] == ';' && p[1] == ';') { case_end = 1; p += 2; }
-        else if (*p == ';' || *p == '\n') p++;
+        else if (*p == '\n') { line_end = 1; p++; }
+        else if (*p == ';') p++;
         else if (*p) { next = (*p == '&') ? JOIN_IF_OK : JOIN_IF_FAILED; p += 2; }
 
         char *t = buf;
@@ -1642,23 +1934,30 @@ static int cut_segments(const char *text) {
             join = JOIN_ALWAYS;
         }
         /* (A newline after "&&" keeps the "&&": an empty segment changes nothing) */
+        if (line_end && read_heredoc_bodies(&p) < 0) return PARSE_SYNTAX;
     }
+    if (heredoc_read < heredoc_count) return PARSE_INCOMPLETE;     /* A here-document's WORD line is to come */
     return join == JOIN_ALWAYS ? PARSE_OK : PARSE_INCOMPLETE;
 }
 
-/* Free the segments */
+/* Free the segments, and the here-documents no node adopted */
 static void free_segments(void) {
+    for (int i = 0; i < heredoc_count; i++) {
+        free(heredocs[i].body);
+        heredocs[i].body = NULL;
+    }
+    heredoc_count = heredoc_read = 0;
     for (int i = 0; i < seg_count; i++) free(segs[i].storage);
     free(segs);
     segs = NULL;
     seg_count = seg_pos = 0;
 }
 
-/* The first word of `text` into word[32] (ended by a blank or an operator,
- * so "done>f" is "done" and ">f"; "" if longer) */
+/* The first word of `text` into word[32] (ended by a blank, an operator or
+ * '&', so "done>f" is "done" and ">f"; "" if longer) */
 static void first_word(const char *text, char word[32]) {
     size_t n = 0;
-    while (text[n] && !is_blank(text[n]) && !is_operator(text[n])) n++;
+    while (text[n] && !is_blank(text[n]) && !is_operator(text[n]) && text[n] != '&') n++;
     if (n >= 32) n = 0;
     memcpy(word, text, n);
     word[n] = '\0';
@@ -1685,8 +1984,8 @@ static int is_redirect_start(const char *p) {
  * (and the segment, if nothing is left) and return 1; else 0. With
  * KEYWORD_ALONE, anything after the keyword is a syntax error ("fi x");
  * with KEYWORD_TAIL (the keywords that close a compound command) so is
- * anything but redirections or a '|', which stay in the segment with
- * tail_waiting set. */
+ * anything but redirections, a '|' or a final '&', which stay in the
+ * segment with tail_waiting set. */
 static int take_keyword(const char *kw, int alone) {
     if (seg_pos >= seg_count) return 0;
     char word[32];
@@ -1696,7 +1995,7 @@ static int take_keyword(const char *kw, int alone) {
     while (is_blank(*rest)) rest++;
     if (*rest == '\0') {
         seg_pos++;
-    } else if (alone == KEYWORD_TAIL && (*rest == '|' || is_redirect_start(rest))) {
+    } else if (alone == KEYWORD_TAIL && (*rest == '|' || *rest == '&' || is_redirect_start(rest))) {
         segs[seg_pos].text = rest;
         tail_waiting = 1;
     } else if (alone) {
@@ -1745,6 +2044,7 @@ static void free_node(node_t *node) {
     if (!node) return;
     free(node->text);
     free(node->redirs);
+    for (int i = 0; i < node->doc_count; i++) free(node->docs[i]);
     free_list(&node->cond);
     free_list(&node->body);
     free_list(&node->other);
@@ -1841,6 +2141,24 @@ static node_t *parse_for(void) {
     if (parse_state == PARSE_OK && node->body.count == 0) parse_state = PARSE_SYNTAX;
     if (parse_state != PARSE_OK) { free_node(node); return NULL; }
     return node;
+}
+
+/* Give `node` the here-documents that `text` (its own text or
+ * redirections) names: each mark's body moves from `heredocs` to
+ * node->docs, and the mark's letter is changed to say where. 0, or -1 if
+ * a mark names nothing or the node has too many. (A body not read yet,
+ * the text being incomplete, is adopted as NULL: it will not run.) */
+static int adopt_docs(node_t *node, char *text) {
+    for (char *c = text; c && *c; c++) {
+        if (c[0] != '<' || c[1] != HEREDOC_MARK || !c[2]) continue;
+        int k = c[2] - 'A';
+        if (k < 0 || k >= heredoc_count || node->doc_count >= MAX_NODE_DOCS) return -1;
+        node->docs[node->doc_count] = heredocs[k].body;
+        heredocs[k].body = NULL;
+        c[2] = (char)('A' + node->doc_count++);
+        c += 2;
+    }
+    return 0;
 }
 
 /* A malloc'd copy of the `n` characters at `text`, or NULL */
@@ -2045,7 +2363,7 @@ static node_t *parse_command(void) {
     if (!node) return NULL;
     const char *text = segs[seg_pos].text;
     const char *bar = pipe_into_compound(text);   /* "a | while ...": a alone, the rest after */
-    if (!(node->text = copy_text(text, bar ? (size_t)(bar - text) : strlen(text)))) {
+    if (!(node->text = copy_text(text, bar ? (size_t)(bar - text) : strlen(text))) || adopt_docs(node, node->text) < 0) {
         free_node(node);
         parse_state = PARSE_SYNTAX;
         return NULL;
@@ -2070,7 +2388,10 @@ static int take_tail(node_t *node) {
     const char *bar = next_pipe(text);
     size_t n = bar ? (size_t)(bar - text) : strlen(text);
     while (n > 0 && is_blank(text[n - 1])) n--;
-    if (n > 0 && !(node->redirs = copy_text(text, n))) { parse_state = PARSE_SYNTAX; return -1; }
+    if (n > 0 && (!(node->redirs = copy_text(text, n)) || adopt_docs(node, node->redirs) < 0)) {
+        parse_state = PARSE_SYNTAX;
+        return -1;
+    }
     if (bar) {
         continue_segment(bar + 1);
         pipe_waiting = 1;
@@ -2078,6 +2399,26 @@ static int take_tail(node_t *node) {
         seg_pos++;
     }
     return 0;
+}
+
+/* If the last command of `pipeline` ends with '&' (after a compound
+ * command's redirections, or as a simple command's last word), take it
+ * off and mark the pipeline to run in the background */
+static void take_ampersand(node_t *pipeline) {
+    node_t *last = pipeline->body.items[pipeline->body.count - 1];
+    char *text = last->kind == NODE_SIMPLE ? last->text : last->redirs;
+    if (!text) return;
+    size_t len = strlen(text);
+    while (len > 0 && (is_blank(text[len - 1]) || text[len - 1] == '\n')) len--;
+    if (len == 0 || text[len - 1] != '&') return;
+    len--;
+    while (len > 0 && is_blank(text[len - 1])) len--;
+    text[len] = '\0';
+    pipeline->background = 1;
+    if (len == 0 && last->kind != NODE_SIMPLE) {
+        free(last->redirs);
+        last->redirs = NULL;
+    }
 }
 
 /* A pipeline: commands joined by '|', any of them compound, a compound one
@@ -2100,7 +2441,10 @@ static node_t *parse_pipeline(void) {
             break;
         }
         element = NULL;
-        if (!pipe_waiting) return pipeline;
+        if (!pipe_waiting) {
+            take_ampersand(pipeline);
+            return pipeline;
+        }
         pipe_waiting = 0;
         if (seg_pos >= seg_count) { parse_state = PARSE_INCOMPLETE; break; }   /* "done |" at the end */
         char word[32];
@@ -2207,7 +2551,12 @@ static node_t *copy_node(const node_t *from) {
     if (!node) return NULL;
     memset(node, 0, sizeof(*node));
     node->kind = from->kind;
+    node->background = from->background;
     memcpy(node->name, from->name, sizeof(node->name));
+    for (int i = 0; i < from->doc_count; i++) {
+        if (from->docs[i] && !(node->docs[i] = copy_text(from->docs[i], strlen(from->docs[i])))) { free_node(node); return NULL; }
+        node->doc_count++;
+    }
     if ((from->text && !(node->text = copy_text(from->text, strlen(from->text)))) ||
         (from->redirs && !(node->redirs = copy_text(from->redirs, strlen(from->redirs)))) ||
         copy_list(&from->cond, &node->cond) < 0 || copy_list(&from->body, &node->body) < 0 ||
@@ -2402,6 +2751,25 @@ static void redirect_compound(const char *text) {
     apply_redirects(&stage);
 }
 
+/* A NODE_PIPELINE's commands as "jobs" shows them, into out[size]: a
+ * simple command as written, a compound one by its shape ("while ...;
+ * done"), joined by " | " */
+static void describe_pipeline(const node_t *node, char *out, size_t size) {
+    size_t used = 0;
+    for (int i = 0; i < node->body.count; i++) {
+        const node_t *e = node->body.items[i];
+        const char *part = e->kind == NODE_SIMPLE ? e->text :
+                           e->kind == NODE_IF ? "if ...; fi" :
+                           e->kind == NODE_WHILE ? "while ...; done" :
+                           e->kind == NODE_UNTIL ? "until ...; done" :
+                           e->kind == NODE_FOR ? "for ...; done" :
+                           e->kind == NODE_CASE ? "case ... esac" : "{ ...; }";
+        if (i > 0 && used + 3 < size) { memcpy(out + used, " | ", 3); used += 3; }
+        for (; *part && used + 1 < size; part++) out[used++] = *part;
+    }
+    out[used] = '\0';
+}
+
 /* Run a NODE_PIPELINE: each command in a child of the shell (a copy of it:
  * what a compound command there sets, variables or the directory, stays
  * in the child), joined by pipes, a compound command's own redirections
@@ -2409,6 +2777,10 @@ static void redirect_compound(const char *text) {
  * so Ctrl-C and Ctrl-Z reach all of it. Its status: the last command's. */
 static int exec_pipeline(node_t *node) {
     int count = node->body.count;
+    if (node->background && !interactive) {
+        fprintf(2, "sh: '&' needs job control, which is only on at the terminal\n");
+        return 2;
+    }
     long pids[MAX_STAGES];
     int input = -1;
     for (int i = 0; i < count; i++) {
@@ -2430,6 +2802,8 @@ static int exec_pipeline(node_t *node) {
             if (input != -1) { dup2(input, 0); close(input); }
             if (link[1] != -1) { dup2(link[1], 1); close(link[1]); close(link[0]); }
             node_t *element = node->body.items[i];
+            active_docs = element->docs;              /* (For a here-document after its closing keyword) */
+            active_doc_count = element->doc_count;
             if (element->redirs) redirect_compound(element->redirs);
             int should_exit = 0;
             exit(exec_node(element, &should_exit));
@@ -2449,7 +2823,17 @@ static int exec_pipeline(node_t *node) {
     if (count == 0) return 1;
     int alive[MAX_STAGES];
     for (int i = 0; i < count; i++) alive[i] = 1;
-    return run_in_foreground(pids, alive, count, "(compound command)", NULL);
+    char text[64];
+    describe_pipeline(node, text, sizeof(text));
+    if (node->background) {
+        int n = job_add(pids, alive, count, text, 0);
+        if (n > 0) {
+            printf("[%d] %ld\n", n, pids[count - 1]);
+            return 0;
+        }
+        fprintf(2, "sh: too many jobs: running %s in the foreground\n", text);
+    }
+    return run_in_foreground(pids, alive, count, text, NULL);
 }
 
 /* Run one command of the tree; its status. An if whose branches are not
@@ -2457,7 +2841,13 @@ static int exec_pipeline(node_t *node) {
  * a function definition give 0. */
 static int exec_node(node_t *node, int *should_exit) {
     if (node->kind == NODE_SIMPLE) {
+        char *const *outer_docs = active_docs;          /* (A function it calls sets its own) */
+        int outer_count = active_doc_count;
+        active_docs = node->docs;
+        active_doc_count = node->doc_count;
         int status = run_pipeline_text(node->text, should_exit);
+        active_docs = outer_docs;
+        active_doc_count = outer_count;
         if (status == 128 + SIGINT) interrupted = 1;        /* Ctrl-C: no further loop rounds */
         return status;
     }
