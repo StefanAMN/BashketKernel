@@ -389,6 +389,12 @@ code comments and commit messages; `git log` is the full history.
   for a condition with a time limit (`TEST_WAIT`). Likewise a process killed
   on another CPU is dead before the next statement: `kill` on an unreaped
   zombie succeeds, as in POSIX.
+- **A task state is not a place in the code.** A test waited for a new
+  process to be "blocked", meaning asleep in `nanosleep`; once it was
+  blocked before its first instruction. Another took "what tcpd has sent"
+  as "before tcpd sends", and on four CPUs tcpd had already sent. Wait
+  for evidence of the point reached (pages touched, a field only that
+  step sets), not for a state or a value several points share.
 - **Do not inject faults on a regular beat.** "Drop every 7th TCP segment"
   fell into step with a retransmission round that happened to be 7 segments
   long (6 data, 1 acknowledgement): the same acknowledgement was lost every
