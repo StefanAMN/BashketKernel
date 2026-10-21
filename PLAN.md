@@ -1450,6 +1450,55 @@ listing after the reboot.
 
 ---
 
+## Track P — Sharing what is read, and a TCP that backs off
+
+### P1. TCP congestion control (M)
+
+O1 left the congestion window out: the sender is limited only by the
+receiver's window. Add RFC 5681: slow start, congestion avoidance, the
+reaction to a timeout (cwnd to one segment, ssthresh halved) and fast
+recovery after fast retransmit (RFC 5681 3.2, or NewReno, RFC 6582, if
+partial acknowledgements need it; say which). `/proc/net/tcp` or the
+existing statistics show cwnd and ssthresh per connection. **Check:**
+unit tests on the window arithmetic against the RFC's formulas; the
+loss-injection test shows the window falling and growing again (a trace
+of cwnd); `make test-net` against the host; no transfer slower than
+before by more than a stated factor on the loss-free tests.
+
+### P2. A page cache for read-only file pages (L)
+
+Two processes running one program each read and hold their own copy of
+every page (O2's limit), and so do private file mappings. Keep file pages
+in a cache keyed by (vnode, page index): a read-only mapping maps the
+cached frame directly, counted; a private writable mapping copies on its
+first write (as fork's COW). A file's cached pages are dropped when it
+is written or truncated (or the writes go through the cache: choose and
+say why), and the cache gives frames back under memory pressure (pages
+mapped nowhere first). Swap does not take shared cache pages (as today
+for shared COW pages). **Check:** unit tests (two mappings, one frame;
+a write to the file seen by a new mapping; reclaim); a second `sh` costs
+fewer frames than the first (`/proc/meminfo`); `make test-swap`,
+`make test-lowmem` and `make fuzz` keep passing.
+
+### P3. Here-documents and `&` after compound commands (S)
+
+`cat <<EOF ... EOF` (with `$` expanded unless the word is quoted, and
+`<<-` stripping leading tabs), in scripts and at the prompt (the prompt
+asks for the lines with "> "); and `while ...; done &` as a background
+job. **Check:** syscheck: expansion and quoting, `<<-`, two here-
+documents on one line, one in a pipeline and a loop; `make test-jobs`
+for a backgrounded loop stopped and continued.
+
+### P4. Options for the text tools (S)
+
+`grep -i -n -c -l -v` (combinations), `sort -n -r -u -k N -t C`,
+`head -c N`, `tail -c N`, `wc -l -w -c`, `uniq -i`. POSIX's meanings, one
+option parser in `user/lib` used by all of them. **Check:** syscheck and
+`make test-tools`, including `sort -k` on fields of different widths and
+`-n` with negative numbers and blanks.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1525,6 +1574,8 @@ M1, M2, M3, M4                   done (in parallel)
 N1, N2, N3, N4                   done (in parallel)
         |
 O1, O2, O3, O4                   done (in parallel)
+        |
+P1, P2, P3, P4                   in parallel
 ```
 
 (Track A, once the recommended first step because everything built on
