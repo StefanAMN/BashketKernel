@@ -118,6 +118,10 @@ struct tcp_socket {
     bool scaling;                   // Both SYNs carried the window scale option (RFC 7323 2)
     uint8_t snd_shift;              // ... then the other end's windows count in units of 2^snd_shift
     uint8_t rcv_shift;              // ... and ours in units of 2^rcv_shift (0 without scaling)
+    bool offer_sack;                // We offer SACK in our SYN (tcp_test_refuse_sack says not)
+    bool sack_ok;                   // Both SYNs carried SACK-permitted (RFC 2018 2)
+    tcp_ooo_t sacked;               // The scoreboard: what the other end reports holding beyond snd_una
+    uint32_t rexmit_next;           // In recovery with SACK: holes below this have been sent again
     bool syn_acked;
     bool fin_queued;                // A FIN follows the data in the ring
     uint8_t *tx;
@@ -142,6 +146,7 @@ struct tcp_socket {
     bool rx_filled;                 // The other end used all the window offered since the ring last grew
     uint32_t rcv_adv;               // The right edge of the window last offered: rcv_nxt + window
     tcp_ooo_t ooo;                  // What is kept beyond rcv_nxt
+    uint32_t ooo_recent;            // The first byte of the latest segment kept there (its block goes first)
     bool fin_known;                 // The other end's FIN has arrived, at fin_seq,
     uint32_t fin_seq;               // ... perhaps ahead of data still missing
 
@@ -182,6 +187,10 @@ static tcp_stats_t stats;
 static uint16_t next_ephemeral = TCP_EPHEMERAL_FIRST;
 static bool work_pending = false;   // tcp_input left something for tcpd to send
 static uint32_t drop_every = 0, drop_counter = 0;
+static bool refuse_sack = false;   // tcp_test_refuse_sack
+static uint16_t sent_trace_port = 0; // tcp_test_trace_sent
+static uint32_t sent_trace[TCP_SENT_TRACE_MAX];
+static size_t sent_trace_len = 0;
 static uint16_t trace_port = 0;     // tcp_test_trace_cwnd
 static uint32_t trace[TCP_TRACE_MAX];
 static size_t trace_len = 0;
@@ -222,10 +231,33 @@ bool tcp_test_windows(uint16_t local_port, uint16_t remote_port, tcp_test_window
         if (!s->used || s->state == TCP_LISTEN || s->local_port != local_port || s->remote_port != remote_port) continue;
         found = true;
         *out = (tcp_test_windows_t){ s->scaling, s->snd_shift, s->rcv_shift, s->snd_wnd,
-                                     (uint32_t)s->rx_size, (uint32_t)s->tx_size };
+                                     (uint32_t)s->rx_size, (uint32_t)s->tx_size, s->sack_ok,
+                                     tcp_sack_bytes(&s->sacked), s->cc.cwnd };
     }
     spinlock_release_irqrestore(&tcp_lock, flags);
     return found;
+}
+
+void tcp_test_refuse_sack(bool refuse) {
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    refuse_sack = refuse;
+    spinlock_release_irqrestore(&tcp_lock, flags);
+}
+
+void tcp_test_trace_sent(uint16_t port) {
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    sent_trace_port = port;
+    if (port) sent_trace_len = 0;
+    spinlock_release_irqrestore(&tcp_lock, flags);
+}
+
+size_t tcp_test_sent_trace(uint32_t *out, size_t max) {
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    size_t n = sent_trace_len < max ? sent_trace_len : max;
+    for (size_t i = 0; i < n; i++) out[i] = sent_trace[i];
+    size_t total = sent_trace_len;
+    spinlock_release_irqrestore(&tcp_lock, flags);
+    return total;
 }
 
 void tcp_test_trace_cwnd(uint16_t port) {
@@ -312,6 +344,67 @@ uint32_t tcp_ooo_take(tcp_ooo_t *q, uint32_t rcv_nxt) {
     for (uint32_t i = gone; i < q->count; i++) q->range[i - gone] = q->range[i];
     q->count -= gone;
     return rcv_nxt;
+}
+
+size_t tcp_sack_blocks(const tcp_ooo_t *held, uint32_t recent, uint32_t out[][2], size_t max) {
+    size_t n = 0, first = held->count;
+    for (uint32_t i = 0; i < held->count; i++) {
+        if (!SEQ_LT(recent, held->range[i].start) && SEQ_LT(recent, held->range[i].end)) first = i;
+    }
+    if (first < held->count && n < max) {
+        out[n][0] = held->range[first].start;
+        out[n][1] = held->range[first].end;
+        n++;
+    }
+    for (uint32_t i = 0; i < held->count && n < max; i++) {
+        if (i == first) continue;
+        out[n][0] = held->range[i].start;
+        out[n][1] = held->range[i].end;
+        n++;
+    }
+    return n;
+}
+
+void tcp_sack_prune(tcp_ooo_t *scoreboard, uint32_t una) {
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < scoreboard->count; i++) {
+        if (!SEQ_GT(scoreboard->range[i].end, una)) continue;               // All below: gone
+        scoreboard->range[kept] = scoreboard->range[i];
+        if (SEQ_LT(scoreboard->range[kept].start, una)) scoreboard->range[kept].start = una;
+        kept++;
+    }
+    scoreboard->count = kept;
+}
+
+uint32_t tcp_sack_bytes(const tcp_ooo_t *scoreboard) {
+    uint32_t bytes = 0;
+    for (uint32_t i = 0; i < scoreboard->count; i++) bytes += scoreboard->range[i].end - scoreboard->range[i].start;
+    return bytes;
+}
+
+bool tcp_sack_next_hole(const tcp_ooo_t *scoreboard, uint32_t from, uint32_t *start, uint32_t *len) {
+    // The stretches are in order and never touch: a hole is the gap before
+    // a stretch, from `from` (or the end of the stretch before) on
+    for (uint32_t i = 0; i < scoreboard->count; i++) {
+        uint32_t s = scoreboard->range[i].start, e = scoreboard->range[i].end;
+        if (!SEQ_LT(from, e)) continue;                // This stretch is behind `from`
+        if (SEQ_LT(from, s)) {
+            *start = from;
+            *len = s - from;
+            return true;
+        }
+        from = e;                                      // Inside a stretch: the hole, if any, is after it
+    }
+    return false;                                      // Nothing reported beyond: no evidence of a loss
+}
+
+uint32_t tcp_sack_hole_bytes(const tcp_ooo_t *scoreboard, uint32_t from) {
+    uint32_t bytes = 0, start, len;
+    while (tcp_sack_next_hole(scoreboard, from, &start, &len)) {
+        bytes += len;
+        from = start + len;
+    }
+    return bytes;
 }
 
 void tcp_rtt_sample(tcp_rtt_t *t, uint32_t r) {
@@ -534,6 +627,7 @@ static struct tcp_socket *alloc_socket(void) {
         sock->state = TCP_CLOSED;
         sock->mss = TCP_DEFAULT_MSS;
         sock->rto = TCP_RTO_INITIAL;
+        sock->offer_sack = !refuse_sack;
         return sock;
     }
     return NULL;
@@ -578,16 +672,52 @@ static void reset_for_segment(uint32_t ip, const struct tcp_header *tcp, size_t 
 
 // --- Sending ---------------------------------------------------------------------
 
+// Into out (12 bytes at most), the options of a SYN: our maximum segment
+// size; window scale with shift `wscale` unless that is negative (RFC 7323
+// 2.2); SACK-permitted if `sack` (RFC 2018 2). No-operations keep each a
+// multiple of 4 bytes. Returns the length.
+static size_t syn_options(uint8_t *out, int wscale, bool sack) {
+    size_t n = 0;
+    out[n++] = 2; out[n++] = 4;                         // Kind 2, length 4
+    out[n++] = (uint8_t)(TCP_OUR_MSS >> 8);
+    out[n++] = (uint8_t)(TCP_OUR_MSS & 0xFF);
+    if (wscale >= 0) {
+        out[n++] = 1; out[n++] = 3; out[n++] = 3;       // NOP, kind 3, length 3
+        out[n++] = (uint8_t)wscale;
+    }
+    if (sack) {
+        out[n++] = 1; out[n++] = 1; out[n++] = 4; out[n++] = 2;   // NOP, NOP, kind 4, length 2
+    }
+    return n;
+}
+
+// Into out (36 bytes at most), a SACK option of `count` blocks after two
+// no-operations (RFC 2018 3). Returns the length.
+static size_t sack_option(uint8_t *out, const uint32_t blocks[][2], size_t count) {
+    size_t n = 0;
+    out[n++] = 1; out[n++] = 1;
+    out[n++] = 5; out[n++] = (uint8_t)(2 + 8 * count);
+    for (size_t b = 0; b < count; b++) {
+        for (int edge = 0; edge < 2; edge++) {
+            uint32_t v = blocks[b][edge];
+            out[n++] = (uint8_t)(v >> 24); out[n++] = (uint8_t)(v >> 16);
+            out[n++] = (uint8_t)(v >> 8); out[n++] = (uint8_t)v;
+        }
+    }
+    return n;
+}
+
 // Build one segment and hand it to the IP layer. Called without the lock.
 // `can_block`: the caller may sleep while the address of the next hop is
 // looked up (ARP). The timer thread may not: every connection waits on it.
 // It only ever sends to machines we have already exchanged segments with,
 // or repeats a send that a caller who could wait has made.
-// A SYN carries our maximum segment size, and the window scale option with
-// shift `wscale` unless that is negative.
+// `options` (options_len bytes, a multiple of 4: syn_options, sack_option)
+// go after the fixed header.
 static void transmit(uint32_t ip, uint16_t local_port, uint16_t remote_port, uint32_t seq, uint32_t ack,
-                     uint8_t flags, uint16_t window, int wscale, const uint8_t *data, size_t len, bool can_block) {
-    uint8_t segment[TCP_HEADER_LEN + 8 + TCP_OUR_MSS];
+                     uint8_t flags, uint16_t window, const uint8_t *options, size_t options_len,
+                     const uint8_t *data, size_t len, bool can_block) {
+    uint8_t segment[TCP_HEADER_LEN + 40 + TCP_OUR_MSS];
     struct tcp_header *tcp = (struct tcp_header *)segment;
     size_t header_len = TCP_HEADER_LEN;
 
@@ -600,21 +730,8 @@ static void transmit(uint32_t ip, uint16_t local_port, uint16_t remote_port, uin
     tcp->checksum = 0;
     tcp->urgent = 0;
 
-    if (flags & TCP_SYN) {
-        // The one option we use: kind 2, length 4, the largest segment we take
-        segment[header_len++] = 2;
-        segment[header_len++] = 4;
-        segment[header_len++] = (uint8_t)(TCP_OUR_MSS >> 8);
-        segment[header_len++] = (uint8_t)(TCP_OUR_MSS & 0xFF);
-        if (wscale >= 0) {
-            // Window scale (RFC 7323 2.2): kind 3, length 3, the shift,
-            // after a no-operation that keeps the header a multiple of 4
-            segment[header_len++] = 1;
-            segment[header_len++] = 3;
-            segment[header_len++] = 3;
-            segment[header_len++] = (uint8_t)wscale;
-        }
-    }
+    memcpy(segment + header_len, options, options_len);
+    header_len += options_len;
     tcp->data_offset = (uint8_t)((header_len / 4) << 4);
 
     if (len > 0) memcpy(segment + header_len, data, len);
@@ -656,17 +773,57 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
         uint32_t snd_max_before = sock->snd_max;
         bool fast = false;
 
+        // While data is held beyond a gap, every acknowledgement says what
+        // (RFC 2018 4): the blocks are decided now, since their room in the
+        // header is room a data segment does not have
+        uint32_t blocks[TCP_SACK_BLOCKS_MAX][2];
+        size_t block_count = 0;
+        if (sock->sack_ok && sock->ooo.count > 0) {
+            block_count = tcp_sack_blocks(&sock->ooo, sock->ooo_recent, blocks, TCP_SACK_BLOCKS_MAX);
+        }
+        size_t segment_max = sock->mss - (block_count ? 4 + 8 * block_count : 0);
+
+        // In recovery with SACK, "pipe" estimates what is still in the
+        // network (RFC 6675 4): what is outstanding, less what the other end
+        // holds, less the holes below its highest report not yet sent again
+        // (taken as lost). While it is below the window, a segment may go.
+        bool sack_recovery = sock->sack_ok && sock->cc.in_recovery && sock->syn_acked;
+        uint32_t pipe = 0, hole_start = 0, hole_len = 0;
+        bool hole = false;
+        if (sack_recovery) {
+            uint32_t from = SEQ_GT(sock->rexmit_next, sock->snd_una) ? sock->rexmit_next : sock->snd_una;
+            uint32_t outstanding = sock->snd_max - sock->snd_una;
+            uint32_t gone = tcp_sack_bytes(&sock->sacked) + tcp_sack_hole_bytes(&sock->sacked, from);
+            pipe = outstanding > gone ? outstanding - gone : 0;
+            hole = tcp_sack_next_hole(&sock->sacked, from, &hole_start, &hole_len) &&
+                   SEQ_LT(hole_start, sock->snd_una + (uint32_t)sock->tx_len);
+        }
+
         if (sock->retransmit_one) {
             // Fast retransmit: the oldest unacknowledged segment, once,
             // without moving snd_nxt (what follows it was not lost). (Only
             // data: tcp_input asks for it only while data is outstanding.)
             sock->retransmit_one = false;
-            len = sock->tx_len < sock->mss ? sock->tx_len : sock->mss;
+            len = sock->tx_len < segment_max ? sock->tx_len : segment_max;
             for (size_t i = 0; i < len; i++) data[i] = sock->tx[(sock->tx_head + i) % sock->tx_size];
             seq = sock->snd_una;
             flags = TCP_ACK | TCP_PSH;
             fast = true;
             stats.fast_retransmissions++;
+            if (sock->sack_ok) sock->rexmit_next = sock->snd_una + (uint32_t)len;
+        } else if (sack_recovery && hole && pipe < sock->cc.cwnd) {
+            // The next hole the scoreboard shows, sent again (from the ring:
+            // it starts at snd_una), without moving snd_nxt
+            uint32_t offset = hole_start - sock->snd_una;
+            len = hole_len < segment_max ? hole_len : segment_max;
+            if (len > sock->tx_len - offset) len = sock->tx_len - offset;
+            for (size_t i = 0; i < len; i++) data[i] = sock->tx[(sock->tx_head + offset + i) % sock->tx_size];
+            seq = hole_start;
+            flags = TCP_ACK | TCP_PSH;
+            fast = true;
+            sock->rexmit_next = hole_start + (uint32_t)len;
+            sock->timing = false;                       // Karn: what is timed may be among them
+            stats.sack_retransmissions++;
         } else if (!sock->syn_acked) {
             // Still opening: the only thing to send is the SYN, once per
             // (re)transmission
@@ -691,6 +848,13 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
             }
             uint32_t window = sock->snd_wnd < congestion ? sock->snd_wnd : congestion;
             size_t usable = window > in_flight ? window - in_flight : 0;
+            if (sack_recovery) {
+                // One segment of new data while pipe is below the window, as
+                // the receiver's window still allows
+                size_t receiver = sock->snd_wnd > offset ? sock->snd_wnd - offset : 0;
+                usable = pipe < sock->cc.cwnd ? segment_max : 0;
+                if (usable > receiver) usable = receiver;
+            }
 
             // The other end has no room and nothing is on its way that would
             // make it say when it has: send one byte to get an answer
@@ -698,7 +862,7 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
 
             len = unsent;
             if (len > usable) len = usable;
-            if (len > sock->mss) len = sock->mss;
+            if (len > segment_max) len = segment_max;
             for (size_t i = 0; i < len; i++) {
                 data[i] = sock->tx[(sock->tx_head + offset + i) % sock->tx_size];
             }
@@ -751,12 +915,24 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
         uint8_t shift = (flags & TCP_SYN) ? 0 : sock->rcv_shift;
         uint16_t window = (uint16_t)((room >> shift) > 0xFFFF ? 0xFFFF : (room >> shift));
         sock->rcv_adv = sock->rcv_nxt + ((uint32_t)window << shift);
-        // Our SYN offers scaling; our SYN+ACK only accepts it if offered
-        int wscale = -1;
-        if ((flags & TCP_SYN) && (sock->state == TCP_SYN_SENT || sock->scaling)) wscale = TCP_WSCALE_OURS;
+        // Our SYN offers scaling and SACK; our SYN+ACK only accepts what
+        // was offered. Any other acknowledgement carries the SACK blocks.
+        uint8_t options[40];
+        size_t options_len = 0;
+        if (flags & TCP_SYN) {
+            bool connecting = sock->state == TCP_SYN_SENT;
+            options_len = syn_options(options, (connecting || sock->scaling) ? TCP_WSCALE_OURS : -1,
+                                      connecting ? sock->offer_sack : sock->sack_ok);
+        } else if ((flags & TCP_ACK) && block_count > 0) {
+            options_len = sack_option(options, (const uint32_t (*)[2])blocks, block_count);
+            stats.sack_blocks_sent += block_count;
+        }
+        if (len > 0 && sent_trace_port != 0 && remote_port == sent_trace_port && sent_trace_len < TCP_SENT_TRACE_MAX) {
+            sent_trace[sent_trace_len++] = seq;
+        }
         spinlock_release_irqrestore(&tcp_lock, irq);
 
-        transmit(ip, local_port, remote_port, seq, ack, flags, window, wscale, data, len, can_block);
+        transmit(ip, local_port, remote_port, seq, ack, flags, window, options, options_len, data, len, can_block);
 
         if (!takes_sequence_space && !more_acks) return; // A bare acknowledgement: nothing more can be due
     }
@@ -803,13 +979,27 @@ void tcp_parse_options(const uint8_t *options, size_t len, tcp_options_t *out) {
         } else if (kind == 3 && option_len == 3) {
             out->has_wscale = true;
             out->wscale = options[i + 2] > TCP_WSCALE_MAX ? TCP_WSCALE_MAX : options[i + 2];
+        } else if (kind == 4 && option_len == 2) {
+            out->sack_permitted = true;
+        } else if (kind == 5) {
+            // 2 + 8n bytes, n from 1 to TCP_SACK_BLOCKS_MAX; otherwise the
+            // option (and what follows it) is not believed
+            size_t blocks = (option_len - 2) / 8;
+            if ((option_len - 2) % 8 != 0 || blocks == 0 || blocks > TCP_SACK_BLOCKS_MAX) break;
+            for (size_t b = 0; b < blocks; b++) {
+                const uint8_t *p = options + i + 2 + 8 * b;
+                out->sack[b][0] = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+                out->sack[b][1] = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 8) | p[7];
+            }
+            out->sack_count = (uint8_t)blocks;
         }
         i += option_len;
     }
 }
 
 // Take what the options of the other end's SYN say: the largest segment it
-// takes (at most our own), and whether it scales windows, and by how much.
+// takes (at most our own), whether it scales windows, and by how much, and
+// whether it takes selective acknowledgements (used if we offer them too).
 // Called with the options of the SYN (from a listener) or SYN+ACK (when we
 // connected, and so offered scaling ourselves). Caller holds tcp_lock.
 static void apply_syn_options(struct tcp_socket *sock, const uint8_t *options, size_t len) {
@@ -819,6 +1009,7 @@ static void apply_syn_options(struct tcp_socket *sock, const uint8_t *options, s
     sock->scaling = o.has_wscale;
     sock->snd_shift = o.has_wscale ? o.wscale : 0;
     sock->rcv_shift = o.has_wscale ? TCP_WSCALE_OURS : 0;
+    sock->sack_ok = sock->offer_sack && o.sack_permitted;
 }
 
 // The window field of a segment that is not a SYN, in bytes
@@ -896,9 +1087,24 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
     sock->dupacks = 0;
     sock->retransmit_one = false;   // What it would have sent may be acknowledged now
 
-    // The congestion window grows, or (in recovery) a partial
-    // acknowledgement points at the next hole: send that at once (RFC 6582)
-    if (tcp_cc_new_ack(&sock->cc, sock->mss, acked, ack, sock->snd_max - ack)) {
+    tcp_sack_prune(&sock->sacked, ack);
+
+    // With SACK a partial acknowledgement in recovery changes nothing but
+    // pipe: the window stays at ssthresh and the scoreboard picks the next
+    // hole (RFC 6675 5). Otherwise the congestion window grows, or (in
+    // NewReno's recovery) a partial acknowledgement points at the next
+    // hole: send that at once (RFC 6582)
+    if (sock->sack_ok && sock->cc.in_recovery && !SEQ_GT(ack, sock->cc.recover)) {
+        // No hole on the scoreboard to repair (a receiver may agree to SACK
+        // and report nothing): what the acknowledgement points at is sent
+        // again, as NewReno would, rather than left for the timer
+        uint32_t start, len;
+        if (!tcp_sack_next_hole(&sock->sacked, sock->snd_una, &start, &len) && sock->tx_len > 0) {
+            sock->retransmit_one = true;
+            sock->timing = false;                   // Karn: what is timed may be the one sent again
+        }
+        kick_tcpd();
+    } else if (tcp_cc_new_ack(&sock->cc, sock->mss, acked, ack, sock->snd_max - ack)) {
         stats.partial_acks++;
         if (sock->tx_len > 0) {
             sock->retransmit_one = true;
@@ -1027,6 +1233,19 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
 
     if (!(flags & TCP_ACK)) goto done; // Everything after the first SYN carries one
 
+    if (sock->sack_ok && header_len > TCP_HEADER_LEN) {
+        // What the other end reports holding beyond the acknowledgement goes
+        // on the scoreboard; a block outside what we have sent and not had
+        // acknowledged says nothing true and is ignored (RFC 2018 5)
+        tcp_options_t o;
+        tcp_parse_options(segment + TCP_HEADER_LEN, header_len - TCP_HEADER_LEN, &o);
+        for (uint8_t b = 0; b < o.sack_count; b++) {
+            uint32_t start = o.sack[b][0], end = o.sack[b][1];
+            if (!SEQ_LT(start, end) || !SEQ_GT(start, ack) || SEQ_GT(end, sock->snd_max)) continue;
+            tcp_ooo_add(&sock->sacked, start, end);      // Full: the report is lost, as if not sent
+        }
+    }
+
     if (sock->state == TCP_SYN_RECEIVED) {
         if (ack != sock->iss + 1) {
             reset_for_segment(src, tcp, data_len);
@@ -1063,10 +1282,17 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         // send it again now and start fast recovery (3.2); in recovery each
         // further one lets a new segment out (tcp_cc_dup_ack).
         if (sock->dupacks < 255) sock->dupacks++;
-        if (tcp_cc_dup_ack(&sock->cc, sock->mss, sock->dupacks, ack, sock->snd_max, sock->snd_max - sock->snd_una)) {
+        if (sock->sack_ok && sock->cc.in_recovery) {
+            // With SACK the window is not inflated in recovery: the block
+            // this duplicate carried has made pipe smaller instead
+        } else if (tcp_cc_dup_ack(&sock->cc, sock->mss, sock->dupacks, ack, sock->snd_max, sock->snd_max - sock->snd_una)) {
             stats.recoveries++;
             sock->retransmit_one = true;
             sock->timing = false;                   // Karn: what is timed may be the one sent again
+            if (sock->sack_ok) {
+                sock->cc.cwnd = sock->cc.ssthresh;  // RFC 6675 5, step 4: pipe, not inflation, paces it
+                sock->rexmit_next = sock->snd_una;
+            }
         }
         cwnd_changed(sock);
         kick_tcpd();
@@ -1122,6 +1348,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         if (receiving && keeping && offset < room) {
             size_t fits = data_len < room - offset ? data_len : room - offset;
             if (fits == 0 || tcp_ooo_add(&sock->ooo, seq, seq + (uint32_t)fits)) {
+                if (fits > 0) sock->ooo_recent = seq;   // Its block is reported first
                 size_t tail = (sock->rx_head + sock->rx_len) % sock->rx_size;
                 for (size_t i = 0; i < fits; i++) sock->rx[(tail + offset + i) % sock->rx_size] = data[i];
                 if (fits > 0) stats.out_of_order_kept++;
@@ -1235,6 +1462,7 @@ static void run_timers(struct tcp_socket *sock, uint64_t now) {
         sock->timing = false;                       // Karn's rule: nothing sent twice is timed
         sock->dupacks = 0;
         sock->retransmit_one = false;               // Everything from snd_una goes again anyway
+        sock->sacked.count = 0;                     // The receiver may have dropped what it reported (RFC 2018 8)
         sock->snd_nxt = sock->syn_acked ? sock->snd_una : sock->iss;
         sock->rto = sock->rto * 2 > TCP_RTO_MAX ? TCP_RTO_MAX : sock->rto * 2;
         sock->rto_deadline = now + sock->rto;
@@ -1268,7 +1496,7 @@ static void tcpd(void) {
         for (size_t i = 0; i < sizeof(to_send) / sizeof(to_send[0]); i++) {
             if (!to_send[i].used) continue;
             transmit(to_send[i].ip, to_send[i].local_port, to_send[i].remote_port,
-                     to_send[i].seq, to_send[i].ack, to_send[i].flags, 0, -1, NULL, 0, false);
+                     to_send[i].seq, to_send[i].ack, to_send[i].flags, 0, NULL, 0, NULL, 0, false);
         }
         for (int i = 0; i < TCP_MAX_SOCKETS; i++) output(&sockets[i], false);
     }

@@ -2125,7 +2125,7 @@ answer from UDP each failed a check; soft codes treated as hard passed
 until the test waited to see `connect` stay unanswered (a connection just
 ended is still found, closed, while its owner holds it).
 
-### T2. TCP selective acknowledgement (M)
+### T2. TCP selective acknowledgement (M) — done
 
 With NewReno a window with several losses is repaired one hole per round
 trip (O2, P1 wrote it down). Offer and accept SACK (RFC 2018: the option
@@ -2137,6 +2137,45 @@ scoreboard; the lossy loopback transfer (`tcp_survives_lost_segments`)
 with fewer retransmission timeouts and less time than with SACK refused,
 both written down; a peer that does not offer it still served by
 NewReno (QEMU's own TCP does not).
+
+Done (`src/net/tcp.c`: `tcp_sack_blocks`, the scoreboard functions, the
+SACK branches of `send_what_is_due`, `process_ack` and the duplicate
+handling). Our SYN offers SACK-permitted; the SYN+ACK carries it only if
+the SYN did. A receiver holding data beyond a gap puts up to four blocks
+in every acknowledgement, the stretch with the latest segment first, and
+takes their room from the data it sends. As sender, blocks inside what is
+outstanding go on a scoreboard; on the third duplicate the window becomes
+ssthresh, and while pipe (outstanding, less what is reported held, less
+the holes below the highest report not yet sent again) is below it a
+segment goes: the next hole, then new data. Every hole below the highest
+block counts as lost, which is simpler than RFC 6675's IsLost and more
+eager. Duplicates in that recovery do not inflate the window, and a
+partial acknowledgement only moves pipe, unless the scoreboard shows no
+hole: a receiver that agreed to SACK and reports nothing then gets
+NewReno's resend. A timeout forgets the scoreboard. QEMU's TCP was not
+seen to offer SACK (its SYN+ACK carries only the segment size), so the
+host tests still run NewReno.
+
+Measured over loopback, 300 KiB with one segment in nine dropped (the same
+pseudo-random losses each time): without SACK 4,700 ms, 11 timer
+retransmissions and 18 fast ones; with SACK 1,720 ms, 6 timer
+retransmissions, 11 fast and 10 holes repaired from the scoreboard. A
+hand-played receiver reporting two holes after three duplicates gets both
+sent again before any further acknowledgement; with SACK refused, only
+the first. The numbers are from one sequence of losses; the test asserts
+that the scoreboard was used, not the times.
+
+Sabotage: holes never resent, the scoreboard never fed, no blocks sent,
+SACK used without the peer's consent, no pruning, the window inflated in
+recovery, and no fallback each failed a check. Pruning and inflation first
+passed, costing only time (3.3 s and 2.3 s), and a receiver sending no
+blocks took 10.9 s, worse than NewReno, until the fallback was written
+(now 4.3 s); exact checks were added (the scoreboard empty once all is
+acknowledged, the window unchanged by a fourth duplicate, a blockless
+partial acknowledgement answered within 100 ms). The fourth duplicate
+at first came 300 ms after the third, by when the retransmission timer had
+ended recovery: NewReno's window did not grow, which failed, and SACK's did
+not either, which proved nothing. It is now sent at once.
 
 ### T3. Assignment and the remaining operators in `$(( ))` (S) — done
 
@@ -2276,7 +2315,7 @@ S4                               done
 S1, S2, S3                       done
 T3                               done
 T1                               done
-T2                               next (planned, not started)
+T2                               done
 ```
 
 (Track A, once the recommended first step because everything built on
