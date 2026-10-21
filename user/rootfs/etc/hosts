@@ -1,0 +1,6 @@
+# Names looked up before the DNS is asked (resolve() in user/lib/ulib.c):
+# an address, then its names. The addresses are those of QEMU's user-mode
+# network, which the kernel starts with; after dhcp they may not apply.
+127.0.0.1   localhost
+10.0.2.2    gateway host
+10.0.2.3    dns
