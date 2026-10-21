@@ -1335,7 +1335,7 @@ coalesced acknowledgements would never add up to the three duplicates.
 The RFC 6298 limits are changed for a virtual network (200 ms first
 timeout and floor, 3 s cap), and a timer expiry still sends everything
 from the oldest unacknowledged byte, since there is no congestion
-window. In the loss test (one segment in seven dropped, 300 KiB):
+window (P1 added one). In the loss test (one segment in seven dropped, 300 KiB):
 before, 500 segments, 49 timer retransmissions, nothing kept; after,
 475 segments, 28 timer and 15 fast retransmissions, 94 segments kept.
 The first version of the hand-made reassembly test failed for a reason
@@ -1453,7 +1453,7 @@ listing after the reboot.
 
 ## Track P — Sharing what is read, and a TCP that backs off
 
-### P1. TCP congestion control (M)
+### P1. TCP congestion control (M) — done
 
 O1 left the congestion window out: the sender is limited only by the
 receiver's window. Add RFC 5681: slow start, congestion avoidance, the
@@ -1465,6 +1465,32 @@ unit tests on the window arithmetic against the RFC's formulas; the
 loss-injection test shows the window falling and growing again (a trace
 of cwnd); `make test-net` against the host; no transfer slower than
 before by more than a stated factor on the loss-free tests.
+
+Done, with NewReno: with one segment in seven lost there are several
+losses per window, and partial acknowledgements do occur (3 in the loss
+test). The arithmetic is four functions with no state of their own
+(`tcp_cc_*`, checked against the RFCs' equations worked by hand); each
+connection's window is in `/proc/tcp` (not `/proc/net/tcp`: there is no
+`/proc/net`). Two things the first runs added. A timer expiry while the
+receiver's window is closed is a probe of that window, not a loss (RFC
+9293 3.8.6.1), and must not shrink the congestion window: the loss-free
+test's receiver sleeps before reading, and every transfer had dropped to
+one segment at that point. And with windows of a few segments, three
+duplicates rarely follow a loss, so most losses waited for the timer
+(4 fast retransmits, 46 timeouts) until limited transmit (RFC 3042,
+recommended by RFC 5681 3.2) let one new segment out on each of the
+first two duplicates (15 fast, 32 timeouts). Times, 300 KiB over the
+loopback: loss-free 309 ms before, 305 to 310 ms after; one segment in
+seven lost (in both directions) 8.2 s before, 18.5 s after. That is the
+point of congestion control at a 14% loss rate: the window stays at one
+to five segments, so a lost acknowledgement or a lost retransmission
+ends in a 200 ms timeout more often. Not done: selective
+acknowledgement, early retransmit (RFC 5827), congestion window
+validation (RFC 7661; the window is capped at `TCP_CWND_MAX` instead).
+Sabotage: a sender that ignored the congestion window failed the new
+hand-played test (it sent all 8000 bytes, not the four segments of the
+initial window); counting a window probe as a loss failed the slow-start
+check of the loss-free transfer.
 
 ### P2. A page cache for read-only file pages (L)
 
@@ -1606,7 +1632,7 @@ N1, N2, N3, N4                   done (in parallel)
         |
 O1, O2, O3, O4                   done (in parallel)
         |
-P1, P2, P3, P4                   in parallel (P3, P4 done)
+P1, P2, P3, P4                   in parallel (P1, P3, P4 done)
 ```
 
 (Track A, once the recommended first step because everything built on
