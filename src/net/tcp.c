@@ -186,7 +186,8 @@ void tcp_test_drop_every(uint32_t n) {
     spinlock_release_irqrestore(&tcp_lock, flags);
 }
 
-bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack) {
+bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack,
+                        uint32_t *unacked) {
     bool found = false;
     uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
     for (int i = 0; i < TCP_MAX_SOCKETS && !found; i++) {
@@ -195,6 +196,7 @@ bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv
         found = true;
         *rcv_nxt = s->rcv_nxt;
         *ack = s->snd_max;
+        *unacked = s->snd_una;
     }
     spinlock_release_irqrestore(&tcp_lock, flags);
     return found;
