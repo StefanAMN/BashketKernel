@@ -189,7 +189,7 @@ and stopping a background job that reads the terminal (`SIGTTIN`).
 - **Check:** new sections in `/bin/syscheck`; a scripted shell session with
   background jobs.
 
-### B4. Memory: lazy and file-backed mappings (M) — done, without the page cache
+### B4. Memory: lazy and file-backed mappings (M) — done (the page cache came with P2)
 
 Done: `mmap` and `brk` record a region and give each page its frame on first
 touch; the pages promised and not yet touched are counted, and a call that
@@ -198,10 +198,9 @@ when it is touched (ten disk requests instead of 442 for one byte of a
 100 KiB file). The kernel gives a program's buffer its frames before using
 it, so its own accesses never fault.
 
-Not done: sharing a file's pages between processes, which needs a page
-cache, the larger half of this item (programs are now read page by page,
-O2, but each process reads its own copy). Shared file mappings and
-write-back likewise.
+Sharing a file's pages between processes came with the page cache (P2):
+programs are read page by page (O2) into frames every process running
+them maps. Not done: shared file mappings and write-back.
 The promise limit does not cover fork or copy-on-write.
 
 - Demand-zero `mmap` and `brk` (pages appear on first touch), with an
@@ -1367,7 +1366,7 @@ code is read when first run; `.bss` and the part of the last page past
 the file's data are zero-filled. Relocations (programs are static PIE)
 touch pages, which is fine: those become private copies. Without a page
 cache, two processes running one program each read their own copy (said
-so). **Check:** unit tests (a program whose untouched pages are never
+so; P2 lifted that). **Check:** unit tests (a program whose untouched pages are never
 read: disk request counter before and after); every scripted target, as
 all programs now load this way; `make test-lowmem`, `make test-swap`,
 `make fuzz`; the loader's existing hostile-ELF tests.
@@ -1492,7 +1491,7 @@ hand-played test (it sent all 8000 bytes, not the four segments of the
 initial window); counting a window probe as a loss failed the slow-start
 check of the loss-free transfer.
 
-### P2. A page cache for read-only file pages (L)
+### P2. A page cache for read-only file pages (L) — done
 
 Two processes running one program each read and hold their own copy of
 every page (O2's limit), and so do private file mappings. Keep file pages
@@ -1506,6 +1505,54 @@ for shared COW pages). **Check:** unit tests (two mappings, one frame;
 a write to the file seen by a new mapping; reclaim); a second `sh` costs
 fewer frames than the first (`/proc/meminfo`); `make test-swap`,
 `make test-lowmem` and `make fuzz` keep passing.
+
+Done (`src/mm/pcache.c`), as decided before the code:
+- *Coherence: dropping, not writing through.* Writes go to the file as
+  before, and the file's cached pages are dropped after each write and
+  truncation (and before its node is freed). Writing through would need
+  every filesystem's write to go through the cache, for a gain only to
+  mappings, which are private here anyway: a page already mapped keeps
+  what it held, as before. A running program's file cannot be written
+  (O2), so its pages never go stale. A generation number per file,
+  raised by every drop, keeps a page that was being read while the file
+  changed from going in afterwards.
+- *Ownership: the frame sharing counts* (`cow.h`). The cache holds one
+  reference and each mapping one more; a frame with one owner is mapped
+  nowhere, and only such frames are ever freed by the cache. A frame
+  still mapped when its file changes is let go by the cache and freed,
+  as before, by its last mapping, so no frame is reused while a page
+  table points at it and no shootdown of the cache's own is needed. A
+  writable private mapping maps the cached frame copy-on-write, and the
+  existing fault path makes its copy (taking the frame outright once the
+  cache has let go of it).
+- *Lock:* one spinlock, ranked 73 (above the heap and kernel stacks,
+  below the page tables), held only to look up, insert and take out;
+  under it only frame sharing counts are touched. Files are read, and
+  frames and entries allocated and freed, outside it; a racing reader's
+  page is used if it went in first.
+- *Eviction:* pages mapped nowhere, least recently used first, when the
+  cache passes 1/32 of memory (at least 128 pages), and on demand
+  (`pcache_reclaim`) where frames are about to be needed: a user page
+  fault with memory low, mmap and brk before they refuse, fork before
+  its reserve check, and before swap pushes anything out. Swap does not
+  take cached pages (they are shared with the cache). Kernel allocations
+  do not reclaim (they happen under locks the cache ranks below); the
+  cap bounds what they can find missing.
+- *What is cached:* files in memory and files of a disk filesystem; not
+  devices or `/proc` (nodes with operations and no truncate).
+
+Measured: a second and a third `sh` cost 124 kB each, against 176 kB
+with the cache switched off (13 pages of code shared); `/proc/meminfo`
+gains a "Cached" line. Leak checks count pages mapped nowhere as free
+(`test_free_frames`). Sabotage: never dropping on a write failed
+syscheck's check that a new mapping sees the file's new contents, and
+showed why the drop before a node is freed matters: a new file in `/tmp`,
+given the freed node's address, read the old file's cached page, and
+the kernel then crashed touching the freed node during reclaim. Mapping
+a writable private mapping's page writable (no copy-on-write) failed
+three syscheck checks (the other mappings saw the write; the existing
+check, which reads the file back, did not notice). A lookup that never
+hits failed ten unit checks.
 
 ### P3. Here-documents and `&` after compound commands (S) — done
 
@@ -1632,7 +1679,7 @@ N1, N2, N3, N4                   done (in parallel)
         |
 O1, O2, O3, O4                   done (in parallel)
         |
-P1, P2, P3, P4                   in parallel (P1, P3, P4 done)
+P1, P2, P3, P4                   done (in parallel)
 ```
 
 (Track A, once the recommended first step because everything built on

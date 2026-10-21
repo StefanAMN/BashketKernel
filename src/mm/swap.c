@@ -14,6 +14,7 @@
 #include "sched.h"
 #include "kstring.h"
 #include "kprintf.h"
+#include "pcache.h"
 
 #define SECTORS_PER_PAGE (PAGE_SIZE / VIRTIO_BLK_SECTOR_SIZE)
 
@@ -200,12 +201,16 @@ static size_t give_up(task_t *task, size_t want) {
 }
 
 size_t swap_make_room_for_fork(void) {
-    if (!active) return 0;
-    task_t *task = sched_get_current_task();
-    if (!task || !task->is_user) return 0;
     size_t free_frames = pmm_get_free_frames();
     if (free_frames >= SWAP_LOW_FRAMES) return 0;
-    return give_up(task, SWAP_HIGH_FRAMES - free_frames);
+    // First what the page cache holds and nobody maps (with or without a
+    // swap disk)
+    size_t freed = pcache_reclaim(SWAP_HIGH_FRAMES - free_frames);
+    free_frames = pmm_get_free_frames();
+    if (!active || free_frames >= SWAP_LOW_FRAMES) return freed;
+    task_t *task = sched_get_current_task();
+    if (!task || !task->is_user) return freed;
+    return freed + give_up(task, SWAP_HIGH_FRAMES - free_frames);
 }
 
 size_t swap_make_room_for_call(void) {
@@ -220,6 +225,7 @@ size_t swap_make_room_for_call(void) {
 
 bool swap_may_retry(int attempt) {
     if (!active || attempt >= FRAME_WAIT_TICKS) return false;
+    if (pcache_reclaim(SWAP_HIGH_FRAMES) > 0) return true;
     if (swap_make_room_for_call() > 0) return true;
     sched_sleep_ticks(1);
     return true;
@@ -232,6 +238,12 @@ void swap_relieve_pressure(void) {
 
     size_t free_frames = pmm_get_free_frames();
     if (free_frames >= SWAP_LOW_FRAMES) return;
+    // Cached file pages nobody maps cost nothing to give back: before any
+    // page goes to the disk
+    if (pcache_reclaim(SWAP_HIGH_FRAMES - free_frames) > 0) {
+        free_frames = pmm_get_free_frames();
+        if (free_frames >= SWAP_LOW_FRAMES) return;
+    }
 
     // A process may have nothing it can give up: just after a fork every
     // page it has is still shared with its parent. Finding that out means

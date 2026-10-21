@@ -14,6 +14,7 @@
 #include "tcp.h"
 #include "auth.h"
 #include "dev.h"
+#include "pcache.h"
 
 // Open files are small, all the same size, and created and destroyed
 // constantly (every open, pipe and exit), which is what a slab cache is for.
@@ -321,7 +322,10 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
                 if (!file->node->ops->write) return -EINVAL; // Read-only device
                 if (file->append) file->offset = file->node->size;
                 int64_t n = file->node->ops->write(file->node, file->offset, buf, count);
-                if (n > 0) file->offset += (size_t)n;
+                if (n > 0) {
+                    file->offset += (size_t)n;
+                    pcache_drop_file(file->node);  // Its cached pages say what it said before
+                }
                 return n;
             }
             if (file->append) file->offset = file->node->size;
