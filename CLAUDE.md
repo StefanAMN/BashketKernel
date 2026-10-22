@@ -398,6 +398,9 @@ code comments and commit messages; `git log` is the full history.
   3, "Syscall:" in `/proc/<pid>/status` names the call a process is in
   (syscheck's `wait_in_syscall`): a sleep before signalling a child failed
   on GitHub's slower runners, where the child had not yet got there.
+  The converse does not hold: "in no call" is not "dying", since a live
+  program also runs its own code and loads its pages. One look taken there
+  failed on GitHub; look until the evidence arrives either way.
 - **Do not inject faults on a regular beat.** "Drop every 7th TCP segment"
   fell into step with a retransmission round that happened to be 7 segments
   long (6 data, 1 acknowledgement): the same acknowledgement was lost every
