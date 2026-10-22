@@ -1603,6 +1603,61 @@ parser reading only the first letter of a group failed seven.
 
 ---
 
+## Track Q — Writing through a mapping, a run queue per CPU
+
+### Q1. Shared file mappings and `msync` (M)
+
+`mmap(MAP_SHARED)` of a file is refused. With the page cache (P2) it can
+map the cached frame writable in every process that shares it; changes
+reach the file at `msync`, at `munmap`, when the last mapping goes and
+at shutdown (dirty pages tracked by the page-table dirty bit, collected
+from every mapping). Such a page stays in the cache while dirty (reclaim
+writes it first, or skips it: choose and say why), is never swapped, and
+`ftruncate` below a mapped page makes touching it `SIGBUS` (POSIX). The
+file may be written with `write` meanwhile: say what coherence is kept
+(P2 dropped pages on write; a shared mapping cannot simply be dropped).
+**Check:** unit tests (two processes see each other's writes; `msync`
+puts them in the file, checked by reading the disk after forgetting the
+cache, CLAUDE.md's lesson); syscheck; `make test-home` (a change made
+through a mapping is there after a reboot); `make test-crash` and
+`make test-swap` keep passing.
+
+### Q2. A run queue per CPU (L)
+
+One task list and one scheduler lock serve every CPU (A3's difference
+from its plan). Give each CPU its own queue of runnable tasks and lock;
+a woken task goes to the CPU it last ran on unless that CPU is busier
+than the least-loaded one by more than a margin; an idle CPU takes work
+from the busiest (stealing); tasks bound to a CPU stay. The scheduler
+lock's held-across-switch rule (CLAUDE.md) and the zombie-stack rule
+must survive: write down how. **Check:** `make test-smp` and every SMP
+target; the existing four-tasks-on-four-CPUs measurement must not get
+worse, and contention on the old lock (count spins before and after)
+falls; a test that pins and unpins tasks; `make fuzz SMP=4`.
+
+### Q3. `trap`, `set -e -u -x`, `shift`, `wait`, `local` in the shell (S)
+
+`trap 'LIST' INT TERM EXIT` (and `trap - SIG`), `set -e` (stop at a
+failing command, with POSIX's exceptions: conditions, `&&`/`||` lists,
+`!`), `set -u` (an unset variable is an error), `set -x` (commands
+printed to standard error with `+`), `shift [N]`, `wait [N]` for
+background jobs, `local NAME[=value]` in functions. **Check:** syscheck,
+one check per exception of `set -e`; `make test-jobs` for `wait` and a
+`trap` on Ctrl-C.
+
+### Q4. `/bin/top` (S)
+
+A full-screen list of processes, refreshed every second, sorted by CPU
+use over the last interval (from the tick counts in `/proc/<pid>/status`,
+which may need a field), with memory per process, the load of each CPU
+and the totals of `/proc/meminfo`; `q` quits, the terminal restored
+(raw mode dies with the program, but `top` should restore it itself).
+**Check:** a scripted run (`tools/qemu_shell.py` with `/bin/spin`
+running) that finds the spinning process at the top, then `q`; the
+terminal usable after.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1680,6 +1735,8 @@ N1, N2, N3, N4                   done (in parallel)
 O1, O2, O3, O4                   done (in parallel)
         |
 P1, P2, P3, P4                   done (in parallel)
+        |
+Q1, Q2, Q3, Q4                   next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
