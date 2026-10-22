@@ -9,6 +9,7 @@
 #include "process.h"
 #include "sched.h"
 #include "signal.h"
+#include "syscall.h"
 
 // Read a whole /proc file through the open-file layer, in small pieces so
 // the offset handling is exercised too.
@@ -194,10 +195,35 @@ TEST(fd_slot_reference_outlives_close) {
     file_close(mine);
 }
 
+// "Syscall" names the system call a process is in: the number while it is
+// asleep in sleep, "-" for the kernel task reading it (which is in none)
+TEST(proc_pid_status_names_the_system_call) {
+    char path[48], text[1024];
+    char *argv[] = { "/bin/sleep", "30", NULL };
+    pid_t pid = process_spawn("/bin/sleep", argv);
+    EXPECT_TRUE(pid > 0);
+    if (pid <= 0) return;
+    task_t *task = sched_find_task((uint32_t)pid);
+    EXPECT_TRUE(task != NULL);
+    if (task) TEST_WAIT(task->in_syscall == SYS_SLEEP + 1, 300);
+
+    proc_path(path, pid, "status");
+    EXPECT_TRUE(slurp(path, text, sizeof(text)) > 0);
+    EXPECT_EQ(number_after(text, "Syscall:\t"), (int64_t)SYS_SLEEP);
+
+    EXPECT_TRUE(slurp("/proc/self/status", text, sizeof(text)) > 0);
+    EXPECT_TRUE(strstr(text, "Syscall:\t-\n") != NULL);
+
+    EXPECT_EQ(process_kill(pid, SIGKILL), 0);
+    int status = 0;
+    EXPECT_EQ(process_wait(pid, &status), pid);
+}
+
 void test_suite_procfs(void) {
     kprintf("Suite: /proc\n");
     RUN_TEST(procfs_files_report_live_state);
     RUN_TEST(proc_pid_directories_follow_processes);
     RUN_TEST(proc_pid_maps_and_fds);
     RUN_TEST(fd_slot_reference_outlives_close);
+    RUN_TEST(proc_pid_status_names_the_system_call);
 }

@@ -8,6 +8,7 @@
 #include "heap.h"
 #include "kstring.h"
 #include "vmm.h"
+#include "syscall.h"
 #include "elf.h"
 #include "spinlock.h"
 #include "vfs.h"
@@ -236,10 +237,10 @@ TEST(programs_are_read_page_by_page) {
     }
     EXPECT_TRUE(program_regions >= 1);                       // Its code at least
 
-    // Asleep in nanosleep: it has run all it will for now. ("Blocked" alone
-    // is not enough: once in make check the task was seen blocked before
-    // it had run its first instruction, with every program page untouched.)
-    TEST_WAIT(task->state == TASK_BLOCKED && task->promised_pages < program_pages, 200);
+    // In its sleep: it has run all it will for now. ("Blocked" alone is not
+    // enough: once in make check the task was seen blocked before it had
+    // run its first instruction, with every program page untouched.)
+    TEST_WAIT(task->in_syscall == SYS_SLEEP + 1, 300);
     EXPECT_TRUE(task->promised_pages > 0);                    // Pages of it never touched, so never read...
     EXPECT_TRUE(task->promised_pages < program_pages);        // ...and some that were (its first instruction)
     EXPECT_EQ(file->exec_count, exec_before + program_regions);
