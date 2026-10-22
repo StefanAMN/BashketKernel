@@ -159,6 +159,15 @@ void lock_debug_report(const char *what, const char *lock_a, const char *lock_b)
 void lock_debug_reset(void);
 
 /**
+ * @brief While `expected` is true, lock_debug_poll reports nothing: a test
+ *        is breaking a rule on purpose and will reset the count itself.
+ *        Every CPU's timer polls, so without this another CPU (or this one,
+ *        where the test must have interrupts on) can halt the kernel in
+ *        the moment between a deliberate violation and its reset.
+ */
+void lock_debug_expect(bool expected);
+
+/**
  * @brief If a violation has been recorded, describe it and stop the kernel.
  *        Called from the timer interrupt, where no lock is held and
  *        printing is safe.

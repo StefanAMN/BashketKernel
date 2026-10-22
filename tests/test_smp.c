@@ -77,8 +77,12 @@ static spinlock_t outer_lock = SPINLOCK_RANKED("test-outer", LOCK_RANK_FS);
 static spinlock_t inner_lock = SPINLOCK_RANKED("test-inner", LOCK_RANK_PMM);
 
 TEST(lock_rules_are_checked) {
-    // Everything below happens with interrupts off, so that the violations
-    // caused on purpose are forgotten again before the timer could report them
+    // The violations caused on purpose are forgotten again before the test
+    // ends; meanwhile no timer may report them. Interrupts off covers this
+    // CPU only, and not where a lock must be taken with them on; every CPU's
+    // timer looks at the count (once, on four starved CPUs, another halted
+    // the kernel here), so the reporting is held off as a whole.
+    lock_debug_expect(true);
     uint64_t irq = irq_save();
     uint32_t before = lock_debug_violations();
     uint32_t held_before = lock_debug_held_count();
@@ -127,6 +131,7 @@ TEST(lock_rules_are_checked) {
         asm volatile("sti");
     }
     EXPECT_TRUE(lock_debug_violations() == 0);   // And nothing in the whole run so far
+    lock_debug_expect(false);
 }
 
 // --- Other CPUs --------------------------------------------------------------
