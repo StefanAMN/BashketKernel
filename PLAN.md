@@ -1736,7 +1736,7 @@ O1, O2, O3, O4                   done (in parallel)
         |
 P1, P2, P3, P4                   done (in parallel)
         |
-Q1, Q2, Q3, Q4                   in parallel
+Q1, Q2, Q3, Q4                   next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
