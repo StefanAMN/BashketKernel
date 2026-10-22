@@ -98,11 +98,13 @@ def dir_entries(name, attr, cluster, size, used):
 
 
 def dir_entry(name, attr, cluster, size):
+    """The entries for one name in a directory that has no other names (see dir_entries)."""
     return dir_entries(name, attr, cluster, size, set())
 
 
 class Image:
     def __init__(self, size_mib):
+        """Lay out a FAT32 volume of `size_mib` MiB, empty; exit if that is too small for FAT32."""
         self.total_sectors = size_mib * 1024 * 1024 // SECTOR
         # Solve for the FAT size: each cluster (one sector) needs 4 bytes of FAT, in each copy
         data_and_fats = self.total_sectors - RESERVED_SECTORS
@@ -147,6 +149,7 @@ class Image:
         return first
 
     def write(self, path, root_cluster):
+        """Write the boot sector, FATs and data to `path`, with the root directory at `root_cluster`."""
         fat_bytes = b"".join(struct.pack("<I", e) for e in self.fat).ljust(self.fat_sectors * SECTOR, b"\0")
         free_clusters = self.cluster_count - (self.next_free - 2)
 
@@ -210,6 +213,7 @@ def add_tree(image, tree, parent_cluster, is_root):
 
 
 def read_tree(path):
+    """A directory on the host as a dict: name to bytes, or to a dict for a subdirectory."""
     tree = {}
     for name in os.listdir(path):
         full = os.path.join(path, name)

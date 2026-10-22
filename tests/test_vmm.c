@@ -2,6 +2,7 @@
 #include "vmm.h"
 #include "pmm.h"
 
+// A frame mapped at a virtual address can be written through it and then unmapped
 TEST(vmm_mapping) {
     void *phys_frame = pmm_alloc_frame();
     EXPECT_TRUE(phys_frame != NULL);

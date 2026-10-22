@@ -15,6 +15,7 @@
 
 #define CHUNK (1UL << 20) /* 1 MiB */
 
+/* Can this process still fork and collect a status? 1 if so, 0 if not. */
 static int still_alive(void) {
     /* After running out of memory, the basics must still work */
     long pid = fork();
@@ -95,7 +96,9 @@ static int stress_fork(void) {
  * writer cannot be given an error code (it is in the middle of an ordinary
  * store instruction), so the kernel has to kill it, and only it. */
 static int stress_cow_common(int via_syscall);
+/* The child writes the shared pages with ordinary store instructions */
 static int stress_cow(void)    { return stress_cow_common(0); }
+/* The child has the kernel write them, through a system call */
 static int stress_cowsys(void) { return stress_cow_common(1); }
 
 /* cow, cowsys: take most of memory, fork, and have the child (or a system

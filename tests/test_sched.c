@@ -25,6 +25,7 @@ static void dummy_task_2(void) {
     }
 }
 
+// Two tasks that yield to each other both run to their end
 TEST(multitasking_cooperative) {
     task_t *t1 = task_create("dummy1", dummy_task_1);
     task_t *t2 = task_create("dummy2", dummy_task_2);
@@ -44,6 +45,8 @@ TEST(multitasking_cooperative) {
     EXPECT_TRUE(t1->state == TASK_ZOMBIE && t2->state == TASK_ZOMBIE);
 }
 
+// sched_reap frees the tasks of the previous test, with their stacks, and then
+// finds nothing more
 TEST(zombie_reaping) {
     // dummy1 and dummy2 from the previous test have exited by now
     size_t free_with_zombies = test_free_frames();
@@ -99,6 +102,8 @@ static void heap_stress_task(void) {
     __atomic_fetch_add(&stress_done, 1, __ATOMIC_SEQ_CST);
 }
 
+// Tasks preempting each other in the heap corrupt nothing, and every byte is back
+// once they are reaped
 TEST(heap_stress_under_preemption) {
     sched_reap();
     size_t heap_before = kheap_get_allocated_bytes();

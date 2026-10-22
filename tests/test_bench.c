@@ -4,6 +4,7 @@
 #include "pmm.h"
 #include "pit.h"
 
+// bench_run takes the time it says, gives believable rates and gives back its memory
 TEST(benchmarks_measure_something) {
     size_t heap_before = kheap_get_allocated_bytes();
     // The heap grows for the scratch buffers and afterwards keeps a little

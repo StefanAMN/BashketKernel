@@ -9,6 +9,7 @@
 // A device's 256 bytes of PCI configuration space, as the tests want it
 static uint8_t space[256];
 
+// One byte of `space`, in the form virtio_pci_parse_caps reads with
 static uint8_t fake8(void *ctx, uint8_t offset) { (void)ctx; return space[offset]; }
 // A configuration space the tests write (`space`), read a byte or 32 bits at a time
 static uint32_t fake32(void *ctx, uint8_t offset) {
@@ -49,6 +50,8 @@ static void sound_layout(void) {
     put_cap(0x40, 0x00, 1, 4, 0x0000, 0x1000);
 }
 
+// The vendor capabilities are parsed from a list made by hand; of two of a
+// kind, the first wins
 TEST(virtio_capabilities_are_found) {
     virtio_caps_t caps;
     sound_layout();
@@ -75,6 +78,8 @@ static void put_msix(uint16_t entries, uint8_t bar, uint32_t offset) {
     put32(0xA0, 0x800 | bar);                           // Pending bits: not used here
 }
 
+// The MSI-X capability is read correctly, and values a device could not mean
+// are refused
 TEST(msix_capability_is_found_and_not_believed) {
     virtio_msix_cap_t cap;
     sound_layout();

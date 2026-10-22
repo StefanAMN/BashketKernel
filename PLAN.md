@@ -2273,6 +2273,14 @@ plan:
     what count), but kernel state in a program's hands. `gdt_flush` now
     loads the null selector there. The unit test looks before any program
     has run, since the first `iretq` hides it afterwards.
+15. (Done 2026-10-31.) `tools/undocumented.py` said 0 while 166 functions
+    had no comment of their own. It matched definitions on one line ending
+    in `{`, in `.c` files, so it never saw one-line functions, `TEST()`
+    bodies, `static inline` in headers or Python, and it accepted a section
+    banner or a variable's trailing comment as documentation. It now follows
+    braces, in `.c` and `.h`, checks Python docstrings under `tools/`, and
+    refuses both false comments; each case was shown to fail. All 166 have
+    comments now.
 
 ---
 

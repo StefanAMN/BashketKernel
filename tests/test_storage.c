@@ -12,12 +12,14 @@
 // filesystem is at the start. The test kernel runs with a throw-away
 // snapshot of the disk image, so nothing written here is kept.
 
+// The disk is there, with the size of the image `make test` attaches
 TEST(disk_is_present_and_sized) {
     EXPECT_TRUE(virtio_blk_present());
     // `make test` attaches a 64 MiB image
     EXPECT_EQ(virtio_blk_capacity(), 64ULL * 1024 * 1024 / VIRTIO_BLK_SECTOR_SIZE);
 }
 
+// Two sectors keep their own contents, and overwriting replaces them
 TEST(disk_stores_what_is_written) {
     uint64_t last = virtio_blk_capacity() - 1;
     static uint8_t out[VIRTIO_BLK_SECTOR_SIZE], in[VIRTIO_BLK_SECTOR_SIZE];
@@ -44,6 +46,7 @@ TEST(disk_stores_what_is_written) {
     EXPECT_EQ(in[100], 0x11);
 }
 
+// A transfer split over several requests reads back right, also from the middle
 TEST(disk_multi_sector_transfers) {
     // 20 sectors: more than one request's worth (8), so the transfer is split
     enum { COUNT = 20 };
@@ -61,6 +64,8 @@ TEST(disk_multi_sector_transfers) {
     EXPECT_EQ(memcmp(in, out + 9 * VIRTIO_BLK_SECTOR_SIZE, 3 * VIRTIO_BLK_SECTOR_SIZE), 0);
 }
 
+// Requests outside the disk, wrapping counts and NULL never reach the device; the
+// last sector and an empty request are fine
 TEST(disk_refuses_out_of_range_requests) {
     static uint8_t buf[2 * VIRTIO_BLK_SECTOR_SIZE];
     uint64_t capacity = virtio_blk_capacity();
@@ -78,6 +83,7 @@ TEST(disk_refuses_out_of_range_requests) {
     EXPECT_EQ(virtio_blk_read(capacity - 1, buf, 1), 0);         // The last sector itself is fine
 }
 
+// Reads complete by interrupt, not only through the timeout fallback
 TEST(disk_completions_arrive_by_interrupt) {
     static uint8_t buf[VIRTIO_BLK_SECTOR_SIZE];
     uint64_t interrupts = virtio_blk_interrupts(0);
@@ -136,6 +142,8 @@ TEST(disk_requests_from_several_tasks) {
 
 // --- The sector cache ----------------------------------------------------------
 
+// A cold read goes to the disk and a warm one does not; a write reaches both the
+// disk and the cache
 TEST(cache_serves_repeated_reads_from_memory) {
     enum { SECTORS = 64, FIRST = 3000 };
     static uint8_t first[SECTORS * VIRTIO_BLK_SECTOR_SIZE], second[SECTORS * VIRTIO_BLK_SECTOR_SIZE];

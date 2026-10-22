@@ -9,6 +9,7 @@ static bool type(const char *keys) {
     return ready;
 }
 
+// Nothing is readable until Enter; Backspace, DEL and Ctrl-U edit the line
 TEST(tty_delivers_whole_edited_lines) {
     char buf[TTY_LINE_MAX + 8];
     tty_init();
@@ -31,6 +32,8 @@ TEST(tty_delivers_whole_edited_lines) {
     EXPECT_EQ(memcmp(buf, "ok\n", 3), 0);
 }
 
+// A short read leaves the rest of the line; Ctrl-D means end-of-file on an empty
+// line and delivers the text otherwise
 TEST(tty_short_reads_and_end_of_file) {
     char buf[16];
     tty_init();
@@ -55,6 +58,7 @@ TEST(tty_short_reads_and_end_of_file) {
     EXPECT_EQ(tty_read(buf, 0), 0);       // A zero-length read never waits
 }
 
+// A line too long keeps room for the newline that ends it
 TEST(tty_line_length_is_bounded) {
     static char buf[TTY_LINE_MAX + 64];
     tty_init();
@@ -71,6 +75,7 @@ TEST(tty_line_length_is_bounded) {
     kprintf("\n");
 }
 
+// In line mode escape sequences and control characters vanish, and a tab is text
 TEST(tty_line_mode_drops_arrow_keys_and_control_characters) {
     char buf[32];
     tty_init();
@@ -91,6 +96,8 @@ TEST(tty_line_mode_drops_arrow_keys_and_control_characters) {
     EXPECT_EQ(memcmp(buf, "a\tb\n", 4), 0);
 }
 
+// Switching to raw mode drops a half-typed line, and line mode returns when the
+// owner ends or asks, not when another process ends
 TEST(tty_raw_mode_belongs_to_a_process) {
     tty_init();
     EXPECT_TRUE(!tty_is_raw());

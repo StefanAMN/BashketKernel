@@ -4,6 +4,7 @@
 #include "sched.h"
 #include "pit.h"
 
+// A semaphore counts, and sem_trywait refuses when it is empty rather than wait
 TEST(semaphore_counts) {
     sem_t sem;
     sem_init(&sem, 2);
@@ -92,6 +93,8 @@ static void visitor_entry(void) {
     }
 }
 
+// A mutex can be taken again by its holder, others sleep on it rather than spin,
+// and never two are inside at once, although each sleeps there
 TEST(mutex_admits_one_holder_and_may_sleep) {
     inside = 0; most_inside = 0; visits = 0;
 

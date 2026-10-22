@@ -68,6 +68,8 @@ typedef struct spinlock {
 #define SPINLOCK_INIT ((spinlock_t){0})
 #define SPINLOCK_RANKED(lock_name, lock_rank) ((spinlock_t){ 0, (lock_rank), (lock_name), 0, 0 })
 
+// Make `lock` free and unranked, for a lock made at run time. An unranked
+// lock takes no part in the lock-order check.
 static inline void spinlock_init(spinlock_t *lock) {
     lock->locked = 0;
     lock->rank = LOCK_RANK_NONE;
@@ -76,6 +78,8 @@ static inline void spinlock_init(spinlock_t *lock) {
     lock->contended = 0;
 }
 
+// Make `lock` free, with its place in the lock order (LOCK_RANK_*) and the
+// name that reports call it. `name` is kept, not copied.
 static inline void spinlock_init_ranked(spinlock_t *lock, const char *name, uint32_t rank) {
     lock->locked = 0;
     lock->rank = rank;
@@ -136,6 +140,8 @@ static inline uint64_t irq_save(void) {
     return flags;
 }
 
+// Turn interrupts back on if `flags`, from irq_save, says they were on;
+// otherwise leave them off.
 static inline void irq_restore(uint64_t flags) {
     if (flags & 0x200) { // RFLAGS.IF
         asm volatile("sti");

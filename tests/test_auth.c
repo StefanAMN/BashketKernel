@@ -6,6 +6,7 @@
 #include "sched.h"
 #include "kerrno.h"
 
+// auth_may_access and auth_may_remove: root, owner, others, and sticky directories
 TEST(permission_rules) {
     vnode_t file = { .uid = 1000, .mode = 0644 };   // Owner reads and writes, others read
     vnode_t dir = { .uid = 0, .mode = 01666 };      // A shared, sticky directory, like /tmp
@@ -50,6 +51,8 @@ TEST(permission_rules) {
     EXPECT_EQ(auth_current_uid(), (uint32_t)UID_ROOT);         // Kernel threads are root
 }
 
+// file_open_as applies those rules: a new file has its owner, others are refused
+// by the bits, and a refused truncation changes nothing
 TEST(open_respects_permissions) {
     file_t *file = NULL;
 

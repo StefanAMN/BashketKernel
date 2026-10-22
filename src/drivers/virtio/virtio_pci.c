@@ -73,10 +73,15 @@
 // Registers in memory are read and written with accesses of exactly their
 // own width (section 4.1.3.1), 64-bit ones as two halves
 static inline uint8_t mmio8(volatile uint8_t *base, uint32_t offset) { return base[offset]; }
+// Read a 16-bit register at `offset` from `base`
 static inline uint16_t mmio16(volatile uint8_t *base, uint32_t offset) { return *(volatile uint16_t *)(base + offset); }
+// Read a 32-bit register at `offset` from `base`
 static inline uint32_t mmio32(volatile uint8_t *base, uint32_t offset) { return *(volatile uint32_t *)(base + offset); }
+// Write an 8-bit register at `offset` from `base`
 static inline void mmio_write8(volatile uint8_t *base, uint32_t offset, uint8_t v) { base[offset] = v; }
+// Write a 16-bit register at `offset` from `base`
 static inline void mmio_write16(volatile uint8_t *base, uint32_t offset, uint16_t v) { *(volatile uint16_t *)(base + offset) = v; }
+// Write a 32-bit register at `offset` from `base`
 static inline void mmio_write32(volatile uint8_t *base, uint32_t offset, uint32_t v) { *(volatile uint32_t *)(base + offset) = v; }
 // (A 64-bit register is written as two 32-bit halves, low first)
 static inline void mmio_write64(volatile uint8_t *base, uint32_t offset, uint64_t v) {
@@ -169,6 +174,7 @@ bool virtio_pci_parse_msix(uint8_t (*read8)(void *ctx, uint8_t offset), uint32_t
 
 // The real configuration space, for virtio_pci_parse_caps (`ctx` is the device)
 static uint8_t config_read8(void *ctx, uint8_t offset) { return pci_read8((const pci_device_t *)ctx, offset); }
+// 32 bits of the real configuration space, for virtio_pci_parse_caps (`ctx` is the device)
 static uint32_t config_read32(void *ctx, uint8_t offset) { return pci_read32((const pci_device_t *)ctx, offset); }
 
 // Map `length` bytes at `offset` in memory BAR number `index` (0..5) and

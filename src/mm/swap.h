@@ -54,8 +54,11 @@ bool swap_parse_header(const uint8_t *page, uint64_t disk_pages, uint32_t *slots
  */
 int swap_init(unsigned disk);
 
+// Is a swap disk in use?
 bool swap_active(void);
+// Slots on the swap disk (0 without one)
 size_t swap_total_pages(void);
+// Slots not in use (0 without a swap disk)
 size_t swap_free_pages(void);
 uint64_t swap_pages_out(void);   // Pages written out since boot
 uint64_t swap_pages_in(void);    // ...and read back

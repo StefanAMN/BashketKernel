@@ -139,10 +139,10 @@ long poll(struct pollfd *fds, unsigned count, long timeout_ms); /* Wait until on
 long mkdir(const char *path); /* 0, or a negative error (-EEXIST, -ENOENT, -EACCES, -ENAMETOOLONG ...) */
 long chdir(const char *path); /* Change the working directory */
 long getcwd(char *buf, size_t size);          /* Length of the path, or a negative error */
-long unlink(const char *path);
+long unlink(const char *path); /* Remove a file or an empty directory */
 long symlink(const char *target, const char *path); /* Make path a symbolic link to target */
 long link(const char *existing, const char *path);  /* A second name for a file (on the ext2 disk only) */
-long readlink(const char *path, char *buf, size_t size); /* A link's target (not NUL-terminated): its length, or -EINVAL if not a link */ /* Remove a file or an empty directory */
+long readlink(const char *path, char *buf, size_t size); /* A link's target (not NUL-terminated): its length, or -EINVAL if not a link */
 long rename(const char *from, const char *to);  /* Within one filesystem; fails with -EEXIST rather than replace anything */
 
 /* Network. The machine is 10.0.2.15; QEMU's gateway (which also reaches the

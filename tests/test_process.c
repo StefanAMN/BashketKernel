@@ -29,6 +29,7 @@ static int run(const char *path, char *const argv[]) {
     return status;
 }
 
+// A spawned program runs, with or without arguments, and its exit status arrives
 TEST(spawn_runs_program_and_returns_status) {
     EXPECT_EQ(run("/bin/hello", NULL), 0);
 
@@ -39,6 +40,7 @@ TEST(spawn_runs_program_and_returns_status) {
     EXPECT_EQ(run("/bin/fault", NULL), 2);
 }
 
+// Missing programs, files that are not ELF, directories and NULL fail and leak nothing
 TEST(spawn_rejects_bad_targets) {
     size_t free_before = test_free_frames();
     EXPECT_EQ(process_spawn("/bin/no-such-program", NULL), -1);
@@ -76,6 +78,7 @@ TEST(faulting_programs_are_killed) {
     EXPECT_EQ(run("/bin/fault", sgdt),   umip ? 128 + SIGSEGV : 1);
 }
 
+// Running a program returns every frame and heap byte
 TEST(processes_leave_nothing_behind) {
     sched_reap();
     size_t free_before = test_free_frames();
@@ -278,6 +281,8 @@ TEST(an_unkillable_task_survives_sigkill) {
     sched_reap();
 }
 
+// A kill is recorded and acted on by the target itself: a spinning process dies at
+// the timer, a sleeping one is woken to die
 TEST(kill_takes_effect_at_a_safe_point) {
     sched_reap();
     size_t free_before = test_free_frames();
