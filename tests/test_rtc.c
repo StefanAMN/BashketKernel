@@ -70,7 +70,17 @@ TEST(time_of_day_follows_the_cmos_clock) {
     rtc_read_time(&cmos);
     uint64_t cmos_seconds = walltime_from_date(&cmos);
     uint64_t ours = walltime_seconds();
-    EXPECT_TRUE(ours + 2 >= cmos_seconds && ours <= cmos_seconds + 2);   // Both count whole seconds
+    // Ours is the CMOS clock at boot plus the calibrated clock since, so any
+    // error in the calibration grows with the time since then. In a VM the
+    // calibration can be off by several per cent when the host stalls
+    // during it (GitHub's runners: more than 2 s after a few minutes of
+    // tests). Allowed: 2 s (both count whole seconds) plus a quarter of
+    // the time since calibration, the window syscheck allows a sleep.
+    uint64_t allowed = 2 + clock_ns() / 4000000000ULL;
+    EXPECT_TRUE(ours + allowed >= cmos_seconds && ours <= cmos_seconds + allowed);
+    if (!(ours + allowed >= cmos_seconds && ours <= cmos_seconds + allowed)) {
+        kprintf("    time of day %lu, CMOS clock %lu, allowed %lu\n", ours, cmos_seconds, allowed);
+    }
 
     uint64_t before = walltime_ns(), clock_before = clock_ns();
     nanosleep(30000000);                                                  // 30 ms

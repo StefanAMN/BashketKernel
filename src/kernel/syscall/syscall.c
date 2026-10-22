@@ -1133,6 +1133,10 @@ int64_t syscall_handler(struct registers *regs) {
     uint64_t number = regs->rax;
     task_t *self = sched_get_current_task();
     process_call_ranges_reset(self);   // The buffers this call checks are kept in memory while it runs (swap.h)
+    // Which call it is in, for /proc/<pid>/status. A test that must act once
+    // a process is inside a call (asleep in read(), say) waits for this:
+    // "blocked" alone could also be a disk read in a page fault.
+    if (self) self->in_syscall = (uint32_t)number + 1;
     int64_t result = dispatch(regs);
     process_call_ranges_reset(self);   // ...and no longer: the call is over
 
@@ -1141,6 +1145,7 @@ int64_t syscall_handler(struct registers *regs) {
     // made again (see signal_deliver)
     task_t *caller = sched_get_current_task();
     if (caller) caller->restart_syscall = (result == -EINTR && restartable(number)) ? (uint32_t)number + 1 : 0;
+    if (caller) caller->in_syscall = 0;
 
     // About to return to user code: the system call is complete and nothing
     // is held, so a pending kill can take effect here.

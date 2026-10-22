@@ -1694,6 +1694,11 @@ plan:
     directory protected nothing in it that was readable, so `/root` hid
     nothing from anyone who knew a name. The path walk now takes the
     caller's user id; the kernel's own lookups pass root.)
+12. The time of day is the CMOS clock read at boot plus the calibrated
+    nanosecond clock since, and is never set right again from the CMOS
+    clock: an error in the calibration (a VM host stalling during it) grows
+    with the uptime. On GitHub's runners it passed 2 s within minutes; the
+    test now allows a quarter of the uptime (2026-10-22).
 
 ---
 
