@@ -1674,6 +1674,157 @@ static void check_shared_mappings(void) {
     CHECK(meminfo("Promised:") == promised_before);
 }
 
+/* The server of check_named_local_sockets, in a child: accept one connection,
+ * send back one read, and exit 0 */
+static void local_echo_server(long listener) {
+    long conn = accept((int)listener, NULL);
+    char text[32];
+    long n = conn >= 0 ? read((int)conn, text, sizeof(text)) : -1;
+    if (n <= 0 || write((int)conn, text, (size_t)n) != n) exit(1);
+    exit(0);
+}
+
+/* socketpair: both ways, between two processes, with shutdown and poll */
+static void check_socketpair(void) {
+    int fds[2];
+    char text[16];
+    CHECK(socketpair(fds) == 0);
+    CHECK(syscall1(SYS_SOCKETPAIR, 0x10) == -EFAULT);
+    struct stat st;
+    CHECK(fstat(fds[0], &st) == 0 && st.type == 5);          /* STAT_SOCKET */
+    CHECK(lseek(fds[0], 0, SEEK_SET) == -ESPIPE);
+
+    struct pollfd p = { fds[0], POLLIN | POLLOUT, 0 };
+    CHECK(poll(&p, 1, 0) == 1 && p.revents == POLLOUT);      /* Room to write, nothing to read */
+
+    long pid = fork();
+    if (pid == 0) {
+        close(fds[0]);
+        long n = read(fds[1], text, sizeof(text));
+        if (n != 4 || memcmp(text, "ping", 4) != 0) exit(1);
+        if (write(fds[1], "pong", 4) != 4) exit(2);
+        if (shutdown(fds[1]) != 0 || write(fds[1], "x", 1) != -EPIPE) exit(3);
+        exit(read(fds[1], text, sizeof(text)) == 1 && text[0] == 'k' ? 0 : 4);   /* Reading goes on */
+    }
+    CHECK(write(fds[0], "ping", 4) == 4);
+    CHECK(read(fds[0], text, sizeof(text)) == 4 && memcmp(text, "pong", 4) == 0);
+    CHECK(read(fds[0], text, sizeof(text)) == 0);            /* Its shutdown: end-of-file */
+    CHECK(write(fds[0], "k", 1) == 1);
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    close(fds[1]);                                            /* The child's copy has gone too */
+    CHECK(read(fds[0], text, sizeof(text)) == 0);
+    CHECK(write(fds[0], "x", 1) == -EPIPE);
+    close(fds[0]);
+}
+
+/* A name in the tree: who may connect, what it is to everything else, and
+ * what closing either end does to the other */
+static void check_named_local_sockets(void) {
+    static const char path[] = "/tmp/local-sock";
+    char text[16];
+    int status = -1;
+    CHECK(local_connect(path) == -ENOENT);
+    long listener = local_listen(path, 2);
+    CHECK(listener >= 0);
+    if (listener < 0) return;
+
+    /* What it is to the rest of the system */
+    struct stat st;
+    CHECK(stat(path, &st) == 0 && st.type == 5);
+    CHECK(open(path, O_RDONLY) == -ENXIO);
+    CHECK(open(path, O_WRONLY | O_TRUNC) == -ENXIO);
+    CHECK(local_listen(path, 2) == -EEXIST);
+    CHECK(read((int)listener, text, 1) == -EINVAL && write((int)listener, "x", 1) == -EINVAL);
+    CHECK(local_connect("/etc/motd") == -ECONNREFUSED);      /* Not a socket */
+    if (root_on_disk()) CHECK(local_listen("/root/local-sock", 2) == -EOPNOTSUPP);
+
+    /* A connection, accepted by a child */
+    struct pollfd p = { (int)listener, POLLIN, 0 };
+    CHECK(poll(&p, 1, 0) == 0);
+    long pid = fork();
+    if (pid == 0) local_echo_server(listener);
+    long conn = local_connect(path);
+    CHECK(conn >= 0);
+    CHECK(write((int)conn, "hello", 5) == 5);
+    CHECK(read((int)conn, text, sizeof(text)) == 5 && memcmp(text, "hello", 5) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    close((int)conn);
+
+    /* Who may connect: write permission on the name, through a link too */
+    CHECK(symlink(path, "/tmp/local-link") == 0);
+    conn = local_connect("/tmp/local-link");
+    CHECK(conn >= 0);
+    close((int)conn);
+    long held = accept((int)listener, NULL);
+    CHECK(held >= 0);
+    close((int)held);
+    CHECK(unlink("/tmp/local-link") == 0);
+    CHECK(chmod(path, 0600) == 0);
+    pid = fork();
+    if (pid == 0) {
+        setuid(1000);
+        exit(local_connect(path) == -EACCES ? 0 : 1);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    CHECK(chmod(path, 0666) == 0);
+
+    /* A full queue: the next connect sleeps until an accept makes room */
+    long first = local_connect(path), second = local_connect(path);
+    CHECK(first >= 0 && second >= 0);
+    CHECK(poll(&p, 1, 0) == 1 && p.revents == POLLIN);
+    pid = fork();
+    if (pid == 0) {
+        long third = local_connect(path);
+        exit(third >= 0 && write((int)third, "3", 1) == 1 ? 0 : 1);
+    }
+    CHECK(wait_in_syscall(pid, SYS_LOCAL_CONNECT));
+    held = accept((int)listener, NULL);
+    CHECK(held >= 0);
+    close((int)held);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+
+    /* ...and a signal ends that sleep, as a kill ends the sleeper */
+    pid = fork();
+    if (pid == 0) {
+        signal(SIGUSR1, counting_handler);
+        exit(local_connect(path) == -EINTR ? 0 : 1);
+    }
+    CHECK(wait_in_syscall(pid, SYS_LOCAL_CONNECT));
+    CHECK(kill(pid, SIGUSR1) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    pid = fork();
+    if (pid == 0) exit(local_connect(path) >= 0);
+    CHECK(wait_in_syscall(pid, SYS_LOCAL_CONNECT));
+    CHECK(kill(pid, SIGKILL) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
+
+    /* Closing the listener: connections it never accepted see end-of-file,
+     * the name stays and is refused, and removing it frees the name */
+    close((int)listener);
+    CHECK(read((int)first, text, sizeof(text)) == 0 || read((int)second, text, sizeof(text)) == 0);
+    close((int)first);
+    close((int)second);
+    CHECK(local_connect(path) == -ECONNREFUSED);
+    CHECK(stat(path, &st) == 0);
+    CHECK(unlink(path) == 0);
+    CHECK(stat(path, &st) == -ENOENT);
+
+    /* The name can go first: the listener goes on, reached by no one */
+    listener = local_listen(path, 1);
+    CHECK(listener >= 0);
+    conn = local_connect(path);
+    CHECK(conn >= 0);
+    CHECK(unlink(path) == 0);
+    CHECK(local_connect(path) == -ENOENT);
+    held = accept((int)listener, NULL);
+    CHECK(held >= 0);
+    CHECK(write((int)conn, "z", 1) == 1 && read((int)held, text, 1) == 1 && text[0] == 'z');
+    close((int)conn);
+    close((int)held);
+    close((int)listener);
+}
+
 /* The frame sigreturn reads, as the kernel lays it out (signal.c): the stack
  * pointer at the call is just past `restorer`. Everything but `rip`, `rsp`
  * and the checks' own fields can be left as zeros. */
@@ -4537,6 +4688,8 @@ int main(void) {
     check_shell_words();
     check_shared_mappings();
     check_forged_sigreturn();
+    check_socketpair();
+    check_named_local_sockets();
     check_screen_mapping();
     check_sessions_and_terminal();
     check_shell_control();

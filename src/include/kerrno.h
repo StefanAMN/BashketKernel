@@ -45,6 +45,8 @@
 #define ECONNRESET  104  // Connection reset by the other end
 #define EISCONN     106  // Already connected
 #define ENOTCONN    107  // Not connected
+#define EOPNOTSUPP  95   // Not possible on this kind of object
+#define ENXIO       6    // Nothing can be opened behind this name (a socket)
 #define ETIMEDOUT   110  // Timed out
 #define ECONNREFUSED 111 // Nobody listening on that port
 #define EHOSTUNREACH 113 // No route to host

@@ -58,6 +58,7 @@ bool run_all_tests(void) {
     test_suite_tcp();
     test_suite_rtc();
     test_suite_pipe();
+    test_suite_localsock();
     test_suite_ansi();
     test_suite_priority();
     test_suite_sem();

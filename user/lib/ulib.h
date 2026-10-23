@@ -153,6 +153,9 @@ long rename(const char *from, const char *to);  /* Within one filesystem; fails 
  * then accept for each connection. A connection is read and written like a
  * file; read returns 0 when the other end has closed. */
 long socket(int type);                            /* A new socket, as a file descriptor */
+long socketpair(int fds[2]);                      /* Two connected local stream sockets: read and write, both ways */
+long local_listen(const char *path, int backlog); /* Make path a local socket (not on a disk): a descriptor for accept */
+long local_connect(const char *path);             /* Connect to a local socket, which needs write permission on it */
 long bind(int fd, unsigned port);                 /* The port to receive on (UDP) or to listen on (TCP) */
 long connect(int fd, uint32_t ip, unsigned port); /* TCP: open a connection; waits until it is made */
 long listen(int fd, int backlog);                 /* TCP: take connections on the bound port */

@@ -121,6 +121,7 @@ static void one_call(void) {
         SYS_SIGNAL, SYS_SIGACTION, SYS_SIGPROCMASK, SYS_SIGRETURN, SYS_CHDIR, SYS_SETPRIORITY, SYS_TTY_RAW, SYS_TTY_SIZE, SYS_SOCKET, SYS_NETCONFIG, SYS_DUP, SYS_PIPE2, SYS_FCNTL, SYS_BIND, SYS_CONNECT, SYS_ACCEPT, SYS_LISTEN, SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_PING, SYS_SHMGET, SYS_SHMAT, SYS_SHMRM, SYS_GETUID, SYS_GETEUID, SYS_GETGID, SYS_SETGID, SYS_UMASK, SYS_SETUID, SYS_CHMOD, SYS_CHOWN, SYS_RENAME, SYS_POLL, SYS_LINK, SYS_SYMLINK, SYS_READLINK,
         SYS_ISATTY, SYS_STAT, SYS_LSTAT, SYS_FSTAT, SYS_TRUNCATE, SYS_FTRUNCATE, SYS_UTIME,
         SYS_SETGROUPS, SYS_GETGROUPS, SYS_MSYNC, SYS_SETSID, SYS_GETSID, SYS_TTY_TOSTOP,
+        SYS_SOCKETPAIR, SYS_LOCAL_LISTEN, SYS_LOCAL_CONNECT,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -164,6 +165,12 @@ static void one_call(void) {
             } else {
                 a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
             }
+            break;
+        case SYS_LOCAL_LISTEN:   /* Makes a name: as for O_CREAT above, only under /tmp, or no path */
+            a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
+            break;
+        case SYS_LOCAL_CONNECT:  /* Can sleep only on the fuzzer's own sockets, and a kill ends that */
+            a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
             break;
         case SYS_CHDIR:
             a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
