@@ -603,6 +603,42 @@ TEST(tcp_reassembles_out_of_order_segments) {
     EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
 }
 
+// A listener that closes while a connection is half open (its SYN+ACK sent,
+// the ACK of it not yet in) must not forget it: the other end already
+// counts itself connected and would get a reset for its ACK instead of the
+// end of the stream. (On four CPUs tcp_connect returned before tcpd had
+// sent that ACK, and tcp_refuses_resets_and_rejects read ECONNRESET.) The
+// peer is played by hand from port 40109, everything sent to it dropped.
+TEST(tcp_listener_close_finishes_half_open_connections) {
+    size_t sockets_before = tcp_sockets_in_use();
+    uint64_t resets_before = tcp_stats()->resets_sent;
+    tcp_socket_t *listener = tcp_open();
+    EXPECT_TRUE(listener != NULL);
+    EXPECT_EQ(tcp_bind(listener, 7109), 0);
+    EXPECT_EQ(tcp_listen(listener, 1), 0);
+
+    const uint16_t peer = 40109;
+    const uint32_t s = 9000;                     // The peer's first sequence number
+    uint32_t rcv_nxt = 0, sent = 0, iss = 0;
+    tcp_test_drop_every(1);
+    inject(peer, 7109, s, 0, 0x02, NULL, 0);                        // SYN
+    TEST_WAIT(tcp_test_sequences(7109, peer, &rcv_nxt, &sent, &iss) && sent == iss + 1, 100);
+    EXPECT_EQ(sent, iss + 1);                                       // SYN+ACK out
+    tcp_close(listener);
+    EXPECT_TRUE(tcp_test_sequences(7109, peer, &rcv_nxt, &sent, &iss)); // Still there
+
+    const uint32_t first = iss;                  // (From here on `iss` is the unacknowledged one)
+    inject(peer, 7109, s + 1, first + 1, 0x10, NULL, 0);           // ACK of the SYN+ACK
+    TEST_WAIT(tcp_test_sequences(7109, peer, &rcv_nxt, &sent, &iss) && sent == first + 2, 100);
+    EXPECT_EQ(sent, first + 2);                                     // ... answered by a FIN
+    EXPECT_TRUE(tcp_stats()->resets_sent == resets_before);         // and not by a reset
+
+    inject(peer, 7109, s + 1, 0, 0x04, NULL, 0);                    // A reset from the peer ends it
+    tcp_test_drop_every(0);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
 // Malformed and stray segments must be counted and dropped, not acted on
 TEST(tcp_rejects_bad_segments) {
     uint64_t bad_before = tcp_stats()->bad_segments;
@@ -692,6 +728,7 @@ void test_suite_tcp(void) {
     RUN_TEST(tcp_large_transfer_arrives_intact);
     RUN_TEST(tcp_survives_lost_segments);
     RUN_TEST(tcp_gives_up_on_a_dead_peer);
+    RUN_TEST(tcp_listener_close_finishes_half_open_connections);
     RUN_TEST(tcp_rejects_bad_segments);
     RUN_TEST(tcp_reassembly_list);
     RUN_TEST(tcp_rto_follows_rfc6298);
