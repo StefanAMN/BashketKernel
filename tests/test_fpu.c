@@ -4,6 +4,7 @@
 #include "sched.h"
 #include "kstring.h"
 
+// The state every program starts from: default control words and zeroed XMM registers
 TEST(fpu_clean_state) {
     // The template every program starts from: default control words
     uint8_t state[FPU_STATE_SIZE] __attribute__((aligned(16)));

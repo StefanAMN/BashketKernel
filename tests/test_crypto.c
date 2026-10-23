@@ -23,6 +23,7 @@ static void to_hex(const uint8_t hash[32], char out[65]) {
     out[64] = '\0';
 }
 
+// SHA-256 of "abc", of nothing and of a two-block message, against published digests
 TEST(sha256_known_answers) {
     uint8_t hash[32];
     char hex[65];

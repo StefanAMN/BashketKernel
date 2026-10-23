@@ -101,9 +101,12 @@ bool ext2_volume_marked_clean(void);
 bool ext2_mounted(void);
 
 /**
- * @brief Free blocks and free inodes on the mounted volume (0 if none is).
+ * @brief Free blocks on the mounted volume (0 if none is).
  */
 uint32_t ext2_free_blocks(void);
+/**
+ * @brief Free inodes on the mounted volume (0 if none is).
+ */
 uint32_t ext2_free_inodes(void);
 
 #ifdef KERNEL_TESTS

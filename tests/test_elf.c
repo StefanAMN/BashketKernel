@@ -57,6 +57,8 @@ static void release_program(program_t *program) {
     kfree(program);
 }
 
+// A real program loads at the address asked for, its text mapped user-executable
+// and read-only, with the file's bytes
 TEST(elf_loads_real_program) {
     program_t *file = load_program("/bin/hello");
     EXPECT_TRUE(file != NULL);
@@ -168,6 +170,8 @@ TEST(elf_applies_relocations) {
     release_program(file);
 }
 
+// Left to choose, the loader picks a different page-aligned address each time,
+// inside its range
 TEST(elf_load_address_is_random) {
     program_t *file = load_program("/bin/hello");
     if (!file) return;
@@ -192,6 +196,8 @@ TEST(elf_load_address_is_random) {
     release_program(file);
 }
 
+// Load addresses that are misaligned, outside user space or wrapping are refused,
+// and so are relocations outside the image or of an unknown kind
 TEST(elf_rejects_bad_placement_and_relocations) {
     program_t *file = load_program("/bin/colors");
     if (!file) return;
@@ -330,6 +336,7 @@ TEST(elf_leaves_read_only_segments_to_the_file) {
     release_program(file);
 }
 
+// A copy of a real program, damaged in one way per case, is refused each time
 TEST(elf_rejects_malformed_files) {
     program_t *file = load_program("/bin/hello");
     EXPECT_TRUE(file != NULL);

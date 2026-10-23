@@ -214,6 +214,8 @@ static void draw(void) {
 
 /* --- Keys ------------------------------------------------------------------ */
 
+/* The next byte typed: its value, or -1 at end of input. A signal interrupting
+ * the read does not count: it reads again. */
 static int read_key(void) {
     char c;
     for (;;) {

@@ -104,6 +104,7 @@ static uint32_t fat_cache_sector = 0; // 0: nothing cached (sector 0 is never pa
 
 // Little-endian fields at any alignment: read 16 and 32 bits at `p`
 static uint16_t read16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+// Read a little-endian 32-bit field at `p`
 static uint32_t read32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 
 bool fat32_parse_boot_sector(const uint8_t *sector, uint64_t disk_sectors, fat32_layout_t *out) {

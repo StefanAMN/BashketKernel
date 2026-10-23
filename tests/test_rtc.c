@@ -6,6 +6,7 @@
 #include "kerrno.h"
 #include "kstring.h"
 
+// The CMOS clock gives a believable date
 TEST(rtc_time_read_test) {
     struct rtc_time t;
     rtc_read_time(&t);
@@ -120,6 +121,8 @@ TEST(time_of_day_is_put_right_by_the_cmos_clock) {
     EXPECT_EQ(walltime_set(saved + (clock_ns() - saved_at)), 0);
 }
 
+// walltime_set refuses dates out of range, and file times follow a new date, in
+// memory and on the disk. The time is restored.
 TEST(time_of_day_can_be_set) {
     uint64_t saved = walltime_ns(), saved_at = clock_ns();
     EXPECT_EQ(walltime_set(100ULL * 1000000000ULL), -EINVAL);                       // 1970

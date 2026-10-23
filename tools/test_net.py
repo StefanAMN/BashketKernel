@@ -56,6 +56,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def free_udp_port():
+    """A UDP port on 127.0.0.1 that nothing is using at this moment."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -64,6 +65,7 @@ def free_udp_port():
 
 
 def free_tcp_port():
+    """A TCP port on 127.0.0.1 that nothing is using at this moment."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -195,6 +197,7 @@ def dhcp_and_dns(extra):
     asked = []
 
     def serve():
+        """Thread: answer DNS queries and note them, until `stop` is set."""
         while not stop.is_set():
             try:
                 query, address = server.recvfrom(512)
@@ -262,6 +265,7 @@ def main():
     tcp_from_guest = []
 
     def receive_file_from_guest():
+        """Thread: take one connection, read to end of stream, record it and answer."""
         try:
             conn, _ = tcp_listener.accept()
         except socket.timeout:
@@ -289,6 +293,7 @@ def main():
     tcp_echo_seconds = []   # How long the echo took, from the first byte sent to the last received
 
     def echo_through_guest():
+        """Thread: keep connecting until the guest listens, then send the payload and check the echo."""
         deadline = time.monotonic() + 80
         while time.monotonic() < deadline and not tcp_echoed:
             time.sleep(1)
@@ -300,6 +305,7 @@ def main():
             received = bytearray()
 
             def reader():
+                """Thread: collect the echo while the other thread sends."""
                 try:
                     while len(received) < len(tcp_payload):
                         data = conn.recv(65536)
@@ -341,6 +347,7 @@ def main():
     stop = threading.Event()
 
     def answer_guest():
+        """Thread: record each UDP datagram from the guest and answer it, until `stop` is set."""
         while not stop.is_set():
             try:
                 data, address = listener.recvfrom(2048)
@@ -360,6 +367,7 @@ def main():
     echoed = []
 
     def talk_to_guest():
+        """Thread: send each message until the guest echoes it, or its time runs out."""
         time.sleep(3)
         sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sender.settimeout(0.5)
@@ -385,6 +393,7 @@ def main():
     capture.close()
 
     def knock_on_closed_port():
+        """Thread: send a few datagrams to a port nobody in the guest has bound."""
         time.sleep(4)
         knocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         for _ in range(3):

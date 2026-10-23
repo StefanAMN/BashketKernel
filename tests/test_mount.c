@@ -5,6 +5,8 @@
 #include "kstring.h"
 #include "ext2.h"
 
+// The mount table lists each source where it is attached, each path is a directory,
+// and /proc/mounts shows the same text
 TEST(mount_table_reflects_the_tree) {
     static char text[1024];
     size_t len = mount_describe(text, sizeof(text));
@@ -40,6 +42,8 @@ TEST(mount_table_reflects_the_tree) {
     EXPECT_EQ(memcmp(from_file, text, len), 0);
 }
 
+// mount_register refuses duplicates and missing arguments, a small buffer gets a
+// terminated table, and a full table refuses cleanly
 TEST(mount_table_rules) {
     size_t before = mount_count();
 

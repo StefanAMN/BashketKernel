@@ -8,6 +8,8 @@ typedef struct {
     char data[32];
 } test_obj_t;
 
+// Objects are distinct and usable, freed slots are reused first, and empty pages
+// go back to the frame allocator
 TEST(slab_allocates_distinct_objects_and_returns_pages) {
     size_t frames_before = pmm_get_free_frames();
     size_t heap_before = kheap_get_allocated_bytes();
@@ -74,6 +76,7 @@ TEST(slab_allocates_distinct_objects_and_returns_pages) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// Objects from a cache start at the alignment asked for, 8 to 1024 bytes
 TEST(slab_honours_alignment) {
     size_t aligns[] = { 8, 16, 64, 256, 1024 };
     for (size_t a = 0; a < sizeof(aligns) / sizeof(aligns[0]); a++) {
@@ -92,6 +95,8 @@ TEST(slab_honours_alignment) {
     }
 }
 
+// Impossible caches are refused, the largest object that fits works, and frees
+// that would corrupt a cache are refused and change nothing
 TEST(slab_rejects_bad_requests) {
     size_t frames_before = pmm_get_free_frames();
 

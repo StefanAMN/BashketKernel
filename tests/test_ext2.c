@@ -16,6 +16,7 @@
 //   bob/                  1001:100 0755   hello.txt 0644
 // Its writes are thrown away when the test run ends.
 
+// Replace the file at `path` with `text`, creating it if need be
 static void put_text(const char *path, const char *text) {
     file_t *file = NULL;
     EXPECT_EQ(file_open(path, O_WRONLY | O_CREAT | O_TRUNC, &file), 0);
@@ -24,6 +25,7 @@ static void put_text(const char *path, const char *text) {
     file_close(file);
 }
 
+// The tree built on the host arrives with its owners, modes, sizes and contents
 TEST(ext2_reads_the_image_with_its_owners) {
     EXPECT_TRUE(ext2_mounted());
     vnode_t *home = vfs_find(NULL, "/home");
@@ -93,6 +95,8 @@ TEST(ext2_records_owner_and_mode) {
     EXPECT_TRUE(ext2_free_inodes() == inodes_before && ext2_free_blocks() == blocks_before);
 }
 
+// The byte a test file holds at offset `i`: varies across blocks, so a block
+// read from the wrong place shows
 static uint8_t pattern(size_t i) { return (uint8_t)(i * 13 + (i >> 9) * 7); }
 
 // A file big enough to need a block of block numbers, and a block of those
@@ -165,6 +169,8 @@ TEST(ext2_large_files_and_holes) {
     EXPECT_TRUE(ext2_free_blocks() == blocks_before && ext2_free_inodes() == inodes_before);
 }
 
+// Creating and removing directories: link counts on the disk, a directory that
+// grows past one block, and refusing to remove one that has entries
 TEST(ext2_directories) {
     uint32_t blocks_before = ext2_free_blocks(), inodes_before = ext2_free_inodes();
     vnode_t *home = vfs_find(NULL, "/home");
@@ -244,6 +250,8 @@ TEST(ext2_directories) {
     EXPECT_TRUE(ext2_free_blocks() == blocks_before && ext2_free_inodes() == inodes_before);
 }
 
+// Rename in place and across directories, and the refusals (name taken, another
+// filesystem, a directory into itself), checked after forgetting the nodes
 TEST(ext2_rename_and_move) {
     uint32_t blocks_before = ext2_free_blocks(), inodes_before = ext2_free_inodes();
     vnode_t *home = vfs_find(NULL, "/home");

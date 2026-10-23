@@ -30,11 +30,14 @@ fatsz = struct.unpack_from('<I', boot, 36)[0]
 root = struct.unpack_from('<I', boot, 44)[0]
 data_start = reserved + 2 * fatsz
 def fat_set(cluster, value):
+    """Set entry `cluster` to `value` in both copies of the FAT."""
     for copy in range(2):
         f.seek((reserved + copy * fatsz) * 512 + cluster * 4); f.write(struct.pack('<I', value))
 def fat_get(cluster):
+    """Entry `cluster` of the first FAT."""
     f.seek(reserved * 512 + cluster * 4); return struct.unpack('<I', f.read(4))[0]
 def find(dir_cluster, name11):
+    """Where the 11-byte name is in a directory (its first sector only), and its first cluster; exit if absent."""
     f.seek((data_start + dir_cluster - 2) * 512); d = f.read(512)
     for i in range(0, 512, 32):
         if d[i:i+11] == name11:

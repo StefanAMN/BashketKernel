@@ -288,6 +288,7 @@ static int run_in_foreground(long *pids, int *alive, int count, const char *text
 
 /* Character classes of the command line */
 static int is_operator(char c) { return c == '|' || c == '<' || c == '>'; }
+/* A space or tab, which separates words */
 static int is_blank(char c)    { return c == ' ' || c == '\t'; }
 
 /* Copy the next word from *cursor into word_storage. Handles "double quotes".

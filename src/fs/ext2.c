@@ -137,8 +137,11 @@ static const vnode_ops_t ext2_symlink_ops;
 
 // Little-endian fields at any alignment: read and write 16 and 32 bits at `p`
 static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+// Read a little-endian 32-bit field at `p`
 static uint32_t get32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+// Write a little-endian 16-bit field at `p`
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+// Write a little-endian 32-bit field at `p`
 static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24); }
 
 // --- Blocks ----------------------------------------------------------------------
@@ -1289,6 +1292,7 @@ static uint32_t check_conflicts;  // Things found that this check does not repai
 
 // Bit `n` of a bitmap: test it, set it
 static bool bit_test(const uint8_t *bits, uint32_t n) { return (bits[n / 8] >> (n % 8)) & 1; }
+// Set bit `n` of a bitmap
 static void bit_set(uint8_t *bits, uint32_t n) { bits[n / 8] |= (uint8_t)(1u << (n % 8)); }
 
 // Note that something reachable uses `block`; a block outside the volume,
