@@ -434,6 +434,7 @@ static size_t vfs_read_unlocked(vnode_t *file, size_t offset, size_t count, void
 // See vfs_write. Caller holds the tree lock unless the node has `ops`.
 static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, const void *buf) {
     if (!file || file->type != VFS_FILE || !buf || count == 0) return 0;
+    if (offset > file->size) pcache_file_gap(file, file->size);
     if (file->ops) {
         int64_t n = file->ops->write ? file->ops->write(file, offset, buf, count) : 0;
         if (n > 0) pcache_file_written(file, offset, buf, (size_t)n);   // Its cached pages say what it said before
