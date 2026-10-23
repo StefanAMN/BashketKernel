@@ -1671,7 +1671,8 @@ wrote nothing failed both unit tests and no syscheck check at all, since
 `read()` shows the cached page, and with no write-back at exit
 `make test-home` failed after the reboot. Not done: resident memory per
 process (Q4 says why); a page a truncation extends the file over keeps
-what a mapping wrote past the old end, where POSIX says zeros.
+what a mapping wrote past the old end, where POSIX says zeros (U1: true
+only of a write that leaves a gap, and fixed).
 
 ### Q2. A run queue per CPU (L) — done
 
@@ -2199,6 +2200,41 @@ Sabotage: an assignment that stored nothing failed four checks; a postfix
 `&&` failed three; `?:` evaluating its middle when the condition is false
 passed until a check with the condition false was added.
 
+## Track U — What is still owed, local sockets, threads
+
+Planned 2026-10-31, after track T, from the limits written down earlier
+(each checked in the code first) and from what programs still cannot do.
+
+### U1. A gap after a mapping's writes; a forged signal frame (S) — done
+
+Q1 says a page a truncation extends the file over keeps what a mapping wrote
+past the old end. Checked: a growing `ftruncate` writes zeros through the
+cache and is right. A `write` past the end is not: the gap it leaves shows
+those bytes, where POSIX says zeros. Zero the rest of the old last page when
+a write leaves a gap. Smaller repair 7 says the forged-frame case of
+`sigreturn` has no targeted test: add one, from ring 3, with hand-made frames.
+
+Done as proposed (`pcache_file_gap`; syscheck's `check_forged_sigreturn`).
+Sabotage: forcing no user `cs` made the kernel take a General Protection Fault
+in ring 0, keeping the frame's `rflags` or MXCSR failed the landing check; the
+gap checks failed four times (twice each in memory and on ext2) before the fix.
+
+### U2. Local sockets (M)
+
+Programs on one machine can talk over a pipe (one way, related processes) or
+loopback TCP (a port number, the whole network stack). Add `socketpair` and
+named stream sockets: a socket file in the tree that `listen` waits on and
+`connect` finds by path, with file permissions deciding who may connect.
+
+### U3. Threads (L)
+
+A process is one task: `task_t` holds its memory, files and signal handlers.
+Split out what threads share (address space and regions, descriptors, working
+directory, handlers), add `thread_create`, `thread_exit`, `thread_join` over a
+`futex`, and define what `fork`, `exec`, `exit` and signals do with several.
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -2219,8 +2255,7 @@ plan:
 5. (Done in F4: `kmalloc` and `kfree` no longer walk the heap.)
 6. (Done in G3 and H3: ARP answers age, and a UDP socket holds 64 KiB
    rather than eight datagrams.)
-7. The forged-frame case of `sigreturn` has no targeted test (the frame is
-   sanitised, and the fuzzer makes random `sigreturn` calls).
+7. (Done in U1: `check_forged_sigreturn` makes the frames by hand.)
 8. The `sysretq` non-canonical-address check cannot be demonstrated under
    QEMU, which behaves like AMD CPUs there.
 9. The GitHub Actions workflow failed every run until 2026-10-20: the
