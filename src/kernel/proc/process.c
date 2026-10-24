@@ -176,7 +176,7 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
     image->cmdline_len = 0;                    // (Recorded below once the image is complete)
     task_t *caller = sched_get_current_task();
     vnode_t *file = NULL;
-    vfs_lookup_as(auth_current_uid(), caller ? caller->cwd : NULL, path, true, &file);   // (Refused: NULL)
+    vfs_lookup_as(auth_current_uid(), caller ? caller->proc->cwd : NULL, path, true, &file);   // (Refused: NULL)
     if (!file || file->type != VFS_FILE || file->size == 0) return false;
     if (file->write_count > 0) return false;  // Open for writing: running it would read a moving target (ETXTBSY)
     if (!auth_may_execute(auth_current_uid(), file)) return false;       // Marked as a program, for this user?
@@ -250,17 +250,17 @@ static void apply_image(task_t *task, const user_image_t *image) {
     sched_unlock_irqrestore(flags);
     task->user_entry = image->entry;
     task->user_rsp = image->rsp;
-    memcpy(task->image_segments, image->segments, sizeof(task->image_segments));
-    task->image_segment_count = image->segment_count;
-    task->brk_start = page_align_up(image->image_end);
-    task->brk_end = task->brk_start;
-    task->mmap_next = USER_MMAP_BASE + ((uint64_t)(get_random_u32() & 0xFFFFF) << 12); // Up to 4 GiB in
-    task->stack_top = image->stack_top;
+    memcpy(task->proc->image_segments, image->segments, sizeof(task->proc->image_segments));
+    task->proc->image_segment_count = image->segment_count;
+    task->proc->brk_start = page_align_up(image->image_end);
+    task->proc->brk_end = task->proc->brk_start;
+    task->proc->mmap_next = USER_MMAP_BASE + ((uint64_t)(get_random_u32() & 0xFFFFF) << 12); // Up to 4 GiB in
+    task->proc->stack_top = image->stack_top;
     fpu_state_init(task->fpu_state); // A new program starts with clean FPU registers
     strncpy(task->name, image->name, sizeof(task->name) - 1);
     task->name[sizeof(task->name) - 1] = '\0';
-    task->cmdline_len = image->cmdline_len < TASK_CMDLINE_MAX ? image->cmdline_len : TASK_CMDLINE_MAX;
-    memcpy(task->cmdline, image->cmdline, task->cmdline_len);
+    task->proc->cmdline_len = image->cmdline_len < TASK_CMDLINE_MAX ? image->cmdline_len : TASK_CMDLINE_MAX;
+    memcpy(task->proc->cmdline, image->cmdline, task->proc->cmdline_len);
     region_adopt(task, image->lazy, image->lazy_count, image->lazy_pages);   // The task's from now on
 }
 
@@ -345,9 +345,9 @@ void process_call_ranges_reset(task_t *task) {
 bool process_grow_stack(uint64_t addr) {
     task_t *self = sched_get_current_task();
     if (!self || !self->is_user) return false;
-    if (self->stack_top < USER_STACK_MAX) return false;
-    uint64_t limit = self->stack_top - USER_STACK_MAX;
-    if (addr < limit + PAGE_SIZE || addr >= self->stack_top) return false;
+    if (self->proc->stack_top < USER_STACK_MAX) return false;
+    uint64_t limit = self->proc->stack_top - USER_STACK_MAX;
+    if (addr < limit + PAGE_SIZE || addr >= self->proc->stack_top) return false;
 
     uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
     uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
@@ -375,10 +375,10 @@ pid_t process_spawn(const char *path, char *const argv[]) {
 
     apply_image(task, &image);
     task->detached = false; // The creator is expected to process_wait() for it
-    task->pgid = task->pid; // A process group of its own
-    task->sid = 0;          // The console's session, which has no leader (setsid makes others)
-    task->has_tty = true;
-    task->umask = UMASK_DEFAULT;
+    task->proc->pgid = task->pid; // A process group of its own
+    task->proc->sid = 0;          // The console's session, which has no leader (setsid makes others)
+    task->proc->has_tty = true;
+    task->proc->umask = UMASK_DEFAULT;
 
     // Standard input, output and error all start as the console
     file_t *console = file_open_console();
@@ -386,9 +386,9 @@ pid_t process_spawn(const char *path, char *const argv[]) {
         task_free(task);
         return -1;
     }
-    task->fds[0] = console;
-    task->fds[1] = file_dup(console);
-    task->fds[2] = file_dup(console);
+    task->proc->fds[0] = console;
+    task->proc->fds[1] = file_dup(console);
+    task->proc->fds[2] = file_dup(console);
 
     pid_t pid = (pid_t)task->pid;
     sched_add(task);
@@ -410,17 +410,17 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
 
     // A set-uid program runs as the file's owner, whoever started it. The
     // real user id stays: it is how the program knows who that was.
-    if (image.setuid) self->uid = image.owner;
-    if (image.setgid) self->gid = image.group;   // (Likewise for the group: the real one stays)
+    if (image.setuid) self->proc->uid = image.owner;
+    if (image.setgid) self->proc->gid = image.group;   // (Likewise for the group: the real one stays)
 
     signal_reset_on_exec(self);
 
     // Descriptors marked close-on-exec belong to the old program only
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
-        if (!(self->fd_cloexec & (1u << fd))) continue;
-        file_close(fd_slot_set(self->fds, fd, NULL));
+        if (!(self->proc->fd_cloexec & (1u << fd))) continue;
+        file_close(fd_slot_set(self->proc->fds, fd, NULL));
     }
-    self->fd_cloexec = 0;
+    self->proc->fd_cloexec = 0;
 
     // The old program's floating point registers are still live in the CPU
     fpu_restore(self->fpu_state);
@@ -480,28 +480,28 @@ pid_t process_fork(struct registers *regs) {
     child->is_user = true;
     child->detached = false;
     child->pml4_phys = (uint64_t *)((uint64_t)child_pml4 - pmm_get_hhdm_offset());
-    memcpy(child->image_segments, parent->image_segments, sizeof(child->image_segments));
-    child->image_segment_count = parent->image_segment_count;
-    child->brk_start = parent->brk_start;
-    child->brk_end = parent->brk_end;
-    child->uid = parent->uid;
-    child->ruid = parent->ruid;
-    child->gid = parent->gid;
-    child->rgid = parent->rgid;
-    memcpy(child->groups, parent->groups, sizeof(child->groups));
-    child->group_count = parent->group_count;
-    child->umask = parent->umask;
-    child->mmap_next = parent->mmap_next;
+    memcpy(child->proc->image_segments, parent->proc->image_segments, sizeof(child->proc->image_segments));
+    child->proc->image_segment_count = parent->proc->image_segment_count;
+    child->proc->brk_start = parent->proc->brk_start;
+    child->proc->brk_end = parent->proc->brk_end;
+    child->proc->uid = parent->proc->uid;
+    child->proc->ruid = parent->proc->ruid;
+    child->proc->gid = parent->proc->gid;
+    child->proc->rgid = parent->proc->rgid;
+    memcpy(child->proc->groups, parent->proc->groups, sizeof(child->proc->groups));
+    child->proc->group_count = parent->proc->group_count;
+    child->proc->umask = parent->proc->umask;
+    child->proc->mmap_next = parent->proc->mmap_next;
     region_fork(child, parent);
-    child->stack_top = parent->stack_top;
-    memcpy(child->sig_handlers, parent->sig_handlers, sizeof(child->sig_handlers));
-    memcpy(child->sig_masks, parent->sig_masks, sizeof(child->sig_masks));
-    memcpy(child->sig_flags, parent->sig_flags, sizeof(child->sig_flags));
+    child->proc->stack_top = parent->proc->stack_top;
+    memcpy(child->proc->sig_handlers, parent->proc->sig_handlers, sizeof(child->proc->sig_handlers));
+    memcpy(child->proc->sig_masks, parent->proc->sig_masks, sizeof(child->proc->sig_masks));
+    memcpy(child->proc->sig_flags, parent->proc->sig_flags, sizeof(child->proc->sig_flags));
     child->sig_blocked = parent->sig_blocked; // What is pending for the parent is the parent's alone
-    child->sig_restorer = parent->sig_restorer;
-    memcpy(child->cmdline, parent->cmdline, parent->cmdline_len); // The same program, until it execs
-    child->cmdline_len = parent->cmdline_len;
-    task_set_cwd(child, parent->cwd);
+    child->proc->sig_restorer = parent->proc->sig_restorer;
+    memcpy(child->proc->cmdline, parent->proc->cmdline, parent->proc->cmdline_len); // The same program, until it execs
+    child->proc->cmdline_len = parent->proc->cmdline_len;
+    task_set_cwd(child, parent->proc->cwd);
 
     // The parent is running, so its FPU registers are in the CPU, not in its
     // task struct: save them straight into the child.
@@ -509,12 +509,12 @@ pid_t process_fork(struct registers *regs) {
 
     // The child shares the parent's open files, positions included
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
-        child->fds[fd] = file_dup(parent->fds[fd]);
+        child->proc->fds[fd] = file_dup(parent->proc->fds[fd]);
     }
-    child->fd_cloexec = parent->fd_cloexec;
-    child->pgid = parent->pgid;
-    child->sid = parent->sid;
-    child->has_tty = parent->has_tty;
+    child->proc->fd_cloexec = parent->proc->fd_cloexec;
+    child->proc->pgid = parent->proc->pgid;
+    child->proc->sid = parent->proc->sid;
+    child->proc->has_tty = parent->proc->has_tty;
 
     // The child's kernel stack starts with a copy of the parent's syscall
     // frame, except that its syscall "returns" 0. Below the frame goes the
@@ -561,7 +561,7 @@ pid_t process_wait_options(pid_t pid, int *status, int options) {
         bool have_child = false;
 
         for (task_t *t = sched_first_task(); t; t = t->next) {
-            if (t->parent_pid != self->pid || t == self || t->detached) continue;
+            if (t->proc->parent_pid != self->pid || t == self || t->detached) continue;
             if (pid != -1 && (pid_t)t->pid != pid) continue;
 
             have_child = true;
@@ -641,12 +641,12 @@ int process_set_foreground(uint32_t pgid) {
     // Only a process whose session the console belongs to may give it to
     // a group, and only to a group of that session (POSIX tcsetpgrp)
     if (self->is_user) {
-        if (!self->has_tty) return -ENOTTY;
+        if (!self->proc->has_tty) return -ENOTTY;
         if (pgid != 0) {
             bool in_session = false;
             uint64_t flags = sched_lock_irqsave();
             for (task_t *t = sched_first_task(); t && !in_session; t = t->next) {
-                if (t->is_user && t->pgid == pgid && t->sid == self->sid && t->state != TASK_ZOMBIE) in_session = true;
+                if (t->is_user && t->proc->pgid == pgid && t->proc->sid == self->proc->sid && t->state != TASK_ZOMBIE) in_session = true;
             }
             sched_unlock_irqrestore(flags);
             if (!in_session) return -EPERM;
@@ -672,15 +672,15 @@ int64_t process_setsid(void) {
     // A group leader may not: its group would be split across two sessions
     bool leader = false;
     for (task_t *t = sched_first_task(); t && !leader; t = t->next) {
-        if (t->pgid == self->pid && t->state != TASK_ZOMBIE) leader = true;
+        if (t->proc->pgid == self->pid && t->state != TASK_ZOMBIE) leader = true;
     }
     if (leader) {
         sched_unlock_irqrestore(flags);
         return -EPERM;
     }
-    self->sid = self->pid;
-    self->pgid = self->pid;
-    self->has_tty = false;          // A new session starts without a terminal (and there is only one)
+    self->proc->sid = self->pid;
+    self->proc->pgid = self->pid;
+    self->proc->has_tty = false;          // A new session starts without a terminal (and there is only one)
     sched_unlock_irqrestore(flags);
     return (int64_t)self->pid;
 }
@@ -688,11 +688,11 @@ int64_t process_setsid(void) {
 int64_t process_getsid(pid_t pid) {
     task_t *self = sched_get_current_task();
     if (!self) return -ESRCH;
-    if (pid == 0) return (int64_t)self->sid;
+    if (pid == 0) return (int64_t)self->proc->sid;
     int64_t sid = -ESRCH;
     uint64_t flags = sched_lock_irqsave();
     task_t *t = sched_find_task_locked((uint32_t)pid);
-    if (t && t->is_user) sid = t->sid;
+    if (t && t->is_user) sid = t->proc->sid;
     sched_unlock_irqrestore(flags);
     return sid;
 }
@@ -707,9 +707,9 @@ int64_t process_getsid(pid_t pid) {
 // scheduler lock.
 static bool group_orphaned_locked(uint32_t pgid, uint32_t sid, uint32_t init) {
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (!t->is_user || t->pgid != pgid || t->state == TASK_ZOMBIE) continue;
-        task_t *parent = sched_find_task_locked(t->parent_pid);
-        if (parent && parent->is_user && parent->pgid != pgid && parent->sid == sid && parent->state != TASK_ZOMBIE &&
+        if (!t->is_user || t->proc->pgid != pgid || t->state == TASK_ZOMBIE) continue;
+        task_t *parent = sched_find_task_locked(t->proc->parent_pid);
+        if (parent && parent->is_user && parent->proc->pgid != pgid && parent->proc->sid == sid && parent->state != TASK_ZOMBIE &&
             (init == 0 || parent->pid != init)) {
             return false;
         }
@@ -726,24 +726,24 @@ int process_terminal_access(bool writing) {
         uint32_t fg = foreground_pgid;
         // In the foreground, or no job control, or not this session's
         // terminal (setsid), or a write with tostop off: go ahead
-        if (!self->has_tty || fg == 0 || self->pgid == fg || (writing && !terminal_tostop)) {
+        if (!self->proc->has_tty || fg == 0 || self->proc->pgid == fg || (writing && !terminal_tostop)) {
             sched_unlock_irqrestore(flags);
             return 0;
         }
         int sig = writing ? SIGTTOU : SIGTTIN;
-        bool refused = self->sig_handlers[sig] == (uint64_t)SIG_IGN || (self->sig_blocked & (1u << sig));
+        bool refused = self->proc->sig_handlers[sig] == (uint64_t)SIG_IGN || (self->sig_blocked & (1u << sig));
         if (refused) {
             // POSIX: a background read whose signal would be lost fails; a
             // write goes ahead
             sched_unlock_irqrestore(flags);
             return writing ? 0 : -EIO;
         }
-        if (group_orphaned_locked(self->pgid, self->sid, init)) {
+        if (group_orphaned_locked(self->proc->pgid, self->proc->sid, init)) {
             sched_unlock_irqrestore(flags);
             return -EIO;            // Stopped, it would never be continued
         }
         for (task_t *t = sched_first_task(); t; t = t->next) {
-            if (t->is_user && t->pgid == self->pgid) signal_send_locked(t, sig);
+            if (t->is_user && t->proc->pgid == self->proc->pgid) signal_send_locked(t, sig);
         }
         sched_unlock_irqrestore(flags);
         // A handler: the call ends so that it runs. Otherwise the signal
@@ -772,7 +772,7 @@ bool process_signal_foreground(int sig) {
 
     uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (t->is_user && (pgid == 0 || t->pgid == pgid)) signal_send_locked(t, sig);
+        if (t->is_user && (pgid == 0 || t->proc->pgid == pgid)) signal_send_locked(t, sig);
     }
     sched_unlock_irqrestore(flags);
     return true;
@@ -788,8 +788,8 @@ int process_kill_group(uint32_t pgid, int sig, uint32_t sender_uid) {
     int sent = 0;
     uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (!t->is_user || t->pgid != pgid || t->state == TASK_ZOMBIE) continue;
-        if (!auth_may_signal(sender_uid, t->uid)) continue;
+        if (!t->is_user || t->proc->pgid != pgid || t->state == TASK_ZOMBIE) continue;
+        if (!auth_may_signal(sender_uid, t->proc->uid)) continue;
         signal_send_locked(t, sig);
         sent++;
     }
@@ -809,15 +809,15 @@ int process_set_group(pid_t pid, uint32_t pgid) {
     // Only for oneself or one's own child in one's own session, never for a
     // session leader, and only into a group of one's own making in that
     // session: the target's own, or one that a relative already leads
-    if (target && target->is_user && (target == self || target->parent_pid == self->pid) &&
-        target->sid == self->sid && target->sid != target->pid) {
+    if (target && target->is_user && (target == self || target->proc->parent_pid == self->pid) &&
+        target->proc->sid == self->proc->sid && target->proc->sid != target->pid) {
         bool exists = pgid == target->pid;
         for (task_t *t = sched_first_task(); t && !exists; t = t->next) {
-            if (t->pgid == pgid && t->sid == self->sid &&
-                (t == self || t->parent_pid == self->pid || t->parent_pid == self->parent_pid)) exists = true;
+            if (t->proc->pgid == pgid && t->proc->sid == self->proc->sid &&
+                (t == self || t->proc->parent_pid == self->pid || t->proc->parent_pid == self->proc->parent_pid)) exists = true;
         }
         if (exists) {
-            target->pgid = pgid;
+            target->proc->pgid = pgid;
             result = 0;
         }
     }

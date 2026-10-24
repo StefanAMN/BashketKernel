@@ -273,10 +273,21 @@ void sched_idle_loop(void) {
 static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool assign_pid);
 static void finish_switch(void);
 
+// A new process structure in use by one task, all zero; NULL if memory runs out
+static process_t *process_alloc(void) {
+    process_t *proc = (process_t *)kmalloc(sizeof(process_t));
+    if (!proc) return NULL;
+    memset(proc, 0, sizeof(process_t));
+    proc->refs = 1;
+    return proc;
+}
+
 void sched_init(void) {
     // Create PID 0 representation for the main running kernel execution context
     task_t *main_task = (task_t *)kmalloc(sizeof(task_t));
     memset(main_task, 0, sizeof(task_t));
+    main_task->proc = process_alloc();
+    if (!main_task->proc) panic("sched_init: no memory for PID 0");
     main_task->name[0] = 'k'; main_task->name[1] = 'e'; main_task->name[2] = 'r'; main_task->name[3] = 'n';
     main_task->name[4] = 'e'; main_task->name[5] = 'l'; main_task->name[6] = '_'; main_task->name[7] = 'm';
     main_task->name[8] = 'a'; main_task->name[9] = 'i'; main_task->name[10] = 'n'; main_task->name[11] = '\0';
@@ -333,6 +344,11 @@ task_t *sched_prepare_cpu(uint32_t cpu_id) {
     task_t *idle = (task_t *)kmalloc(sizeof(task_t));
     if (!idle) return NULL;
     memset(idle, 0, sizeof(task_t));
+    idle->proc = process_alloc();
+    if (!idle->proc) {
+        kfree(idle);
+        return NULL;
+    }
     idle->name[0] = 'i'; idle->name[1] = 'd'; idle->name[2] = 'l'; idle->name[3] = 'e'; idle->name[4] = '\0';
     idle->pid = IDLE_PID;
     idle->state = TASK_RUNNING;
@@ -376,6 +392,11 @@ static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool a
     task_t *t = (task_t *)kmalloc(sizeof(task_t));
     if (!t) return NULL;
     memset(t, 0, sizeof(task_t));
+    t->proc = process_alloc();
+    if (!t->proc) {
+        kfree(t);
+        return NULL;
+    }
 
     if (name) {
         size_t i = 0;
@@ -390,6 +411,7 @@ static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool a
     // Allocate a 16 KiB kernel stack with an unmapped guard page below it
     t->kernel_stack = kstack_alloc();
     if (!t->kernel_stack) {
+        kfree(t->proc);
         kfree(t);
         return NULL;
     }
@@ -400,7 +422,7 @@ static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool a
     t->sleeping_on = -1;
     t->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys(); // Kernel threads share the kernel address space
     t->detached = true;
-    t->parent_pid = current_task ? current_task->pid : 0;
+    t->proc->parent_pid = current_task ? current_task->pid : 0;
     t->priority = current_task ? current_task->priority : PRIO_NORMAL; // Inherited
 
     // Assign the PID now so the creator can use it before the task ever runs
@@ -455,14 +477,14 @@ void task_set_cwd(task_t *task, vnode_t *dir) {
     // it can not be removed from under them
     vfs_lock();
     if (dir) dir->open_count++;
-    if (task->cwd) task->cwd->open_count--;
-    task->cwd = dir;
+    if (task->proc->cwd) task->proc->cwd->open_count--;
+    task->proc->cwd = dir;
     vfs_unlock();
 }
 
 void task_free(task_t *t) {
     if (!t) return;
-    file_close_all(t->fds); // Normally already empty: closed when it died
+    file_close_all(t->proc->fds); // Normally already empty: closed when it died
     region_release_all(t);  // Likewise (but a task that never ran still holds its program's file)
     task_set_cwd(t, NULL);
     if (t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
@@ -473,6 +495,7 @@ void task_free(task_t *t) {
     }
     kfree(t->io_buffer);
     kfree(t->datagram_buffer);
+    kfree(t->proc);
     kfree(t);
 }
 
@@ -900,7 +923,7 @@ static void stop_current(task_t *self) {
 
     // The parent may be waiting to hear of this (waitpid with WUNTRACED)
     for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->pid == self->parent_pid && t != self) {
+        if (t->pid == self->proc->parent_pid && t != self) {
             wakeup_locked(t);
             signal_send_locked(t, SIGCHLD);
             break;
@@ -916,7 +939,7 @@ void sched_check_kill(void) {
 
     // The same safe point serves for giving up pages a truncation has cut
     // off from shared mappings' files (cheap when nothing was truncated)
-    if (self->is_user && self->seen_truncations != pcache_truncations()) region_revalidate(self);
+    if (self->is_user && self->proc->seen_truncations != pcache_truncations()) region_revalidate(self);
 
     // The same safe point serves for being stopped: the task holds nothing
     if (self->stop_pending) {
@@ -1094,7 +1117,7 @@ void task_exit_status(int status) {
     // other end of a pipe must see end-of-file as soon as the writer dies.
     // (Done before taking the scheduler lock: closing takes other locks
     // and may sleep.)
-    file_close_all(self->fds);
+    file_close_all(self->proc->fds);
     task_set_cwd(self, NULL);
 
     // Its memory goes now too, not when someone collects its exit status: a
@@ -1135,16 +1158,16 @@ void task_exit_status(int status) {
     task_t *parent = NULL;
     bool adopted = false;
     for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->parent_pid == self->pid && t != self) {
+        if (t->proc->parent_pid == self->pid && t != self) {
             if (init_task) {
-                t->parent_pid = init_task->pid;
+                t->proc->parent_pid = init_task->pid;
                 adopted = true;
             } else {
                 t->detached = true;
                 if (t->state == TASK_ZOMBIE) wakeup_locked(&reaper_channel); // Dead already, and now nobody's
             }
         }
-        if (t->pid == self->parent_pid && t != self) parent = t;
+        if (t->pid == self->proc->parent_pid && t != self) parent = t;
     }
     if (adopted) {
         wakeup_locked(init_task);

@@ -75,7 +75,7 @@ static void act_on_pending(task_t *task) {
     uint32_t ready = task->sig_pending & ~task->sig_blocked;
     for (int sig = 1; sig < TASK_NSIG && ready; sig++) {
         if (!(ready & (1u << sig))) continue;
-        uint64_t handler = task->sig_handlers[sig];
+        uint64_t handler = task->proc->sig_handlers[sig];
         if (handler == SIG_DFL) {
             task->sig_pending &= ~(1u << sig);
             if (default_is_stop(sig)) sched_request_stop(task, sig);
@@ -102,15 +102,15 @@ int signal_set_action(task_t *task, int sig, const struct signal_action *action,
 
     uint64_t flags = sched_lock_irqsave();
     if (old) {
-        old->handler = task->sig_handlers[sig];
-        old->mask = task->sig_masks[sig];
-        old->flags = task->sig_flags[sig];
+        old->handler = task->proc->sig_handlers[sig];
+        old->mask = task->proc->sig_masks[sig];
+        old->flags = task->proc->sig_flags[sig];
     }
     if (action) {
-        task->sig_handlers[sig] = action->handler;
-        task->sig_masks[sig] = action->mask & ~UNBLOCKABLE;
-        task->sig_flags[sig] = (uint8_t)action->flags;
-        if (action->handler != SIG_DFL && action->handler != SIG_IGN) task->sig_restorer = restorer;
+        task->proc->sig_handlers[sig] = action->handler;
+        task->proc->sig_masks[sig] = action->mask & ~UNBLOCKABLE;
+        task->proc->sig_flags[sig] = (uint8_t)action->flags;
+        if (action->handler != SIG_DFL && action->handler != SIG_IGN) task->proc->sig_restorer = restorer;
 
         // One that is now ignored has nothing left to deliver
         bool ignored = action->handler == SIG_IGN || (action->handler == SIG_DFL && default_is_ignore(sig));
@@ -162,7 +162,7 @@ void signal_send_locked(task_t *task, int sig) {
     }
 
     // A signal that would be ignored is dropped at once, blocked or not
-    uint64_t handler = task->sig_handlers[sig];
+    uint64_t handler = task->proc->sig_handlers[sig];
     if (handler == SIG_IGN || (handler == SIG_DFL && default_is_ignore(sig))) return;
 
     task->sig_pending |= (1u << sig);
@@ -171,13 +171,13 @@ void signal_send_locked(task_t *task, int sig) {
 
 void signal_reset_on_exec(task_t *task) {
     for (int sig = 0; sig < TASK_NSIG; sig++) {
-        if (task->sig_handlers[sig] != SIG_IGN) task->sig_handlers[sig] = SIG_DFL;
-        task->sig_masks[sig] = 0;
-        task->sig_flags[sig] = 0;
+        if (task->proc->sig_handlers[sig] != SIG_IGN) task->proc->sig_handlers[sig] = SIG_DFL;
+        task->proc->sig_masks[sig] = 0;
+        task->proc->sig_flags[sig] = 0;
     }
     // (The set of blocked signals stays: a program is started with whatever
     // its parent arranged, and what is pending stays pending.)
-    task->sig_restorer = 0;
+    task->proc->sig_restorer = 0;
     uint64_t flags = sched_lock_irqsave();
     act_on_pending(task);   // Signals whose handlers have just gone now have their default effect
     sched_unlock_irqrestore(flags);
@@ -206,13 +206,13 @@ void signal_deliver(struct registers *regs) {
         if (ready & (1u << s)) { sig = s; break; }
     }
     if (sig) task->sig_pending &= ~(1u << sig);
-    uint64_t handler = sig ? task->sig_handlers[sig] : SIG_IGN;
+    uint64_t handler = sig ? task->proc->sig_handlers[sig] : SIG_IGN;
     uint32_t blocked_before = task->sig_blocked;
-    bool restarts = sig && (task->sig_flags[sig] & SA_RESTART);
+    bool restarts = sig && (task->proc->sig_flags[sig] & SA_RESTART);
     // While the handler runs its own signal is held back (it would otherwise
     // interrupt itself), along with whatever the program asked for
     if (sig && handler != SIG_IGN && handler != SIG_DFL) {
-        task->sig_blocked |= (task->sig_masks[sig] | (1u << sig)) & ~UNBLOCKABLE;
+        task->sig_blocked |= (task->proc->sig_masks[sig] | (1u << sig)) & ~UNBLOCKABLE;
     }
     sched_unlock_irqrestore(flags);
 
@@ -235,7 +235,7 @@ void signal_deliver(struct registers *regs) {
 
     // Build the frame in kernel memory, then copy it out in one piece
     signal_frame_t frame;
-    frame.restorer = task->sig_restorer;
+    frame.restorer = task->proc->sig_restorer;
     frame.signo = (uint64_t)sig;
     frame.blocked = blocked_before;
     frame.regs = *regs;

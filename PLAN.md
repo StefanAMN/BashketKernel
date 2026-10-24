@@ -2247,9 +2247,58 @@ not count its bytes.
 ### U3. Threads (L)
 
 A process is one task: `task_t` holds its memory, files and signal handlers.
-Split out what threads share (address space and regions, descriptors, working
-directory, handlers), add `thread_create`, `thread_exit`, `thread_join` over a
-`futex`, and define what `fork`, `exec`, `exit` and signals do with several.
+So far each address space has had exactly one running task, and much of the
+kernel leans on that without saying so. Threads end it. Staged, each stage
+merged on its own after `make check`:
+
+**U3a. Split the process out of the task (no change in behaviour).** What
+threads will share moves into a counted `process_t` that `task->proc` points
+at: regions, heap limits, descriptors, credentials, working directory,
+process group and session, signal dispositions, program arguments. Per task
+stay the kernel stack, scheduling and wait state, FPU registers, blocked and
+pending signals, `io_buffer` and the call ranges. `pml4_phys` stays too, as
+"what this CPU loads": a thread leaves for the kernel's tables as it dies.
+
+**U3b. Make the shared state safe.**
+- A sleeping `mem_lock` per process around everything that reads or changes
+  its regions and heap limits (faults, `process_populate`, `mmap`, `munmap`,
+  `brk`, giving pages to swap). Held only across attempts, never across a
+  wait a kill can end (`swap_may_retry` runs outside it).
+- User TLB shootdown. "A user address space is live on one CPU" stops being
+  true: a page-table change in a process with several threads is flushed on
+  the other CPUs, before the frame is freed.
+- A buffer a system call has checked stays usable. The kernel has no fault
+  recovery for its own accesses to user memory: another thread's `munmap`
+  between the check and the copy would be a kernel fault, possibly under a
+  lock. The call ranges already record what each call has checked. `munmap`
+  and shrinking `brk` refuse with `EBUSY` a range another thread's call has
+  checked; swap keeps the ranges of every thread; `fork` gives each such
+  range its private copy again after marking pages copy-on-write. EBUSY is
+  this kernel's answer where Linux has exception tables: such a program is
+  already racing with itself.
+- Descriptors. A file found in the table is pinned for the rest of the call
+  in slots owned by the task (`call_files`), dropped at system call return
+  or by the task's death, as `io_buffer` is: a reference on the stack would
+  leak when a sleeper is killed. So `close` during another thread's `read`
+  cannot free the file under it; the file lasts until that call ends.
+
+**U3c. The calls.** `thread_create(entry, stack, arg)`, `thread_exit(status)`,
+`thread_join(tid, &status)`, `gettid`, `futex_wait(addr, expected, timeout)`,
+`futex_wake(addr, count)` (within one process), and user-space mutexes on
+them. Rules:
+- `getpid` is the process's; a pid names a process, so `kill`, `waitpid`
+  and `/proc` take only that.
+- `exit`, or a fatal signal in any thread, ends them all; files and memory
+  go when the last thread does, and the parent hears then.
+- `fork` copies only the caller, which becomes the child's only thread.
+- `exec` ends the other threads and waits for them, then goes on; the caller
+  takes the pid over if it was not the first thread.
+- A signal sent to a process goes to the first thread not blocking it (or
+  stays pending on the first thread); handlers are per process, masks per
+  thread. A stop stops all of them; SIGCONT continues all of them.
+
+Not planned: `pthread_kill`, process-shared futexes, thread-local storage
+(each thread has only its stack; `errno`-style globals are shared).
 
 ---
 

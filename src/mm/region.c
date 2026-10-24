@@ -36,15 +36,15 @@ static uint64_t *space_of(const struct task *task) {
 // Count `pages` more as promised to `task` and not yet given a frame: in its
 // own total and in the system's (which limits what can be promised)
 static void charge(struct task *task, size_t pages) {
-    task->promised_pages += pages;
+    task->proc->promised_pages += pages;
     __atomic_add_fetch(&promised_total, pages, __ATOMIC_RELAXED);
 }
 
 // The reverse of charge: `pages` of the task's promise have been kept (given
 // a frame) or withdrawn (unmapped). Never takes more than the task has.
 static void uncharge(struct task *task, size_t pages) {
-    if (pages > task->promised_pages) pages = task->promised_pages;
-    task->promised_pages -= pages;
+    if (pages > task->proc->promised_pages) pages = task->proc->promised_pages;
+    task->proc->promised_pages -= pages;
     __atomic_sub_fetch(&promised_total, pages, __ATOMIC_RELAXED);
 }
 
@@ -133,13 +133,13 @@ void region_adopt(struct task *task, const mem_region_t *regions, uint32_t count
         mem_region_t *slot = free_slot(task);
         if (slot) *slot = regions[i];      // (Always: the caller made room)
     }
-    task->promised_pages += pages;         // Already in the system's total (region_reserve)
+    task->proc->promised_pages += pages;         // Already in the system's total (region_reserve)
 }
 
 // An unused entry of the task's table of regions, or NULL if all are in use
 static mem_region_t *free_slot(struct task *task) {
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        if (task->regions[i].end == 0) return &task->regions[i];
+        if (task->proc->regions[i].end == 0) return &task->proc->regions[i];
     }
     return NULL;
 }
@@ -153,7 +153,7 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
 
     uint64_t size = page_align_up(length);
     if (size < length) return 0; // Overflow
-    uint64_t addr = task->mmap_next;
+    uint64_t addr = task->proc->mmap_next;
     *error = -ENOMEM;
     if (addr >= USER_MMAP_END || size > USER_MMAP_END - addr) return 0;
 
@@ -181,7 +181,7 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
     }
     if (!device) charge(task, size / PAGE_SIZE);
 
-    task->mmap_next = addr + size;
+    task->proc->mmap_next = addr + size;
     *error = 0;
     return addr;
 }
@@ -194,7 +194,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
     // Cutting a hole in the middle of a region leaves two: make sure there
     // is somewhere to record the second before changing anything
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        mem_region_t *r = &task->regions[i];
+        mem_region_t *r = &task->proc->regions[i];
         if (r->end != 0 && r->start < addr && end < r->end && !free_slot(task)) return -ENOMEM;
     }
 
@@ -204,7 +204,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
     struct { struct vnode *node; uint64_t first, end; } written[TASK_MAX_REGIONS];
     int written_count = 0;
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        mem_region_t *r = &task->regions[i];
+        mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0 || !r->shared || r->end <= addr || end <= r->start) continue;
         uint64_t cut_start = r->start > addr ? r->start : addr;
         uint64_t cut_end = r->end < end ? r->end : end;
@@ -216,7 +216,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
     }
 
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        mem_region_t *r = &task->regions[i];
+        mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0 || r->end <= addr || end <= r->start) continue;
 
         uint64_t cut_start = r->start > addr ? r->start : addr;
@@ -261,19 +261,19 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
 uint64_t region_set_brk(struct task *task, uint64_t new_brk) {
     // Out-of-range requests leave the break where it is; the caller sees the
     // unchanged value and knows the request failed (Linux brk semantics).
-    if (new_brk < task->brk_start || new_brk > task->brk_start + USER_BRK_MAX) return task->brk_end;
+    if (new_brk < task->proc->brk_start || new_brk > task->proc->brk_start + USER_BRK_MAX) return task->proc->brk_end;
 
-    uint64_t old_top = page_align_up(task->brk_end);
+    uint64_t old_top = page_align_up(task->proc->brk_end);
     uint64_t new_top = page_align_up(new_brk);
     if (new_top > old_top) {
         size_t pages = (new_top - old_top) / PAGE_SIZE;
-        if (!can_promise(pages)) return task->brk_end;
+        if (!can_promise(pages)) return task->proc->brk_end;
         charge(task, pages);
     } else if (new_top < old_top) {
         uncharge(task, untouched_pages(task, new_top, old_top));
         user_unmap_range(space_of(task), new_top, old_top - new_top);
     }
-    task->brk_end = new_brk;
+    task->proc->brk_end = new_brk;
     return new_brk;
 }
 
@@ -289,12 +289,12 @@ int region_fault(struct task *task, uint64_t addr) {
     uint64_t file_offset = 0;
     bool found = false, shared = false, device = false;
 
-    if (page >= task->brk_start && page < page_align_up(task->brk_end)) {
+    if (page >= task->proc->brk_start && page < page_align_up(task->proc->brk_end)) {
         prot = PROT_READ | PROT_WRITE;                    // The heap
         found = true;
     }
     for (int i = 0; i < TASK_MAX_REGIONS && !found; i++) {
-        const mem_region_t *r = &task->regions[i];
+        const mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0 || page < r->start || page >= r->end) continue;
         prot = r->prot;
         node = r->node;
@@ -371,17 +371,17 @@ int region_fault(struct task *task, uint64_t addr) {
 }
 
 void region_fork(struct task *child, const struct task *parent) {
-    memcpy(child->regions, parent->regions, sizeof(child->regions));
+    memcpy(child->proc->regions, parent->proc->regions, sizeof(child->proc->regions));
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        if (child->regions[i].end == 0) continue;
-        pin(&child->regions[i], +1);
-        hold_device(&child->regions[i], +1);     // (The parent holds it already: this cannot be refused)
+        if (child->proc->regions[i].end == 0) continue;
+        pin(&child->proc->regions[i], +1);
+        hold_device(&child->proc->regions[i], +1);     // (The parent holds it already: this cannot be refused)
     }
     // The child may touch every page the parent has not: the same promise
     // made a second time. (Not refused for lack of memory: fork has its own
     // check, and a process that cannot fork cannot run a command either.)
-    child->promised_pages = 0;
-    charge(child, parent->promised_pages);
+    child->proc->promised_pages = 0;
+    charge(child, parent->proc->promised_pages);
 }
 
 // Done with a region taken off its task: what a shared mapping wrote goes
@@ -399,24 +399,24 @@ static void put_region(const mem_region_t *gone) {
 void region_release_all(struct task *task) {
     // Each entry is cleared before its file is unpinned (see region_unmap)
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        mem_region_t *r = &task->regions[i];
+        mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0) continue;
         mem_region_t gone = *r;
         memset(r, 0, sizeof(*r));
         put_region(&gone);
     }
-    uncharge(task, task->promised_pages);
+    uncharge(task, task->proc->promised_pages);
 }
 
 mem_region_t *region_take_all(struct task *task) {
-    mem_region_t *taken = kmalloc(sizeof(task->regions));
+    mem_region_t *taken = kmalloc(sizeof(task->proc->regions));
     if (!taken) {
         region_release_all(task);           // At once, then: written back while still mapped
         return NULL;
     }
-    memcpy(taken, task->regions, sizeof(task->regions));
-    memset(task->regions, 0, sizeof(task->regions));
-    uncharge(task, task->promised_pages);
+    memcpy(taken, task->proc->regions, sizeof(task->proc->regions));
+    memset(task->proc->regions, 0, sizeof(task->proc->regions));
+    uncharge(task, task->proc->promised_pages);
     return taken;
 }
 
@@ -435,9 +435,9 @@ int region_sync(struct task *task, uint64_t addr, size_t length) {
     uint64_t *space = space_of(task);
     for (uint64_t cursor = addr; cursor < end; ) {
         uint64_t next = 0;
-        if (cursor >= task->brk_start && cursor < page_align_up(task->brk_end)) next = page_align_up(task->brk_end);
+        if (cursor >= task->proc->brk_start && cursor < page_align_up(task->proc->brk_end)) next = page_align_up(task->proc->brk_end);
         for (int i = 0; i < TASK_MAX_REGIONS && !next; i++) {
-            const mem_region_t *r = &task->regions[i];
+            const mem_region_t *r = &task->proc->regions[i];
             if (r->end != 0 && cursor >= r->start && cursor < r->end) next = r->end;
         }
         if (!next) {
@@ -450,7 +450,7 @@ int region_sync(struct task *task, uint64_t addr, size_t length) {
 
     int result = 0;
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        const mem_region_t *r = &task->regions[i];
+        const mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0 || !r->shared || r->end <= addr || end <= r->start) continue;
         uint64_t first, last;
         file_pages(r, r->start > addr ? r->start : addr, r->end < end ? r->end : end, &first, &last);
@@ -461,11 +461,11 @@ int region_sync(struct task *task, uint64_t addr, size_t length) {
 
 void region_revalidate(struct task *task) {
     uint32_t now = pcache_truncations();
-    if (!task || !task->is_user || task->seen_truncations == now) return;
-    task->seen_truncations = now;
+    if (!task || !task->is_user || task->proc->seen_truncations == now) return;
+    task->proc->seen_truncations = now;
     uint64_t *space = space_of(task);
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        const mem_region_t *r = &task->regions[i];
+        const mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0 || !r->shared) continue;
         uint64_t keep = page_align_up(r->node->size);          // The file's pages: offsets below this
         if (r->file_offset + (r->end - r->start) <= keep) continue;

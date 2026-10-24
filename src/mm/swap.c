@@ -196,7 +196,7 @@ int swap_in(uint64_t *space, uint64_t virt) {
 // might be taken. Returns how many went.
 static size_t give_up(task_t *task, size_t want) {
     if (task->call_ranges_full) return 0;
-    return swap_out_keeping(vmm_space_from_phys((uint64_t)task->pml4_phys), &task->swap_cursor, want,
+    return swap_out_keeping(vmm_space_from_phys((uint64_t)task->pml4_phys), &task->proc->swap_cursor, want,
                             task->call_ranges, task->call_range_count);
 }
 
@@ -250,9 +250,9 @@ void swap_relieve_pressure(void) {
     // looking at its whole address space, which must not happen at every
     // fault: after a search that found nothing, the next one waits until
     // half of what was free then has gone.
-    if (task->swap_retry_below != 0 && free_frames >= task->swap_retry_below) return;
+    if (task->proc->swap_retry_below != 0 && free_frames >= task->proc->swap_retry_below) return;
 
     size_t want = SWAP_HIGH_FRAMES - free_frames;
     size_t got = give_up(task, want);
-    task->swap_retry_below = got < want ? free_frames / 2 + 1 : 0;
+    task->proc->swap_retry_below = got < want ? free_frames / 2 + 1 : 0;
 }

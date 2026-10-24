@@ -124,7 +124,7 @@ static int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t dst_si
 static file_t *fd_to_file(int fd) {
     task_t *task = sched_get_current_task();
     if (fd < 0 || fd >= TASK_MAX_FDS) return NULL;
-    return task->fds[fd];
+    return task->proc->fds[fd];
 }
 
 // read() and write() do not hand the user's buffer to the file layer. The
@@ -231,12 +231,12 @@ static int64_t sys_open(uint64_t user_path, int flags) {
 
     file_t *file = NULL;
     task_t *task = sched_get_current_task();
-    int err = file_open_as(task->uid, task->cwd, path, flags, &file);
+    int err = file_open_as(task->proc->uid, task->proc->cwd, path, flags, &file);
     if (err != 0) return err;
 
-    int fd = fd_install(task->fds, file);
+    int fd = fd_install(task->proc->fds, file);
     if (fd < 0) file_close(file);
-    else if (flags & O_CLOEXEC) task->fd_cloexec |= 1u << fd;
+    else if (flags & O_CLOEXEC) task->proc->fd_cloexec |= 1u << fd;
     return fd;
 }
 
@@ -246,8 +246,8 @@ static int64_t sys_close(int fd) {
     task_t *task = sched_get_current_task();
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
-    fd_slot_set(task->fds, fd, NULL);
-    task->fd_cloexec &= ~(1u << fd);
+    fd_slot_set(task->proc->fds, fd, NULL);
+    task->proc->fd_cloexec &= ~(1u << fd);
     file_close(file);
     return 0;
 }
@@ -263,15 +263,15 @@ static int64_t sys_pipe(uint64_t user_fds, uint64_t flags) {
     if (err != 0) return err;
 
     task_t *task = sched_get_current_task();
-    int read_fd = fd_install(task->fds, reader);
-    int write_fd = (read_fd >= 0) ? fd_install(task->fds, writer) : -EMFILE;
+    int read_fd = fd_install(task->proc->fds, reader);
+    int write_fd = (read_fd >= 0) ? fd_install(task->proc->fds, writer) : -EMFILE;
     if (write_fd < 0) {
-        if (read_fd >= 0) fd_slot_set(task->fds, read_fd, NULL);
+        if (read_fd >= 0) fd_slot_set(task->proc->fds, read_fd, NULL);
         file_close(reader);
         file_close(writer);
         return -EMFILE;
     }
-    if (flags & O_CLOEXEC) task->fd_cloexec |= (1u << read_fd) | (1u << write_fd);
+    if (flags & O_CLOEXEC) task->proc->fd_cloexec |= (1u << read_fd) | (1u << write_fd);
 
     int *out = (int *)user_fds;
     user_access_begin();
@@ -289,8 +289,8 @@ static int64_t sys_dup2(int old_fd, int new_fd) {
     if (old_fd == new_fd) return new_fd;
 
     task_t *task = sched_get_current_task();
-    file_t *replaced = fd_slot_set(task->fds, new_fd, file_dup(file));
-    task->fd_cloexec &= ~(1u << new_fd); // The flag belongs to the descriptor, not the file: a copy starts without it
+    file_t *replaced = fd_slot_set(task->proc->fds, new_fd, file_dup(file));
+    task->proc->fd_cloexec &= ~(1u << new_fd); // The flag belongs to the descriptor, not the file: a copy starts without it
     file_close(replaced);
     return new_fd;
 }
@@ -300,7 +300,7 @@ static int64_t sys_dup(int old_fd) {
     file_t *file = fd_to_file(old_fd);
     if (!file) return -EBADF;
 
-    int fd = fd_install(sched_get_current_task()->fds, file);
+    int fd = fd_install(sched_get_current_task()->proc->fds, file);
     if (fd < 0) return fd;
     file_dup(file); // Now two descriptors refer to it
     return fd;
@@ -314,10 +314,10 @@ static int64_t sys_dup(int old_fd) {
 static int64_t sys_fcntl(int fd, uint64_t command, uint64_t arg) {
     task_t *task = sched_get_current_task();
     if (!fd_to_file(fd)) return -EBADF;
-    if (command == F_GETFD) return (task->fd_cloexec >> fd) & 1;
+    if (command == F_GETFD) return (task->proc->fd_cloexec >> fd) & 1;
     if (command == F_SETFD) {
-        if (arg & FD_CLOEXEC) task->fd_cloexec |= 1u << fd;
-        else task->fd_cloexec &= ~(1u << fd);
+        if (arg & FD_CLOEXEC) task->proc->fd_cloexec |= 1u << fd;
+        else task->proc->fd_cloexec &= ~(1u << fd);
         return 0;
     }
     return -EINVAL;
@@ -347,17 +347,17 @@ static int64_t sys_mkdir(uint64_t user_path) {
     char name[VFS_NAME_MAX];
     vnode_t *parent = NULL;
     task_t *task = sched_get_current_task();
-    int found = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
+    int found = vfs_find_parent_as(task->proc->uid, task->proc->cwd, path, &parent, name);
     if (found < 0) return found;
 
-    if (!auth_may_access(task->uid, parent, true)) return -EACCES;
+    if (!auth_may_access(task->proc->uid, parent, true)) return -EACCES;
 
     vnode_t *dir = NULL;
     int err = vfs_create(parent, name, VFS_DIRECTORY, &dir);
     if (err == 0 && (!parent->ops || !parent->ops->create || (dir->ops && dir->ops->setattr))) {
-        dir->uid = task->uid;
-        dir->gid = auth_new_entry_group(parent, task->gid);
-        dir->mode = (uint16_t)(PERM_NEW_DIR & ~task->umask);
+        dir->uid = task->proc->uid;
+        dir->gid = auth_new_entry_group(parent, task->proc->gid);
+        dir->mode = (uint16_t)(PERM_NEW_DIR & ~task->proc->umask);
         if (parent->mode & PERM_SETGID) dir->mode |= PERM_SETGID;  // The rule passes down the tree
         if (dir->ops && dir->ops->setattr) dir->ops->setattr(dir);
     }
@@ -378,14 +378,14 @@ static int64_t sys_symlink(uint64_t user_target, uint64_t user_path) {
     task_t *task = sched_get_current_task();
     char name[VFS_NAME_MAX];
     vnode_t *parent = NULL;
-    int found = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
+    int found = vfs_find_parent_as(task->proc->uid, task->proc->cwd, path, &parent, name);
     if (found < 0) return found;
-    if (!auth_may_access(task->uid, parent, true)) return -EACCES;
+    if (!auth_may_access(task->proc->uid, parent, true)) return -EACCES;
     vnode_t *link = NULL;
     int err = vfs_symlink(parent, name, target, &link);
     if (err == 0 && link) {
-        link->uid = task->uid;
-        link->gid = auth_new_entry_group(parent, task->gid);
+        link->uid = task->proc->uid;
+        link->gid = auth_new_entry_group(parent, task->proc->gid);
         if (link->ops && link->ops->setattr) link->ops->setattr(link);
     }
     return err;
@@ -403,10 +403,10 @@ static int64_t sys_link(uint64_t user_existing, uint64_t user_path) {
     task_t *task = sched_get_current_task();
     vnode_t *existing = NULL, *parent = NULL;
     char name[VFS_NAME_MAX];
-    int err = vfs_lookup_as(task->uid, task->cwd, existing_path, false, &existing);  // A link to a link names the link: refused below
-    if (err == 0) err = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
+    int err = vfs_lookup_as(task->proc->uid, task->proc->cwd, existing_path, false, &existing);  // A link to a link names the link: refused below
+    if (err == 0) err = vfs_find_parent_as(task->proc->uid, task->proc->cwd, path, &parent, name);
     if (err < 0) return err;
-    if (!auth_may_access(task->uid, parent, true)) return -EACCES;
+    if (!auth_may_access(task->proc->uid, parent, true)) return -EACCES;
     return vfs_link(existing, parent, name);
 }
 
@@ -429,7 +429,7 @@ static int64_t sys_stat(uint64_t user_path, uint64_t user_st, bool follow_last) 
     if (path_len < 0) return path_len;
     task_t *task = sched_get_current_task();
     vnode_t *node = NULL;
-    int err = vfs_lookup_as(task->uid, task->cwd, path, follow_last, &node);
+    int err = vfs_lookup_as(task->proc->uid, task->proc->cwd, path, follow_last, &node);
     if (err < 0) return err;
     struct vfs_stat st;
     err = vfs_stat(node, &st);
@@ -468,13 +468,13 @@ static int64_t sys_truncate(uint64_t user_path, uint64_t length) {
     if (path_len < 0) return path_len;
     task_t *task = sched_get_current_task();
     vnode_t *node = NULL;
-    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &node);
+    int err = vfs_lookup_as(task->proc->uid, task->proc->cwd, path, true, &node);
     if (err < 0) return err;
     if (node->type == VFS_DIRECTORY) return -EISDIR;
     if (node->type != VFS_FILE) return -EINVAL;
     if (node->read_only) return -EROFS;
-    if (!auth_may_access(task->uid, node, true)) return -EACCES;
-    return resize_file(node, length, task->uid);
+    if (!auth_may_access(task->proc->uid, node, true)) return -EACCES;
+    return resize_file(node, length, task->proc->uid);
 }
 
 // ftruncate(fd, length): the same for a file opened for writing
@@ -483,7 +483,7 @@ static int64_t sys_ftruncate(int fd, uint64_t length) {
     if (!file) return -EBADF;
     if (file->kind != FILE_VNODE || !file->writable || file->node->type != VFS_FILE) return -EINVAL;
     vfs_lock();
-    int64_t r = resize_file(file->node, length, sched_get_current_task()->uid);
+    int64_t r = resize_file(file->node, length, sched_get_current_task()->proc->uid);
     vfs_unlock();
     return r;
 }
@@ -498,11 +498,11 @@ static int64_t sys_utime(uint64_t user_path, uint64_t seconds) {
     if (path_len < 0) return path_len;
     task_t *task = sched_get_current_task();
     vnode_t *node = NULL;
-    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &node);
+    int err = vfs_lookup_as(task->proc->uid, task->proc->cwd, path, true, &node);
     if (err < 0) return err;
-    bool privileged = task->uid == UID_ROOT || task->uid == node->uid;
+    bool privileged = task->proc->uid == UID_ROOT || task->proc->uid == node->uid;
     if (seconds == UTIME_NOW) {
-        if (!privileged && !auth_may_access(task->uid, node, true)) return -EACCES;
+        if (!privileged && !auth_may_access(task->proc->uid, node, true)) return -EACCES;
         seconds = walltime_seconds();
     } else {
         if (!privileged) return -EPERM;
@@ -521,7 +521,7 @@ static int64_t sys_readlink(uint64_t user_path, uint64_t user_buf, size_t size) 
     if (path_len < 0) return path_len;
     vnode_t *node = NULL;
     task_t *task = sched_get_current_task();
-    int err = vfs_lookup_as(task->uid, task->cwd, path, false, &node);
+    int err = vfs_lookup_as(task->proc->uid, task->proc->cwd, path, false, &node);
     if (err < 0) return err;
     int64_t n = vfs_readlink(node, target, size < sizeof(target) ? size : sizeof(target));
     if (n <= 0) return n;
@@ -544,11 +544,11 @@ static int64_t sys_unlink(uint64_t user_path) {
     char leaf[VFS_NAME_MAX];
     vnode_t *parent = NULL;
     task_t *caller = sched_get_current_task();
-    int found = vfs_find_parent_as(caller->uid, caller->cwd, path, &parent, leaf);
+    int found = vfs_find_parent_as(caller->proc->uid, caller->proc->cwd, path, &parent, leaf);
     if (found < 0) return found;
 
     vnode_t *child = vfs_find_child(parent, leaf);
-    if (child && !auth_may_remove(sched_get_current_task()->uid, parent, child)) return -EACCES;
+    if (child && !auth_may_remove(sched_get_current_task()->proc->uid, parent, child)) return -EACCES;
     return vfs_unlink(parent, leaf);
 }
 
@@ -565,16 +565,16 @@ static int64_t sys_rename(uint64_t user_old, uint64_t user_new) {
     task_t *task = sched_get_current_task();
     char old_name[VFS_NAME_MAX], new_name[VFS_NAME_MAX];
     vnode_t *old_parent = NULL, *new_parent = NULL;
-    int found = vfs_find_parent_as(task->uid, task->cwd, old_path, &old_parent, old_name);
-    if (found == 0) found = vfs_find_parent_as(task->uid, task->cwd, new_path, &new_parent, new_name);
+    int found = vfs_find_parent_as(task->proc->uid, task->proc->cwd, old_path, &old_parent, old_name);
+    if (found == 0) found = vfs_find_parent_as(task->proc->uid, task->proc->cwd, new_path, &new_parent, new_name);
     if (found < 0) return found;
 
     // Taking the entry out of one directory needs the right to remove it;
     // putting it into the other needs the right to write there
     vnode_t *node = vfs_find_child(old_parent, old_name);
     if (!node) return -ENOENT;
-    if (!auth_may_remove(task->uid, old_parent, node)) return -EACCES;
-    if (!auth_may_access(task->uid, new_parent, true)) return -EACCES;
+    if (!auth_may_remove(task->proc->uid, old_parent, node)) return -EACCES;
+    if (!auth_may_access(task->proc->uid, new_parent, true)) return -EACCES;
     if (node->open_count > 0 && node->type == VFS_DIRECTORY) return -EBUSY; // Someone's working directory
 
     return vfs_rename(old_parent, old_name, new_parent, new_name);
@@ -587,7 +587,7 @@ static int64_t lookup_for_change(uint64_t user_path, vnode_t **out) {
     if (path_len < 0) return path_len;
     task_t *task = sched_get_current_task();
     *out = NULL;
-    return vfs_lookup_as(task->uid, task->cwd, path, true, out);
+    return vfs_lookup_as(task->proc->uid, task->proc->cwd, path, true, out);
 }
 
 // chmod(path, mode): set the permission bits. Only the owner or root.
@@ -597,7 +597,7 @@ static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
     if (err != 0) return err;
 
     // Only the owner (or root) decides who may use a file
-    uint32_t uid = sched_get_current_task()->uid;
+    uint32_t uid = sched_get_current_task()->proc->uid;
     if (uid != UID_ROOT && uid != node->uid) return -EPERM;
     if (node->read_only) return -EROFS;
     if (mode & ~(uint64_t)PERM_ALL) return -EINVAL;
@@ -614,7 +614,7 @@ static int64_t sys_chmod(uint64_t user_path, uint64_t mode) {
 // (too many), -EFAULT. Changes only the caller, which alone reads its list.
 static int64_t sys_setgroups(uint64_t count, uint64_t user_list) {
     task_t *task = sched_get_current_task();
-    if (task->uid != UID_ROOT) return -EPERM;
+    if (task->proc->uid != UID_ROOT) return -EPERM;
     if (count > TASK_MAX_GROUPS) return -EINVAL;
     uint32_t groups[TASK_MAX_GROUPS];
     size_t bytes = (size_t)count * sizeof(uint32_t);
@@ -624,8 +624,8 @@ static int64_t sys_setgroups(uint64_t count, uint64_t user_list) {
         memcpy(groups, (const void *)user_list, bytes);
         user_access_end();
     }
-    memcpy(task->groups, groups, bytes);
-    task->group_count = (uint32_t)count;
+    memcpy(task->proc->groups, groups, bytes);
+    task->proc->group_count = (uint32_t)count;
     return 0;
 }
 
@@ -635,14 +635,14 @@ static int64_t sys_setgroups(uint64_t count, uint64_t user_list) {
 // -EFAULT.
 static int64_t sys_getgroups(uint64_t size, uint64_t user_list) {
     task_t *task = sched_get_current_task();
-    uint32_t count = task->group_count;
+    uint32_t count = task->proc->group_count;
     if (size == 0) return count;
     if (size < count) return -EINVAL;
     size_t bytes = (size_t)count * sizeof(uint32_t);
     if (count > 0) {
         if (!user_range_ok(user_list, bytes, true)) return -EFAULT;
         user_access_begin();
-        memcpy((void *)user_list, task->groups, bytes);
+        memcpy((void *)user_list, task->proc->groups, bytes);
         user_access_end();
     }
     return count;
@@ -664,17 +664,17 @@ static int64_t sys_chown(uint64_t user_path, uint64_t new_uid, uint64_t new_gid)
     // Giving files away (or taking them) is root's privilege. An owner may
     // move a file of theirs into a group they are in.
     task_t *task = sched_get_current_task();
-    bool owner_to_own_group = task->uid == node->uid && new_uid == CHOWN_KEEP && new_gid != CHOWN_KEEP &&
+    bool owner_to_own_group = task->proc->uid == node->uid && new_uid == CHOWN_KEEP && new_gid != CHOWN_KEEP &&
                               auth_current_in_group((uint32_t)new_gid);
-    if (task->uid != UID_ROOT && !owner_to_own_group) return -EPERM;
+    if (task->proc->uid != UID_ROOT && !owner_to_own_group) return -EPERM;
     if (node->read_only) return -EROFS;
 
     if (new_uid != CHOWN_KEEP) node->uid = (uint32_t)new_uid;
     if (new_gid != CHOWN_KEEP) node->gid = (uint32_t)new_gid;
     // Whoever the file belongs to now did not ask for it to be set-uid, and
     // the group it is in now did not ask for it to be set-gid
-    if (task->uid != UID_ROOT || new_uid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETUID;
-    if (task->uid != UID_ROOT || new_gid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETGID;
+    if (task->proc->uid != UID_ROOT || new_uid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETUID;
+    if (task->proc->uid != UID_ROOT || new_gid != CHOWN_KEEP) node->mode &= (uint16_t)~PERM_SETGID;
     return (node->ops && node->ops->setattr) ? node->ops->setattr(node) : 0;
 }
 
@@ -684,7 +684,7 @@ static int64_t sys_kill(int pid, int sig) {
     // A negative number names a process group: every member gets the signal
     if (pid < 0) {
         if (sig <= 0 || sig >= TASK_NSIG) return -ESRCH;
-        return process_kill_group((uint32_t)(-(int64_t)pid), sig, sched_get_current_task()->uid) == 0 ? 0 : -ESRCH;
+        return process_kill_group((uint32_t)(-(int64_t)pid), sig, sched_get_current_task()->proc->uid) == 0 ? 0 : -ESRCH;
     }
 
     // Look at the target under the scheduler lock: it may be reaped at any
@@ -695,10 +695,10 @@ static int64_t sys_kill(int pid, int sig) {
     // A process that has died but has not been waited for still exists, as
     // far as signals go: on another CPU it may die between two kills
     bool exists = target && target->is_user;
-    uint32_t target_uid = exists ? target->uid : 0;
+    uint32_t target_uid = exists ? target->proc->uid : 0;
     sched_unlock_irqrestore(flags);
     if (!exists) return -ESRCH;
-    if (!auth_may_signal(sched_get_current_task()->uid, target_uid)) return -EPERM;
+    if (!auth_may_signal(sched_get_current_task()->proc->uid, target_uid)) return -EPERM;
     return process_kill((pid_t)pid, sig) == 0 ? 0 : -ESRCH;
 }
 
@@ -706,7 +706,7 @@ static int64_t sys_kill(int pid, int sig) {
 // Returns the end after the call, which is the old one if refused.
 static int64_t sys_brk(uint64_t new_brk) {
     task_t *task = sched_get_current_task();
-    if (new_brk == 0) return (int64_t)task->brk_end;
+    if (new_brk == 0) return (int64_t)task->proc->brk_end;
     return (int64_t)region_set_brk(task, new_brk);
 }
 
@@ -731,7 +731,7 @@ static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int f
         if (shared) {
             // Shared with children: given its frames at once, so that parent
             // and child are certain to get the same ones
-            uint64_t mapped = user_mmap_anon_flags(current_space(), &task->mmap_next, length, prot, true);
+            uint64_t mapped = user_mmap_anon_flags(current_space(), &task->proc->mmap_next, length, prot, true);
             return mapped ? (int64_t)mapped : -ENOMEM;
         }
         int error = 0;
@@ -857,7 +857,7 @@ static int64_t sys_execve(struct registers *regs, uint64_t user_path, uint64_t u
         // itself, under the same lock as the loading.)
         vfs_lock();
         vnode_t *program = NULL;
-        int looked = vfs_lookup_as(auth_current_uid(), sched_get_current_task()->cwd, path, true, &program);
+        int looked = vfs_lookup_as(auth_current_uid(), sched_get_current_task()->proc->cwd, path, true, &program);
         bool refused = looked == -EACCES ||
                        (program && program->type == VFS_FILE && !auth_may_execute(auth_current_uid(), program));
         vfs_unlock();
@@ -911,7 +911,7 @@ static int64_t sys_uname(uint64_t user_buf) {
 static int64_t sys_getcwd(uint64_t user_buf, size_t size) {
     char path[PATH_MAX];
     task_t *task = sched_get_current_task();
-    size_t len = vfs_path_of(task->cwd ? task->cwd : vfs_get_root(), path, sizeof(path));
+    size_t len = vfs_path_of(task->proc->cwd ? task->proc->cwd : vfs_get_root(), path, sizeof(path));
     if (len == 0) return -EINVAL;
 
     if (size < len + 1) return -EINVAL; // The caller's buffer is too small
@@ -931,10 +931,10 @@ static int64_t sys_chdir(uint64_t user_path) {
 
     task_t *task = sched_get_current_task();
     vnode_t *dir = NULL;
-    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &dir);
+    int err = vfs_lookup_as(task->proc->uid, task->proc->cwd, path, true, &dir);
     if (err < 0) return err;
     if (dir->type != VFS_DIRECTORY) return -ENOTDIR;
-    if (!auth_may_search(task->uid, dir)) return -EACCES;   // A directory you could look nothing up in
+    if (!auth_may_search(task->proc->uid, dir)) return -EACCES;   // A directory you could look nothing up in
 
     task_set_cwd(task, dir == vfs_get_root() ? NULL : dir);
     return 0;
@@ -946,7 +946,7 @@ static int64_t sys_chdir(uint64_t user_path) {
 // address, and move that address on. Returns the address, or -EINVAL.
 static int64_t sys_shmat(int id) {
     task_t *task = sched_get_current_task();
-    uint64_t addr = shm_attach(id, current_space(), &task->mmap_next);
+    uint64_t addr = shm_attach(id, current_space(), &task->proc->mmap_next);
     return addr ? (int64_t)addr : -EINVAL;
 }
 
@@ -979,7 +979,7 @@ static int64_t sys_socket(uint64_t type) {
     file_t *file = (type == SOCK_STREAM) ? file_open_tcp(NULL) : file_open_socket();
     if (!file) return -ENOMEM;
 
-    int fd = fd_install(sched_get_current_task()->fds, file);
+    int fd = fd_install(sched_get_current_task()->proc->fds, file);
     if (fd < 0) file_close(file);
     return fd;
 }
@@ -992,10 +992,10 @@ static int64_t sys_socketpair(uint64_t user_fds) {
     if (err != 0) return err;
 
     task_t *task = sched_get_current_task();
-    int fd_a = fd_install(task->fds, a);
-    int fd_b = (fd_a >= 0) ? fd_install(task->fds, b) : -EMFILE;
+    int fd_a = fd_install(task->proc->fds, a);
+    int fd_b = (fd_a >= 0) ? fd_install(task->proc->fds, b) : -EMFILE;
     if (fd_b < 0) {
-        if (fd_a >= 0) fd_slot_set(task->fds, fd_a, NULL);
+        if (fd_a >= 0) fd_slot_set(task->proc->fds, fd_a, NULL);
         file_close(a);
         file_close(b);
         return -EMFILE;
@@ -1024,7 +1024,7 @@ static int64_t sys_local_listen(uint64_t user_path, int backlog) {
     if (!listener) return -ENOMEM;
     file_t *file = file_open_local_listener(listener);     // Closes the listener if it fails
     if (!file) return -ENOMEM;
-    int fd = fd_install(task->fds, file);
+    int fd = fd_install(task->proc->fds, file);
     if (fd < 0) {
         file_close(file);
         return fd;
@@ -1034,19 +1034,19 @@ static int64_t sys_local_listen(uint64_t user_path, int backlog) {
     vnode_t *parent = NULL;
     vnode_t *node = NULL;
     vfs_lock();
-    int err = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
-    if (err == 0 && !auth_may_access(task->uid, parent, true)) err = -EACCES;
+    int err = vfs_find_parent_as(task->proc->uid, task->proc->cwd, path, &parent, name);
+    if (err == 0 && !auth_may_access(task->proc->uid, parent, true)) err = -EACCES;
     if (err == 0 && parent->ops && parent->ops->create) err = -EOPNOTSUPP;
     if (err == 0) err = vfs_create(parent, name, VFS_SOCKET, &node);
     if (err == 0) {
         node->private_data = id;
-        node->uid = task->uid;
-        node->gid = auth_new_entry_group(parent, task->gid);
-        node->mode = (uint16_t)(PERM_NEW_FILE & ~task->umask);
+        node->uid = task->proc->uid;
+        node->gid = auth_new_entry_group(parent, task->proc->gid);
+        node->mode = (uint16_t)(PERM_NEW_FILE & ~task->proc->umask);
     }
     vfs_unlock();
     if (err != 0) {
-        fd_slot_set(task->fds, fd, NULL);
+        fd_slot_set(task->proc->fds, fd, NULL);
         file_close(file);
         return err;
     }
@@ -1064,22 +1064,22 @@ static int64_t sys_local_connect(uint64_t user_path) {
 
     vnode_t *node = NULL;
     vfs_lock();
-    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &node);
+    int err = vfs_lookup_as(task->proc->uid, task->proc->cwd, path, true, &node);
     uint64_t id = 0;
     if (err == 0 && node->type != VFS_SOCKET) err = -ECONNREFUSED;
-    if (err == 0 && !auth_may_access(task->uid, node, true)) err = -EACCES;
+    if (err == 0 && !auth_may_access(task->proc->uid, node, true)) err = -EACCES;
     if (err == 0) id = node->private_data;
     vfs_unlock();
     if (err != 0) return err;
 
     bool have_slot = false;
-    for (int i = 0; i < TASK_MAX_FDS; i++) if (!task->fds[i]) have_slot = true;
+    for (int i = 0; i < TASK_MAX_FDS; i++) if (!task->proc->fds[i]) have_slot = true;
     if (!have_slot) return -EMFILE;
 
     file_t *file = NULL;
     err = local_connect(id, &file);
     if (err != 0) return err;
-    int fd = fd_install(task->fds, file);
+    int fd = fd_install(task->proc->fds, file);
     if (fd < 0) file_close(file);
     return fd;
 }
@@ -1106,14 +1106,14 @@ static int64_t sys_accept(int fd, uint64_t user_from) {
     // it: once accepted it could only be dropped
     task_t *task = sched_get_current_task();
     bool have_slot = false;
-    for (int i = 0; i < TASK_MAX_FDS; i++) if (!task->fds[i]) have_slot = true;
+    for (int i = 0; i < TASK_MAX_FDS; i++) if (!task->proc->fds[i]) have_slot = true;
     if (!have_slot) return -EMFILE;
 
     if (local) {                       // A local peer has no address: *from is all zeros
         file_t *connection = NULL;
         int err = local_accept(held->listener, &connection);
         if (err != 0) return err;
-        int new_fd = fd_install(task->fds, connection);
+        int new_fd = fd_install(task->proc->fds, connection);
         if (new_fd < 0) {
             file_close(connection);
             return new_fd;
@@ -1135,7 +1135,7 @@ static int64_t sys_accept(int fd, uint64_t user_from) {
 
     file_t *file = file_open_tcp(connection); // Closes the connection if it fails
     if (!file) return -ENOMEM;
-    int new_fd = fd_install(task->fds, file);
+    int new_fd = fd_install(task->proc->fds, file);
     if (new_fd < 0) {
         file_close(file);
         return new_fd;
@@ -1181,7 +1181,7 @@ static int64_t sys_poll(uint64_t user_fds, uint64_t count, int64_t timeout_ms) {
     memcpy(fds, (const void *)user_fds, bytes);
     user_access_end();
 
-    int64_t result = poll_wait(sched_get_current_task()->fds, fds, (size_t)count, timeout_ms);
+    int64_t result = poll_wait(sched_get_current_task()->proc->fds, fds, (size_t)count, timeout_ms);
     if (result < 0) return result;
 
     if (count > 0 && !user_range_ok(user_fds, bytes, true)) return -EFAULT; // (It may have been unmapped meanwhile)
@@ -1222,7 +1222,7 @@ static int64_t sys_netconfig(uint64_t user_get, uint64_t user_set) {
     if (!net_up()) return -ENETDOWN;
 
     // Changing the machine's address is the administrator's business
-    if (user_set != 0 && sched_get_current_task()->uid != UID_ROOT) return -EPERM;
+    if (user_set != 0 && sched_get_current_task()->proc->uid != UID_ROOT) return -EPERM;
 
     net_config_t config;
     if (user_get != 0) {
@@ -1377,15 +1377,15 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_GETPID_ALT:
             return (int64_t)task->pid;
         case SYS_GETPPID:
-            return (int64_t)task->parent_pid;
+            return (int64_t)task->proc->parent_pid;
         case SYS_SETPGID:
             if (regs->rdi > 0x7FFFFFFF || regs->rsi > 0x7FFFFFFF) return -EINVAL;
             return process_set_group((pid_t)regs->rdi, (uint32_t)regs->rsi) == 0 ? 0 : -EPERM;
         case SYS_GETPGID: {
-            if (regs->rdi == 0) return (int64_t)task->pgid;
+            if (regs->rdi == 0) return (int64_t)task->proc->pgid;
             uint64_t irq = sched_lock_irqsave();
             task_t *other = sched_find_task_locked((uint32_t)regs->rdi);
-            int64_t pgid = (other && other->is_user) ? (int64_t)other->pgid : -ESRCH;
+            int64_t pgid = (other && other->is_user) ? (int64_t)other->proc->pgid : -ESRCH;
             sched_unlock_irqrestore(irq);
             return pgid;
         }
@@ -1417,7 +1417,7 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_REALTIME: return (int64_t)walltime_ns();
         case SYS_SETTIME:
             // Every process's clock: root's alone to change
-            if (sched_get_current_task()->uid != UID_ROOT) return -EPERM;
+            if (sched_get_current_task()->proc->uid != UID_ROOT) return -EPERM;
             return walltime_set(regs->rdi);
         case SYS_NANOSLEEP:
             if (regs->rdi > 3600ULL * 1000000000ULL) return -EINVAL;
@@ -1431,38 +1431,38 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_WAITPID: return sys_waitpid((int)regs->rdi, regs->rsi, regs->rdx);
         case SYS_KILL:    return sys_kill((int)regs->rdi, (int)regs->rsi);
 
-        case SYS_GETUID:  return (int64_t)task->ruid;   // Who started this process
-        case SYS_GETEUID: return (int64_t)task->uid;    // Whose rights it has
-        case SYS_GETGID:  return (int64_t)task->rgid;   // The group of whoever started it
-        case SYS_GETEGID: return (int64_t)task->gid;    // The group whose rights it has
+        case SYS_GETUID:  return (int64_t)task->proc->ruid;   // Who started this process
+        case SYS_GETEUID: return (int64_t)task->proc->uid;    // Whose rights it has
+        case SYS_GETGID:  return (int64_t)task->proc->rgid;   // The group of whoever started it
+        case SYS_GETEGID: return (int64_t)task->proc->gid;    // The group whose rights it has
         case SYS_SETUID:
             // Root may become anyone, for good: real and effective user both
             // change. Anyone else may only go back to being themselves, which
             // is how a set-uid program gives up the rights it was lent.
             if (regs->rdi > 0xFFFFFFFFULL) return -EINVAL;
-            if (task->uid == UID_ROOT) {
-                task->ruid = (uint32_t)regs->rdi;
-            } else if ((uint32_t)regs->rdi != task->ruid) {
+            if (task->proc->uid == UID_ROOT) {
+                task->proc->ruid = (uint32_t)regs->rdi;
+            } else if ((uint32_t)regs->rdi != task->proc->ruid) {
                 return -EPERM;
             }
-            task->uid = (uint32_t)regs->rdi;
+            task->proc->uid = (uint32_t)regs->rdi;
             return 0;
         case SYS_SETGID:
             // As setuid: root sets both groups for good; anyone else may only
             // go back to their real group (a set-gid program giving it up)
             if (regs->rdi > 0xFFFFFFFFULL) return -EINVAL;
-            if (task->uid == UID_ROOT) {
-                task->rgid = (uint32_t)regs->rdi;
-            } else if ((uint32_t)regs->rdi != task->rgid) {
+            if (task->proc->uid == UID_ROOT) {
+                task->proc->rgid = (uint32_t)regs->rdi;
+            } else if ((uint32_t)regs->rdi != task->proc->rgid) {
                 return -EPERM;
             }
-            task->gid = (uint32_t)regs->rdi;
+            task->proc->gid = (uint32_t)regs->rdi;
             return 0;
         case SYS_SETGROUPS: return sys_setgroups(regs->rdi, regs->rsi);
         case SYS_GETGROUPS: return sys_getgroups(regs->rdi, regs->rsi);
         case SYS_UMASK: {
-            uint16_t previous = task->umask;
-            task->umask = (uint16_t)(regs->rdi & 0777);
+            uint16_t previous = task->proc->umask;
+            task->proc->umask = (uint16_t)(regs->rdi & 0777);
             return previous;
         }
         case SYS_RENAME: { vfs_lock(); int64_t r = sys_rename(regs->rdi, regs->rsi); vfs_unlock(); return r; }
@@ -1478,13 +1478,13 @@ static int64_t dispatch(struct registers *regs) {
         // not found by its key, and its number is of no use to them.
         case SYS_SHMGET: {
             int id = shm_get((uint32_t)regs->rdi, (size_t)regs->rsi);
-            return (id >= 0 && !shm_may_use(id, task->uid)) ? -EACCES : id;
+            return (id >= 0 && !shm_may_use(id, task->proc->uid)) ? -EACCES : id;
         }
         case SYS_SHMAT:
-            if (shm_count_valid((int)regs->rdi) && !shm_may_use((int)regs->rdi, task->uid)) return -EACCES;
+            if (shm_count_valid((int)regs->rdi) && !shm_may_use((int)regs->rdi, task->proc->uid)) return -EACCES;
             return sys_shmat((int)regs->rdi);
         case SYS_SHMRM:
-            if (shm_count_valid((int)regs->rdi) && !shm_may_use((int)regs->rdi, task->uid)) return -EACCES;
+            if (shm_count_valid((int)regs->rdi) && !shm_may_use((int)regs->rdi, task->proc->uid)) return -EACCES;
             return shm_remove((int)regs->rdi);
 
         case SYS_SOCKET:   return sys_socket(regs->rdi);
@@ -1508,7 +1508,7 @@ static int64_t dispatch(struct registers *regs) {
             if (!socket && !stream) return -EBADF;
             if (regs->rsi == 0 || regs->rsi > 0xFFFF) return -EINVAL;
             // Ports below 1024 are where system services live: root only
-            if (regs->rsi < 1024 && task->uid != UID_ROOT) return -EACCES;
+            if (regs->rsi < 1024 && task->proc->uid != UID_ROOT) return -EACCES;
             if (stream) return tcp_bind(stream, (uint16_t)regs->rsi);
             return udp_bind(socket, (uint16_t)regs->rsi);
         }
@@ -1522,7 +1522,7 @@ static int64_t dispatch(struct registers *regs) {
             return 0;
         case SYS_REBOOT:
             // Only root may stop the system (rdi: 0 switch off, 1 restart)
-            if (task->uid != UID_ROOT) return -EPERM;
+            if (task->proc->uid != UID_ROOT) return -EPERM;
             if (regs->rdi > 1) return -EINVAL;
             system_shutdown(regs->rdi == 1);
 
