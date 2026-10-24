@@ -120,11 +120,17 @@ static int64_t copy_string_from_user(char *dst, uint64_t user_src, size_t dst_si
 
 // --- Individual system calls -------------------------------------------------
 
-// Look up a descriptor in the calling process's table
+// Look up a descriptor in the calling process's table. The file comes with a
+// reference that lasts until this system call returns (or the task dies:
+// it may be killed asleep in the call, which a reference on the stack would
+// not survive). So another thread's close cannot free it under the caller. NULL if
+// the descriptor is not open, or the call has already used all it may.
 static file_t *fd_to_file(int fd) {
     task_t *task = sched_get_current_task();
-    if (fd < 0 || fd >= TASK_MAX_FDS) return NULL;
-    return task->proc->fds[fd];
+    if (task->call_file_count == TASK_CALL_FILES) return NULL;
+    file_t *file = fd_slot_dup(task->proc->fds, fd);
+    if (file) task->call_files[task->call_file_count++] = file;
+    return file;
 }
 
 // read() and write() do not hand the user's buffer to the file layer. The
@@ -236,7 +242,7 @@ static int64_t sys_open(uint64_t user_path, int flags) {
 
     int fd = fd_install(task->proc->fds, file);
     if (fd < 0) file_close(file);
-    else if (flags & O_CLOEXEC) task->proc->fd_cloexec |= 1u << fd;
+    else if (flags & O_CLOEXEC) __atomic_or_fetch(&task->proc->fd_cloexec, 1u << fd, __ATOMIC_RELAXED);
     return fd;
 }
 
@@ -247,7 +253,7 @@ static int64_t sys_close(int fd) {
     file_t *file = fd_to_file(fd);
     if (!file) return -EBADF;
     fd_slot_set(task->proc->fds, fd, NULL);
-    task->proc->fd_cloexec &= ~(1u << fd);
+    __atomic_and_fetch(&task->proc->fd_cloexec, ~(1u << fd), __ATOMIC_RELAXED);
     file_close(file);
     return 0;
 }
@@ -271,7 +277,7 @@ static int64_t sys_pipe(uint64_t user_fds, uint64_t flags) {
         file_close(writer);
         return -EMFILE;
     }
-    if (flags & O_CLOEXEC) task->proc->fd_cloexec |= (1u << read_fd) | (1u << write_fd);
+    if (flags & O_CLOEXEC) __atomic_or_fetch(&task->proc->fd_cloexec, (1u << read_fd) | (1u << write_fd), __ATOMIC_RELAXED);
 
     int *out = (int *)user_fds;
     user_access_begin();
@@ -290,7 +296,7 @@ static int64_t sys_dup2(int old_fd, int new_fd) {
 
     task_t *task = sched_get_current_task();
     file_t *replaced = fd_slot_set(task->proc->fds, new_fd, file_dup(file));
-    task->proc->fd_cloexec &= ~(1u << new_fd); // The flag belongs to the descriptor, not the file: a copy starts without it
+    __atomic_and_fetch(&task->proc->fd_cloexec, ~(1u << new_fd), __ATOMIC_RELAXED); // The flag belongs to the descriptor, not the file: a copy starts without it
     file_close(replaced);
     return new_fd;
 }
@@ -316,8 +322,8 @@ static int64_t sys_fcntl(int fd, uint64_t command, uint64_t arg) {
     if (!fd_to_file(fd)) return -EBADF;
     if (command == F_GETFD) return (task->proc->fd_cloexec >> fd) & 1;
     if (command == F_SETFD) {
-        if (arg & FD_CLOEXEC) task->proc->fd_cloexec |= 1u << fd;
-        else task->proc->fd_cloexec &= ~(1u << fd);
+        if (arg & FD_CLOEXEC) __atomic_or_fetch(&task->proc->fd_cloexec, 1u << fd, __ATOMIC_RELAXED);
+        else __atomic_and_fetch(&task->proc->fd_cloexec, ~(1u << fd), __ATOMIC_RELAXED);
         return 0;
     }
     return -EINVAL;
@@ -731,7 +737,11 @@ static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int f
         if (shared) {
             // Shared with children: given its frames at once, so that parent
             // and child are certain to get the same ones
+            mutex_lock(&task->proc->map_mutex);
+            mutex_lock(&task->proc->mem_lock);
             uint64_t mapped = user_mmap_anon_flags(current_space(), &task->proc->mmap_next, length, prot, true);
+            mutex_unlock(&task->proc->mem_lock);
+            mutex_unlock(&task->proc->map_mutex);
             return mapped ? (int64_t)mapped : -ENOMEM;
         }
         int error = 0;
@@ -946,7 +956,11 @@ static int64_t sys_chdir(uint64_t user_path) {
 // address, and move that address on. Returns the address, or -EINVAL.
 static int64_t sys_shmat(int id) {
     task_t *task = sched_get_current_task();
+    mutex_lock(&task->proc->map_mutex);
+    mutex_lock(&task->proc->mem_lock);
     uint64_t addr = shm_attach(id, current_space(), &task->proc->mmap_next);
+    mutex_unlock(&task->proc->mem_lock);
+    mutex_unlock(&task->proc->map_mutex);
     return addr ? (int64_t)addr : -EINVAL;
 }
 
@@ -1312,6 +1326,7 @@ int64_t syscall_handler(struct registers *regs) {
     if (self) self->in_syscall = (uint32_t)number + 1;
     int64_t result = dispatch(regs);
     process_call_ranges_reset(self);   // ...and no longer: the call is over
+    process_call_files_release(self);  // Likewise the files it looked up
 
     // If a signal handler is about to run instead of this call's result
     // being looked at, the handler's settings may ask for the call to be

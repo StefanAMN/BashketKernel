@@ -22,6 +22,7 @@
 #include "swap.h"
 #include "region.h"
 #include "kerrno.h"
+#include "smp.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
@@ -287,7 +288,11 @@ bool process_populate(uint64_t addr, size_t len) {
     task_t *self = sched_get_current_task();
     if (!self || !self->is_user || len == 0) return true;
     if (addr >= USER_SPACE_END || len > USER_SPACE_END - addr) return false;
+    // Under mem_lock: from here another thread's munmap or swap sees the
+    // range, or this call sees what they did (the check after this one)
+    mutex_lock(&self->proc->mem_lock);
     process_call_range_add(self, addr, len);
+    mutex_unlock(&self->proc->mem_lock);
 
     uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
     for (uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1); page < addr + len; page += PAGE_SIZE) {
@@ -296,8 +301,8 @@ bool process_populate(uint64_t addr, size_t len) {
         swap_relieve_pressure();      // As a fault from user mode would: memory is short, and this page needs a frame
         if (vmm_pte_swapped(entry)) {
             // On the swap disk: read it back
-            int back = swap_in(space, page);
-            for (int i = 0; back < 0 && swap_may_retry(i); i++) back = swap_in(space, page);
+            int back = process_swap_in(self, space, page);
+            for (int i = 0; back < 0 && swap_may_retry(i); i++) back = process_swap_in(self, space, page);
             if (back < 0) return false;
             continue;
         }
@@ -338,8 +343,84 @@ void process_call_range_add(task_t *task, uint64_t addr, size_t len) {
 
 void process_call_ranges_reset(task_t *task) {
     if (!task) return;
+    if (task->call_range_count == 0 && !task->call_ranges_full) return;
+    // (Another thread looking at these under mem_lock; without other threads
+    // nobody is)
+    bool threads = task->proc && task->proc->live > 1;
+    if (threads) mutex_lock(&task->proc->mem_lock);
     task->call_range_count = 0;
     task->call_ranges_full = false;
+    if (threads) mutex_unlock(&task->proc->mem_lock);
+}
+
+void process_call_files_release(task_t *task) {
+    if (!task) return;
+    while (task->call_file_count > 0) file_close(task->call_files[--task->call_file_count]);
+}
+
+void process_tlb_sync(void) {
+    task_t *self = sched_get_current_task();
+    // (Live threads leave for the kernel's page tables before they stop
+    // counting: see task_exit_status)
+    if (self && self->proc->live > 1) smp_tlb_shootdown();
+}
+
+bool process_range_busy(task_t *task, uint64_t start, uint64_t end) {
+    if (task->proc->live <= 1) return false;
+    bool busy = false;
+    uint64_t flags = sched_lock_irqsave();
+    for (task_t *t = sched_first_task(); t && !busy; t = t->next) {
+        if (t == task || t->proc != task->proc) continue;
+        busy = t->call_ranges_full;
+        for (uint32_t i = 0; i < t->call_range_count && !busy; i++) {
+            busy = t->call_ranges[i].start < end && start < t->call_ranges[i].end;
+        }
+    }
+    sched_unlock_irqrestore(flags);
+    return busy;
+}
+
+bool process_keep_ranges(task_t *task, vmm_range_t *out, size_t *count) {
+    size_t n = 0;
+    bool ok = !task->call_ranges_full;
+    for (uint32_t i = 0; i < task->call_range_count; i++) out[n++] = task->call_ranges[i];
+    if (task->proc->live > 1) {
+        uint64_t flags = sched_lock_irqsave();
+        for (task_t *t = sched_first_task(); t && ok; t = t->next) {
+            if (t == task || t->proc != task->proc) continue;
+            if (t->call_ranges_full) ok = false;
+            for (uint32_t i = 0; i < t->call_range_count; i++) out[n++] = t->call_ranges[i];
+        }
+        sched_unlock_irqrestore(flags);
+    }
+    *count = n;
+    return ok;
+}
+
+// After fork has marked the caller's pages copy-on-write: buffers another
+// thread's system call has checked for writing must stay writable, because the
+// kernel may be about to write to them holding a lock, where a fault could
+// not end well. Each gets its private copy again now. False if there is no
+// memory for that, or a call checked more than it recorded. Caller holds
+// mem_lock.
+static bool process_keep_private(task_t *task, uint64_t *space) {
+    if (task->proc->live <= 1) return true;
+    size_t count = 0;
+    bool ok = process_keep_ranges(task, task->proc->keep_ranges, &count);
+    for (size_t i = 0; i < count && ok; i++) {
+        const vmm_range_t *r = &task->proc->keep_ranges[i];
+        for (uint64_t page = r->start; page < r->end && ok; page += PAGE_SIZE) {
+            if (vmm_get_pte(space, page) & VMM_COW) ok = vmm_handle_cow_fault(space, page);
+        }
+    }
+    return ok;
+}
+
+int process_swap_in(task_t *task, uint64_t *space, uint64_t virt) {
+    mutex_lock(&task->proc->mem_lock);
+    int result = swap_in(space, virt);
+    mutex_unlock(&task->proc->mem_lock);
+    return result;
 }
 
 bool process_grow_stack(uint64_t addr) {
@@ -351,10 +432,12 @@ bool process_grow_stack(uint64_t addr) {
 
     uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
     uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
+    mutex_lock(&self->proc->mem_lock);
     uint64_t entry = vmm_get_pte(space, page);
-    if ((entry & VMM_PRESENT) || vmm_pte_swapped(entry)) return false; // Some other kind of fault
-
-    return vmm_alloc_user_page(space, page, VMM_WRITABLE | VMM_NO_EXECUTE) != NULL;
+    bool grown = !(entry & VMM_PRESENT) && !vmm_pte_swapped(entry) &&    // (Otherwise some other kind of fault)
+                 vmm_alloc_user_page(space, page, VMM_WRITABLE | VMM_NO_EXECUTE) != NULL;
+    mutex_unlock(&self->proc->mem_lock);
+    return grown;
 }
 
 pid_t process_spawn(const char *path, char *const argv[]) {
@@ -454,14 +537,28 @@ pid_t process_fork(struct registers *regs) {
     uint64_t *child_pml4 = vmm_create_address_space();
     if (!child_pml4) return -1;
 
-    // Share every page copy-on-write: nothing is copied until one side writes
-    if (!vmm_clone_user_space(child_pml4, vmm_space_from_phys((uint64_t)parent->pml4_phys))) {
+    task_t *child = task_alloc(parent->name, NULL);
+    if (!child) {
         vmm_destroy_address_space(child_pml4);
         return -1;
     }
 
-    task_t *child = task_alloc(parent->name, NULL);
-    if (!child) {
+    // Nothing may change the mappings or page tables from here until the
+    // child has its copy of them. (The other threads may run: they stay in
+    // the parent. Only the caller is copied.)
+    process_t *shared = parent->proc;
+    mutex_lock(&shared->map_mutex);
+    mutex_lock(&shared->mem_lock);
+
+    // Share every page copy-on-write: nothing is copied until one side writes
+    uint64_t *parent_space = vmm_space_from_phys((uint64_t)parent->pml4_phys);
+    bool cloned = vmm_clone_user_space(child_pml4, parent_space);
+    process_tlb_sync();
+    if (cloned) cloned = process_keep_private(parent, parent_space);
+    if (!cloned) {
+        mutex_unlock(&shared->mem_lock);
+        mutex_unlock(&shared->map_mutex);
+        task_free(child);
         vmm_destroy_address_space(child_pml4);
         return -1;
     }
@@ -472,6 +569,8 @@ pid_t process_fork(struct registers *regs) {
     // So refuse now, while the caller can still be told, rather than
     // succeed with nothing left over for those copies.
     if (pmm_get_free_frames() < PROCESS_FORK_RESERVE_FRAMES) {
+        mutex_unlock(&shared->mem_lock);
+        mutex_unlock(&shared->map_mutex);
         task_free(child);
         vmm_destroy_address_space(child_pml4);
         return -1;
@@ -492,8 +591,10 @@ pid_t process_fork(struct registers *regs) {
     child->proc->group_count = parent->proc->group_count;
     child->proc->umask = parent->proc->umask;
     child->proc->mmap_next = parent->proc->mmap_next;
-    region_fork(child, parent);
     child->proc->stack_top = parent->proc->stack_top;
+    mutex_unlock(&shared->mem_lock);
+    region_fork(child, parent);            // (Pins files: not under mem_lock. The table stays as it is: map_mutex)
+    mutex_unlock(&shared->map_mutex);
     memcpy(child->proc->sig_handlers, parent->proc->sig_handlers, sizeof(child->proc->sig_handlers));
     memcpy(child->proc->sig_masks, parent->proc->sig_masks, sizeof(child->proc->sig_masks));
     memcpy(child->proc->sig_flags, parent->proc->sig_flags, sizeof(child->proc->sig_flags));
@@ -509,7 +610,7 @@ pid_t process_fork(struct registers *regs) {
 
     // The child shares the parent's open files, positions included
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
-        child->proc->fds[fd] = file_dup(parent->proc->fds[fd]);
+        child->proc->fds[fd] = fd_slot_dup(parent->proc->fds, fd);
     }
     child->proc->fd_cloexec = parent->proc->fd_cloexec;
     child->proc->pgid = parent->proc->pgid;
@@ -565,10 +666,10 @@ pid_t process_wait_options(pid_t pid, int *status, int options) {
             if (pid != -1 && (pid_t)t->pid != pid) continue;
 
             have_child = true;
-            if (t->state == TASK_STOPPED && !t->stop_reported && (options & PROCESS_WUNTRACED)) {
+            if (t->state == TASK_STOPPED && !t->proc->stop_reported && (options & PROCESS_WUNTRACED)) {
                 // Stopped, not dead: reported once, and the child stays
-                t->stop_reported = true;
-                if (status) *status = PROCESS_STATUS_STOPPED | t->stop_signal;
+                t->proc->stop_reported = true;
+                if (status) *status = PROCESS_STATUS_STOPPED | t->proc->stop_signal;
                 found = (pid_t)t->pid;
                 break;
             }

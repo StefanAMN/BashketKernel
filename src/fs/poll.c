@@ -53,8 +53,10 @@ static int64_t scan(file_t *const table[], struct pollfd *fds, size_t count) {
             fds[i].revents = 0;
             continue;
         }
-        file_t *file = fd < TASK_MAX_FDS ? table[fd] : NULL;
+        // A reference for the look: another thread may close it meanwhile
+        file_t *file = fd_slot_dup((file_t **)table, fd);
         int events = file ? file_poll(file) : POLLNVAL;
+        file_close(file);
         // What was asked for, and what is always reported
         fds[i].revents = (int16_t)(events & (fds[i].events | POLLERR | POLLHUP | POLLNVAL));
         if (fds[i].revents) ready++;

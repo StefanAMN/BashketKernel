@@ -8,6 +8,7 @@
 #include "pmm.h"
 #include "cow.h"
 #include "kstring.h"
+#include "process.h"
 
 // The page-table bits for memory a program may use with protection `prot`
 // (PROT_READ, PROT_WRITE, PROT_EXEC): always present and reachable from
@@ -23,17 +24,30 @@ int user_unmap_range(uint64_t *pml4, uint64_t addr, size_t length) {
     if (!pml4 || length == 0 || (addr & (PAGE_SIZE - 1))) return -1;
     if (addr >= USER_SPACE_END || length > USER_SPACE_END - addr) return -1;
 
+    // A frame goes back only once no CPU can still reach it: another thread
+    // may be running with the old translation. So they are gathered, and
+    // the other CPUs told, before they are released.
+    enum { BATCH = 32 };
+    void *frames[BATCH];
+    size_t held = 0;
     uint64_t end = addr + page_align_up(length);
     for (uint64_t page = addr; page < end; page += PAGE_SIZE) {
         uint64_t phys = vmm_get_phys(pml4, page);
         if (phys) {
             bool device = (vmm_get_pte(pml4, page) & VMM_DEVICE) != 0;
             vmm_unmap_page(pml4, page);
-            if (!device) pmm_unref_frame((void *)phys);   // (A device's memory is not the allocator's)
+            if (!device) frames[held++] = (void *)phys;   // (A device's memory is not the allocator's)
+            if (held == BATCH) {
+                process_tlb_sync();
+                for (size_t i = 0; i < held; i++) pmm_unref_frame(frames[i]);
+                held = 0;
+            }
         } else {
             vmm_swap_discard(pml4, page); // On the swap disk: give the slot back
         }
     }
+    process_tlb_sync();
+    for (size_t i = 0; i < held; i++) pmm_unref_frame(frames[i]);
     return 0;
 }
 

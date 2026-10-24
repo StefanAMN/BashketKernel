@@ -279,6 +279,9 @@ static process_t *process_alloc(void) {
     if (!proc) return NULL;
     memset(proc, 0, sizeof(process_t));
     proc->refs = 1;
+    proc->live = 1;
+    proc->map_mutex = (mutex_t)MUTEX_INIT("map");
+    proc->mem_lock = (mutex_t)MUTEX_INIT("mem");
     return proc;
 }
 
@@ -493,6 +496,7 @@ void task_free(task_t *t) {
     if (t->kernel_stack) {
         kstack_free(t->kernel_stack);
     }
+    process_call_files_release(t);
     kfree(t->io_buffer);
     kfree(t->datagram_buffer);
     kfree(t->proc);
@@ -916,9 +920,9 @@ void sched_continue(task_t *task) {
 // else, with interrupts off; returns when the task has been continued,
 // holding neither scheduler lock (see schedule).
 static void stop_current(task_t *self) {
-    self->stop_signal = self->stop_pending;
+    self->proc->stop_signal = self->stop_pending;
     self->stop_pending = 0;
-    self->stop_reported = false;
+    self->proc->stop_reported = false;
     self->state = TASK_STOPPED;
 
     // The parent may be waiting to hear of this (waitpid with WUNTRACED)
@@ -1112,6 +1116,7 @@ void task_exit_status(int status) {
     self->sig_pending = 0;
     self->in_syscall = 0;   // Dying, not in a call (exit, or one it was killed in, never returns): before its files close
     sched_unlock_irqrestore(flags);
+    process_call_files_release(self);
 
     // Close its files now rather than when it is reaped: a reader at the
     // other end of a pipe must see end-of-file as soon as the writer dies.

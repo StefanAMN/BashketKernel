@@ -197,6 +197,11 @@ static bool try_copy_on_write(struct registers *regs) {
     uint64_t *space = vmm_space_from_phys((uint64_t)task->pml4_phys);
     if (vmm_handle_cow_fault(space, cr2)) return true;
 
+    // Writable already: another thread made the copy after this CPU cached
+    // the old translation (the fault itself has now dropped that)
+    uint64_t now = cr2 < USER_SPACE_END ? vmm_get_pte(space, cr2 & ~0xFFFULL) : 0;
+    if ((now & VMM_PRESENT) && (now & VMM_WRITABLE) && (now & VMM_USER)) return true;
+
     // Still a copy-on-write page? Then the copy could not be made: memory is
     // exhausted. fork promised this page without reserving a frame for it,
     // and a store instruction has no way to return an error, so the process
@@ -266,8 +271,8 @@ static bool try_swap(struct registers *regs) {
     // the very page the program was writing to (a "write to a present page"
     // fault whose page is present no longer)
     uint64_t *space = vmm_space_from_phys((uint64_t)task->pml4_phys);
-    int result = swap_in(space, cr2);
-    for (int i = 0; result < 0 && swap_may_retry(i); i++) result = swap_in(space, cr2);
+    int result = process_swap_in(task, space, cr2);
+    for (int i = 0; result < 0 && swap_may_retry(i); i++) result = process_swap_in(task, space, cr2);
     asm volatile("cli");
     asm volatile("mov cr2, %0" : : "r"(cr2));
 

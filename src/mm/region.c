@@ -2,10 +2,11 @@
  * @file region.c
  * @brief Memory a process has been promised but not yet given (see region.h)
  *
- * A task's regions, its heap limits and its count of promised pages are
- * only ever touched by the task itself (in its system calls and its page
- * faults), by its parent before it first runs, and by whoever frees it when
- * it is dead: no lock is needed for them. The system-wide total is atomic.
+ * A process's regions, heap limits and count of promised pages are changed
+ * under its map_mutex and mem_lock both, and read by page faults under
+ * mem_lock alone (task.h says why two). A task's parent sets them up before
+ * it first runs, and whoever frees it does so when it is dead, with no lock:
+ * nobody else can see them then. The system-wide total is atomic.
  */
 
 #include "region.h"
@@ -21,6 +22,8 @@
 #include "swap.h"
 #include "pcache.h"
 #include "heap.h"
+#include "sched.h"
+#include "timer.h"
 
 static size_t promised_total = 0;
 
@@ -144,6 +147,38 @@ static mem_region_t *free_slot(struct task *task) {
     return NULL;
 }
 
+// region_map, with the caller holding the process's map_mutex: nobody else
+// changes the table, so a free slot stays free. The new entry appears, whole,
+// under mem_lock; everything that touches the file comes before that.
+static uint64_t map_locked(struct task *task, uint64_t size, int prot, struct vnode *node, uint64_t offset, bool shared, int *error) {
+    uint64_t addr = task->proc->mmap_next;
+    *error = -ENOMEM;
+    if (addr >= USER_MMAP_END || size > USER_MMAP_END - addr) return 0;
+
+    mem_region_t *slot = free_slot(task);
+    if (!slot) return 0;
+    bool device = node && node->ops && node->ops->map_page;
+    if (!device && !can_promise(size / PAGE_SIZE)) return 0;   // (A device's pages are not memory to promise)
+
+    mem_region_t region = { .start = addr, .end = addr + size, .prot = prot, .node = node, .file_offset = offset,
+                            .program = false, .shared = shared && node && !device, .device = device };
+    pin(&region, +1);
+    int held = hold_device(&region, +1);
+    if (held < 0) {
+        pin(&region, -1);
+        *error = held;
+        return 0;
+    }
+
+    mutex_lock(&task->proc->mem_lock);
+    *slot = region;
+    if (!device) charge(task, size / PAGE_SIZE);
+    task->proc->mmap_next = addr + size;
+    mutex_unlock(&task->proc->mem_lock);
+    *error = 0;
+    return addr;
+}
+
 uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *node, uint64_t offset, bool shared,
                     int *error) {
     int unused;
@@ -153,49 +188,46 @@ uint64_t region_map(struct task *task, size_t length, int prot, struct vnode *no
 
     uint64_t size = page_align_up(length);
     if (size < length) return 0; // Overflow
-    uint64_t addr = task->proc->mmap_next;
-    *error = -ENOMEM;
-    if (addr >= USER_MMAP_END || size > USER_MMAP_END - addr) return 0;
-
-    mem_region_t *region = free_slot(task);
-    if (!region) return 0;
-    bool device = node && node->ops && node->ops->map_page;
-    if (!device && !can_promise(size / PAGE_SIZE)) return 0;   // (A device's pages are not memory to promise)
-
-    region->start = addr;
-    region->end = addr + size;
-    region->prot = prot;
-    region->node = node;
-    region->file_offset = offset;
-    region->program = false;
-    region->shared = shared && node && !device;
-    region->device = device;
-    pin(region, +1);
-    int held = hold_device(region, +1);
-    if (held < 0) {
-        mem_region_t gone = *region;
-        memset(region, 0, sizeof(*region));
-        pin(&gone, -1);
-        *error = held;
-        return 0;
-    }
-    if (!device) charge(task, size / PAGE_SIZE);
-
-    task->proc->mmap_next = addr + size;
-    *error = 0;
+    mutex_lock(&task->proc->map_mutex);
+    uint64_t addr = map_locked(task, size, prot, node, offset, shared, error);
+    mutex_unlock(&task->proc->map_mutex);
     return addr;
 }
 
-int region_unmap(struct task *task, uint64_t addr, size_t length) {
-    if (!task || length == 0 || (addr & (PAGE_SIZE - 1))) return -EINVAL;
-    if (addr >= USER_SPACE_END || length > USER_SPACE_END - addr) return -EINVAL;
-    uint64_t end = addr + page_align_up(length);
+// Wait until no page fault of this process is working on a region's file.
+// Those it was working on hold no pin of their own: a fault takes file_users
+// under mem_lock while the region is there, so once the count has been seen
+// at zero after the region has gone, none can still be using its file. A
+// short uninterruptible sleep, not a wake-up: the caller holds map_mutex and
+// must not be ended here, and a disk read is over soon.
+static void wait_for_file_users(process_t *proc) {
+    for (;;) {
+        mutex_lock(&proc->mem_lock);
+        uint32_t users = proc->file_users;
+        mutex_unlock(&proc->mem_lock);
+        if (users == 0) return;
+        sched_sleep_uninterruptible(&proc->file_users, NULL, timer_ticks() + 1);
+    }
+}
 
+// region_unmap, with the caller holding the process's map_mutex
+static int unmap_locked(struct task *task, uint64_t addr, uint64_t end) {
+    process_t *proc = task->proc;
     // Cutting a hole in the middle of a region leaves two: make sure there
-    // is somewhere to record the second before changing anything
+    // is somewhere to record the second before changing anything. The
+    // second holds the file, and the device, as the first does: taken now,
+    // since nothing under mem_lock may touch a file.
+    mem_region_t hole = { 0 };
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        mem_region_t *r = &task->proc->regions[i];
-        if (r->end != 0 && r->start < addr && end < r->end && !free_slot(task)) return -ENOMEM;
+        mem_region_t *r = &proc->regions[i];
+        if (r->end != 0 && r->start < addr && end < r->end) {
+            if (!free_slot(task)) return -ENOMEM;
+            hole = *r;
+        }
+    }
+    if (hole.end != 0) {
+        pin(&hole, +1);
+        hold_device(&hole, +1);
     }
 
     // What shared mappings in the range wrote goes to their files, once the
@@ -204,7 +236,7 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
     struct { struct vnode *node; uint64_t first, end; } written[TASK_MAX_REGIONS];
     int written_count = 0;
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        mem_region_t *r = &task->proc->regions[i];
+        mem_region_t *r = &proc->regions[i];
         if (r->end == 0 || !r->shared || r->end <= addr || end <= r->start) continue;
         uint64_t cut_start = r->start > addr ? r->start : addr;
         uint64_t cut_end = r->end < end ? r->end : end;
@@ -215,86 +247,139 @@ int region_unmap(struct task *task, uint64_t addr, size_t length) {
         written_count++;
     }
 
-    for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        mem_region_t *r = &task->proc->regions[i];
-        if (r->end == 0 || r->end <= addr || end <= r->start) continue;
+    mem_region_t gone[TASK_MAX_REGIONS];
+    int gone_count = 0;
+    int result;
 
-        uint64_t cut_start = r->start > addr ? r->start : addr;
-        uint64_t cut_end = r->end < end ? r->end : end;
-        if (!r->device) uncharge(task, untouched_pages(task, cut_start, cut_end)); // The frames are freed below
+    mutex_lock(&proc->mem_lock);
+    bool busy = process_range_busy(task, addr, end);
+    if (busy) {
+        result = -EBUSY;
+    } else {
+        for (int i = 0; i < TASK_MAX_REGIONS; i++) {
+            mem_region_t *r = &proc->regions[i];
+            if (r->end == 0 || r->end <= addr || end <= r->start) continue;
 
-        if (cut_start == r->start && cut_end == r->end) {
-            // The entry goes before the file's pin: /proc/<pid>/maps reads
-            // the entries of other processes under the tree lock, and must
-            // never find one naming a file that could already be gone
-            mem_region_t gone = *r;
-            memset(r, 0, sizeof(*r));
-            hold_device(&gone, -1);
-            pin(&gone, -1);
-        } else if (cut_start == r->start) {
-            r->file_offset += cut_end - r->start;                   // The front goes
-            r->start = cut_end;
-        } else if (cut_end == r->end) {
-            r->end = cut_start;                                     // The back goes
-        } else {
-            mem_region_t *tail = free_slot(task);                   // A hole: the back becomes a region of its own
-            *tail = *r;
-            tail->start = cut_end;
-            tail->file_offset = r->file_offset + (cut_end - r->start);
-            pin(tail, +1);
-            hold_device(tail, +1);                                  // (Each piece holds the device)
-            r->end = cut_start;
+            uint64_t cut_start = r->start > addr ? r->start : addr;
+            uint64_t cut_end = r->end < end ? r->end : end;
+            if (!r->device) uncharge(task, untouched_pages(task, cut_start, cut_end)); // The frames are freed below
+
+            if (cut_start == r->start && cut_end == r->end) {
+                // The entry goes before the file's pin: /proc/<pid>/maps reads
+                // the entries of other processes under the tree lock, and must
+                // never find one naming a file that could already be gone
+                gone[gone_count++] = *r;
+                memset(r, 0, sizeof(*r));
+            } else if (cut_start == r->start) {
+                r->file_offset += cut_end - r->start;                   // The front goes
+                r->start = cut_end;
+            } else if (cut_end == r->end) {
+                r->end = cut_start;                                     // The back goes
+            } else {
+                mem_region_t *tail = free_slot(task);                   // A hole: the back becomes a region of its own
+                *tail = *r;
+                tail->start = cut_end;
+                tail->file_offset = r->file_offset + (cut_end - r->start);
+                r->end = cut_start;                                     // (Pinned above, with the device)
+            }
         }
-    }
 
-    // Whatever has frames in the range, promised or not (shared memory is
-    // mapped at once and has no region)
-    int result = user_unmap_range(space_of(task), addr, end - addr) == 0 ? 0 : -EINVAL;
+        // Whatever has frames in the range, promised or not (shared memory is
+        // mapped at once and has no region)
+        result = user_unmap_range(space_of(task), addr, end - addr) == 0 ? 0 : -EINVAL;
+    }
+    mutex_unlock(&proc->mem_lock);
+
+    wait_for_file_users(proc);
+    for (int i = 0; i < gone_count; i++) {
+        hold_device(&gone[i], -1);
+        pin(&gone[i], -1);
+    }
+    if (busy && hole.end != 0) {
+        hold_device(&hole, -1);
+        pin(&hole, -1);
+    }
     for (int i = 0; i < written_count; i++) {
-        pcache_writeback(written[i].node, written[i].first, written[i].end);  // (An error stays dirty: see pcache.h)
+        if (!busy) pcache_writeback(written[i].node, written[i].first, written[i].end);  // (An error stays dirty: see pcache.h)
         mem_region_t hold = { .node = written[i].node };
         pin(&hold, -1);
     }
     return result;
 }
 
-uint64_t region_set_brk(struct task *task, uint64_t new_brk) {
+int region_unmap(struct task *task, uint64_t addr, size_t length) {
+    if (!task || length == 0 || (addr & (PAGE_SIZE - 1))) return -EINVAL;
+    if (addr >= USER_SPACE_END || length > USER_SPACE_END - addr) return -EINVAL;
+    mutex_lock(&task->proc->map_mutex);
+    int result = unmap_locked(task, addr, addr + page_align_up(length));
+    mutex_unlock(&task->proc->map_mutex);
+    return result;
+}
+
+// region_set_brk, with the caller holding the process's map_mutex
+static uint64_t set_brk_locked(struct task *task, uint64_t new_brk) {
+    process_t *proc = task->proc;
     // Out-of-range requests leave the break where it is; the caller sees the
     // unchanged value and knows the request failed (Linux brk semantics).
-    if (new_brk < task->proc->brk_start || new_brk > task->proc->brk_start + USER_BRK_MAX) return task->proc->brk_end;
+    if (new_brk < proc->brk_start || new_brk > proc->brk_start + USER_BRK_MAX) return proc->brk_end;
 
-    uint64_t old_top = page_align_up(task->proc->brk_end);
+    uint64_t old_top = page_align_up(proc->brk_end);
     uint64_t new_top = page_align_up(new_brk);
+    if (new_top > old_top && !can_promise((new_top - old_top) / PAGE_SIZE)) return proc->brk_end;
+
+    mutex_lock(&proc->mem_lock);
+    if (new_top < old_top && process_range_busy(task, new_top, old_top)) {
+        mutex_unlock(&proc->mem_lock);
+        return proc->brk_end;                 // Another thread's call is using it: refused like any other
+    }
     if (new_top > old_top) {
-        size_t pages = (new_top - old_top) / PAGE_SIZE;
-        if (!can_promise(pages)) return task->proc->brk_end;
-        charge(task, pages);
+        charge(task, (new_top - old_top) / PAGE_SIZE);
     } else if (new_top < old_top) {
         uncharge(task, untouched_pages(task, new_top, old_top));
         user_unmap_range(space_of(task), new_top, old_top - new_top);
     }
-    task->proc->brk_end = new_brk;
+    proc->brk_end = new_brk;
+    mutex_unlock(&proc->mem_lock);
     return new_brk;
 }
 
-int region_fault(struct task *task, uint64_t addr) {
-    if (!task || !task->is_user || addr >= USER_SPACE_END) return 0;
-    uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
+uint64_t region_set_brk(struct task *task, uint64_t new_brk) {
+    mutex_lock(&task->proc->map_mutex);
+    uint64_t result = set_brk_locked(task, new_brk);
+    mutex_unlock(&task->proc->map_mutex);
+    return result;
+}
+
+// One look at a fault on `page`. What it found to do with a file is done with
+// mem_lock released and file_users counted, so the file stays pinned; then it
+// looks again before mapping the page, since another thread may have given
+// it a frame or unmapped the region meanwhile.
+#define FAULT_AGAIN (-100)     // The table changed while the file was read: look again
+#define FAULT_NO_FRAME (-101)  // No frame for an anonymous page: the page cache may have some to give
+
+static int fault_once(struct task *task, uint64_t page) {
+    process_t *proc = task->proc;
     uint64_t *space = space_of(task);
+    mutex_lock(&proc->mem_lock);
     uint64_t entry = vmm_get_pte(space, page);
-    if ((entry & VMM_PRESENT) || vmm_pte_swapped(entry)) return 0; // Some other kind of fault
+    if ((entry & VMM_PRESENT) || vmm_pte_swapped(entry)) {
+        // Another thread got here first (or swap took it back), or it is not
+        // a fault of this kind; either way the instruction can be tried again
+        mutex_unlock(&proc->mem_lock);
+        return 1;
+    }
 
     int prot = 0;
     struct vnode *node = NULL;
     uint64_t file_offset = 0;
     bool found = false, shared = false, device = false;
 
-    if (page >= task->proc->brk_start && page < page_align_up(task->proc->brk_end)) {
+    if (page >= proc->brk_start && page < page_align_up(proc->brk_end)) {
         prot = PROT_READ | PROT_WRITE;                    // The heap
         found = true;
     }
     for (int i = 0; i < TASK_MAX_REGIONS && !found; i++) {
-        const mem_region_t *r = &task->proc->regions[i];
+        const mem_region_t *r = &proc->regions[i];
         if (r->end == 0 || page < r->start || page >= r->end) continue;
         prot = r->prot;
         node = r->node;
@@ -303,71 +388,112 @@ int region_fault(struct task *task, uint64_t addr) {
         file_offset = r->file_offset + (page - r->start);
         found = true;
     }
-    if (!found) return 0;
-    // A shared mapping's page wholly past the end of its file is not the
-    // file's: there is nothing to give (POSIX: SIGBUS)
-    if (shared && file_offset >= page_align_up(node->size)) return REGION_PAST_THE_END;
+    if (!found) {
+        mutex_unlock(&proc->mem_lock);
+        return 0;
+    }
+    uint64_t flags = VMM_USER;
+    if (prot & PROT_WRITE) flags |= VMM_WRITABLE;
+    if (!(prot & PROT_EXEC)) flags |= VMM_NO_EXECUTE;
+
+    if (!node) {
+        // A zeroed frame, filled through nobody: nothing to read
+        void *frame_view = vmm_alloc_user_page(space, page, flags);
+        if (frame_view) uncharge(task, 1);
+        mutex_unlock(&proc->mem_lock);
+        return frame_view ? 1 : FAULT_NO_FRAME;
+    }
+
+    proc->file_users++;
+    mutex_unlock(&proc->mem_lock);
+
+    // From here to the next mem_lock the file may be read
+    int result = 1;
+    uint64_t frame = 0;
+    bool charged = true;
+    if (shared && file_offset >= page_align_up(node->size)) {
+        // A shared mapping's page wholly past the end of its file is not the
+        // file's: there is nothing to give (POSIX: SIGBUS)
+        result = REGION_PAST_THE_END;
+    } else if (device) {
+        // The device's own page (the screen's memory), as it is: not a frame
+        // of ours, so marked to be left alone by unmapping, fork and swap
+        if (node->ops->map_page(node, file_offset, &frame) != 0) result = REGION_PAST_THE_END;
+        flags |= VMM_SHARED | VMM_DEVICE;
+        charged = false;                                   // (Nothing was promised for it)
+    } else if (shared) {
+        // The cached frame itself, writable if the mapping is, in every
+        // process that maps the page; VMM_SHARED keeps it so across fork
+        frame = pcache_get_shared(node, file_offset / PAGE_SIZE, (prot & PROT_WRITE) != 0);
+        if (!frame) result = REGION_NO_MEMORY;
+        if (flags & VMM_WRITABLE) flags |= VMM_SHARED;
+    } else if (pcache_cacheable(node) && (file_offset & (PAGE_SIZE - 1)) == 0) {
+        // A page of a file: the frame the page cache holds for it, shared
+        // with every other mapping of that page. Never writable as it is: a
+        // writable private mapping gets it copy-on-write, and its first
+        // write makes the process a copy of its own.
+        frame = pcache_get(node, file_offset / PAGE_SIZE);
+        if (!frame) result = REGION_NO_MEMORY;
+        if (flags & VMM_WRITABLE) flags = (flags & ~VMM_WRITABLE) | VMM_COW;
+    } else {
+        // A zeroed frame; then, for a file the cache does not keep, as much of
+        // it as lies on this page (past its end the zeros stay). The frame is
+        // filled through the kernel's own view of it, before the program can
+        // see it.
+        void *fresh = pmm_alloc_frame();
+        if (!fresh && pcache_reclaim(16) > 0) fresh = pmm_alloc_frame();
+        if (fresh) {
+            frame = (uint64_t)fresh;
+            void *view = (void *)(frame + pmm_get_hhdm_offset());
+            memset(view, 0, PAGE_SIZE);
+            vfs_read(node, file_offset, PAGE_SIZE, view);
+        } else {
+            result = REGION_NO_MEMORY;
+        }
+    }
+
+    mutex_lock(&proc->mem_lock);
+    proc->file_users--;
+    if (result == 1) {
+        // Is this still the page to give? Another thread may have given it
+        // a frame, or unmapped the region, while the file was being read
+        bool still = false;
+        for (int i = 0; i < TASK_MAX_REGIONS && !still; i++) {
+            const mem_region_t *r = &proc->regions[i];
+            still = r->end != 0 && page >= r->start && page < r->end && r->node == node &&
+                    r->file_offset + (page - r->start) == file_offset;
+        }
+        uint64_t now = vmm_get_pte(space, page);
+        if (!still || (now & VMM_PRESENT) || vmm_pte_swapped(now)) {
+            result = FAULT_AGAIN;
+        } else if (!vmm_map_page(space, page, frame, flags | VMM_PRESENT)) {
+            result = REGION_NO_MEMORY;
+        } else {
+            frame = 0;                       // The page table's now
+            if (charged) uncharge(task, 1);
+        }
+    }
+    mutex_unlock(&proc->mem_lock);
+    if (frame && !device) pmm_unref_frame((void *)frame);    // Not used: the reference pcache_get or the allocator gave
+    return result;
+}
+
+int region_fault(struct task *task, uint64_t addr) {
+    if (!task || !task->is_user || addr >= USER_SPACE_END) return 0;
+    uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1);
 
     // Short of memory: cached pages nobody maps go first (they cost
     // nothing to give back), before anything else has to
     size_t free_frames = pmm_get_free_frames();
     if (free_frames < SWAP_LOW_FRAMES) pcache_reclaim(SWAP_HIGH_FRAMES - free_frames);
 
-    uint64_t flags = VMM_USER;
-    if (prot & PROT_WRITE) flags |= VMM_WRITABLE;
-    if (!(prot & PROT_EXEC)) flags |= VMM_NO_EXECUTE;
-
-    if (device) {
-        // The device's own page (the screen's memory), as it is: not a frame
-        // of ours, so marked to be left alone by unmapping, fork and swap
-        uint64_t phys;
-        if (node->ops->map_page(node, file_offset, &phys) != 0) return REGION_PAST_THE_END;
-        flags |= VMM_SHARED | VMM_DEVICE;
-        if (!vmm_map_page(space, page, phys, flags | VMM_PRESENT)) return REGION_NO_MEMORY;
-        return 1;                                // (Nothing was promised for it)
+    for (bool reclaimed = false;;) {
+        int result = fault_once(task, page);
+        if (result == FAULT_AGAIN) continue;
+        if (result != FAULT_NO_FRAME) return result;
+        if (reclaimed || pcache_reclaim(16) == 0) return REGION_NO_MEMORY;
+        reclaimed = true;
     }
-
-    if (shared) {
-        // The cached frame itself, writable if the mapping is, in every
-        // process that maps the page; VMM_SHARED keeps it so across fork
-        uint64_t frame = pcache_get_shared(node, file_offset / PAGE_SIZE, (prot & PROT_WRITE) != 0);
-        if (!frame) return REGION_NO_MEMORY;
-        if (flags & VMM_WRITABLE) flags |= VMM_SHARED;
-        if (!vmm_map_page(space, page, frame, flags | VMM_PRESENT)) {
-            pmm_unref_frame((void *)frame);
-            return REGION_NO_MEMORY;
-        }
-        uncharge(task, 1);
-        return 1;
-    }
-
-    if (node && pcache_cacheable(node) && (file_offset & (PAGE_SIZE - 1)) == 0) {
-        // A page of a file: the frame the page cache holds for it, shared
-        // with every other mapping of that page. Never writable as it is: a
-        // writable private mapping gets it copy-on-write, and its first
-        // write makes the process a copy of its own.
-        uint64_t frame = pcache_get(node, file_offset / PAGE_SIZE);
-        if (!frame) return REGION_NO_MEMORY;
-        if (flags & VMM_WRITABLE) flags = (flags & ~VMM_WRITABLE) | VMM_COW;
-        if (!vmm_map_page(space, page, frame, flags | VMM_PRESENT)) {
-            pmm_unref_frame((void *)frame);  // The reference pcache_get gave us
-            return REGION_NO_MEMORY;
-        }
-        uncharge(task, 1);
-        return 1;
-    }
-
-    // A zeroed frame; then, for a file the cache does not keep, as much of
-    // it as lies on this page (past its end the zeros stay). The frame is
-    // filled through the kernel's own view of it, before the program can
-    // see it.
-    void *frame_view = vmm_alloc_user_page(space, page, flags);
-    if (!frame_view && pcache_reclaim(16) > 0) frame_view = vmm_alloc_user_page(space, page, flags);
-    if (!frame_view) return REGION_NO_MEMORY;
-    if (node) vfs_read(node, file_offset, PAGE_SIZE, frame_view);
-
-    uncharge(task, 1);
-    return 1;
 }
 
 void region_fork(struct task *child, const struct task *parent) {
@@ -397,7 +523,8 @@ static void put_region(const mem_region_t *gone) {
 }
 
 void region_release_all(struct task *task) {
-    // Each entry is cleared before its file is unpinned (see region_unmap)
+    // Each entry is cleared before its file is unpinned (see region_unmap).
+    // (The last thread: nobody is left to fault, so no locks.)
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
         mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0) continue;
@@ -428,7 +555,9 @@ void region_put_all(mem_region_t *taken) {
     kfree(taken);
 }
 
-int region_sync(struct task *task, uint64_t addr, size_t length) {
+// region_sync, with the caller holding the process's map_mutex: nobody else
+// changes the table
+static int sync_locked(struct task *task, uint64_t addr, size_t length) {
     uint64_t end = addr + page_align_up(length);
     // Every page of the range must be mapped by something: a region, the
     // heap, or a page that is there (the stack, shared memory)
@@ -459,20 +588,40 @@ int region_sync(struct task *task, uint64_t addr, size_t length) {
     return result;
 }
 
+int region_sync(struct task *task, uint64_t addr, size_t length) {
+    mutex_lock(&task->proc->map_mutex);
+    int result = sync_locked(task, addr, length);
+    mutex_unlock(&task->proc->map_mutex);
+    return result;
+}
+
 void region_revalidate(struct task *task) {
     uint32_t now = pcache_truncations();
     if (!task || !task->is_user || task->proc->seen_truncations == now) return;
-    task->proc->seen_truncations = now;
+    process_t *proc = task->proc;
+    // Under map_mutex, so that a region's file is not unpinned as its size
+    // is read here. Another thread's call may be using a page that has to
+    // go: then it is left until the next safe point, after that call.
+    mutex_lock(&proc->map_mutex);
+    mutex_lock(&proc->mem_lock);
+    bool all_done = true;
     uint64_t *space = space_of(task);
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        const mem_region_t *r = &task->proc->regions[i];
+        const mem_region_t *r = &proc->regions[i];
         if (r->end == 0 || !r->shared) continue;
         uint64_t keep = page_align_up(r->node->size);          // The file's pages: offsets below this
         if (r->file_offset + (r->end - r->start) <= keep) continue;
         uint64_t from = keep > r->file_offset ? r->start + (keep - r->file_offset) : r->start;
         size_t present = (r->end - from) / PAGE_SIZE - untouched_pages(task, from, r->end);
         if (present == 0) continue;
+        if (process_range_busy(task, from, r->end)) {
+            all_done = false;
+            continue;
+        }
         user_unmap_range(space, from, r->end - from);
         charge(task, present);           // Untouched again (and never to be given: SIGBUS)
     }
+    if (all_done) proc->seen_truncations = now;
+    mutex_unlock(&proc->mem_lock);
+    mutex_unlock(&proc->map_mutex);
 }
