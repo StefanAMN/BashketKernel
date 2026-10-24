@@ -487,6 +487,12 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     user_image_t image;
     if (!load_user_image(path, argv, envp, &image)) return -1;
 
+    // The new program starts alone
+    if (!sched_end_other_threads(self)) {
+        discard_image(&image);
+        return -1;
+    }
+
     uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
     mem_region_t *old_regions = region_take_all(self); // The old program's mappings are not the new one's
     apply_image(self, &image);
@@ -662,19 +668,20 @@ pid_t process_wait_options(pid_t pid, int *status, int options) {
         bool have_child = false;
 
         for (task_t *t = sched_first_task(); t; t = t->next) {
-            if (t->proc->parent_pid != self->pid || t == self || t->detached) continue;
+            if (t->pid != t->proc->pid) continue;               // Processes: their first threads
+            if (t->proc->parent_pid != self->proc->pid || t->proc == self->proc || t->detached) continue;
             if (pid != -1 && (pid_t)t->pid != pid) continue;
 
             have_child = true;
-            if (t->state == TASK_STOPPED && !t->proc->stop_reported && (options & PROCESS_WUNTRACED)) {
+            if (sched_process_stopped_locked(t) && !t->proc->stop_reported && (options & PROCESS_WUNTRACED)) {
                 // Stopped, not dead: reported once, and the child stays
                 t->proc->stop_reported = true;
                 if (status) *status = PROCESS_STATUS_STOPPED | t->proc->stop_signal;
                 found = (pid_t)t->pid;
                 break;
             }
-            if (t->state == TASK_ZOMBIE) {
-                if (status) *status = t->exit_status;
+            if (t->state == TASK_ZOMBIE && t->proc->live == 0) {
+                if (status) *status = t->proc->exit_status;
                 found = (pid_t)t->pid;
                 sched_unlink_zombie(t);
                 collected = t;
@@ -694,8 +701,8 @@ pid_t process_wait_options(pid_t pid, int *status, int options) {
             break;
         }
 
-        // A dying task wakes this channel if we are its parent
-        sched_sleep_on_task_list(self);
+        // A dying process wakes this channel if we are its parent
+        sched_sleep_on_task_list(self->proc);
     }
 
     sched_unlock_irqrestore(flags);
@@ -713,14 +720,14 @@ int process_kill(pid_t pid, int sig) {
     // be reaped in between
     int result = -1;
     uint64_t flags = sched_lock_irqsave();
-    task_t *target = sched_find_task_locked((uint32_t)pid);
+    task_t *target = sched_find_process_locked((uint32_t)pid);
     if (target && target->is_user) {
         // The target may be half way through a system call, so nothing is
         // done to it here: the signal is recorded and takes effect at its
         // next safe point. That is true even when the target is the caller.
         // (Sending to a process that is already dead but not yet waited
         // for succeeds and does nothing.)
-        if (target->state != TASK_ZOMBIE) signal_send_locked(target, sig);
+        if (target->proc->live > 0) signal_send_locked(target, sig);
         result = 0;
     }
     sched_unlock_irqrestore(flags);
@@ -747,13 +754,13 @@ int process_set_foreground(uint32_t pgid) {
             bool in_session = false;
             uint64_t flags = sched_lock_irqsave();
             for (task_t *t = sched_first_task(); t && !in_session; t = t->next) {
-                if (t->is_user && t->proc->pgid == pgid && t->proc->sid == self->proc->sid && t->state != TASK_ZOMBIE) in_session = true;
+                if (t->is_user && t->proc->pgid == pgid && t->proc->sid == self->proc->sid && t->proc->live > 0) in_session = true;
             }
             sched_unlock_irqrestore(flags);
             if (!in_session) return -EPERM;
         }
     }
-    foreground_owner = pgid ? self->pid : 0;
+    foreground_owner = pgid ? self->proc->pid : 0;
     foreground_pgid = pgid;
     return 0;
 }
@@ -773,17 +780,17 @@ int64_t process_setsid(void) {
     // A group leader may not: its group would be split across two sessions
     bool leader = false;
     for (task_t *t = sched_first_task(); t && !leader; t = t->next) {
-        if (t->proc->pgid == self->pid && t->state != TASK_ZOMBIE) leader = true;
+        if (t->proc->pgid == self->proc->pid && t->proc->live > 0) leader = true;
     }
     if (leader) {
         sched_unlock_irqrestore(flags);
         return -EPERM;
     }
-    self->proc->sid = self->pid;
-    self->proc->pgid = self->pid;
+    self->proc->sid = self->proc->pid;
+    self->proc->pgid = self->proc->pid;
     self->proc->has_tty = false;          // A new session starts without a terminal (and there is only one)
     sched_unlock_irqrestore(flags);
-    return (int64_t)self->pid;
+    return (int64_t)self->proc->pid;
 }
 
 int64_t process_getsid(pid_t pid) {
@@ -792,7 +799,7 @@ int64_t process_getsid(pid_t pid) {
     if (pid == 0) return (int64_t)self->proc->sid;
     int64_t sid = -ESRCH;
     uint64_t flags = sched_lock_irqsave();
-    task_t *t = sched_find_task_locked((uint32_t)pid);
+    task_t *t = sched_find_process_locked((uint32_t)pid);
     if (t && t->is_user) sid = t->proc->sid;
     sched_unlock_irqrestore(flags);
     return sid;
@@ -808,9 +815,9 @@ int64_t process_getsid(pid_t pid) {
 // scheduler lock.
 static bool group_orphaned_locked(uint32_t pgid, uint32_t sid, uint32_t init) {
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (!t->is_user || t->proc->pgid != pgid || t->state == TASK_ZOMBIE) continue;
-        task_t *parent = sched_find_task_locked(t->proc->parent_pid);
-        if (parent && parent->is_user && parent->proc->pgid != pgid && parent->proc->sid == sid && parent->state != TASK_ZOMBIE &&
+        if (!t->is_user || t->proc->pgid != pgid || t->proc->live == 0) continue;
+        task_t *parent = sched_find_process_locked(t->proc->parent_pid);
+        if (parent && parent->is_user && parent->proc->pgid != pgid && parent->proc->sid == sid && parent->proc->live > 0 &&
             (init == 0 || parent->pid != init)) {
             return false;
         }
@@ -844,7 +851,7 @@ int process_terminal_access(bool writing) {
             return -EIO;            // Stopped, it would never be continued
         }
         for (task_t *t = sched_first_task(); t; t = t->next) {
-            if (t->is_user && t->proc->pgid == self->proc->pgid) signal_send_locked(t, sig);
+            if (t->is_user && t->pid == t->proc->pid && t->proc->pgid == self->proc->pgid) signal_send_locked(t, sig);
         }
         sched_unlock_irqrestore(flags);
         // A handler: the call ends so that it runs. Otherwise the signal
@@ -873,7 +880,7 @@ bool process_signal_foreground(int sig) {
 
     uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (t->is_user && (pgid == 0 || t->proc->pgid == pgid)) signal_send_locked(t, sig);
+        if (t->is_user && t->pid == t->proc->pid && (pgid == 0 || t->proc->pgid == pgid)) signal_send_locked(t, sig);
     }
     sched_unlock_irqrestore(flags);
     return true;
@@ -889,7 +896,7 @@ int process_kill_group(uint32_t pgid, int sig, uint32_t sender_uid) {
     int sent = 0;
     uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t; t = t->next) {
-        if (!t->is_user || t->proc->pgid != pgid || t->state == TASK_ZOMBIE) continue;
+        if (!t->is_user || t->pid != t->proc->pid || t->proc->pgid != pgid || t->proc->live == 0) continue;
         if (!auth_may_signal(sender_uid, t->proc->uid)) continue;
         signal_send_locked(t, sig);
         sent++;
@@ -901,21 +908,21 @@ int process_kill_group(uint32_t pgid, int sig, uint32_t sender_uid) {
 int process_set_group(pid_t pid, uint32_t pgid) {
     task_t *self = sched_get_current_task();
     if (!self) return -1;
-    if (pid == 0) pid = (pid_t)self->pid;
+    if (pid == 0) pid = (pid_t)self->proc->pid;
     if (pgid == 0) pgid = (uint32_t)pid;
 
     int result = -1;
     uint64_t flags = sched_lock_irqsave();
-    task_t *target = sched_find_task_locked((uint32_t)pid);
+    task_t *target = sched_find_process_locked((uint32_t)pid);
     // Only for oneself or one's own child in one's own session, never for a
     // session leader, and only into a group of one's own making in that
     // session: the target's own, or one that a relative already leads
-    if (target && target->is_user && (target == self || target->proc->parent_pid == self->pid) &&
+    if (target && target->is_user && (target->proc == self->proc || target->proc->parent_pid == self->proc->pid) &&
         target->proc->sid == self->proc->sid && target->proc->sid != target->pid) {
         bool exists = pgid == target->pid;
         for (task_t *t = sched_first_task(); t && !exists; t = t->next) {
             if (t->proc->pgid == pgid && t->proc->sid == self->proc->sid &&
-                (t == self || t->proc->parent_pid == self->pid || t->proc->parent_pid == self->proc->parent_pid)) exists = true;
+                (t->proc == self->proc || t->proc->parent_pid == self->proc->pid || t->proc->parent_pid == self->proc->parent_pid)) exists = true;
         }
         if (exists) {
             target->proc->pgid = pgid;
@@ -923,6 +930,80 @@ int process_set_group(pid_t pid, uint32_t pgid) {
         }
     }
     sched_unlock_irqrestore(flags);
+    return result;
+}
+
+// What a new thread starts with: a clean set of floating point registers,
+// set just before it can run (sched_add_thread)
+static void thread_before_start(task_t *t) {
+    fpu_state_init(t->fpu_state);
+}
+
+int64_t process_thread_create(uint64_t entry, uint64_t stack, uint64_t arg) {
+    task_t *self = sched_get_current_task();
+    if (!self || !self->is_user) return -EINVAL;
+    if (entry == 0 || entry >= USER_SPACE_END || stack == 0 || stack >= USER_SPACE_END) return -EINVAL;
+
+    task_t *thread = task_alloc(self->name, NULL);
+    if (!thread) return -ENOMEM;
+
+    // Its kernel stack starts with a frame that returns to ring 3 at `entry`
+    // on the stack it was given, with its one argument where a function
+    // expects it. Below that, what ctx_switch pops (see process_fork).
+    uint64_t stack_top = ((uint64_t)thread->kernel_stack + KERNEL_STACK_SIZE) & ~0xFULL;
+    struct registers *frame = (struct registers *)(stack_top - sizeof(struct registers));
+    memset(frame, 0, sizeof(*frame));
+    frame->rip = entry;
+    frame->rsp = stack;
+    frame->rdi = arg;
+    frame->cs = USER_CS;
+    frame->ss = USER_DS;
+    frame->rflags = 0x202;
+
+    uint64_t *sp = (uint64_t *)frame;
+    *(--sp) = (uint64_t)user_frame_return;
+    *(--sp) = (uint64_t)task_start_trampoline;
+    *(--sp) = 0x002;                       // RFLAGS: interrupts off
+    for (int i = 0; i < 6; i++) *(--sp) = 0; // R15, R14, R13, R12, RBP, RBX
+    thread->rsp = (uint64_t)sp;
+    int64_t tid = thread->pid;
+
+    if (!sched_add_thread(thread, self, thread_before_start)) {
+        task_free(thread);
+        return -EAGAIN;
+    }
+    return tid;
+}
+
+int64_t process_thread_join(uint32_t tid, int *status) {
+    task_t *self = sched_get_current_task();
+    if (!self || !self->is_user || tid == self->pid) return -EINVAL;
+
+    task_t *collected = NULL;
+    int64_t result = 0;
+    uint64_t flags = sched_lock_irqsave();
+    for (;;) {
+        task_t *t = sched_find_task_locked(tid);
+        // Only a thread of this process, and not the first: that one is what
+        // the process is found by, and stays until the process ends
+        if (!t || t->proc != self->proc || t->pid == self->proc->pid) {
+            result = -ESRCH;
+            break;
+        }
+        if (t->state == TASK_ZOMBIE) {
+            if (status) *status = t->exit_status;
+            sched_unlink_zombie(t);
+            collected = t;
+            break;
+        }
+        if (sched_interrupted()) {
+            result = -EINTR;
+            break;
+        }
+        sched_sleep_on_task_list(self->proc);
+    }
+    sched_unlock_irqrestore(flags);
+    if (collected) task_free(collected);
     return result;
 }
 

@@ -263,7 +263,7 @@ static int64_t snapshot_status(vnode_t *node, char **out) {
 
     // Formatting takes no other lock and cannot sleep (see gen_tasks)
     uint64_t flags = sched_lock_irqsave();
-    task_t *t = sched_find_task_locked(pid_of(node));
+    task_t *t = sched_find_process_locked(pid_of(node));
     if (t) {
         found = true;
         uint64_t mapped = 0;
@@ -289,17 +289,21 @@ static int64_t snapshot_status(vnode_t *node, char **out) {
                 program += t->proc->image_segments[i].end - t->proc->image_segments[i].start;
             }
         }
+        uint64_t ticks = 0;               // (Of all its threads)
+        for (task_t *o = sched_first_task(); o; o = o->next) {
+            if (o->proc == t->proc) ticks += o->cpu_ticks;
+        }
         char syscall_text[12] = "-";
         if (t->in_syscall) ksnprintf(syscall_text, sizeof(syscall_text), "%u", t->in_syscall - 1);
         len = ksnprintf(text, PROC_TEXT_MAX,
                         "Name:\t%s\nState:\t%s\nPid:\t%u\nPPid:\t%u\nPgid:\t%u\nSid:\t%u\n"
                         "Uid:\t%u\nRuid:\t%u\nGid:\t%u\nRgid:\t%u\nKind:\t%s\nPriority:\t%u\n"
                         "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\nSize:\t%lu kB\n"
-                        "Resident:\t%lu kB\nShared:\t%lu kB\nSyscall:\t%s\n",
+                        "Resident:\t%lu kB\nShared:\t%lu kB\nSyscall:\t%s\nThreads:\t%u\n",
                         t->name, (unsigned)t->state < 5 ? state_words[t->state] : "?", t->pid, t->proc->parent_pid, t->proc->pgid, t->proc->sid,
                         t->proc->uid, t->proc->ruid, t->proc->gid, t->proc->rgid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
-                        t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->proc->promised_pages * 4,
-                        (program + heap + mapped) / 1024, (uint64_t)resident * 4, (uint64_t)shared * 4, syscall_text);
+                        ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->proc->promised_pages * 4,
+                        (program + heap + mapped) / 1024, (uint64_t)resident * 4, (uint64_t)shared * 4, syscall_text, t->proc->live);
     }
     sched_unlock_irqrestore(flags);
     return give_text(text, len, found, out);
@@ -315,12 +319,36 @@ static int64_t snapshot_cmdline(vnode_t *node, char **out) {
     size_t len = 0;
     bool found = false;
     uint64_t flags = sched_lock_irqsave();
-    task_t *t = sched_find_task_locked(pid_of(node));
+    task_t *t = sched_find_process_locked(pid_of(node));
     if (t) {
         found = true;
         len = t->proc->cmdline_len;
         memcpy(text, t->proc->cmdline, len);
     }
+    sched_unlock_irqrestore(flags);
+    return give_text(text, len, found, out);
+}
+
+// /proc/<pid>/threads: one line per thread: its id, state and the system
+// call it is in ("-": none). -ENOENT once the process is gone.
+static int64_t snapshot_threads(vnode_t *node, char **out) {
+    static const char *const state_words[] = { "ready", "running", "blocked", "zombie", "stopped" };
+    *out = NULL;
+    char *text = kmalloc(PROC_TEXT_MAX);
+    if (!text) return -ENOMEM;
+    size_t len = 0;
+    uint64_t flags = sched_lock_irqsave();
+    task_t *leader = sched_find_process_locked(pid_of(node));
+    if (leader) {
+        for (task_t *t = sched_first_task(); t && len + 64 < PROC_TEXT_MAX; t = t->next) {
+            if (t->proc != leader->proc) continue;
+            char syscall_text[12] = "-";
+            if (t->in_syscall) ksnprintf(syscall_text, sizeof(syscall_text), "%u", t->in_syscall - 1);
+            len += ksnprintf(text + len, PROC_TEXT_MAX - len, "%u %s %s\n", t->pid,
+                             (unsigned)t->state < 5 ? state_words[t->state] : "?", syscall_text);
+        }
+    }
+    bool found = leader != NULL;
     sched_unlock_irqrestore(flags);
     return give_text(text, len, found, out);
 }
@@ -392,7 +420,7 @@ static int64_t snapshot_maps(vnode_t *node, char **out) {
 
     vfs_lock();
     uint64_t flags = sched_lock_irqsave();
-    task_t *t = sched_find_task_locked(pid_of(node));
+    task_t *t = sched_find_process_locked(pid_of(node));
     bool found = t != NULL;
     if (t) n = copy_maps(t, lines, name);
     sched_unlock_irqrestore(flags);
@@ -464,7 +492,7 @@ static size_t describe_file(const file_t *file, char *text, size_t size) {
 static int64_t snapshot_fd(vnode_t *node, char **out) {
     *out = NULL;
     uint64_t flags = sched_lock_irqsave();
-    task_t *t = sched_find_task_locked(pid_of(node));
+    task_t *t = sched_find_process_locked(pid_of(node));
     file_t *file = t ? fd_slot_dup(t->proc->fds, fd_of(node)) : NULL;
     sched_unlock_irqrestore(flags);
     if (!file) return -ENOENT;
@@ -481,6 +509,7 @@ static int64_t snapshot_fd(vnode_t *node, char **out) {
 
 static const vnode_ops_t ops_status = { .snapshot = snapshot_status };
 static const vnode_ops_t ops_cmdline = { .snapshot = snapshot_cmdline };
+static const vnode_ops_t ops_threads = { .snapshot = snapshot_threads };
 static const vnode_ops_t ops_maps = { .snapshot = snapshot_maps };
 static const vnode_ops_t ops_fd = { .snapshot = snapshot_fd };
 
@@ -548,7 +577,7 @@ static void fd_dir_refresh(vnode_t *dir) {
 
     uint32_t mask = 0, uid = dir->uid, gid = dir->gid;
     uint64_t flags = sched_lock_irqsave();
-    task_t *t = sched_find_task_locked(pid_of(dir));
+    task_t *t = sched_find_process_locked(pid_of(dir));
     if (t) {
         mask = fd_slot_mask(t->proc->fds);
         uid = t->proc->uid;
@@ -597,6 +626,7 @@ static void add_pid_dir(vnode_t *dir, const proc_entry_t *e) {
     d->gid = e->gid;
     add_pid_file(d, "status", &ops_status);
     add_pid_file(d, "cmdline", &ops_cmdline);
+    add_pid_file(d, "threads", &ops_threads);
     add_pid_node(d, "maps", VFS_FILE, &ops_maps, 0400, 0);      // They name files: the owner's only
     add_pid_node(d, "fd", VFS_DIRECTORY, &fd_dir_ops, 0500, 0);
 }
@@ -628,7 +658,7 @@ static void proc_refresh(vnode_t *dir) {
     refreshing = true;
 
     task_t *me = sched_get_current_task();
-    ksnprintf(self_target, sizeof(self_target), "%u", me ? me->pid : 0);
+    ksnprintf(self_target, sizeof(self_target), "%u", me ? me->proc->pid : 0);
     if (self_link) self_link->size = strlen(self_target);
 
     // How many tasks, then a copy of them (room for a few more that start meanwhile)
@@ -645,6 +675,7 @@ static void proc_refresh(vnode_t *dir) {
     size_t n = 0;
     flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t && n < room; t = t->next) {
+        if (t->pid != t->proc->pid) continue;     // A directory per process, not per thread
         tasks[n].pid = t->pid;
         tasks[n].uid = t->proc->uid;
         tasks[n++].gid = t->proc->gid;

@@ -65,7 +65,7 @@ typedef struct process {
     uint32_t pid;            // Its process id: the first thread's task id, or exec's caller's
     uint32_t live;           // Threads that have not begun their last steps (scheduler lock)
     bool group_exit;         // One thread has ended the process: the others are being killed (scheduler lock)
-    bool exec_running;       // One thread is ending the others in order to exec (scheduler lock)
+    uint32_t exec_tid;       // The thread that is ending the others in order to exec, or 0 (scheduler lock)
     int exit_status;         // What waitpid reports, valid once live is 0 (the first to end the process sets it)
     int stop_signal;         // While every thread is stopped: the signal that did it
     bool stop_reported;      // ...and whether waitpid has told the parent yet

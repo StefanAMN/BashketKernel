@@ -250,9 +250,11 @@ static int64_t sys_open(uint64_t user_path, int flags) {
 // descriptor (in any process) is gone. -EBADF if fd is not open.
 static int64_t sys_close(int fd) {
     task_t *task = sched_get_current_task();
-    file_t *file = fd_to_file(fd);
+    if (fd < 0 || fd >= TASK_MAX_FDS) return -EBADF;
+    // What the slot held, in one step: of two threads closing one descriptor,
+    // only one has anything to close
+    file_t *file = fd_slot_set(task->proc->fds, fd, NULL);
     if (!file) return -EBADF;
-    fd_slot_set(task->proc->fds, fd, NULL);
     __atomic_and_fetch(&task->proc->fd_cloexec, ~(1u << fd), __ATOMIC_RELAXED);
     file_close(file);
     return 0;
@@ -272,8 +274,7 @@ static int64_t sys_pipe(uint64_t user_fds, uint64_t flags) {
     int read_fd = fd_install(task->proc->fds, reader);
     int write_fd = (read_fd >= 0) ? fd_install(task->proc->fds, writer) : -EMFILE;
     if (write_fd < 0) {
-        if (read_fd >= 0) fd_slot_set(task->proc->fds, read_fd, NULL);
-        file_close(reader);
+        if (read_fd < 0 || fd_take_back(task->proc->fds, read_fd, reader)) file_close(reader);
         file_close(writer);
         return -EMFILE;
     }
@@ -697,7 +698,7 @@ static int64_t sys_kill(int pid, int sig) {
     // other time. (PIDs are never reused, so the kill below can not reach a
     // different process.)
     uint64_t flags = sched_lock_irqsave();
-    task_t *target = sched_find_task_locked((uint32_t)pid);
+    task_t *target = sched_find_process_locked((uint32_t)pid);
     // A process that has died but has not been waited for still exists, as
     // far as signals go: on another CPU it may die between two kills
     bool exists = target && target->is_user;
@@ -964,6 +965,72 @@ static int64_t sys_shmat(int id) {
     return addr ? (int64_t)addr : -EINVAL;
 }
 
+static uint64_t ms_to_ticks(uint64_t ms);
+
+// --- Threads -----------------------------------------------------------------
+
+// thread_join(tid, status): wait for a thread of this process to end. See
+// process_thread_join. `user_status` (NULL: not wanted) is written afterwards.
+static int64_t sys_thread_join(uint64_t tid, uint64_t user_status) {
+    if (tid > 0xFFFFFFFFULL) return -ESRCH;
+    if (user_status && !user_range_ok(user_status, sizeof(int), true)) return -EFAULT;
+    int status = 0;
+    int64_t result = process_thread_join((uint32_t)tid, &status);
+    if (result == 0 && user_status) {
+        user_access_begin();
+        *(int *)user_status = status;
+        user_access_end();
+    }
+    return result;
+}
+
+// Serialises a waiter's "look, then sleep" with a waker's "mark, then wake",
+// across all processes: one short hold each. Its user access is a read of a
+// range checked and recorded first: it cannot go away or be swapped out.
+static spinlock_t futex_lock = SPINLOCK_RANKED("futex", LOCK_RANK_FUTEX);
+
+// futex_wait(addr, expected, timeout_ms): if the 32-bit word at addr still
+// holds `expected`, sleep until futex_wake on addr (0), the time is up
+// (-ETIMEDOUT; timeout_ms 0: never), or a signal comes (-EINTR). -EAGAIN if it
+// holds something else, -EINVAL if addr is not aligned, -EFAULT.
+static int64_t sys_futex_wait(uint64_t addr, uint32_t expected, uint64_t timeout_ms) {
+    if (addr == 0 || (addr & 3)) return -EINVAL;
+    if (!user_range_ok(addr, sizeof(uint32_t), false)) return -EFAULT;
+    task_t *self = sched_get_current_task();
+    uint64_t deadline = timeout_ms ? timer_ticks() + ms_to_ticks(timeout_ms) : 0;
+    int64_t result = 0;
+
+    uint64_t flags = spinlock_acquire_irqsave(&futex_lock);
+    user_access_begin();
+    uint32_t now = *(const volatile uint32_t *)addr;
+    user_access_end();
+    if (now != expected) {
+        result = -EAGAIN;
+    } else {
+        self->futex_addr = addr;
+        while (self->futex_addr && result == 0) {
+            if (sched_interrupted()) result = -EINTR;
+            else if (deadline && timer_ticks() >= deadline) result = -ETIMEDOUT;
+            else sched_sleep(&self->futex_addr, &futex_lock, deadline);
+        }
+        if (self->futex_addr == 0) result = 0;   // Woken, whatever else happened: that wake-up is used
+        self->futex_addr = 0;
+    }
+    spinlock_release_irqrestore(&futex_lock, flags);
+    return result;
+}
+
+// futex_wake(addr, count): wake up to `count` threads of this process in
+// futex_wait on addr. Returns how many.
+static int64_t sys_futex_wake(uint64_t addr, uint64_t count) {
+    if (addr == 0 || (addr & 3)) return -EINVAL;
+    uint32_t most = count > PROCESS_MAX_THREADS ? PROCESS_MAX_THREADS : (uint32_t)count;
+    uint64_t flags = spinlock_acquire_irqsave(&futex_lock);
+    uint32_t woken = sched_futex_wake(sched_get_current_task()->proc, addr, most);
+    spinlock_release_irqrestore(&futex_lock, flags);
+    return woken;
+}
+
 // --- Network -----------------------------------------------------------------
 
 // A timeout in milliseconds as timer ticks, rounded up so it never ends early,
@@ -1009,8 +1076,7 @@ static int64_t sys_socketpair(uint64_t user_fds) {
     int fd_a = fd_install(task->proc->fds, a);
     int fd_b = (fd_a >= 0) ? fd_install(task->proc->fds, b) : -EMFILE;
     if (fd_b < 0) {
-        if (fd_a >= 0) fd_slot_set(task->proc->fds, fd_a, NULL);
-        file_close(a);
+        if (fd_a < 0 || fd_take_back(task->proc->fds, fd_a, a)) file_close(a);
         file_close(b);
         return -EMFILE;
     }
@@ -1060,8 +1126,7 @@ static int64_t sys_local_listen(uint64_t user_path, int backlog) {
     }
     vfs_unlock();
     if (err != 0) {
-        fd_slot_set(task->proc->fds, fd, NULL);
-        file_close(file);
+        if (fd_take_back(task->proc->fds, fd, file)) file_close(file);
         return err;
     }
     return fd;
@@ -1390,7 +1455,17 @@ static int64_t dispatch(struct registers *regs) {
 
         case SYS_GETPID:
         case SYS_GETPID_ALT:
+            return (int64_t)task->proc->pid;
+        case SYS_GETTID:
             return (int64_t)task->pid;
+        case SYS_THREAD_CREATE:
+            return process_thread_create(regs->rdi, regs->rsi, regs->rdx);
+        case SYS_THREAD_EXIT:
+            task_exit_thread((int)regs->rdi);
+            return 0; // Not reached
+        case SYS_THREAD_JOIN: return sys_thread_join(regs->rdi, regs->rsi);
+        case SYS_FUTEX_WAIT:  return sys_futex_wait(regs->rdi, (uint32_t)regs->rsi, regs->rdx);
+        case SYS_FUTEX_WAKE:  return sys_futex_wake(regs->rdi, regs->rsi);
         case SYS_GETPPID:
             return (int64_t)task->proc->parent_pid;
         case SYS_SETPGID:
@@ -1399,7 +1474,7 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_GETPGID: {
             if (regs->rdi == 0) return (int64_t)task->proc->pgid;
             uint64_t irq = sched_lock_irqsave();
-            task_t *other = sched_find_task_locked((uint32_t)regs->rdi);
+            task_t *other = sched_find_process_locked((uint32_t)regs->rdi);
             int64_t pgid = (other && other->is_user) ? (int64_t)other->proc->pgid : -ESRCH;
             sched_unlock_irqrestore(irq);
             return pgid;
@@ -1533,7 +1608,7 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_NETCONFIG: return sys_netconfig(regs->rdi, regs->rsi);
 
         case SYS_TTY_RAW:
-            tty_set_raw(regs->rdi != 0, task->pid);
+            tty_set_raw(regs->rdi != 0, task->proc->pid);
             return 0;
         case SYS_REBOOT:
             // Only root may stop the system (rdi: 0 switch off, 1 restart)

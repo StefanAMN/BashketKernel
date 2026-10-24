@@ -565,6 +565,17 @@ code comments and commit messages; `git log` is the full history.
 - **A fallback nobody runs is a stub.** "Timestamp counter unusable" had
   been in the tree untested; the first run on `-cpu qemu64,-tsc` failed five
   checks. It is in `make check` now.
+- **One running task per address space was an assumption everywhere.** Threads
+  broke code that looked finished: `close` closed the pointer it had looked up
+  rather than what it took from the slot, so two threads closing one descriptor
+  freed the file twice (seen as a corrupt slab free list, one run in several on
+  eight CPUs, not on four). Look for look-then-act on anything shared.
+- **Without exception tables a checked user range must stay valid.** The kernel
+  cannot recover from its own fault on user memory, so "checked" has to mean
+  "held": the call ranges that protected buffers from swap now also make
+  `munmap` refuse with `EBUSY`, and `fork` re-privatise. A file reference taken
+  by a call is held by the task for the same reason as `io_buffer`: a sleeper
+  killed in the call never unwinds.
 - **Check that a concurrency test can fail.** Removing the test's own lock
   made the four-CPU test fail at once; putting the semaphore back on
   interrupt masking alone did not, because its window is two instructions

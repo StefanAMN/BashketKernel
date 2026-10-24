@@ -223,6 +223,13 @@ int file_readdir(file_t *file, struct dirent_info *out);
 file_t *fd_slot_set(file_t *fds[TASK_MAX_FDS], int fd, file_t *file);
 
 /**
+ * @brief Undo an fd_install by this system call: empty slot `fd` if it still
+ *        holds `file`, and say so (the caller then closes it). False if another
+ *        thread closed it meanwhile: that reference has been dealt with.
+ */
+bool fd_take_back(file_t *fds[TASK_MAX_FDS], int fd, file_t *file);
+
+/**
  * @brief A reference to the file in slot `fd` of any process's table
  *        (file_close it when done), or NULL if the slot is empty or out
  *        of range. For another process's table the caller keeps the task

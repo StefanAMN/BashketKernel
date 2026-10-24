@@ -296,6 +296,14 @@ file_t *fd_slot_set(file_t *fds[TASK_MAX_FDS], int fd, file_t *file) {
     return old;
 }
 
+bool fd_take_back(file_t *fds[TASK_MAX_FDS], int fd, file_t *file) {
+    uint64_t flags = spinlock_acquire_irqsave(&fd_slot_lock);
+    bool there = fds[fd] == file;
+    if (there) fds[fd] = NULL;
+    spinlock_release_irqrestore(&fd_slot_lock, flags);
+    return there;
+}
+
 file_t *fd_slot_dup(file_t *fds[TASK_MAX_FDS], int fd) {
     if (fd < 0 || fd >= TASK_MAX_FDS) return NULL;
     uint64_t flags = spinlock_acquire_irqsave(&fd_slot_lock);

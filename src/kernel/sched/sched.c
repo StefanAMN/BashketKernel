@@ -314,6 +314,7 @@ void sched_init(void) {
     task_t *idle = task_alloc_with_pid("idle", sched_idle_loop, false);
     if (!idle) panic("sched_init: no memory for the idle task");
     idle->pid = IDLE_PID;
+    idle->proc->pid = IDLE_PID;
     idle->priority = PRIO_LOW;
     idle->affinity = 0;
     idle->queued_on = -1;
@@ -321,6 +322,7 @@ void sched_init(void) {
 
     uint64_t flags = sched_lock_irqsave();
     main_task->pid = next_pid++;
+    main_task->proc->pid = main_task->pid;
     enqueue_task(main_task);
     this_cpu()->current = main_task;
     this_cpu()->idle = idle;
@@ -354,6 +356,7 @@ task_t *sched_prepare_cpu(uint32_t cpu_id) {
     }
     idle->name[0] = 'i'; idle->name[1] = 'd'; idle->name[2] = 'l'; idle->name[3] = 'e'; idle->name[4] = '\0';
     idle->pid = IDLE_PID;
+    idle->proc->pid = IDLE_PID;
     idle->state = TASK_RUNNING;
     idle->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys();
     idle->detached = true;
@@ -425,13 +428,14 @@ static task_t *task_alloc_with_pid(const char *name, void (*entry)(void), bool a
     t->sleeping_on = -1;
     t->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys(); // Kernel threads share the kernel address space
     t->detached = true;
-    t->proc->parent_pid = current_task ? current_task->pid : 0;
+    t->proc->parent_pid = current_task ? current_task->proc->pid : 0;
     t->priority = current_task ? current_task->priority : PRIO_NORMAL; // Inherited
 
     // Assign the PID now so the creator can use it before the task ever runs
     if (assign_pid) {
         uint64_t flags = sched_lock_irqsave();
         t->pid = next_pid++;
+        t->proc->pid = t->pid;
         sched_unlock_irqrestore(flags);
     }
 
@@ -487,10 +491,14 @@ void task_set_cwd(task_t *task, vnode_t *dir) {
 
 void task_free(task_t *t) {
     if (!t) return;
-    file_close_all(t->proc->fds); // Normally already empty: closed when it died
-    region_release_all(t);  // Likewise (but a task that never ran still holds its program's file)
-    task_set_cwd(t, NULL);
-    if (t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
+    process_t *proc = t->proc;
+    bool last = __atomic_sub_fetch(&proc->refs, 1, __ATOMIC_ACQ_REL) == 0;
+    if (last) {
+        file_close_all(proc->fds); // Normally already empty: closed when it died
+        region_release_all(t);  // Likewise (but a task that never ran still holds its program's file)
+        task_set_cwd(t, NULL);
+    }
+    if (last && t->is_user && t->pml4_phys && (uint64_t)t->pml4_phys != vmm_get_kernel_pml4_phys()) {
         vmm_destroy_address_space(vmm_space_from_phys((uint64_t)t->pml4_phys));
     }
     if (t->kernel_stack) {
@@ -499,7 +507,7 @@ void task_free(task_t *t) {
     process_call_files_release(t);
     kfree(t->io_buffer);
     kfree(t->datagram_buffer);
-    kfree(t->proc);
+    if (last) kfree(proc);
     kfree(t);
 }
 
@@ -552,7 +560,7 @@ void sched_set_init(task_t *task) {
 
 uint32_t sched_init_pid(void) {
     uint64_t flags = sched_lock_irqsave();
-    uint32_t pid = init_task ? init_task->pid : 0;
+    uint32_t pid = init_task ? init_task->proc->pid : 0;
     sched_unlock_irqrestore(flags);
     return pid;
 }
@@ -567,6 +575,20 @@ task_t *sched_find_task_locked(uint32_t pid) {
         curr = curr->next;
     }
     return curr;
+}
+
+task_t *sched_find_process_locked(uint32_t pid) {
+    task_t *t = sched_find_task_locked(pid);
+    return t && t->pid == t->proc->pid ? t : NULL;
+}
+
+bool sched_process_stopped_locked(const task_t *leader) {
+    const process_t *proc = leader->proc;
+    if (proc->live == 0) return false;
+    for (const task_t *t = task_queue_head; t; t = t->next) {
+        if (t->proc == proc && t->state != TASK_STOPPED && t->state != TASK_ZOMBIE) return false;
+    }
+    return true;
 }
 
 task_t *sched_find_task(uint32_t pid) {
@@ -859,10 +881,18 @@ void sched_sleep_until_ns(uint64_t deadline_ns) {
 // dead task that nobody else will wait for.
 static int reaper_channel;
 
+// May the kernel's reaper free `t`? It is dead and nobody will wait for it.
+// The first thread stays while others live: it is what the process is found
+// by. Caller holds the scheduler lock.
+static bool reapable(const task_t *t) {
+    if (t->state != TASK_ZOMBIE || !t->detached || t == current_task) return false;
+    return t->pid != t->proc->pid || t->proc->live == 0;
+}
+
 // Is there a dead task that nobody will wait for (one sched_reap frees)? Caller holds the scheduler lock.
 static bool reapable_exists(void) {
     for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->state == TASK_ZOMBIE && t->detached && t != current_task) return true;
+        if (reapable(t)) return true;
     }
     return false;
 }
@@ -925,13 +955,12 @@ static void stop_current(task_t *self) {
     self->proc->stop_reported = false;
     self->state = TASK_STOPPED;
 
-    // The parent may be waiting to hear of this (waitpid with WUNTRACED)
-    for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->pid == self->proc->parent_pid && t != self) {
-            wakeup_locked(t);
-            signal_send_locked(t, SIGCHLD);
-            break;
-        }
+    // The parent may be waiting to hear of this (waitpid with WUNTRACED),
+    // once the last of the process's threads has stopped
+    task_t *parent = sched_process_stopped_locked(self) ? sched_find_process_locked(self->proc->parent_pid) : NULL;
+    if (parent && parent->proc != self->proc) {
+        wakeup_locked(parent->proc);
+        signal_send_locked(parent, SIGCHLD);
     }
     schedule(true);
 }
@@ -1020,7 +1049,7 @@ size_t sched_reap(void) {
     task_t *curr = task_queue_head;
     while (curr) {
         task_t *next = curr->next;
-        if (curr->state == TASK_ZOMBIE && curr->detached && curr != current_task) {
+        if (reapable(curr)) {
             if (prev) prev->next = next; else task_queue_head = next;
             if (curr == task_queue_tail) task_queue_tail = prev;
             curr->next = dead_list;
@@ -1104,9 +1133,20 @@ void task_exit(void) {
     task_exit_status(0);
 }
 
-void task_exit_status(int status) {
+// Ask every other thread of the process to end. Caller holds the scheduler lock.
+static void kill_other_threads(task_t *self) {
+    if (self->proc->live <= 1) return;
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t != self && t->proc == self->proc) sched_request_kill(t, SIGKILL);
+    }
+}
+
+// End the calling task. With `whole`, the process ends with it: the others are
+// told to, and `status` is what its parent hears unless another thread got
+// there first. What belongs to the process goes when the last thread does.
+static __attribute__((noreturn)) void task_end(int status, bool whole) {
     task_t *self = current_task;
-    if (!self) return;
+    process_t *proc = self->proc;
 
     // From here on the task can not be killed again, and nothing it does
     // while cleaning up is cut short by a signal
@@ -1115,75 +1155,102 @@ void task_exit_status(int status) {
     self->kill_pending = 0;
     self->sig_pending = 0;
     self->in_syscall = 0;   // Dying, not in a call (exit, or one it was killed in, never returns): before its files close
+    // Killed by a thread that is exec'ing: the process goes on without it
+    if (proc->exec_tid != 0 && proc->exec_tid != self->pid) whole = false;
+    if (whole && !proc->group_exit) {
+        proc->group_exit = true;
+        proc->exit_status = status;
+        kill_other_threads(self);
+    }
     sched_unlock_irqrestore(flags);
     process_call_files_release(self);
 
-    // Close its files now rather than when it is reaped: a reader at the
-    // other end of a pipe must see end-of-file as soon as the writer dies.
-    // (Done before taking the scheduler lock: closing takes other locks
-    // and may sleep.)
-    file_close_all(self->proc->fds);
-    task_set_cwd(self, NULL);
-
-    // Its memory goes now too, not when someone collects its exit status: a
-    // parent may take its time over that (or be asleep), and until then a
-    // large dead program would hold frames, and swap slots, that others are
-    // being refused. From here on the task runs on the kernel's own page
-    // tables (it is in the kernel, on its kernel stack, and will not return
-    // to user code). The task is pointed at them before the CPU is, with
-    // interrupts off, so that being switched out and in again in between
-    // loads the right ones; and under the scheduler lock, which /proc holds
-    // while it walks a task's page tables (vmm_count_user_pages): a walk
-    // under way finishes before the pointer changes, and none starts on the
-    // tables once they are being freed.
+    // This thread leaves the process's page tables now: from here on it runs
+    // on the kernel's own (it is in the kernel, on its kernel stack, and will
+    // not return to user code). The task is pointed at them before the CPU
+    // is, with interrupts off, so that being switched out and in again in
+    // between loads the right ones; and under the scheduler lock, which /proc
+    // holds while it walks a task's page tables (vmm_count_user_pages): a
+    // walk under way finishes before the pointer changes, and none starts on
+    // the tables once they are being freed. Only then does it stop counting
+    // as alive, so that once one thread is left, it alone has them loaded.
+    uint64_t *space = NULL;
+    uint64_t irq = sched_lock_irqsave();
     if (self->is_user && self->pml4_phys && (uint64_t)self->pml4_phys != vmm_get_kernel_pml4_phys()) {
-        uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
-        uint64_t irq = sched_lock_irqsave();
+        space = vmm_space_from_phys((uint64_t)self->pml4_phys);
         self->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys();
         vmm_switch_pml4(self->pml4_phys);
-        sched_unlock_irqrestore(irq);
-        vmm_destroy_address_space(space);
     }
-    // Its regions go once its pages have (what shared mappings wrote is
-    // written to their files, and a page nobody maps any more is left
-    // clean), and its mapped files are free to be removed again
-    region_release_all(self);
-    tty_process_exited(self->pid);
-    process_foreground_owner_exited(self->pid);
+    proc->live--;
+    bool last = proc->live == 0;
+    if (last && !proc->group_exit) proc->exit_status = status;   // (thread_exit by the last thread)
+    sched_unlock_irqrestore(irq);
+
+    if (last) {
+        // Close its files now rather than when it is reaped: a reader at the
+        // other end of a pipe must see end-of-file as soon as the writer dies.
+        // (Done before taking the scheduler lock: closing takes other locks
+        // and may sleep.)
+        file_close_all(proc->fds);
+        task_set_cwd(self, NULL);
+
+        // Its memory goes now too, not when someone collects its exit status: a
+        // parent may take its time over that (or be asleep), and until then a
+        // large dead program would hold frames, and swap slots, that others are
+        // being refused.
+        if (space) vmm_destroy_address_space(space);
+
+        // Its regions go once its pages have (what shared mappings wrote is
+        // written to their files, and a page nobody maps any more is left
+        // clean), and its mapped files are free to be removed again
+        region_release_all(self);
+        tty_process_exited(proc->pid);
+        process_foreground_owner_exited(proc->pid);
+    }
 
     sched_lock_irqsave(); // Never released by this task: see sched_lock
     self->exit_status = status;
     self->state = TASK_ZOMBIE;
+    wakeup_locked(proc);   // A thread in thread_join, or exec waiting for the others to go
     if (self->detached) wakeup_locked(&reaper_channel);
 
-    // Children of a dead task have nobody left to wait for them: the init
-    // process takes them over, and will wait for them in its turn. (If there
-    // is none, they are marked for the kernel's own reaper.)
-    if (init_task == self) init_task = NULL;
-    task_t *parent = NULL;
-    bool adopted = false;
-    for (task_t *t = task_queue_head; t; t = t->next) {
-        if (t->proc->parent_pid == self->pid && t != self) {
-            if (init_task) {
-                t->proc->parent_pid = init_task->pid;
-                adopted = true;
-            } else {
-                t->detached = true;
-                if (t->state == TASK_ZOMBIE) wakeup_locked(&reaper_channel); // Dead already, and now nobody's
-            }
+    if (last) {
+        // Threads nobody joined will not be now
+        for (task_t *t = task_queue_head; t; t = t->next) {
+            if (t->proc == proc && t->pid != proc->pid) t->detached = true;
         }
-        if (t->pid == self->proc->parent_pid && t != self) parent = t;
-    }
-    if (adopted) {
-        wakeup_locked(init_task);
-        signal_send_locked(init_task, SIGCHLD);
-    }
+        wakeup_locked(&reaper_channel);
 
-    // A parent blocked in process_wait sleeps on its own task struct; one
-    // that would rather be told gets SIGCHLD
-    if (parent) {
-        wakeup_locked(parent);
-        signal_send_locked(parent, SIGCHLD);
+        // Children of a dead process have nobody left to wait for them: the
+        // init process takes them over, and will wait for them in its turn. (If
+        // there is none, they are marked for the kernel's own reaper.)
+        if (init_task && init_task->proc == proc) init_task = NULL;
+        task_t *parent = NULL;
+        bool adopted = false;
+        for (task_t *t = task_queue_head; t; t = t->next) {
+            if (t->pid != t->proc->pid || t->proc == proc) continue;       // (Processes: their first threads)
+            if (t->proc->parent_pid == proc->pid) {
+                if (init_task) {
+                    t->proc->parent_pid = init_task->proc->pid;
+                    adopted = true;
+                } else {
+                    t->detached = true;
+                    if (t->state == TASK_ZOMBIE) wakeup_locked(&reaper_channel); // Dead already, and now nobody's
+                }
+            }
+            if (t->pid == proc->parent_pid) parent = t;
+        }
+        if (adopted) {
+            wakeup_locked(init_task->proc);
+            signal_send_locked(init_task, SIGCHLD);
+        }
+
+        // A parent blocked in process_wait sleeps on its own process
+        // structure; one that would rather be told gets SIGCHLD
+        if (parent) {
+            wakeup_locked(parent->proc);
+            signal_send_locked(parent, SIGCHLD);
+        }
     }
 
     // A zombie is never chosen again. Whoever sees its state from now on
@@ -1191,6 +1258,85 @@ void task_exit_status(int status) {
     // switch is complete.
     schedule(true);
     panic("a zombie task was scheduled");
+}
+
+void task_exit_status(int status) {
+    if (current_task) task_end(status, true);
+}
+
+void task_exit_thread(int status) {
+    if (current_task) task_end(status, false);
+}
+
+bool sched_add_thread(task_t *t, task_t *creator, void (*before_start)(task_t *)) {
+    process_t *proc = creator->proc;
+    process_t *own = NULL;
+    uint64_t flags = sched_lock_irqsave();
+    // One hold of the lock from the check to the task list: an exit or exec
+    // that comes after finds it there, and one that came before refuses it
+    bool ok = !proc->group_exit && proc->exec_tid == 0 && !creator->kill_pending && proc->live < PROCESS_MAX_THREADS;
+    if (ok) {
+        own = t->proc;
+        t->proc = proc;
+        t->is_user = true;
+        t->detached = false;
+        t->pml4_phys = creator->pml4_phys;
+        t->sig_blocked = creator->sig_blocked;
+        __atomic_add_fetch(&proc->refs, 1, __ATOMIC_ACQ_REL);
+        proc->live++;
+        before_start(t);
+        enqueue_task(t);
+    }
+    sched_unlock_irqrestore(flags);
+    kfree(own);                  // The one it was made with (not under this lock: the heap's comes first)
+    return ok;
+}
+
+bool sched_end_other_threads(task_t *self) {
+    process_t *proc = self->proc;
+    uint64_t flags = sched_lock_irqsave();
+    if (proc->group_exit || proc->exec_tid != 0) {
+        sched_unlock_irqrestore(flags);
+        return false;            // It is ending, or another thread got here first (and will end this one)
+    }
+    if (proc->live > 1) {
+        proc->exec_tid = self->pid;
+        kill_other_threads(self);
+        // Not to be cut short: a signal handler could not run yet anyway, and
+        // a kill of this thread waits the moment it takes the others to go
+        while (proc->live > 1) sleep_on(proc, &sched_lock, 0, 0, false);
+        proc->exec_tid = 0;
+    }
+
+    // Dead threads nobody will join. The first of them may be one: the caller
+    // takes its id, since a pid names the process, and exec does not change it
+    bool others = false;
+    for (task_t *t = task_queue_head; t; t = t->next) {
+        if (t->proc != proc || t == self) continue;
+        if (t->pid == proc->pid) {
+            t->pid = self->pid;
+            self->pid = proc->pid;
+        }
+        t->detached = true;
+        others = true;
+    }
+    if (others) wakeup_locked(&reaper_channel);
+    sched_unlock_irqrestore(flags);
+    return true;
+}
+
+uint32_t sched_futex_wake(process_t *proc, uint64_t addr, uint32_t count) {
+    uint32_t woken = 0;
+    uint64_t flags = sched_lock_irqsave();
+    for (task_t *t = task_queue_head; t && woken < count; t = t->next) {
+        // (One being killed has no use for it: another waiter gets it)
+        if (t->proc != proc || t->futex_addr != addr || t->exiting || t->kill_pending) continue;
+        t->futex_addr = 0;       // The waiter's sign that it was woken
+        if (t->state == TASK_BLOCKED && t->wait_channel == &t->futex_addr) wake_task(t);
+        woken++;
+    }
+    sched_unlock_irqrestore(flags);
+    return woken;
 }
 
 void sched_print_tasks(void) {

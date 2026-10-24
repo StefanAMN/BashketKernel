@@ -155,6 +155,20 @@ long rename(const char *from, const char *to);  /* Within one filesystem; fails 
 long socket(int type);                            /* A new socket, as a file descriptor */
 long socketpair(int fds[2]);                      /* Two connected local stream sockets: read and write, both ways */
 long local_listen(const char *path, int backlog); /* Make path a local socket (not on a disk): a descriptor for accept */
+/* Threads: share everything but their registers, stack and signal mask */
+typedef struct {
+    long tid;                                         /* The kernel's id, for thread_join */
+    void *stack;                                      /* Given back when it is joined */
+} thread_t;
+long thread_create(thread_t *thread, int (*fn)(void *), void *arg); /* Start fn(arg) on a new stack; its return is its status. 0 or an error */
+long thread_join(thread_t *thread, int *status);      /* Wait for it to end; frees its stack */
+void thread_exit(int status) __attribute__((noreturn)); /* End this thread only (exit ends them all) */
+long gettid(void);                                    /* This thread's id; the first thread's is the pid */
+long futex_wait(volatile unsigned *addr, unsigned expected, unsigned long timeout_ms); /* Sleep while *addr is expected (0: no limit); 0, -EAGAIN, -ETIMEDOUT, -EINTR */
+long futex_wake(volatile unsigned *addr, long count); /* Wake that many waiting on addr, in this process; how many */
+typedef struct { volatile unsigned state; } thread_mutex_t; /* Starts all zero: free */
+void thread_mutex_lock(thread_mutex_t *mutex);        /* Take it, sleeping while another thread has it */
+void thread_mutex_unlock(thread_mutex_t *mutex);      /* Give it up, waking one waiter if there is any */
 long local_connect(const char *path);             /* Connect to a local socket, which needs write permission on it */
 long bind(int fd, unsigned port);                 /* The port to receive on (UDP) or to listen on (TCP) */
 long connect(int fd, uint32_t ip, unsigned port); /* TCP: open a connection; waits until it is made */

@@ -350,13 +350,13 @@ uint64_t region_set_brk(struct task *task, uint64_t new_brk) {
     return result;
 }
 
+#define FAULT_AGAIN (-100)     // The table changed while the file was read: look again
+#define FAULT_NO_FRAME (-101)  // No frame for an anonymous page: the page cache may have some to give
+
 // One look at a fault on `page`. What it found to do with a file is done with
 // mem_lock released and file_users counted, so the file stays pinned; then it
 // looks again before mapping the page, since another thread may have given
 // it a frame or unmapped the region meanwhile.
-#define FAULT_AGAIN (-100)     // The table changed while the file was read: look again
-#define FAULT_NO_FRAME (-101)  // No frame for an anonymous page: the page cache may have some to give
-
 static int fault_once(struct task *task, uint64_t page) {
     process_t *proc = task->proc;
     uint64_t *space = space_of(task);

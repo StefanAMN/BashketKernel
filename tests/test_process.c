@@ -78,6 +78,25 @@ TEST(faulting_programs_are_killed) {
     EXPECT_EQ(run("/bin/fault", sgdt),   umip ? 128 + SIGSEGV : 1);
 }
 
+// A program with threads that come and go, end together and fork returns
+// every frame and heap byte too
+TEST(threads_leave_nothing_behind) {
+    char *args[] = { "/bin/threads", "1", NULL };
+    EXPECT_EQ(run("/bin/threads", args), 0);    // Its pages are in the page cache from now on
+
+    // Unjoined threads go to the reaper: this task is it, in a test
+    sched_reap();
+    test_settle();
+    size_t free_before = test_free_frames();
+    size_t heap_before = kheap_get_allocated_bytes();
+
+    for (int i = 0; i < 3; i++) EXPECT_EQ(run("/bin/threads", args), 0);
+
+    sched_reap();
+    EXPECT_EQ(test_free_frames(), free_before);
+    EXPECT_EQ(kheap_get_allocated_bytes(), heap_before);
+}
+
 // Running a program returns every frame and heap byte
 TEST(processes_leave_nothing_behind) {
     sched_reap();
@@ -89,8 +108,8 @@ TEST(processes_leave_nothing_behind) {
     }
 
     sched_reap();
-    EXPECT_TRUE(test_free_frames() == free_before);
-    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
+    EXPECT_EQ(test_free_frames(), free_before);
+    EXPECT_EQ(kheap_get_allocated_bytes(), heap_before);
 }
 
 // The user shell builds pipelines and redirections from fork, exec, pipe,
@@ -521,6 +540,7 @@ void test_suite_process(void) {
     RUN_TEST(spawn_runs_program_and_returns_status);
     RUN_TEST(spawn_rejects_bad_targets);
     RUN_TEST(faulting_programs_are_killed);
+    RUN_TEST(threads_leave_nothing_behind);
     RUN_TEST(processes_leave_nothing_behind);
     RUN_TEST(shell_pipelines_and_redirection);
     RUN_TEST(kill_takes_effect_at_a_safe_point);

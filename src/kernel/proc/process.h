@@ -133,6 +133,22 @@ void process_call_range_add(struct task *task, uint64_t addr, size_t len);
 void process_call_ranges_reset(struct task *task);
 
 /**
+ * @brief A new thread of the calling process, starting at `entry` in ring 3
+ *        on `stack` with `arg` in RDI. Returns its id; -EINVAL for addresses
+ *        that are not user memory, -EAGAIN if the process is ending or has
+ *        PROCESS_MAX_THREADS, -ENOMEM.
+ */
+int64_t process_thread_create(uint64_t entry, uint64_t stack, uint64_t arg);
+
+/**
+ * @brief Wait for thread `tid` of the calling process to end and free it, with
+ *        what it passed to thread_exit in *status (kernel memory, or NULL).
+ *        -ESRCH if there is no such thread (or it is the first, which cannot
+ *        be joined), -EINVAL for the caller itself, -EINTR. May sleep.
+ */
+int64_t process_thread_join(uint32_t tid, int *status);
+
+/**
  * @brief Drop the references a system call took on the files it looked up:
  *        when it returns, or when the task dies in it. May sleep (the last
  *        reference closes the file).

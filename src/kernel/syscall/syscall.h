@@ -107,6 +107,12 @@
 #define SYS_SOCKETPAIR  327  // (int fds[2]): two connected local stream sockets
 #define SYS_LOCAL_LISTEN 328 // (path, backlog): make `path` a local socket, as a descriptor to accept on
 #define SYS_LOCAL_CONNECT 329 // (path): connect to a local socket, as a descriptor; needs write permission on it
+#define SYS_GETTID 330       // (): the calling thread's id (the first thread's is the pid)
+#define SYS_THREAD_CREATE 331 // (entry, stack, arg): a new thread; returns its id
+#define SYS_THREAD_EXIT 332  // (status): end the calling thread only
+#define SYS_THREAD_JOIN 333  // (tid, status): wait for a thread of this process to end
+#define SYS_FUTEX_WAIT 334   // (addr, expected, timeout_ms): sleep while the word at addr is expected
+#define SYS_FUTEX_WAKE 335   // (addr, count): wake threads of this process waiting on addr
 #define SYS_TTY_TOSTOP  326  // (on): 1 sets the terminal's tostop (background writers stop), 0 clears it; -1 asks
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105

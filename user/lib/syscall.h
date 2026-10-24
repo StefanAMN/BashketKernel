@@ -73,6 +73,12 @@
 #define SYS_SOCKETPAIR 327
 #define SYS_LOCAL_LISTEN 328
 #define SYS_LOCAL_CONNECT 329
+#define SYS_GETTID 330
+#define SYS_THREAD_CREATE 331
+#define SYS_THREAD_EXIT 332
+#define SYS_THREAD_JOIN 333
+#define SYS_FUTEX_WAIT 334
+#define SYS_FUTEX_WAKE 335
 #define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
@@ -111,6 +117,7 @@
 #define ENOMEM  12
 #define EACCES  13
 #define EFAULT  14
+#define EAGAIN  11
 #define EBUSY   16
 #define EEXIST  17
 #define ENODEV  19
