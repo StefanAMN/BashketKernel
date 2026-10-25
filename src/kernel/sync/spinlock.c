@@ -104,11 +104,14 @@ void spinlock_acquire(spinlock_t *lock) {
         }
     }
 
-    while (__atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE)) {
-        // The CPU we are waiting for may itself be waiting for us to drop
-        // stale page-table lookups (see smp_tlb_shootdown)
-        if (cpu) smp_tlb_service();
-        asm volatile("pause");
+    if (__atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE)) {
+        __atomic_add_fetch(&lock->contended, 1, __ATOMIC_RELAXED);
+        while (__atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE)) {
+            // The CPU we are waiting for may itself be waiting for us to drop
+            // stale page-table lookups (see smp_tlb_shootdown)
+            if (cpu) smp_tlb_service();
+            asm volatile("pause");
+        }
     }
 
     if (cpu) {
@@ -116,6 +119,18 @@ void spinlock_acquire(spinlock_t *lock) {
         if (cpu->held_count < LOCK_HELD_MAX) cpu->held[cpu->held_count++] = lock;
         else lock_debug_report("too many locks held at once", name_of(lock), NULL);
     }
+}
+
+bool spinlock_try_acquire(spinlock_t *lock) {
+    cpu_t *cpu = tracking ? this_cpu() : NULL;
+    if (cpu && interrupts_enabled()) lock_debug_report("taken with interrupts enabled", name_of(lock), NULL);
+    if (lock->locked || __atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE)) return false;
+    if (cpu) {
+        lock->owner = cpu;
+        if (cpu->held_count < LOCK_HELD_MAX) cpu->held[cpu->held_count++] = lock;
+        else lock_debug_report("too many locks held at once", name_of(lock), NULL);
+    }
+    return true;
 }
 
 // Locks are usually released in the reverse of the order they were taken,
