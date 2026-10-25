@@ -133,6 +133,19 @@ uint64_t sched_lock_irqsave(void);
 void sched_unlock_irqrestore(uint64_t flags);
 
 /**
+ * @brief How many times since boot taking the scheduler lock found it held
+ *        and had to wait (for measuring contention: each CPU's tick, yield
+ *        and idle loop no longer take it, only their own run queue's).
+ */
+uint64_t sched_lock_contention(void);
+
+/**
+ * @brief How many READY tasks wait in CPU `cpu_id`'s run queue (0 for a
+ *        CPU number out of range). Read without its lock: a snapshot.
+ */
+uint32_t sched_queue_length(uint32_t cpu_id);
+
+/**
  * @brief Whether a signal is waiting for the current task's handler. Code
  *        that waits in a loop around sched_sleep must check this after each
  *        return and give up with -EINTR if it is true:

@@ -89,7 +89,8 @@ flags of an open file shared after `fork` are still not locked.
 Done, with these differences from the list below. There is one task list
 and one scheduler lock for all CPUs rather than a run queue per CPU: every
 CPU takes the next runnable task it is allowed to run, so load spreads by
-itself, at the price of a contended lock and no cache affinity. The boot CPU
+itself, at the price of a contended lock and no cache affinity (a run queue
+per CPU came with Q2). The boot CPU
 kept the PIT as its tick (and as the system's clock) and the other CPUs used
 periodic local APIC timers, until C4's one-shot timer replaced both. TLB shootdown is done for the
 kernel half only, where it is needed: a process's own mappings are only ever
@@ -1671,7 +1672,7 @@ wrote nothing failed both unit tests and no syscheck check at all, since
 process (Q4 says why); a page a truncation extends the file over keeps
 what a mapping wrote past the old end, where POSIX says zeros.
 
-### Q2. A run queue per CPU (L)
+### Q2. A run queue per CPU (L) — done
 
 One task list and one scheduler lock serve every CPU (A3's difference
 from its plan). Give each CPU its own queue of runnable tasks and lock;
@@ -1683,6 +1684,69 @@ must survive: write down how. **Check:** `make test-smp` and every SMP
 target; the existing four-tasks-on-four-CPUs measurement must not get
 worse, and contention on the old lock (count spins before and after)
 falls; a test that pins and unpins tasks; `make fuzz SMP=4`.
+
+Design (written before the code). Two kinds of lock:
+- The scheduler lock stays, for what it protects that is not "who runs
+  next": the task list, sleeping and waking (state BLOCKED/STOPPED/ZOMBIE,
+  wait channels, deadlines), signals, parents and reaping. Its callers
+  outside sched.c do not change.
+- Each CPU gets a run queue: its READY tasks in order, a count, and a
+  lock ranked just above the scheduler lock (taken under it, never the
+  other way round). The tick, yield and the idle loop take only their own
+  queue's lock: that is the traffic that leaves the scheduler lock.
+- Choosing: the head of this CPU's queue; if it is empty, the oldest task
+  that may move (no affinity) from the queue of the CPU with the most
+  waiting, its lock taken with a try-lock while holding ours (two CPUs
+  taking from each other must not wait on each other: a refused try-lock
+  means "not now"). A preempted task goes to the back of its own queue,
+  or to its CPU's if its affinity changed meanwhile.
+- Placing a woken or new task: the CPU it last ran on (its caches) unless
+  that one has more than one task more than the least loaded (load: the
+  queue plus the running task); a bound task goes to its CPU. An idle CPU
+  that gets a task, or could take one, is sent the wake-up interrupt.
+- Held across the switch: the outgoing task holds its CPU's queue lock
+  through ctx_switch, and the incoming task releases it (in schedule
+  after ctx_switch, or in sched_task_started), so a CPU taking a task
+  from this queue cannot run it before it has left its stack. A task that
+  sleeps, stops or exits holds the scheduler lock across the switch as
+  well (a per-CPU note tells the incoming task to release it too): a
+  waker or the reaper that sees BLOCKED, STOPPED or ZOMBIE under the
+  scheduler lock therefore sees a task that is off its stack, which is
+  the zombie-stack rule unchanged. schedule() returns with neither lock
+  held; its callers take back what they need.
+
+Done as designed (`src/kernel/sched/sched.c`; `spinlock_try_acquire`, and
+a count of acquires that had to wait on every spinlock). Measured with
+`yields_spare_the_scheduler_lock`, four tasks yielding as fast as they can
+on four CPUs for 50 ticks: before, 1,077,461 yields and the scheduler lock
+found held 667,023 times (62%; the same test, added to the old scheduler
+for the measurement, fails there); now 1,565,959 yields and 0. The
+four-workers measurement is no worse (one worker 57 ms, four 84 ms before;
+66 and 89 now: within the host's noise; see below for the slow clock). Tests: that one, and
+`pinned_tasks_stay_and_unpinned_ones_move` (with more busy tasks than
+CPUs, a pinned task runs only on its CPU and waits only in its queue;
+unpinned, it is soon seen elsewhere). Sabotage: placement and the
+"may it stay here" check ignoring affinity failed the new test and every
+older one that pins; no stealing failed the "seen elsewhere" check (with
+every CPU busy, only stealing moves a task that is never woken). The
+first `make check` failed that check with the periodic tick, three runs in
+three: a CPU taking work chose the first of the busiest queues, so with
+queues tied at one task each the highest numbered CPU (where the unpinned
+task waited) was never chosen. Each CPU now looks from the one after itself.
+That made it rarer, not gone (four in four runs on four host cores); the
+test then printed the queues when it failed, which showed the real cause:
+a CPU tried only the busiest queue, and CPU 0's often held nothing it may
+take (the test runner, bound to CPU 0, waiting there at every tick), so it
+gave up with movable tasks waiting elsewhere. Queues are now tried busiest
+first until one gives a task. The same runs failed the four-worker check:
+one worker took 50 ms (60 to 70 on the old scheduler, whose tick fought
+for the lock) and four 130 ms on both, with a clock of 10 ms ticks. With
+four times the work both schedulers measure 230 to 240 and 490 ms.
+Not done:
+moving work between busy CPUs (only an idle CPU takes work, and a woken
+task is placed: a CPU with three tasks waiting and one with one stay so
+until one goes idle), and timer queues per CPU for sleepers (the
+scheduler lock still walks the task list for deadlines).
 
 ### Q3. `trap`, `set -e -u -x`, `shift`, `wait`, `local` in the shell (S) — done
 
@@ -1835,8 +1899,7 @@ O1, O2, O3, O4                   done (in parallel)
         |
 P1, P2, P3, P4                   done (in parallel)
         |
-Q1, Q3, Q4                       done
-Q2                               next (planned, not started)
+Q1, Q2, Q3, Q4                   done
 ```
 
 (Track A, once the recommended first step because everything built on
