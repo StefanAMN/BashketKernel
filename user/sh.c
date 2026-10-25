@@ -151,6 +151,7 @@ typedef struct {
     int alive[8];
     int count;
     int stopped;
+    int stop_signal;            /* What stopped it (Ctrl-Z, or the terminal: SIGTTIN, SIGTTOU) */
     char text[64];              /* The command line, for "jobs" */
 } job_t;
 
@@ -182,6 +183,15 @@ static int job_add(const long *pids, const int *alive, int count, const char *te
     return 0;
 }
 
+/* How "jobs" and the reports say that a job stopped for signal `sig` */
+static const char *stopped_words(int sig) {
+    if (sig == SIGTTIN) return "Stopped (tty input)";
+    if (sig == SIGTTOU) return "Stopped (tty output)";
+    return "Stopped";
+}
+
+static int last_stop_signal;    /* wait_foreground: what stopped the command it waited for */
+
 /* Wait for a command that has the terminal: until every process of it has
  * exited, or it has been stopped. Returns the last program's status. */
 static int wait_foreground(const long *pids, int *alive, int count, int *stopped) {
@@ -194,6 +204,7 @@ static int wait_foreground(const long *pids, int *alive, int count, int *stopped
         while ((r = waitpid(pids[i], &status, interactive ? WUNTRACED : 0)) == -EINTR) { } /* Interrupted is not finished */
         if (r == pids[i] && WIFSTOPPED(status)) {
             *stopped = 1;
+            last_stop_signal = WSTOPSIG(status);
             continue;
         }
         alive[i] = 0;
@@ -213,8 +224,9 @@ static void check_jobs(void) {
             int status = 0;
             long r = waitpid(job->pids[i], &status, WNOHANG | WUNTRACED);
             if (r == job->pids[i] && WIFSTOPPED(status)) {
-                if (!job->stopped) printf("[%d] Stopped   %s\n", n + 1, job->text);
+                if (!job->stopped) printf("[%d] %s   %s\n", n + 1, stopped_words(WSTOPSIG(status)), job->text);
                 job->stopped = 1;
+                job->stop_signal = WSTOPSIG(status);
             } else if (r != 0) {
                 job->alive[i] = 0;                /* Exited (or no longer ours to wait for) */
             }
@@ -250,12 +262,14 @@ static int run_in_foreground(long *pids, int *alive, int count, const char *text
         int n;
         if (existing) {
             existing->stopped = 1;
+            existing->stop_signal = last_stop_signal;
             n = (int)(existing - jobs) + 1;
         } else {
             n = job_add(pids, alive, count, text, 1);
         }
         if (n > 0) {
-            printf("\n[%d] Stopped   %s\n", n, jobs[n - 1].text);
+            jobs[n - 1].stop_signal = last_stop_signal;
+            printf("\n[%d] %s   %s\n", n, stopped_words(last_stop_signal), jobs[n - 1].text);
         } else {
             /* No room to remember it: it can not be left stopped for ever */
             fprintf(2, "\nsh: too many jobs: ending %s\n", text);
@@ -2007,7 +2021,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     }
     if (count == 1 && strcmp(stages[0].argv[0], "jobs") == 0) {
         for (int n = 0; n < MAX_JOBS; n++) {
-            if (jobs[n].used) printf("[%d] %s   %s\n", n + 1, jobs[n].stopped ? "Stopped" : "Running", jobs[n].text);
+            if (jobs[n].used) printf("[%d] %s   %s\n", n + 1, jobs[n].stopped ? stopped_words(jobs[n].stop_signal) : "Running", jobs[n].text);
         }
         return 0;
     }

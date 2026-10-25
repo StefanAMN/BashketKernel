@@ -45,6 +45,9 @@ long setpgid(long pid, long pgid) { return syscall2(SYS_SETPGID, pid, pgid); }
 long getpgid(long pid)            { return syscall1(SYS_GETPGID, pid); }
 long tcsetpgrp(long pgid)         { return syscall1(SYS_TCSETPGRP, pgid); }
 long tcgetpgrp(void)              { return syscall0(SYS_TCGETPGRP); }
+long setsid(void)                 { return syscall0(SYS_SETSID); }
+long getsid(long pid)             { return syscall1(SYS_GETSID, pid); }
+long tty_tostop(int on)           { return syscall1(SYS_TTY_TOSTOP, on); }
 
 long sigprocmask(int how, const uint32_t *set, uint32_t *old) {
     return syscall3(SYS_SIGPROCMASK, how, set, old);
@@ -656,6 +659,7 @@ const char *strerror(long err) {
         case EFAULT:    return "bad address";
         case EBUSY:     return "file is in use";
         case ETXTBSY:   return "a running program's file, or a program open for writing";
+        case ENOTTY:  return "not a terminal of this session";
         case EEXIST:    return "file exists";
         case ENOTDIR:   return "not a directory";
         case EXDEV:     return "not on the same filesystem";

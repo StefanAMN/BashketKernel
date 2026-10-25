@@ -15,6 +15,7 @@
 #include "auth.h"
 #include "dev.h"
 #include "pcache.h"
+#include "process.h"
 
 // Open files are small, all the same size, and created and destroyed
 // constantly (every open, pipe and exit), which is what a slab cache is for.
@@ -280,8 +281,11 @@ int64_t file_read(file_t *file, void *buf, size_t count) {
     if (count == 0) return 0;
 
     switch (file->kind) {
-        case FILE_CONSOLE:
+        case FILE_CONSOLE: {
+            int access = process_terminal_access(false);   // A background job stops here (SIGTTIN)
+            if (access < 0) return access;
             return tty_read(buf, count);
+        }
         case FILE_PIPE:
             return pipe_read(file->pipe, buf, count);
         case FILE_SOCKET:
@@ -313,8 +317,11 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
     if (count == 0) return 0;
 
     switch (file->kind) {
-        case FILE_CONSOLE:
+        case FILE_CONSOLE: {
+            int access = process_terminal_access(true);    // With tostop, a background job stops here
+            if (access < 0) return access;
             return tty_write(buf, count);
+        }
         case FILE_PIPE:
             return pipe_write(file->pipe, buf, count);
         case FILE_SOCKET:

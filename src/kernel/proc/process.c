@@ -21,6 +21,7 @@
 #include "heap.h"
 #include "swap.h"
 #include "region.h"
+#include "kerrno.h"
 
 extern void enter_user_mode(uint64_t rip, uint64_t rsp);
 extern void user_frame_return(void);
@@ -375,6 +376,8 @@ pid_t process_spawn(const char *path, char *const argv[]) {
     apply_image(task, &image);
     task->detached = false; // The creator is expected to process_wait() for it
     task->pgid = task->pid; // A process group of its own
+    task->sid = 0;          // The console's session, which has no leader (setsid makes others)
+    task->has_tty = true;
     task->umask = UMASK_DEFAULT;
 
     // Standard input, output and error all start as the console
@@ -510,6 +513,8 @@ pid_t process_fork(struct registers *regs) {
     }
     child->fd_cloexec = parent->fd_cloexec;
     child->pgid = parent->pgid;
+    child->sid = parent->sid;
+    child->has_tty = parent->has_tty;
 
     // The child's kernel stack starts with a copy of the parent's syscall
     // frame, except that its syscall "returns" 0. Below the frame goes the
@@ -628,12 +633,125 @@ int process_kill(pid_t pid, int sig) {
 static volatile uint32_t foreground_pgid = 0;
 static volatile uint32_t foreground_owner = 0; // The shell that set it; cleared when that exits
 
+static volatile bool terminal_tostop = false;  // A background job's writes stop it (SIGTTOU)
+
 int process_set_foreground(uint32_t pgid) {
     task_t *self = sched_get_current_task();
-    if (!self) return -1;
+    if (!self) return -EINVAL;
+    // Only a process whose session the console belongs to may give it to
+    // a group, and only to a group of that session (POSIX tcsetpgrp)
+    if (self->is_user) {
+        if (!self->has_tty) return -ENOTTY;
+        if (pgid != 0) {
+            bool in_session = false;
+            uint64_t flags = sched_lock_irqsave();
+            for (task_t *t = sched_first_task(); t && !in_session; t = t->next) {
+                if (t->is_user && t->pgid == pgid && t->sid == self->sid && t->state != TASK_ZOMBIE) in_session = true;
+            }
+            sched_unlock_irqrestore(flags);
+            if (!in_session) return -EPERM;
+        }
+    }
     foreground_owner = pgid ? self->pid : 0;
     foreground_pgid = pgid;
     return 0;
+}
+
+void process_set_tostop(bool on) {
+    terminal_tostop = on;
+}
+
+bool process_get_tostop(void) {
+    return terminal_tostop;
+}
+
+int64_t process_setsid(void) {
+    task_t *self = sched_get_current_task();
+    if (!self || !self->is_user) return -EPERM;
+    uint64_t flags = sched_lock_irqsave();
+    // A group leader may not: its group would be split across two sessions
+    bool leader = false;
+    for (task_t *t = sched_first_task(); t && !leader; t = t->next) {
+        if (t->pgid == self->pid && t->state != TASK_ZOMBIE) leader = true;
+    }
+    if (leader) {
+        sched_unlock_irqrestore(flags);
+        return -EPERM;
+    }
+    self->sid = self->pid;
+    self->pgid = self->pid;
+    self->has_tty = false;          // A new session starts without a terminal (and there is only one)
+    sched_unlock_irqrestore(flags);
+    return (int64_t)self->pid;
+}
+
+int64_t process_getsid(pid_t pid) {
+    task_t *self = sched_get_current_task();
+    if (!self) return -ESRCH;
+    if (pid == 0) return (int64_t)self->sid;
+    int64_t sid = -ESRCH;
+    uint64_t flags = sched_lock_irqsave();
+    task_t *t = sched_find_task_locked((uint32_t)pid);
+    if (t && t->is_user) sid = t->sid;
+    sched_unlock_irqrestore(flags);
+    return sid;
+}
+
+// Is process group `pgid` (of session `sid`) orphaned, in POSIX's sense:
+// does no member have a parent in another group of the same session? Such
+// a group has nobody left who could continue it, so it must not be stopped
+// by the terminal. The init process counts as in no session: on a real
+// system it leads one of its own, and here it is in the console's like
+// everything the kernel starts, but it never continues anyone's job (a job
+// it adopts is orphaned); `init` is its pid (0: none). Caller holds the
+// scheduler lock.
+static bool group_orphaned_locked(uint32_t pgid, uint32_t sid, uint32_t init) {
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (!t->is_user || t->pgid != pgid || t->state == TASK_ZOMBIE) continue;
+        task_t *parent = sched_find_task_locked(t->parent_pid);
+        if (parent && parent->is_user && parent->pgid != pgid && parent->sid == sid && parent->state != TASK_ZOMBIE &&
+            (init == 0 || parent->pid != init)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int process_terminal_access(bool writing) {
+    task_t *self = sched_get_current_task();
+    if (!self || !self->is_user) return 0;
+    uint32_t init = sched_init_pid();   // (Taken here: it takes the scheduler lock itself)
+    for (;;) {
+        uint64_t flags = sched_lock_irqsave();
+        uint32_t fg = foreground_pgid;
+        // In the foreground, or no job control, or not this session's
+        // terminal (setsid), or a write with tostop off: go ahead
+        if (!self->has_tty || fg == 0 || self->pgid == fg || (writing && !terminal_tostop)) {
+            sched_unlock_irqrestore(flags);
+            return 0;
+        }
+        int sig = writing ? SIGTTOU : SIGTTIN;
+        bool refused = self->sig_handlers[sig] == (uint64_t)SIG_IGN || (self->sig_blocked & (1u << sig));
+        if (refused) {
+            // POSIX: a background read whose signal would be lost fails; a
+            // write goes ahead
+            sched_unlock_irqrestore(flags);
+            return writing ? 0 : -EIO;
+        }
+        if (group_orphaned_locked(self->pgid, self->sid, init)) {
+            sched_unlock_irqrestore(flags);
+            return -EIO;            // Stopped, it would never be continued
+        }
+        for (task_t *t = sched_first_task(); t; t = t->next) {
+            if (t->is_user && t->pgid == self->pgid) signal_send_locked(t, sig);
+        }
+        sched_unlock_irqrestore(flags);
+        // A handler: the call ends so that it runs. Otherwise the signal
+        // stops the group, this process here (a safe point: nothing is
+        // held); once continued, look again: it may be in the foreground now
+        if (sched_interrupted()) return -EINTR;
+        sched_check_kill();
+    }
 }
 
 uint32_t process_get_foreground(void) {
@@ -688,12 +806,15 @@ int process_set_group(pid_t pid, uint32_t pgid) {
     int result = -1;
     uint64_t flags = sched_lock_irqsave();
     task_t *target = sched_find_task_locked((uint32_t)pid);
-    // Only for oneself or one's own child, and only into a group of one's
-    // own making: the target's own, or one that a relative already leads
-    if (target && target->is_user && (target == self || target->parent_pid == self->pid)) {
+    // Only for oneself or one's own child in one's own session, never for a
+    // session leader, and only into a group of one's own making in that
+    // session: the target's own, or one that a relative already leads
+    if (target && target->is_user && (target == self || target->parent_pid == self->pid) &&
+        target->sid == self->sid && target->sid != target->pid) {
         bool exists = pgid == target->pid;
         for (task_t *t = sched_first_task(); t && !exists; t = t->next) {
-            if (t->pgid == pgid && (t == self || t->parent_pid == self->pid || t->parent_pid == self->parent_pid)) exists = true;
+            if (t->pgid == pgid && t->sid == self->sid &&
+                (t == self || t->parent_pid == self->pid || t->parent_pid == self->parent_pid)) exists = true;
         }
         if (exists) {
             target->pgid = pgid;

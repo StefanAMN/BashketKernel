@@ -57,6 +57,8 @@
 #define SIGCONT 18   // Continue if stopped
 #define SIGSTOP 19   // Stop (suspend) the process; cannot be caught, ignored or blocked
 #define SIGTSTP 20   // Stop, asked for from the terminal (Ctrl-Z); a program may catch or ignore it
+#define SIGTTIN 21   // Stop: a background job read its terminal (process_terminal_access)
+#define SIGTTOU 22   // Stop: a background job wrote to its terminal while it has tostop set
 
 #define SIG_DFL 0ULL // Terminate the process
 #define SIG_IGN 1ULL // Do nothing

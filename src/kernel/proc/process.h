@@ -152,9 +152,48 @@ int process_kill_group(uint32_t pgid, int sig, uint32_t sender_uid);
 
 /**
  * @brief Make a group the terminal's foreground group (0: no job control).
- *        Reverts to 0 when the calling process exits.
+ *        Reverts to 0 when the calling process exits. A user process must
+ *        have the console as its controlling terminal (-ENOTTY), and the
+ *        group must be one of its session's (-EPERM). 0 on success.
  */
 int process_set_foreground(uint32_t pgid);
+
+/**
+ * @brief The terminal's tostop flag: when set, a background job that
+ *        writes to the terminal is stopped (SIGTTOU). Off at boot.
+ */
+void process_set_tostop(bool on);
+
+/**
+ * @brief See process_set_tostop.
+ */
+bool process_get_tostop(void);
+
+/**
+ * @brief setsid: the calling process starts a session (and a process group)
+ *        of its own, numbered by its pid, which has no controlling terminal.
+ *        Refused (-EPERM) for a process group leader.
+ * @return The new session's number, or -EPERM.
+ */
+int64_t process_setsid(void);
+
+/**
+ * @brief getsid: the session of process `pid` (0: the caller), 0 for the
+ *        console's (which the kernel's processes start in), or -ESRCH.
+ */
+int64_t process_getsid(pid_t pid);
+
+/**
+ * @brief May the calling process read (or write: `writing`) the terminal
+ *        now? Yes (0) unless it is in a background group of the session the
+ *        console belongs to. Then a read sends SIGTTIN to its group, and a
+ *        write with tostop set SIGTTOU, and this waits here, stopped, until
+ *        the group is continued, and looks again. -EIO for a read whose
+ *        SIGTTIN is ignored or blocked, or from an orphaned group (nobody
+ *        could continue it); -EINTR if the signal has a handler. Called
+ *        holding nothing (it may stop the process).
+ */
+int process_terminal_access(bool writing);
 
 /**
  * @brief The terminal's foreground process group (0: none, no job control).

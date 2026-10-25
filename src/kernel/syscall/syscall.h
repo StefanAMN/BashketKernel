@@ -102,6 +102,9 @@
 #define SYS_GETGROUPS   321  // (size, uint32_t *list): the caller's supplementary groups; returns how many (size 0: only that)
 #define SYS_GETEGID     322  // The effective group: whose group rights the process has (differs in a set-gid program)
 #define SYS_MSYNC       323  // (addr, length, flags): write what shared mappings in the range wrote to their files
+#define SYS_SETSID      324  // (): a session and group of one's own, without a terminal; the session's number
+#define SYS_GETSID      325  // (pid): the session of a process (0: the caller); 0 is the console's
+#define SYS_TTY_TOSTOP  326  // (on): 1 sets the terminal's tostop (background writers stop), 0 clears it; -1 asks
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105
 #define SYS_TTY_SIZE    304  // (uint32_t size[2]): receives columns and rows of the screen

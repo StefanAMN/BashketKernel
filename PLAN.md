@@ -1858,7 +1858,7 @@ by itself: its reader read the file in 7-byte pieces, and each read makes
 the text afresh, so a process changing between pieces gave a torn line;
 it now reads in one call, as `cat` does.
 
-### R2. Sessions and background jobs at the terminal (M)
+### R2. Sessions and background jobs at the terminal (M) — done
 
 There are no sessions, and a background job that reads the terminal is
 not stopped (README). Add `setsid`, a controlling terminal per session,
@@ -1868,6 +1868,24 @@ terminal's `tostop` set; the shell reports "Stopped (tty input)" and `fg`
 gives the terminal back. **Check:** syscheck (`setsid` errors, a child in
 its own session has no terminal); `make test-jobs` (`cat &` stops, `fg`
 lets it read).
+
+Done (`process_terminal_access`, called by the console's read and write in
+the file layer, where the process holds nothing and may stop;
+`setsid` 324, `getsid` 325, `tty_tostop` 326, `/bin/stty`, a `Sid` line in
+`/proc/<pid>/status`, `SIGTTIN` 21 and `SIGTTOU` 22, which stop by
+default). The kernel's processes share the console's session, numbered 0
+and without a leader: making each a session leader would have refused
+them `setpgid`, which POSIX denies a leader. A new session has no terminal
+and cannot get one (there is one console). Found on the way: `init` is in
+the console's session here, so a job it adopted was not orphaned by
+POSIX's rule, and stopped for good; init now counts as outside every
+session, as on a system where it leads its own. Checks: syscheck's
+`check_sessions_and_terminal` (bounded: a child that neither stops nor
+exits is killed after 5 s, so a broken check fails instead of hanging,
+which the first sabotage did); `make test-jobs` (`cat &` stopped and
+reported, then read after `fg`; `echo &` with `tostop`). Sabotage: no
+terminal checks failed five syscheck checks and the scenario; no orphan
+rule and a `setsid` that changed nothing failed four.
 
 ### R3. Work moves between busy CPUs; sleepers per CPU (M)
 
@@ -1990,7 +2008,8 @@ Q1, Q2, Q3, Q4                   done
         |
 R4                               done
 R1                               done
-R2, R3                           next (planned, not started)
+R2                               done
+R3                               next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
