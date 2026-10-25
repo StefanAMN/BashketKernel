@@ -1635,7 +1635,7 @@ target; the existing four-tasks-on-four-CPUs measurement must not get
 worse, and contention on the old lock (count spins before and after)
 falls; a test that pins and unpins tasks; `make fuzz SMP=4`.
 
-### Q3. `trap`, `set -e -u -x`, `shift`, `wait`, `local` in the shell (S)
+### Q3. `trap`, `set -e -u -x`, `shift`, `wait`, `local` in the shell (S) — done
 
 `trap 'LIST' INT TERM EXIT` (and `trap - SIG`), `set -e` (stop at a
 failing command, with POSIX's exceptions: conditions, `&&`/`||` lists,
@@ -1644,6 +1644,30 @@ printed to standard error with `+`), `shift [N]`, `wait [N]` for
 background jobs, `local NAME[=value]` in functions. **Check:** syscheck,
 one check per exception of `set -e`; `make test-jobs` for `wait` and a
 `trap` on Ctrl-C.
+
+Done (`user/sh.c`, syscheck's `check_shell_options`, a "trap and wait at
+the terminal" scenario in `make test-jobs`). Added because the item needed
+them: `! pipeline` (one of `set -e`'s exceptions) and `$$` (for a script
+to signal itself in the trap checks). A signal handler only notes the
+signal; the trap's list runs between commands (after the foreground
+command has finished, as POSIX says), with `$?` and the place in the
+running list (a pending `break`, Ctrl-C) kept around it. A child that
+goes on running shell code is a subshell and drops the caught traps and
+the EXIT trap; `trap '' SIG` is inherited by everything started. With an
+INT trap, a command ended by Ctrl-C no longer ends the loop or list it
+is in: the trap decides. `wait` catches Ctrl-C at the terminal (the
+shell otherwise ignores it there) and returns 130, the job running on.
+`set -u` in a shell that is not interactive exits with 2, running the
+EXIT trap. `set` alone lists the variables. Not done: `set -- ARGS`
+(setting `$1` ...), `set -o`, `$-`, traps for signals other than HUP,
+INT, QUIT, USR1, USR2 and TERM. At the terminal, Ctrl-C at the prompt is
+a key for the line editor, not a signal, so an INT trap of the
+interactive shell itself runs only during `wait`. Sabotage: removing
+the four exceptions failed their eight checks one each; breaking `-e`,
+`-u`, `-x`, `local`, `$$`, the handler and the subshell reset failed 21
+checks; a `shift` that did nothing first hung the `while ... shift`
+check (it is bounded now) and then failed both; the terminal scenario
+failed all three parts.
 
 ### Q4. `/bin/top` (S) — done
 
@@ -1762,8 +1786,8 @@ O1, O2, O3, O4                   done (in parallel)
         |
 P1, P2, P3, P4                   done (in parallel)
         |
-Q4                               done
-Q1, Q2, Q3                       next (planned, not started)
+Q3, Q4                           done
+Q1, Q2                           next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on

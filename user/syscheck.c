@@ -3200,6 +3200,78 @@ static void check_directory_tools(void) {
     }
 }
 
+/* set -e and each of its exceptions, set -u, set -x, '!', shift, local,
+ * $$ and trap */
+static void check_shell_options(void) {
+    /* set -e: the first command that fails ends the shell, with its status */
+    CHECK(sh_ends("set -e; echo a; false; echo b", "a\n", 1));
+    CHECK(sh_ends("set -e; echo a; sh -c 'exit 3'; echo b", "a\n", 3));
+    CHECK(sh_ends("set -e; for i in 1 2; do echo $i; false; done; echo no", "1\n", 1));
+    CHECK(sh_ends("set -e; f() { return 4; }; f; echo no", "", 4));
+    CHECK(sh_ends("set -e; true && false; echo no", "", 1));               /* The last of an && list counts */
+    CHECK(sh_prints("set -e; { false; } | cat; echo yes", "yes\n"));        /* A pipeline's status is its last command's */
+    /* ... except in a condition: if, elif, while, until */
+    CHECK(sh_prints("set -e; if false; then echo no; fi; echo after-if", "after-if\n"));
+    CHECK(sh_prints("set -e; if false; then :; elif false; then :; else echo else; fi", "else\n"));
+    CHECK(sh_prints("set -e; while false; do :; done; echo after-while", "after-while\n"));
+    CHECK(sh_prints("set -e; n=0; until [ $n -eq 2 ]; do n=$((n + 1)); done; echo n=$n", "n=2\n"));
+    /* ... before the end of an && or || list */
+    CHECK(sh_prints("set -e; false && echo no; echo after-and", "after-and\n"));
+    CHECK(sh_prints("set -e; false || echo or-ran; echo after-or", "or-ran\nafter-or\n"));
+    /* ... after '!' */
+    CHECK(sh_prints("set -e; ! true; echo after-not", "after-not\n"));
+    /* A function called in a condition runs with set -e set aside */
+    CHECK(sh_prints("set -e; f() { false; echo in-f; }; if f; then echo t; fi", "in-f\nt\n"));
+    CHECK(sh_prints("set -e; set +e; false; echo still", "still\n"));
+
+    /* ! turns a status round, for a compound command too */
+    CHECK(sh_prints("! false; echo $?; ! true; echo $?; ! { false; }; echo $?", "0\n1\n0\n"));
+    CHECK(sh_ends("!", "", 2));
+
+    /* set -u: an unset variable ends the shell (not at the terminal) */
+    CHECK(sh_ends("set -u; echo $nothing; echo no", "", 2));
+    CHECK(sh_ends("set -u; f() { echo $1; }; f", "", 2));
+    CHECK(sh_ends("set -u; echo ${nothing}x", "", 2));
+    CHECK(sh_prints("set -u; x=1; echo $x $# $?", "1 0 0\n"));
+    CHECK(sh_prints("set -u; set +u; echo [$nothing]", "[]\n"));
+
+    /* set -x: each command, expanded, after "+ " on standard error */
+    CHECK(sh_prints("{ set -x; x=1; echo $x \"a b\"; } 2>&1", "+ x=1\n+ echo 1 a b\n1 a b\n"));
+    CHECK(sh_ends("set -q", "", 2));
+
+    /* shift */
+    CHECK(sh_prints("f() { shift; echo $# $1; shift 2; echo $# $1; }; f a b c d", "3 b\n1 d\n"));
+    /* (Bounded: a shift that did nothing must fail the check, not hang it) */
+    CHECK(sh_prints("f() { n=0; while [ $# -gt 0 ] && [ $n -lt 3 ]; do echo $1; shift; n=$((n + 1)); done; }; f x 'y z'", "x\ny z\n"));
+    CHECK(sh_ends("f() { shift 3; }; f a b", "", 1));
+
+    /* local: the function's own, the old value back when it returns */
+    CHECK(sh_prints("x=outer; f() { local x=inner; echo $x; }; f; echo $x", "inner\nouter\n"));
+    CHECK(sh_prints("f() { local y=1; }; f; echo [$y]", "[]\n"));
+    CHECK(sh_prints("x=a; g() { echo g:$x; x=c; }; f() { local x; x=b; g; echo f:$x; }; f; echo $x", "g:b\nf:c\na\n"));
+    CHECK(sh_prints("export E=env; f() { local E=mine; sh -c 'echo $E'; }; f; sh -c 'echo $E'", "mine\nenv\n"));
+    CHECK(sh_ends("local x=1", "", 1));                                      /* Not in a function */
+
+    /* $$: the shell's process, also in a $(...); another shell has its own */
+    CHECK(sh_prints("[ $$ -gt 1 ] && [ $$ = $(echo $$) ] && [ $$ != $(sh -c 'echo $$') ] && echo ok", "ok\n"));
+
+    /* trap */
+    CHECK(sh_prints("trap 'echo bye' EXIT; echo hi", "hi\nbye\n"));
+    CHECK(sh_ends("trap 'echo bye $?' EXIT; sh -c 'exit 5'", "bye 5\n", 5));
+    CHECK(sh_ends("trap 'exit 7' EXIT; true", "", 7));
+    CHECK(sh_ends("trap 'echo bye' EXIT; set -u; echo $nothing", "bye\n", 2));
+    CHECK(sh_prints("trap 'echo got USR1' USR1; kill -10 $$; echo after", "got USR1\nafter\n"));
+    CHECK(sh_prints("trap 'false' USR1; kill -10 $$; echo $?", "0\n"));      /* $? as it was before the trap */
+    CHECK(sh_prints("trap 'echo got' TERM; kill -15 $$; kill -15 $$; trap '' TERM; kill -15 $$; echo end", "got\ngot\nend\n"));
+    CHECK(sh_ends("trap 'echo t' TERM; trap - TERM; kill -15 $$; echo no", "", 128 + SIGTERM));
+    CHECK(sh_ends("trap 'echo t' 15; trap 15; kill -15 $$; echo no", "", 128 + SIGTERM));
+    CHECK(sh_prints("trap 'echo a' INT; trap \"it's\" SIGTERM; trap", "trap -- 'echo a' INT\ntrap -- 'it'\\''s' TERM\n"));
+    CHECK(sh_ends("trap 'echo x' NOPE", "", 1));
+    CHECK(sh_ends("trap 'echo x' KILL", "", 1));
+    /* A child running shell code is a subshell: no EXIT trap of its own */
+    CHECK(sh_prints("trap 'echo bye' EXIT; set -u; { echo $nothing; } | cat; echo after", "after\nbye\n"));
+}
+
 /* The shell's if, while and for, break and continue, and test / [ */
 static void check_shell_control(void) {
     /* if: the branch taken; elif; nothing taken is status 0; the status of the branch */
@@ -3932,6 +4004,7 @@ int main(void) {
     check_running_program_file();
     check_shell_words();
     check_shell_control();
+    check_shell_options();
     check_shell_redirects();
     check_shell_variables();
     check_shell_case_functions();
