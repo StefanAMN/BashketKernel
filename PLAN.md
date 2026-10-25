@@ -1816,6 +1816,59 @@ not visible from outside.
 
 ---
 
+## Track R — What processes hold, who owns the terminal, CPUs that share
+
+Planned 2026-10-25, after track Q. Each item comes from a limit that Q or
+an earlier track wrote down.
+
+### R1. Resident memory per process (M)
+
+`/proc/<pid>/status` and `top` show a process's size, not what it holds
+(Q4): counting present pages means walking another process's page tables,
+which exit and `execve` free without any lock a reader could take. Give
+each address space a lock (or a reference the reader holds) that its
+teardown waits for, so `/proc` can walk it safely; report "Resident"
+(present pages, and how many of them are shared) and show it in `top`.
+**Check:** a unit test whose process touches N pages and is seen to hold
+N more; a test reading the status of processes that are exiting and
+exec'ing in a loop on four CPUs (no fault, no stale count); `make
+test-top`; sabotage the teardown's wait and see the race test fail.
+
+### R2. Sessions and background jobs at the terminal (M)
+
+There are no sessions, and a background job that reads the terminal is
+not stopped (README). Add `setsid`, a controlling terminal per session,
+and the terminal's checks: a process of a background group that reads it
+gets `SIGTTIN` (and stops), one that writes gets `SIGTTOU` only with the
+terminal's `tostop` set; the shell reports "Stopped (tty input)" and `fg`
+gives the terminal back. **Check:** syscheck (`setsid` errors, a child in
+its own session has no terminal); `make test-jobs` (`cat &` stops, `fg`
+lets it read).
+
+### R3. Work moves between busy CPUs; sleepers per CPU (M)
+
+Only an idle CPU takes work (Q2): three tasks waiting on one CPU and one
+on another stay so. Let a CPU whose queue is longer than the shortest by
+more than one hand a task over at its tick; and keep each CPU's timed
+sleepers in a queue of its own, ordered by deadline, so that the timer no
+longer walks every task under the scheduler lock. **Check:**
+`make test-smp` and the SMP targets; a test that starts six busy tasks
+bound to one CPU, unbinds them, and sees them spread over four; the
+yield measurement of Q2 stays at no waits; `/proc/timers` shows sleepers
+per CPU.
+
+### R4. Interrupt lines spread over the CPUs (S)
+
+Interrupts that come through the I/O APIC (keyboard, serial line, mouse,
+legacy virtio) all go to the boot CPU; MSI-X vectors are already spread
+(N3). Route each line to a CPU of its own, the same way, and say which in
+`/proc/interrupts`. **Check:** `make test VIRTIO=legacy` and the SMP
+targets with the legacy interface; a check that some line's interrupts
+arrive on a CPU other than 0; the keyboard and serial line still work
+(`make test-kshell`, the scripted shell tests).
+
+---
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -1900,6 +1953,8 @@ O1, O2, O3, O4                   done (in parallel)
 P1, P2, P3, P4                   done (in parallel)
         |
 Q1, Q2, Q3, Q4                   done
+        |
+R4, R1, R2, R3                   next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
