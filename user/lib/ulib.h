@@ -42,6 +42,7 @@ void ignore_interrupt(int ignore);   /* 1: Ctrl-C does not end this process */
 #define SIGFPE   8                  /* Killed for a division by zero (cannot be caught yet) */
 #define SIGKILL  9
 #define SIGUSR1 10
+#define SIGBUS   7                  /* Touched a shared mapping's page past the end of its file */
 #define SIGSEGV 11
 #define SIGUSR2 12
 #define SIGTERM 15
@@ -111,7 +112,9 @@ void *mmap_shared(size_t length);            /* Stays shared with children creat
 long shmget(unsigned key, size_t size);      /* Find or create; returns an id */
 void *shmat(long id);                        /* Map it here; NULL on failure. munmap() to detach. */
 long shmrm(long id);                         /* Release the key; memory goes with the last mapping */
+void *mmap_file_shared(int fd, size_t length, size_t offset, int prot); /* The file itself as memory: writes reach the file (at msync, munmap or exit), other processes mapping it see them at once; PROT_WRITE needs fd open for writing too. Touching a page past the file's end: SIGBUS */
 long munmap(void *addr, size_t length); /* Give back pages from mmap_* or shmat */
+long msync(void *addr, size_t length, int flags); /* Write what shared mappings in the range wrote to their files (MS_SYNC); 0 or a negative error */
 void *malloc(size_t size); /* Heap memory (16-byte aligned), or NULL (also for 0 and absurd sizes) */
 void free(void *ptr); /* Give back what malloc returned (NULL is allowed) */
 

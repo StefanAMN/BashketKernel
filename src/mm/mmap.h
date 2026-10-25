@@ -25,6 +25,13 @@
 
 #define MAP_FAILED ((void *)-1)
 
+// msync's flags. Both kinds write at once, before the call returns (there
+// is no writer thread to leave it to); the cache is the mappings' memory,
+// so there is nothing to invalidate.
+#define MS_ASYNC      1
+#define MS_INVALIDATE 2
+#define MS_SYNC       4
+
 // User address space layout
 #define USER_MMAP_BASE 0x0000700000000000ULL // mmap regions grow up from here
 #define USER_MMAP_END  0x00007F0000000000ULL

@@ -229,9 +229,13 @@ static bool try_promised_page(struct registers *regs) {
     // call. The frame on this stack is complete, so being preempted is fine.
     asm volatile("sti");
     int result = region_fault(task, cr2);
-    for (int i = 0; result < 0 && swap_may_retry(i); i++) result = region_fault(task, cr2);
+    for (int i = 0; result == REGION_NO_MEMORY && swap_may_retry(i); i++) result = region_fault(task, cr2);
     asm volatile("cli");
 
+    if (result == REGION_PAST_THE_END) {
+        kprintf("\n[pid %u %s] killed: bus error at 0x%zx: past the end of the mapped file\n", task->pid, task->name, cr2);
+        task_exit_status(128 + SIGBUS);
+    }
     if (result < 0) {
         kprintf("\n[pid %u %s] killed: out of memory for a promised page at 0x%zx\n", task->pid, task->name, cr2);
         task_exit_status(128 + SIGKILL);

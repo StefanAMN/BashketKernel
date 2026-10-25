@@ -293,10 +293,14 @@ int64_t file_read(file_t *file, void *buf, size_t count) {
             if (file->node->ops) {
                 if (!file->node->ops->read) return 0;
                 int64_t n = file->node->ops->read(file->node, file->offset, buf, count);
-                if (n > 0) file->offset += (size_t)n;
+                if (n > 0) {
+                    pcache_read_overlay(file->node, file->offset, buf, (size_t)n);   // What shared mappings wrote
+                    file->offset += (size_t)n;
+                }
                 return n;
             }
             size_t n = vfs_read(file->node, file->offset, count, buf);
+            pcache_read_overlay(file->node, file->offset, buf, n);
             file->offset += n;
             return (int64_t)n;
         }
@@ -323,8 +327,8 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
                 if (file->append) file->offset = file->node->size;
                 int64_t n = file->node->ops->write(file->node, file->offset, buf, count);
                 if (n > 0) {
+                    pcache_file_written(file->node, file->offset, buf, (size_t)n);  // Its cached pages say what it said before
                     file->offset += (size_t)n;
-                    pcache_drop_file(file->node);  // Its cached pages say what it said before
                 }
                 return n;
             }

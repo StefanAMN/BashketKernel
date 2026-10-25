@@ -66,6 +66,7 @@
 #define SYS_SETGROUPS 320
 #define SYS_GETGROUPS 321
 #define SYS_GETEGID   322
+#define SYS_MSYNC     323
 #define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
@@ -225,6 +226,9 @@ struct stat {
 #define MAP_SHARED    0x01
 #define MAP_PRIVATE   0x02
 #define MAP_ANONYMOUS 0x20
+#define MS_ASYNC      1
+#define MS_INVALIDATE 2
+#define MS_SYNC       4
 
 /* Raw system call. The syscall instruction overwrites RCX (with the return
  * address) and R11 (with RFLAGS), so the compiler must be told. */

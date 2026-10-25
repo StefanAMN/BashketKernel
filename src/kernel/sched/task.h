@@ -85,6 +85,7 @@ typedef struct task {
     uint32_t call_range_count;  // How many of call_ranges[] are in use
     bool call_ranges_full;   // It checked more than fit: nothing of it may be swapped out until it returns
     size_t promised_pages;   // Pages of those regions, and of the heap, not yet touched
+    uint32_t seen_truncations; // pcache_truncations() when it last gave up pages past its files' ends (region_revalidate)
     uint64_t stack_top;      // Highest address of the user stack (randomised per program)
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
     uint32_t fd_cloexec;     // Bit n set: descriptor n is closed when the process execs a new program

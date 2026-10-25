@@ -218,7 +218,7 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
         if (ok) image->lazy_pages = pages;
         for (uint32_t i = 0; ok && i < program->lazy_count; i++) {
             const elf_lazy_t *lazy = &program->lazy[i];
-            image->lazy[i] = (mem_region_t){ lazy->start, lazy->end, lazy->prot, file, lazy->file_offset, true };
+            image->lazy[i] = (mem_region_t){ lazy->start, lazy->end, lazy->prot, file, lazy->file_offset, true, false };
             region_hold_program(file, +1);
             image->lazy_count++;
         }
@@ -297,8 +297,9 @@ bool process_populate(uint64_t addr, size_t len) {
         }
         if (process_grow_stack(page)) continue;
         int given = region_fault(self, page);
-        for (int i = 0; given < 0 && swap_may_retry(i); i++) given = region_fault(self, page);
-        if (given < 0) return false;  // Promised, and no memory to keep the promise
+        for (int i = 0; given == REGION_NO_MEMORY && swap_may_retry(i); i++) given = region_fault(self, page);
+        if (given == REGION_NO_MEMORY) return false;  // Promised, and no memory to keep the promise
+        if (given == REGION_PAST_THE_END) break;      // Not memory a call may use: the check that follows refuses it
         // Never promised: the range is bad, and the check that follows will
         // say so. Stop here: the length is the caller's word, and walking
         // terabytes of nothing one page at a time is not a way to say no.
@@ -396,7 +397,7 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     if (!load_user_image(path, argv, envp, &image)) return -1;
 
     uint64_t *old_pml4 = vmm_space_from_phys((uint64_t)self->pml4_phys);
-    region_release_all(self); // The old program's mappings are not the new one's
+    mem_region_t *old_regions = region_take_all(self); // The old program's mappings are not the new one's
     apply_image(self, &image);
 
     // A set-uid program runs as the file's owner, whoever started it. The
@@ -419,6 +420,7 @@ int process_exec(struct registers *regs, const char *path, char *const argv[], c
     // Leave the old address space before freeing it
     vmm_switch_pml4(self->pml4_phys);
     vmm_destroy_address_space(old_pml4);
+    region_put_all(old_regions);         // What its shared mappings wrote, to their files (see region_take_all)
 
     // Rewrite the syscall frame: the return to ring 3 starts the new program
     memset(regs, 0, sizeof(*regs));

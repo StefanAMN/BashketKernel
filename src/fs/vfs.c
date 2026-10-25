@@ -425,7 +425,7 @@ static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, con
     if (!file || file->type != VFS_FILE || !buf || count == 0) return 0;
     if (file->ops) {
         int64_t n = file->ops->write ? file->ops->write(file, offset, buf, count) : 0;
-        if (n > 0) pcache_drop_file(file);     // Its cached pages say what it said before
+        if (n > 0) pcache_file_written(file, offset, buf, (size_t)n);   // Its cached pages say what it said before
         return n > 0 ? (size_t)n : 0;
     }
 
@@ -456,7 +456,7 @@ static size_t vfs_write_unlocked(vnode_t *file, size_t offset, size_t count, con
     }
     memcpy(data + offset, buf, count);
     if (end > file->size) file->size = end;
-    pcache_drop_file(file);
+    pcache_file_written(file, offset, buf, count);
 
     return count;
 }
@@ -697,7 +697,7 @@ vnode_t *vfs_find(vnode_t *relative_root, const char *path) {
 int vfs_truncate(vnode_t *file, size_t size) {
     vfs_lock();
     int result = vfs_truncate_unlocked(file, size);
-    pcache_drop_file(file);
+    pcache_file_truncated(file, file->size);
     vfs_unlock();
     return result;
 }
