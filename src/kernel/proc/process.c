@@ -241,7 +241,12 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
 // and (set-uid) the file owner's rights
 static void apply_image(task_t *task, const user_image_t *image) {
     task->is_user = true;
+    // Under the scheduler lock: /proc walks a task's page tables under it,
+    // and exec destroys the old ones once this has changed (see the exit
+    // path in sched.c)
+    uint64_t flags = sched_lock_irqsave();
     task->pml4_phys = (uint64_t *)((uint64_t)image->pml4 - pmm_get_hhdm_offset());
+    sched_unlock_irqrestore(flags);
     task->user_entry = image->entry;
     task->user_rsp = image->rsp;
     memcpy(task->image_segments, image->segments, sizeof(task->image_segments));

@@ -7,7 +7,8 @@
  * refresh, over the ticks that passed (uptime_ticks), is the share of one
  * CPU the task had in that interval. Processes are listed busiest first.
  * SIZE is "Size" from the same file: the program, heap and mapped regions
- * (what was asked for, not what is resident). Above the list: each CPU's load from the
+ * (what was asked for); RES is "Resident", the pages of it present in
+ * memory now. Above the list: each CPU's load from the
  * "busy ticks" lines of /proc/cpuinfo, and the totals of /proc/meminfo.
  *
  * The terminal is in raw mode while it runs, so that a key arrives at once
@@ -20,7 +21,7 @@
 #define REFRESH_MS 1000
 
 typedef struct {
-    long pid, uid, ticks, cpu, size_kb;
+    long pid, uid, ticks, cpu, size_kb, resident_kb;
     long delta;                /* Ticks in the last interval */
     char state[12], name[24];
 } task_info_t;
@@ -124,6 +125,7 @@ static int read_task(const char *name, task_info_t *t) {
     t->ticks = number_field(status, "Ticks");
     t->cpu = number_field(status, "Cpu");
     t->size_kb = number_field(status, "Size");
+    t->resident_kb = number_field(status, "Resident");
     field(status, "State", t->state, sizeof(t->state));
     field(status, "Name", t->name, sizeof(t->name));
     return 1;
@@ -244,7 +246,7 @@ static void draw(long elapsed) {
     lines += 2;
 
     put("\033[30;47m");
-    put_padded("  PID   UID STATE     CPU%  ON  SIZE kB  NAME", (int)columns);
+    put_padded("  PID   UID STATE     CPU%  ON  SIZE kB   RES kB  NAME", (int)columns);
     put("\033[0m\r\n");
     lines++;
 
@@ -259,8 +261,9 @@ static void draw(long elapsed) {
         put_number(percent(t->delta < elapsed ? t->delta : elapsed, elapsed), 5);
         put_number(t->cpu, 4);
         put_number(t->size_kb, 9);
+        put_number(t->resident_kb, 9);
         put("  ");
-        put_padded(t->name, (int)columns > 46 ? (int)columns - 46 : 1);
+        put_padded(t->name, (int)columns > 55 ? (int)columns - 55 : 1);
         put("\033[K\r\n");
     }
     put("\033[J");                                /* Clear what an earlier, longer list left */

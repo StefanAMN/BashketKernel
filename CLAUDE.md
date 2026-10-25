@@ -172,6 +172,10 @@ code comments and commit messages; `git log` is the full history.
   Twice this exposed a test that tested nothing: one calculation overflowed to
   infinity for every input, another was hoisted out of its loop by the
   compiler (pure function, constant arguments; fixed with a volatile seed).
+  A use-after-free of a frame passes silently (it keeps its contents and
+  stays mapped), so the test kernel fills freed frames with 0xFF: a walk
+  over freed page tables that went unnoticed 8,600 times then faulted at
+  once.
 - **Run long, run small, run hostile.** A 200-command session found a 5x
   console slowdown; a 64 MB machine (`make test-lowmem`) found that a failed
   heap growth kept all the memory; random system calls (`make fuzz`) and

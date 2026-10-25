@@ -1024,13 +1024,16 @@ void task_exit_status(int status) {
     // tables (it is in the kernel, on its kernel stack, and will not return
     // to user code). The task is pointed at them before the CPU is, with
     // interrupts off, so that being switched out and in again in between
-    // loads the right ones.
+    // loads the right ones; and under the scheduler lock, which /proc holds
+    // while it walks a task's page tables (vmm_count_user_pages): a walk
+    // under way finishes before the pointer changes, and none starts on the
+    // tables once they are being freed.
     if (self->is_user && self->pml4_phys && (uint64_t)self->pml4_phys != vmm_get_kernel_pml4_phys()) {
         uint64_t *space = vmm_space_from_phys((uint64_t)self->pml4_phys);
-        uint64_t irq = irq_save();
+        uint64_t irq = sched_lock_irqsave();
         self->pml4_phys = (uint64_t *)vmm_get_kernel_pml4_phys();
         vmm_switch_pml4(self->pml4_phys);
-        irq_restore(irq);
+        sched_unlock_irqrestore(irq);
         vmm_destroy_address_space(space);
     }
     // Its regions go once its pages have (what shared mappings wrote is
