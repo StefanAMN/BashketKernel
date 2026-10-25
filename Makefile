@@ -388,7 +388,8 @@ test-net: iso
 # schedule, the kernel's shared structures must survive all four using them
 # at once, and everything else must work exactly as with one. Then real
 # programs on 2, 4 and 8 CPUs: the system call checks, floating point state
-# across task switches (and now across CPUs), and a pipeline.
+# across task switches (and now across CPUs), a pipeline, and the serial
+# line's interrupts arriving on CPU 1, not the boot CPU (R4).
 SMP_PROGRAM_CPUS ?= 2 4 8
 test-smp:
 	@$(MAKE) --no-print-directory BUILD=build-test KERNEL_TESTS=1 iso disks
@@ -409,8 +410,8 @@ test-smp:
 		tools/qemu_shell.py --quiet --timeout 120 $(SHELL_CPU) --qemu-arg=-smp --qemu-arg=$$n \
 			--expect "SMP: $$n CPUs scheduling" --expect 'syscheck: all checks passed' \
 			--expect 'fptest: all workers computed the right values' --expect '\n$(words $(USER_PROGS)) [0-9]+ [0-9]+\n' \
-			--forbid 'LOCK RULE' \
-			'exec /bin/syscheck' 'exec /bin/fptest' 'exec /bin/sh -c "ls /bin | wc"' > $(BUILD)/smp-$$n.log 2>&1 \
+			--expect 'IRQ  4 +0 +[1-9][0-9]* ' --forbid 'LOCK RULE' \
+			'exec /bin/syscheck' 'exec /bin/fptest' 'exec /bin/sh -c "ls /bin | wc"' 'cat /proc/interrupts' > $(BUILD)/smp-$$n.log 2>&1 \
 			&& echo "$$n CPUs: programs run" \
 			|| { echo "$$n CPUs: FAILED (see $(BUILD)/smp-$$n.log)"; exit 1; }; \
 	done
@@ -838,6 +839,7 @@ check:
 	@$(MAKE) --no-print-directory test-smp
 	@$(MAKE) --no-print-directory test CPU=$(NO_TSC_CPU)
 	@$(MAKE) --no-print-directory test-smp CPU=$(NO_TSC_CPU) SMP_PROGRAM_CPUS=2
+	@$(MAKE) --no-print-directory test-smp VIRTIO=legacy SMP_PROGRAM_CPUS="2 4"
 	@$(MAKE) --no-print-directory test-lowmem
 	@$(MAKE) --no-print-directory test-lowmem SMP=4
 	@$(MAKE) --no-print-directory test-lowmem CPU=max

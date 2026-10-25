@@ -292,6 +292,7 @@ static void boot_continue(void) {
 
     // Phase 10: Symmetric Multiprocessing (SMP & Spinlocks)
     smp_init(mp_request.response);
+    ioapic_spread_lines();      // The keyboard and serial line to CPUs of their own
 
     // Phase 11: the disks, and with them the root of the file tree.
     //

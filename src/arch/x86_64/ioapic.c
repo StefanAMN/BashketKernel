@@ -18,6 +18,8 @@
 #include "kprintf.h"
 #include "pic.h"
 #include "acpi.h"
+#include "smp.h"
+#include "percpu.h"
 
 #define IOAPIC_DEFAULT_PHYS 0xFEC00000ULL // Where it is when the firmware says nothing
 #define IOAPIC_REG_VERSION  0x01          // Bits 23..16: number of redirection entries - 1
@@ -72,6 +74,17 @@ void ioapic_init(void) {
 }
 
 void ioapic_route_isa_irq(uint8_t irq) {
+    ioapic_route_isa_irq_to(irq, 0);
+}
+
+void ioapic_spread_lines(void) {
+    // The serial line first: it carries the most (every scripted test types
+    // into it), and so gets the first CPU after the boot CPU
+    ioapic_route_isa_irq_to(4, smp_next_interrupt_cpu());    // Serial line (COM1)
+    ioapic_route_isa_irq_to(1, smp_next_interrupt_cpu());    // Keyboard
+}
+
+void ioapic_route_isa_irq_to(uint8_t irq, uint32_t cpu_id) {
     uint16_t flags;
     uint32_t gsi = acpi_isa_irq_to_gsi(irq, &flags);
 
@@ -81,7 +94,8 @@ void ioapic_route_isa_irq(uint8_t irq) {
     if ((flags & ACPI_INTI_POLARITY_MASK) == ACPI_INTI_ACTIVE_LOW) mode |= (1u << 13);
     if ((flags & ACPI_INTI_TRIGGER_MASK) == ACPI_INTI_LEVEL_TRIGGERED) mode |= (1u << 15);
 
-    ioapic_route_pin(gsi, 32 + irq, mode, 0);
+    cpu_t *cpu = cpu_get(cpu_id);
+    ioapic_route_pin(gsi, 32 + irq, mode, cpu && cpu->active ? cpu->lapic_id : 0);
 }
 
 void ioapic_route_pin(uint32_t gsi, uint8_t vector, uint32_t mode, uint32_t apic_id) {
