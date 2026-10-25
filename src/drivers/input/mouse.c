@@ -7,6 +7,7 @@
 #include "keyboard.h"
 #include "interrupts.h"
 #include "ioapic.h"
+#include "smp.h"
 #include "spinlock.h"
 #include "sched.h"
 #include "random.h"
@@ -169,7 +170,7 @@ int mouse_init(void) {
         return -1;
     }
     register_irq_handler(MOUSE_IRQ, mouse_irq);
-    ioapic_route_isa_irq(MOUSE_IRQ);
+    ioapic_route_isa_irq_to(MOUSE_IRQ, smp_next_interrupt_cpu());
     present = true;
     kprintf("mouse: PS/2 mouse ready, IRQ %u\n", MOUSE_IRQ);
     return 0;

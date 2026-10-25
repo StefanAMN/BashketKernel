@@ -24,6 +24,7 @@
 #include "spinlock.h"
 #include "pit.h"
 #include "ioapic.h"
+#include "smp.h"
 #include "interrupts.h"
 #include "virtqueue.h"
 
@@ -144,7 +145,7 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
     ksnprintf(names[number], sizeof(names[number]), "virtio-blk %u", number);
     if (virtio_msix_start(&d->virtio)) {
         uint8_t vector = register_msi_handler(names[number], virtio_blk_msi, d);
-        if (!vector || !virtio_msix_assign(&d->virtio, 0, 0, vector, virtio_msix_next_cpu())) {
+        if (!vector || !virtio_msix_assign(&d->virtio, 0, 0, vector, smp_next_interrupt_cpu())) {
             d->virtio.queue_vector[0] = VIRTIO_MSI_NO_VECTOR;   // virtio_msix_finish then goes back to the line
         }
     }
@@ -187,7 +188,7 @@ static int init_device(blk_device_t *d, const pci_device_t *pci, unsigned number
     uint8_t irq = d->virtio.irq;
     if (!virtio_msix_finish(&d->virtio) && irq > 0 && irq < 16 && !(*irq_registered && *registered_irq == irq)) {
         register_irq_handler(irq, virtio_blk_irq); // One handler serves every disk on the line
-        ioapic_route_isa_irq(irq);
+        ioapic_route_isa_irq_to(irq, smp_next_interrupt_cpu());
         *irq_registered = true;
         *registered_irq = irq;
     }

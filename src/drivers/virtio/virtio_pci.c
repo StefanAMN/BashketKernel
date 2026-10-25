@@ -396,20 +396,6 @@ bool virtio_msix_finish(virtio_device_t *dev) {
     return true;
 }
 
-uint32_t virtio_msix_next_cpu(void) {
-    static uint32_t turn;
-    uint32_t total = (uint32_t)smp_get_cpu_total();
-    if (total <= 1) return 0;
-    // CPUs 1, 2, ..., total-1, 0, 1, ...: the boot CPU last, since it also
-    // takes every line interrupt
-    for (uint32_t tried = 0; tried < total; tried++) {
-        uint32_t cpu = (1 + turn++) % total;
-        cpu_t *c = cpu_get(cpu);
-        if (c && c->active) return cpu;
-    }
-    return 0;
-}
-
 void virtio_describe_interrupts(const virtio_device_t *dev, char *buf, size_t size) {
     if (dev->msix) ksnprintf(buf, size, "MSI-X vector 0x%x on CPU %u", dev->vector, dev->vector_cpu);
     else ksnprintf(buf, size, "line IRQ %u", dev->irq);
