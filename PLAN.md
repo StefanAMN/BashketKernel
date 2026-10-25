@@ -200,7 +200,7 @@ it, so its own accesses never fault.
 
 Sharing a file's pages between processes came with the page cache (P2):
 programs are read page by page (O2) into frames every process running
-them maps. Not done: shared file mappings and write-back.
+them maps. Shared file mappings and write-back came with Q1.
 The promise limit does not cover fork or copy-on-write.
 
 - Demand-zero `mmap` and `brk` (pages appear on first touch), with an
@@ -1605,7 +1605,7 @@ parser reading only the first letter of a group failed seven.
 
 ## Track Q — Writing through a mapping, a run queue per CPU
 
-### Q1. Shared file mappings and `msync` (M)
+### Q1. Shared file mappings and `msync` (M) — done
 
 `mmap(MAP_SHARED)` of a file is refused. With the page cache (P2) it can
 map the cached frame writable in every process that shares it; changes
@@ -1621,6 +1621,55 @@ puts them in the file, checked by reading the disk after forgetting the
 cache, CLAUDE.md's lesson); syscheck; `make test-home` (a change made
 through a mapping is there after a reboot); `make test-crash` and
 `make test-swap` keep passing.
+
+Done (`src/mm/pcache.c`, `src/mm/region.c`, `msync` = system call 323,
+`/bin/mapwrite`). The choices the item asked for:
+- Dirty tracking is per cached page, not by the page-table dirty bit: a
+  page mapped writable is dirty until written back with no mapping left
+  that could write it again. Collecting dirty bits "from every mapping"
+  needs every page table that maps a frame, and no reverse map is kept;
+  walking other processes' tables is unsafe, as their exit frees them
+  without the scheduler lock (Q4). The cost: a dirty page that is still
+  mapped is written again by each `msync`, changed or not.
+- Write-back happens at `msync` (both kinds at once: there is no writer
+  thread), at `munmap` (after the pages are unmapped, so the last one out
+  leaves the page clean), at exit and exec (after the address space is
+  gone, for the same reason: `region_take_all`), and so at shutdown,
+  which ends every process.
+- Reclaim skips dirty pages rather than writing them (it runs under the
+  cache's spinlock); a dirty page with no mapping is left only by a failed
+  write.
+- Coherence: a page a shared mapping has mapped is the file's one copy.
+  `write()` changes it in place (other cached pages of the file are
+  dropped, as before), `read()` copies it over what the file holds (it may
+  have been written through a mapping and not saved yet), and a private
+  mapping of the same page sees the changes until its first write gives
+  it a copy (POSIX leaves that open).
+- Truncation drops the shared pages past the new end and zeros the rest
+  of the page the file now ends in. A page never touched is `SIGBUS` at
+  the fault; one some process already maps is taken out of that process's
+  page tables at its next safe point (system call return, interrupt
+  return to user code), where it compares a counter of such truncations
+  with the one it last saw (`region_revalidate`). Until then it can still
+  read the old page: at most one scheduler tick for a process that is
+  running.
+- A writable shared mapping counts as open for writing: the file cannot
+  be run meanwhile (`ETXTBSY`), as for `write()`.
+Tests: `shared_pages_are_the_files_copy` and `writeback_reaches_the_disk`
+(the second reads the file with the cache dropped); syscheck's
+`check_shared_mappings` on a file in memory and one on the ext2 disk;
+`make test-home` writes through a mapping with `mapwrite`, which exits
+without `msync`, and reads it back after the reboot. Sabotage: `write()`
+dropping shared pages failed the unit test and three syscheck checks; no
+`SIGBUS` past the end failed three; no revalidation failed two; `read()`
+not seeing mapped writes failed the unit test and one check (which first
+passed by accident: a child's exit had already written the change back,
+so a check of a write by the reader itself was added); write-back that
+wrote nothing failed both unit tests and no syscheck check at all, since
+`read()` shows the cached page, and with no write-back at exit
+`make test-home` failed after the reboot. Not done: resident memory per
+process (Q4 says why); a page a truncation extends the file over keeps
+what a mapping wrote past the old end, where POSIX says zeros.
 
 ### Q2. A run queue per CPU (L)
 
@@ -1786,8 +1835,8 @@ O1, O2, O3, O4                   done (in parallel)
         |
 P1, P2, P3, P4                   done (in parallel)
         |
-Q3, Q4                           done
-Q1, Q2                           next (planned, not started)
+Q1, Q3, Q4                       done
+Q2                               next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on

@@ -1,6 +1,7 @@
 #include "test.h"
 #include "pcache.h"
 #include "vfs.h"
+#include "file.h"
 #include "pmm.h"
 #include "cow.h"
 #include "vmm.h"
@@ -112,6 +113,86 @@ TEST(reclaim_takes_only_unmapped_pages) {
     EXPECT_EQ(pcache_pages(), 0u);
 }
 
+// A page a shared mapping has is the file's one copy: write() changes it
+// in place, read() sees what was written into it, and it stays dirty (and
+// in the cache) until it has been written back with nobody mapping it.
+// Truncation cuts off the shared pages past the end and counts it.
+TEST(shared_pages_are_the_files_copy) {
+    pcache_reclaim((size_t)-1);
+    size_t free_before = test_free_frames();
+    vnode_t *tmp = vfs_find(NULL, "/tmp");
+    vnode_t *file = vfs_create_file(tmp, "pcache-shared", "shared words", 12);
+    EXPECT_TRUE(file != NULL);
+    if (!file) return;
+
+    uint64_t mapped = pcache_get_shared(file, 0, true);       // As a writable shared mapping
+    uint64_t privately = pcache_get(file, 0);
+    EXPECT_TRUE(mapped != 0 && privately == mapped);
+    EXPECT_EQ(file->shared_cached, 1u);
+
+    EXPECT_EQ(vfs_write(file, 0, 3, "SHA"), 3u);              // Changed in place, not dropped
+    EXPECT_EQ(file->cached_pages, 1u);
+    EXPECT_TRUE(memcmp(view(mapped), "SHAred words", 12) == 0);
+
+    memcpy((uint8_t *)view(mapped) + 7, "WORDS", 5);           // Written through the mapping
+    char text[13] = { 0 };
+    EXPECT_EQ(vfs_read(file, 0, 12, text), 12u);
+    EXPECT_TRUE(memcmp(text, "SHAred words", 12) == 0);        // Not in the file yet...
+    pcache_read_overlay(file, 0, text, 12);
+    EXPECT_TRUE(memcmp(text, "SHAred WORDS", 12) == 0);        // ... but a read sees it
+
+    EXPECT_EQ(pcache_writeback(file, 0, 1), 0);
+    EXPECT_EQ(vfs_read(file, 0, 12, text), 12u);
+    EXPECT_TRUE(memcmp(text, "SHAred WORDS", 12) == 0);        // Now it is
+    pmm_unref_frame((void *)mapped);
+    pmm_unref_frame((void *)privately);
+    EXPECT_EQ(pcache_reclaim(100), 0u);                        // Still dirty: written while mapped
+    EXPECT_EQ(pcache_writeback(file, 0, 1), 0);                // Nobody maps it now: clean
+    EXPECT_EQ(pcache_reclaim(100), 1u);
+
+    // Truncation: the shared page past the end goes, the last one keeps its
+    // place with zeros past the end
+    static char two_pages[2 * 4096];
+    memset(two_pages, 't', sizeof(two_pages));
+    EXPECT_EQ(vfs_write(file, 0, sizeof(two_pages), two_pages), sizeof(two_pages));
+    uint64_t first = pcache_get_shared(file, 0, true), second = pcache_get_shared(file, 1, true);
+    uint32_t truncations = pcache_truncations();
+    EXPECT_EQ(vfs_truncate(file, 100), 0);
+    EXPECT_EQ(file->cached_pages, 1u);
+    EXPECT_EQ(pcache_truncations(), truncations + 1);
+    EXPECT_TRUE(view(first)[99] == 't' && view(first)[100] == 0 && view(first)[4095] == 0);
+    EXPECT_EQ(pmm_get_frame_ref((void *)second), 1u);         // Only the "mapping" has it now
+    pmm_unref_frame((void *)first);
+    pmm_unref_frame((void *)second);
+    EXPECT_EQ(vfs_unlink(tmp, "pcache-shared"), 0);
+    EXPECT_EQ(pcache_pages(), 0u);
+    EXPECT_TRUE(test_free_frames() == free_before);
+}
+
+// What is written through a shared page of a file on the disk is on the
+// disk after a write-back: read back with the cache forgotten first
+TEST(writeback_reaches_the_disk) {
+    file_t *f = NULL;
+    EXPECT_EQ(file_open("/root/pcache-disk", O_RDWR | O_CREAT | O_TRUNC, &f), 0);
+    if (!f) return;
+    EXPECT_EQ(file_write(f, "on the disk", 11), 11);
+    vnode_t *file = f->node;
+    uint64_t mapped = pcache_get_shared(file, 0, true);
+    EXPECT_TRUE(mapped != 0);
+    if (mapped) {
+        memcpy((uint8_t *)view(mapped) + 7, "DISK", 4);
+        EXPECT_EQ(pcache_writeback(file, 0, 1), 0);
+        pmm_unref_frame((void *)mapped);
+    }
+    pcache_drop_file(file);                                    // Forget it: the next read is the disk's
+    EXPECT_EQ(file->cached_pages, 0u);
+    char text[12] = { 0 };
+    EXPECT_EQ(vfs_read(file, 0, 11, text), 11u);
+    EXPECT_TRUE(memcmp(text, "on the DISK", 11) == 0);
+    file_close(f);
+    EXPECT_EQ(vfs_unlink(vfs_find(NULL, "/root"), "pcache-disk"), 0);
+}
+
 // Devices and /proc files say something new at each read: never cached
 TEST(devices_are_not_cached) {
     EXPECT_TRUE(!pcache_cacheable(vfs_find(NULL, "/dev/zero")));
@@ -169,6 +250,8 @@ void test_suite_pcache(void) {
     RUN_TEST(one_page_one_frame);
     RUN_TEST(a_written_file_is_read_again);
     RUN_TEST(reclaim_takes_only_unmapped_pages);
+    RUN_TEST(shared_pages_are_the_files_copy);
+    RUN_TEST(writeback_reaches_the_disk);
     RUN_TEST(devices_are_not_cached);
     RUN_TEST(two_processes_share_their_code);
 }

@@ -465,6 +465,7 @@ test-home: iso
 		'ln -s projects/notes.txt short-link' 'ln -s /home/alice/projects/./././././././././././././././notes.txt long-link' \
 		'ln projects/notes.txt notes-again' 'cat /bin/sh > cut.bin' 'truncate -s 400000 cut.bin' \
 		'truncate -s 300000 cut.bin' 'truncate -s 100000 cut.bin' 'truncate -s 1000 cut.bin' 'touch -d 1000000000 kept.txt' \
+		'echo before the mapping > mapped.txt' 'mapwrite mapped.txt 7 MAPPED' \
 		'exit' '!exec /bin/login bob' '~bob\r' 'cat /home/alice/kept.txt' \
 		'echo from bob > /home/bob/second.txt' 'exit' > $(BUILD)/home-boot1.log 2>&1 \
 		|| { echo "home: FAILED in the first boot (see $(BUILD)/home-boot1.log)"; exit 1; }; \
@@ -481,14 +482,16 @@ test-home: iso
 		--expect 'lrwxrwxrwx +1 +1000 +100 +18 [0-9-]+ [0-9:]+ short-link -> projects/notes.txt' \
 		--expect 'long-link -> /home/alice/projects/\./\./' --expect '(Alice keeps her notes here\.\n){3}' \
 		--forbid 'diary' --forbid 'temp.txt' --forbid 'intruder' \
+		--expect '\nbefore MAPPEDpping\n' \
 		--expect 'cut.bin\n  Type: file  Size: 1000 ' --expect 'kept.txt\n.*\n.*\n  Modified: 2001-09-09 01:46:40' \
 		'exec /bin/ls -l /home/alice' 'exec /bin/ls -l /home/alice/team' 'exec /bin/ls -l /home/bob' \
 		'exec /bin/cat /home/alice/kept.txt /home/alice/projects/notes.txt' \
 		'exec /bin/cat /home/alice/short-link /home/alice/long-link /home/alice/notes-again' \
 		'exec /bin/sh -c "wc /home/alice/projects/shell.bin > /tmp/a"' 'exec /bin/sh -c "wc /bin/sh > /tmp/b"' \
-		'exec /bin/sh /home/../etc/compare.sh' 'exec /bin/stat /home/alice/cut.bin /home/alice/kept.txt' > $(BUILD)/home-boot2.log 2>&1 \
+		'exec /bin/sh /home/../etc/compare.sh' 'exec /bin/stat /home/alice/cut.bin /home/alice/kept.txt' \
+		'exec /bin/cat /home/alice/mapped.txt' > $(BUILD)/home-boot2.log 2>&1 \
 		|| { echo "home: FAILED, the second boot does not see the files as they were left (see $(BUILD)/home-boot2.log)"; exit 1; }; \
-	echo "home (ext2: owners and modes across a reboot, checked by e2fsck): ok"
+	echo "home (ext2: owners and modes and a change made through a shared mapping across a reboot, checked by e2fsck): ok"
 	@if [ -n "$(ROOT_FLAGS)" ]; then for kind in dir-reclen dir-overrun block-outside indirect-loop huge-size inode-table bitmap-full root-not-dir; do \
 		tools/corrupt_ext2.py $(ROOT_IMG) $$kind $(BUILD)/home-damaged.img && \
 		tools/qemu_shell.py --quiet --timeout 90 --root-disk $(BUILD)/home-damaged.img $(SHELL_CPU) \
