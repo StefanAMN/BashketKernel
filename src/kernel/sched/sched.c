@@ -762,6 +762,10 @@ void sched_tick(void) {
     uint64_t flags = sched_lock_irqsave();
     task_t *self = current_task;
     self->cpu_ticks++;
+    // How busy this CPU is: an idle CPU is not ticked with one-shot timers,
+    // and its idle task's ticks are not counted with the periodic one, so
+    // the count means the same in both modes
+    if (self != this_cpu()->idle) this_cpu()->busy_ticks++;
 
     // Preempt only when the running task has used up its turn. The idle
     // task has no turn: it gives way as soon as anything is runnable.
