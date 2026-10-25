@@ -1164,6 +1164,7 @@ static __attribute__((noreturn)) void task_end(int status, bool whole) {
     }
     sched_unlock_irqrestore(flags);
     process_call_files_release(self);
+    process_call_ranges_reset(self);    // What a call killed half way had checked: it will not use it now
 
     // This thread leaves the process's page tables now: from here on it runs
     // on the kernel's own (it is in the kernel, on its kernel stack, and will

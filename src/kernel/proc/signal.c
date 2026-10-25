@@ -297,6 +297,7 @@ void signal_deliver(struct registers *regs) {
     user_access_begin();
     memcpy((void *)frame_addr, &frame, sizeof(frame));
     user_access_end();
+    process_call_ranges_reset(task);        // Back to user code: this stack is no longer in use by a call
 
     // Continue in the handler: handler(sig), returning to the restorer
     regs->rip = handler;
@@ -313,7 +314,10 @@ void signal_return(struct registers *regs) {
     // The handler's `ret` popped the restorer address, so RSP now points at
     // the signo field. Everything read from here on is untrusted.
     uint64_t frame_addr = regs->rsp - sizeof(uint64_t);
-    if (frame_addr > regs->rsp || !vmm_user_range_ok(space, frame_addr, sizeof(signal_frame_t), false)) {
+    // (Populating first also records the range: another thread cannot unmap
+    // it between this check and the copy)
+    if (frame_addr > regs->rsp || !process_populate(frame_addr, sizeof(signal_frame_t)) ||
+        !vmm_user_range_ok(space, frame_addr, sizeof(signal_frame_t), false)) {
         task_exit_status(128 + SIGSEGV);
     }
 
