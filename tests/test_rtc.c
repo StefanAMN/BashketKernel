@@ -66,17 +66,18 @@ TEST(dates_and_unix_times_agree) {
 
 // The time of day is the CMOS clock's, kept by the nanosecond clock
 TEST(time_of_day_follows_the_cmos_clock) {
+    // Ours is the CMOS clock at boot plus the nanosecond clock since, which
+    // can fall behind (lost ticks without a timestamp counter: 18 s behind
+    // after a minute on GitHub's runners, once) or run at a wrong rate; it
+    // is checked against the CMOS clock, which keeps it within 1.5 s of the
+    // middle of the CMOS second. Allowed: that, and the second this test's
+    // own reading of the CMOS clock rounds away, whatever the uptime.
+    walltime_check();
     struct rtc_time cmos;
     rtc_read_time(&cmos);
     uint64_t cmos_seconds = walltime_from_date(&cmos);
     uint64_t ours = walltime_seconds();
-    // Ours is the CMOS clock at boot plus the calibrated clock since, so any
-    // error in the calibration grows with the time since then. In a VM the
-    // calibration can be off by several per cent when the host stalls
-    // during it (GitHub's runners: more than 2 s after a few minutes of
-    // tests). Allowed: 2 s (both count whole seconds) plus a quarter of
-    // the time since calibration, the window syscheck allows a sleep.
-    uint64_t allowed = 2 + clock_ns() / 4000000000ULL;
+    uint64_t allowed = 3;
     EXPECT_TRUE(ours + allowed >= cmos_seconds && ours <= cmos_seconds + allowed);
     if (!(ours + allowed >= cmos_seconds && ours <= cmos_seconds + allowed)) {
         kprintf("    time of day %lu, CMOS clock %lu, allowed %lu\n", ours, cmos_seconds, allowed);
@@ -90,6 +91,35 @@ TEST(time_of_day_follows_the_cmos_clock) {
 
 // Setting the time moves it, and what is written from then on is dated by
 // it; out of range is refused. The time is put back afterwards.
+// A time of day that has fallen behind or run ahead of the CMOS clock by
+// more than the limit is put right by the next check; one within it is left
+// alone; a time someone set is kept, as its difference from the CMOS clock
+TEST(time_of_day_is_put_right_by_the_cmos_clock) {
+    const int64_t second = 1000000000LL;
+    walltime_check();
+    for (int i = 0; i < 2; i++) {
+        int64_t skew = i == 0 ? 10 * second : -10 * second;      // Ran ahead; fell behind (lost ticks)
+        walltime_test_skew(skew);
+        int64_t out = walltime_check();
+        EXPECT_TRUE(i == 0 ? out > 8 * second : out < -8 * second);
+        int64_t after = walltime_check();                          // Put right
+        EXPECT_TRUE(after <= (int64_t)WALLTIME_CHECK_LIMIT_NS && after >= -(int64_t)WALLTIME_CHECK_LIMIT_NS);
+    }
+    walltime_check();
+    walltime_test_skew(second / 2);                                // Within the limit: kept
+    uint64_t before = walltime_ns();
+    walltime_check();
+    EXPECT_TRUE(walltime_ns() >= before);
+    walltime_test_skew(-second / 2);
+
+    uint64_t saved = walltime_ns(), saved_at = clock_ns();
+    EXPECT_EQ(walltime_set(saved + 1000 * (uint64_t)second), 0);   // Someone sets it 1000 s on
+    int64_t out = walltime_check();
+    EXPECT_TRUE(out <= (int64_t)WALLTIME_CHECK_LIMIT_NS && out >= -(int64_t)WALLTIME_CHECK_LIMIT_NS);
+    EXPECT_TRUE(walltime_ns() >= saved + 999 * (uint64_t)second);  // ...and it stays set
+    EXPECT_EQ(walltime_set(saved + (clock_ns() - saved_at)), 0);
+}
+
 TEST(time_of_day_can_be_set) {
     uint64_t saved = walltime_ns(), saved_at = clock_ns();
     EXPECT_EQ(walltime_set(100ULL * 1000000000ULL), -EINVAL);                       // 1970
@@ -129,5 +159,6 @@ void test_suite_rtc(void) {
     RUN_TEST(rtc_decodes_every_format);
     RUN_TEST(dates_and_unix_times_agree);
     RUN_TEST(time_of_day_follows_the_cmos_clock);
+    RUN_TEST(time_of_day_is_put_right_by_the_cmos_clock);
     RUN_TEST(time_of_day_can_be_set);
 }
