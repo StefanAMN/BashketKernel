@@ -86,6 +86,18 @@ bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt);
 uint64_t vmm_get_pte(uint64_t *pml4, uint64_t virt);
 
 /**
+ * @brief Pages present in the user half of the address space `pml4`
+ *        (what a process holds in memory: not those promised and never
+ *        touched, nor those swapped out); in *shared, how many of them have
+ *        another owner too (copy-on-write after fork, the page cache,
+ *        shared memory). Walks only the tables that exist. Takes no lock:
+ *        the caller must keep the address space from being destroyed
+ *        meanwhile (the scheduler lock: see process.c and sched.c), and the
+ *        counts are a snapshot while its owner runs.
+ */
+size_t vmm_count_user_pages(const uint64_t *pml4, size_t *shared);
+
+/**
  * @brief Allocate a zeroed frame and map it at a user address.
  * @return Kernel (direct map) pointer to the new page, for filling it in
  *         without switching address space. NULL on failure.

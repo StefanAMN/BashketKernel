@@ -130,6 +130,31 @@ static void free_table(uint64_t *table, int level) {
     }
 }
 
+size_t vmm_count_user_pages(const uint64_t *pml4, size_t *shared) {
+    uint64_t hhdm = pmm_get_hhdm_offset();
+    size_t present = 0, with_others = 0;
+    for (int i4 = 0; i4 < 256; i4++) {                    // The user half
+        if (!(pml4[i4] & VMM_PRESENT)) continue;
+        const uint64_t *pdpt = (const uint64_t *)((pml4[i4] & PTE_ADDR_MASK) + hhdm);
+        for (int i3 = 0; i3 < 512; i3++) {
+            if (!(pdpt[i3] & VMM_PRESENT) || (pdpt[i3] & VMM_HUGE)) continue;
+            const uint64_t *pd = (const uint64_t *)((pdpt[i3] & PTE_ADDR_MASK) + hhdm);
+            for (int i2 = 0; i2 < 512; i2++) {
+                if (!(pd[i2] & VMM_PRESENT) || (pd[i2] & VMM_HUGE)) continue;
+                const uint64_t *pt = (const uint64_t *)((pd[i2] & PTE_ADDR_MASK) + hhdm);
+                for (int i1 = 0; i1 < 512; i1++) {
+                    uint64_t pte = pt[i1];
+                    if ((pte & (VMM_PRESENT | VMM_USER)) != (VMM_PRESENT | VMM_USER)) continue;
+                    present++;
+                    if (pmm_frame_shared_hint(pte & PTE_ADDR_MASK)) with_others++;
+                }
+            }
+        }
+    }
+    if (shared) *shared = with_others;
+    return present;
+}
+
 void vmm_destroy_address_space(uint64_t *pml4) {
     if (!pml4 || pml4 == kernel_pml4) return;
     uint64_t hhdm = pmm_get_hhdm_offset();

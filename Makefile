@@ -353,7 +353,7 @@ test-disk: iso
 # mode (it echoes what is typed) and runs commands.
 test-top: iso
 	@tools/qemu_shell.py --quiet --timeout 60 $(SHELL_CPU) \
-		--expect 'SIZE kB  NAME[^\n]*\n +[0-9]+ +[0-9]+ +[a-z]+ +([5-9][0-9]|100) +[0-9]+ +[0-9]+  spin ' \
+		--expect 'RES kB  NAME[^\n]*\n +[0-9]+ +[0-9]+ +[a-z]+ +([5-9][0-9]|100) +[0-9]+ +[0-9]+ +[1-9][0-9]*  spin ' \
 		--expect 'echo after-top\nafter-top\n' \
 		'exec /bin/sh' 'spin &' '!top' '~x' '@wait:3' '~q' 'echo after-top' 'exit' > $(BUILD)/top.log 2>&1 \
 		&& echo "top: ok" || { echo "top: FAILED (see $(BUILD)/top.log)"; exit 1; }

@@ -57,6 +57,12 @@ void pmm_unref_frame(void *phys_frame) {
     }
 }
 
+bool pmm_frame_shared_hint(uint64_t phys_frame) {
+    uint64_t frame = phys_frame / PAGE_SIZE;
+    if (!extra_owners || frame >= tracked_frames) return false;
+    return __atomic_load_n(&extra_owners[frame], __ATOMIC_RELAXED) > 0;
+}
+
 uint32_t pmm_get_frame_ref(void *phys_frame) {
     uint64_t frame = (uint64_t)phys_frame / PAGE_SIZE;
     if (!extra_owners || frame >= tracked_frames) return 1;

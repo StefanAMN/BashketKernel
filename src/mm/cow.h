@@ -12,6 +12,7 @@
 #define COW_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 
 /**
@@ -33,5 +34,13 @@ void pmm_unref_frame(void *phys_frame);
  * @brief Number of owners of an allocated frame (1 = not shared).
  */
 uint32_t pmm_get_frame_ref(void *phys_frame);
+
+/**
+ * @brief Whether the frame has more than one owner, read without the lock:
+ *        a snapshot that may be out of date the moment it is taken. For
+ *        statistics only (vmm_count_user_pages), where the caller holds a
+ *        lock ranked above this one's (the scheduler lock).
+ */
+bool pmm_frame_shared_hint(uint64_t phys_frame);
 
 #endif // COW_H
