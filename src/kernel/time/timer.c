@@ -236,7 +236,8 @@ size_t timer_describe(char *buf, size_t size) {
     size_t len = ksnprintf(buf, size, "mode: %s\nticks: %lu\n", one_shot ? "one-shot" : "periodic", timer_ticks());
     for (uint32_t i = 0; i < MAX_CPUS && len < size; i++) {
         if (!cpu_get(i)->online) continue;
-        len += ksnprintf(buf + len, size - len, "cpu%u: %lu timer interrupts\n", i, timers[i].interrupts);
+        len += ksnprintf(buf + len, size - len, "cpu%u: %lu timer interrupts, %u sleepers with a deadline\n",
+                         i, timers[i].interrupts, sched_sleeper_count(i));
     }
     return len < size ? len : size;
 }
