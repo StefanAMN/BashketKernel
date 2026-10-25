@@ -1939,11 +1939,16 @@ plan:
     directory protected nothing in it that was readable, so `/root` hid
     nothing from anyone who knew a name. The path walk now takes the
     caller's user id; the kernel's own lookups pass root.)
-12. The time of day is the CMOS clock read at boot plus the calibrated
-    nanosecond clock since, and is never set right again from the CMOS
-    clock: an error in the calibration (a VM host stalling during it) grows
-    with the uptime. On GitHub's runners it passed 2 s within minutes; the
-    test now allows a quarter of the uptime (2026-10-22).
+12. (Done 2026-10-25.) The time of day was the CMOS clock read at boot
+    plus the nanosecond clock since, never set right again: on GitHub's
+    runners it passed 2 s within minutes (2026-10-22: the test then allowed
+    a quarter of the uptime), and without a timestamp counter, where the
+    clock counts ticks and a busy host loses some, it was 18 s behind
+    after a minute. It is now compared with the CMOS clock when read, at
+    most once a second, and put right beyond 1.5 s; a time someone set is
+    kept as its difference from the CMOS clock. The test allows 3 s at any
+    uptime, and `time_of_day_is_put_right_by_the_cmos_clock` puts the clock
+    10 s out each way (a check that measures without correcting fails it).
 
 ---
 
