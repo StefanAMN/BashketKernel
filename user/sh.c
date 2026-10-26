@@ -76,7 +76,11 @@
  * end of an && or || list, or after '!'; "set -u" makes an unset variable
  * an error (the shell exits unless it is at the terminal); "set -x" writes
  * each command to standard error, "+ " and its words, before running it;
- * "+e", "+u", "+x" turn them off. "shift [N]" drops the first N arguments,
+ * "+e", "+u", "+x" turn them off; "set -- ARGS" (or "set ARGS") makes
+ * ARGS the arguments, and "$*" is them all as one word (unquoted, one
+ * word per argument, as $@: values are never split here). "getopts OPTSTRING NAME" takes the next option of the
+ * arguments, as POSIX has it (OPTIND, OPTARG, a leading ':' for silent
+ * errors). "shift [N]" drops the first N arguments,
  * "local NAME[=value]" gives a function a variable of its own (the old one
  * is back when it returns), and $$ is the shell's process. "trap 'LIST'
  * INT TERM ..." runs LIST when the signal comes (between commands, after
@@ -378,6 +382,7 @@ static int export_variable(const char *name) {
  * level none, or a script's own with "sh FILE ARGS"), and $0 */
 static char **arguments;
 static int argument_count;
+static char **owned_arguments;  /* What "set --" made them (malloc'd, as the words): freed when replaced, or when the function that set them returns */
 static const char *shell_name = "sh";
 
 #define FIELD_BREAK '\x1f'    /* Where unquoted $(...) output had blanks (0x1f in output counts as one) */
@@ -428,7 +433,7 @@ static int append_variable(const char **p, char *word, size_t *len, size_t used,
     int braced = (**p == '{');
     if (braced) (*p)++;
     char special = 0;
-    if (**p == '?' || **p == '#' || **p == '@' || **p == '$') {
+    if (**p == '?' || **p == '#' || **p == '@' || **p == '*' || **p == '$') {
         special = *(*p)++;
     } else if (**p >= '0' && **p <= '9') {
         special = '1';                     /* $1: one digit; ${12}: all of them */
@@ -455,8 +460,10 @@ static int append_variable(const char **p, char *word, size_t *len, size_t used,
         int index = atoi(name);
         if (index == 0) value = shell_name;
         else if (index <= argument_count) value = arguments[index - 1];
-    } else if (special == '@') {
-        int joined = reading_assignment || reading_pattern;
+    } else if (special == '@' || special == '*') {
+        /* "$*" is one word, the arguments joined by a blank; "$@" one word
+         * per argument; unquoted, either is split into words */
+        int joined = reading_assignment || reading_pattern || (special == '*' && quote != 0);
         if (!joined) *split = 1;
         for (int i = 0; i < argument_count; i++) {
             if (i > 0 && put_char(word, len, used, joined ? ' ' : FIELD_BREAK, 0) < 0) return -1;
@@ -687,11 +694,47 @@ static int trap_builtin(int argc, char **argv) {
     return status;
 }
 
-/* set [-eux] [+eux]: turn options on with '-' and off with '+', letters
- * grouped or apart. With nothing after it, list the variables (the
- * shell's own, then the environment), one "NAME=value" a line. 0; 2
- * (with a message) for an option it does not know or an operand that is
- * not one (setting $1 .. with "set -- a b" is not supported). */
+/* Free an array of arguments "set" made (each word, then the array); NULL
+ * does nothing */
+static void free_argument_array(char **array) {
+    if (!array) return;
+    for (char **w = array; *w; w++) free(*w);
+    free(array);
+}
+
+/* Make words[0..count) the arguments ($1 ..): copied, in an array the
+ * shell owns (owned_arguments), which replaces the one an earlier "set"
+ * at this level made. 0, or 1 (a message printed) if out of memory. */
+static int replace_arguments(char **words, int count) {
+    char **copy = malloc(sizeof(char *) * (size_t)(count + 1));
+    if (!copy) {
+        fprintf(2, "sh: set: out of memory\n");
+        return 1;
+    }
+    for (int i = 0; i < count; i++) {
+        size_t n = strlen(words[i]);
+        if (!(copy[i] = malloc(n + 1))) {
+            while (i-- > 0) free(copy[i]);
+            free(copy);
+            fprintf(2, "sh: set: out of memory\n");
+            return 1;
+        }
+        memcpy(copy[i], words[i], n + 1);
+    }
+    copy[count] = NULL;
+    free_argument_array(owned_arguments);
+    owned_arguments = copy;
+    arguments = copy;
+    argument_count = count;
+    return 0;
+}
+
+/* set [-eux] [+eux] [--] [ARGS]: turn options on with '-' and off with
+ * '+', letters grouped or apart; the operands after them (or everything
+ * after "--", even none) become $1 .., $#, "$@". With nothing after it,
+ * list the variables (the shell's own, then the environment), one
+ * "NAME=value" a line. 0; 2 (with a message) for an option it does not
+ * know. */
 static int set_builtin(int argc, char **argv) {
     if (argc == 1) {
         for (int i = 0; i < MAX_VARIABLES; i++) if (variables[i]) printf("%s\n", variables[i]);
@@ -700,10 +743,8 @@ static int set_builtin(int argc, char **argv) {
     }
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if ((a[0] != '-' && a[0] != '+') || !a[1]) {
-            fprintf(2, "sh: set: '%s': only the options -e, -u and -x are supported\n", a);
-            return 2;
-        }
+        if (strcmp(a, "--") == 0) return replace_arguments(argv + i + 1, argc - i - 1);
+        if ((a[0] != '-' && a[0] != '+') || !a[1]) return replace_arguments(argv + i, argc - i);
         int on = a[0] == '-';
         for (const char *c = a + 1; *c; c++) {
             if (*c == 'e') opt_errexit = on;
@@ -716,6 +757,80 @@ static int set_builtin(int argc, char **argv) {
         }
     }
     return 0;
+}
+
+/* getopts OPTSTRING NAME [ARGS]: the next option of the arguments (or of
+ * ARGS), as POSIX describes. OPTSTRING lists the option letters, a ':'
+ * after one that takes an argument; a ':' first makes errors silent (NAME
+ * is then ':' for a missing argument, and OPTARG names the letter). NAME
+ * is set to the letter (or '?' for one not in the list), OPTARG to its
+ * argument (joined, "-fvalue", or the next word), OPTIND to the index of
+ * the next argument to look at. Grouped letters ("-ab") are taken one per
+ * call. Its status: 0 for an option, 1 at the end ("--", a word that is
+ * not an option, or no more words), 2 for wrong usage. */
+static int getopts_builtin(int argc, char **argv) {
+    static long position = 1;            /* Within a group of letters: the next to take */
+    static long seen_optind = 1;         /* OPTIND as this left it: a different one restarts the group */
+    if (argc < 3 || !is_name(argv[2], NULL)) {
+        fprintf(2, "sh: getopts: usage: getopts OPTSTRING NAME [ARGS]\n");
+        return 2;
+    }
+    const char *spec = argv[1], *name = argv[2];
+    char **words = argc > 3 ? argv + 3 : arguments;
+    int count = argc > 3 ? argc - 3 : argument_count;
+    int silent = spec[0] == ':';
+    const char *index_text = get_variable("OPTIND");
+    long optind = index_text ? atoi(index_text) : 1;
+    if (optind < 1) optind = 1;
+    if (optind != seen_optind) position = 1;
+
+    char text[12];
+    char letter[2] = { 0, 0 };
+    int status = 0;
+    unset_variable("OPTARG");
+    if (optind > count || (position == 1 && (words[optind - 1][0] != '-' || words[optind - 1][1] == '\0'))) {
+        status = 1;                                  /* No more options */
+    } else if (position == 1 && strcmp(words[optind - 1], "--") == 0) {
+        optind++;
+        status = 1;
+    } else {
+        const char *word = words[optind - 1];
+        letter[0] = word[position];
+        const char *found = letter[0] != ':' ? strchr(spec + silent, letter[0]) : NULL;
+        position++;
+        if (word[position] == '\0') {               /* The group is used up: the next word */
+            optind++;
+            position = 1;
+        }
+        if (!found) {
+            if (silent) set_variable("OPTARG", letter);
+            else fprintf(2, "sh: getopts: illegal option -- %c\n", letter[0]);
+            letter[0] = '?';
+        } else if (found[1] == ':') {
+            if (position > 1) {                      /* Joined: the rest of this word */
+                set_variable("OPTARG", word + position);
+                optind++;
+                position = 1;
+            } else if (optind <= count) {            /* Apart: the next word */
+                set_variable("OPTARG", words[optind - 1]);
+                optind++;
+            } else {
+                if (silent) {
+                    set_variable("OPTARG", letter);
+                    letter[0] = ':';
+                } else {
+                    fprintf(2, "sh: getopts: option requires an argument -- %c\n", letter[0]);
+                    letter[0] = '?';
+                }
+            }
+        }
+    }
+    if (status == 1) letter[0] = '?';
+    number_text((int)optind, text);
+    set_variable("OPTIND", text);
+    seen_optind = optind;
+    set_variable(name, letter);
+    return status;
 }
 
 /* shift [N]: drop the first N arguments ($1 .. $N; 1 if not given), the
@@ -1229,7 +1344,7 @@ static char *next_word(const char **cursor, size_t *used, int *flags) {
             }
             if (!whole) split = 1;
         } else if (c == '$' && quote != '\'' &&
-                   (is_name_char(p[1]) || p[1] == '?' || p[1] == '#' || p[1] == '@' || p[1] == '$' || p[1] == '{')) {
+                   (is_name_char(p[1]) || p[1] == '?' || p[1] == '#' || p[1] == '@' || p[1] == '*' || p[1] == '$' || p[1] == '{')) {
             p++;
             if (append_variable(&p, word, &len, *used, quote, &split) < 0) return NULL;
         } else {
@@ -1414,7 +1529,7 @@ static char *heredoc_text(const char *body) {
                 failed = n < 0 || text_add(&out, value, (size_t)n) < 0;
                 t = end + 1;
             }
-        } else if (t[0] == '$' && (is_name_char(t[1]) || t[1] == '?' || t[1] == '#' || t[1] == '@' || t[1] == '$' || t[1] == '{')) {
+        } else if (t[0] == '$' && (is_name_char(t[1]) || t[1] == '?' || t[1] == '#' || t[1] == '@' || t[1] == '*' || t[1] == '$' || t[1] == '{')) {
             /* As inside double quotes: append_variable writes into `value`
              * (bounded by word_storage's size, as for a word), $@ with
              * FIELD_BREAKs between the arguments, made blanks here */
@@ -1962,6 +2077,7 @@ static int run_pipeline_text(const char *line, int *should_exit) {
     if (count == 1 && strcmp(stages[0].argv[0], "trap") == 0) return trap_builtin(stages[0].argc, stages[0].argv);
     if (count == 1 && strcmp(stages[0].argv[0], "set") == 0) return set_builtin(stages[0].argc, stages[0].argv);
     if (count == 1 && strcmp(stages[0].argv[0], "shift") == 0) return shift_builtin(stages[0].argc, stages[0].argv);
+    if (count == 1 && strcmp(stages[0].argv[0], "getopts") == 0) return getopts_builtin(stages[0].argc, stages[0].argv);
     if (count == 1 && strcmp(stages[0].argv[0], "local") == 0) return local_builtin(stages[0].argc, stages[0].argv);
     if (count == 1 && !background && strcmp(stages[0].argv[0], "wait") == 0) {
         return wait_builtin(stages[0].argc, stages[0].argv);
@@ -2077,6 +2193,8 @@ static int run_pipeline_text(const char *line, int *should_exit) {
                "  trap 'cmds' INT TERM EXIT   run cmds on a signal, or on leaving; trap - INT undoes it\n"
                "  set -e -u -x           stop at a failing command; unset variables are errors; show commands\n"
                "  shift [N], local x=1   drop $1 ..; a variable of the function being run, $$ the shell\n"
+               "  set -- a b, \"$*\"       set $1 $2 ..; all of them as one word (\"$@\": one word each)\n"
+               "  getopts ab:c opt       the next option of $1 ..: while getopts ...; do case $opt in ...\n"
                "  ! cmd                  turn the status round\n"
                "  exit [status]          leave the shell\n");
         return 0;
@@ -3139,16 +3257,19 @@ static int call_function(int argc, char **argv, int *should_exit) {
         if ((args[count] = copy_text(argv[i], strlen(argv[i])))) count++;
     }
 
-    char **saved_args = arguments;
+    char **saved_args = arguments, **saved_owned = owned_arguments;
     int saved_arg_count = argument_count, saved_loops = loop_depth, locals_mark = saved_count;
     arguments = args;
     argument_count = count;
+    owned_arguments = NULL;              /* A "set --" in the function is the function's */
     loop_depth = 0;           /* break and continue do not reach the caller's loops */
     call_depth++;
     int status = exec_list(&body, should_exit);
     call_depth--;
     pending_return = 0;
     loop_depth = saved_loops;
+    free_argument_array(owned_arguments);
+    owned_arguments = saved_owned;
     arguments = saved_args;
     argument_count = saved_arg_count;
     restore_locals(locals_mark);
@@ -3582,7 +3703,7 @@ static void complete_names(lineedit_t *e, const char *word, int command) {
     for (const char *c = word; *c; c++) if (*c == '/') slash = c;
 
     if (command && !slash) {
-        static const char *const builtins[] = { "bg", "cd", "exit", "export", "fg", "help", "jobs", "local", "pwd", "set",
+        static const char *const builtins[] = { "bg", "cd", "exit", "export", "fg", "getopts", "help", "jobs", "local", "pwd", "set",
                                                 "shift", "trap", "unset", "wait" };
         size_t n = strlen(word);
         for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
