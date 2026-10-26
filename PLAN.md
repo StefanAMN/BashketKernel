@@ -1943,7 +1943,7 @@ run); the boot CPU is last in the turn, not left out.
 Planned 2026-10-26, after track R, from limits the README and earlier
 tracks wrote down (each checked in the code first).
 
-### S1. The screen mapped into a program, and mouse and keyboard at once (M)
+### S1. The screen mapped into a program, and mouse and keyboard at once (M) — done
 
 `/dev/fb0` can only be written with `write()` and `lseek()`, and nothing
 has waited for the mouse and the keyboard together (both answer `poll`,
@@ -1956,6 +1956,26 @@ screen back or dies), and make `/bin/paint` draw through the mapping and
 syscheck (mapping refused without owning the screen, refused past its
 size; `poll` on console and mouse reports the one that has input); a
 screenshot taken after the owner is killed shows the console again.
+
+Done. A vnode operation `map_page` gives a device's physical page for an
+offset (`/dev/fb0`: the framebuffer's address in the direct map, less the
+map's offset). Its pages are mapped with a software bit, `VMM_DEVICE` (bit
+52), with `VMM_SHARED`: unmapping and destroying skip giving them back,
+`fork` copies them without counting owners, swap skips shared pages
+already. A device region promises no memory, and holds the device through
+its `opened`/`closed` operations, once per piece. Mapped as the kernel's
+direct map has it (the same caching for both views). Checks: syscheck's
+`check_screen_mapping` (read-only descriptor, past the end, private all
+refused; a pixel written through the mapping is read back through the
+file; with the descriptor closed, the mapping alone keeps the console off
+the screen); `make test-paint` (draws through the mapping, polls both
+devices, a third session ends with `q`; the killed session is now one
+holding a mapping); the paint and SMP program runs refuse "PMM WARNING".
+Sabotage: unmapping that gave the device's page to the frame allocator
+printed that warning; a mapping that held nothing failed the holding
+check; `map_page` ignoring the offset failed two checks and the
+screenshots. (A mouse event and a typed line arriving together is only
+exercised by `paint` itself.)
 
 ### S2. TCP window scaling (M)
 
@@ -2097,7 +2117,8 @@ R2                               done
 R3                               done
         |
 S4                               done
-S1, S3, S2                       next (planned, not started)
+S1                               done
+S3, S2                           next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
