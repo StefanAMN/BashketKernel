@@ -3472,6 +3472,40 @@ static void check_directory_tools(void) {
     }
 }
 
+/* set -- ARGS, $* and "$*", getopts */
+static void check_shell_arguments(void) {
+    CHECK(sh_prints("set -- a 'b c' d; echo $# $1 $2 $3", "3 a b c d\n"));
+    CHECK(sh_prints("set -- a b; set --; echo [$#] [$1]", "[0] []\n"));               /* None */
+    CHECK(sh_prints("set x y; echo $2 $1", "y x\n"));                                    /* set ARGS */
+    CHECK(sh_prints("set -- -e x; echo $1 $2", "-e x\n"));                               /* After --: arguments, not options */
+    CHECK(sh_prints("set -- 'a b' c; for w in \"$@\"; do echo [$w]; done", "[a b]\n[c]\n"));
+    CHECK(sh_prints("set -- 'a b' c; for w in \"$*\"; do echo [$w]; done", "[a b c]\n"));
+    CHECK(sh_prints("set -- 'a b' c; for w in $*; do echo [$w]; done", "[a b]\n[c]\n"));   /* Unquoted: as $@ (values are not split) */
+    CHECK(sh_prints("f() { set -- in f; echo $2; }; set -- out; f; echo $1", "f\nout\n"));   /* A function's own */
+    CHECK(sh_prints("set -- a b c; shift; echo $*", "b c\n"));
+    /* What a function's "set --" makes is freed when it returns: 2000 calls
+     * leave the shell's heap as it was (the leak printed nothing at all) */
+    CHECK(sh_prints("f() { set -- one two three four five six seven eight; }; f; "
+                    "a=$(grep Size /proc/$$/status | cut -f 2); i=0; "
+                    "while [ $i -lt 2000 ]; do f; i=$((i + 1)); done; "
+                    "b=$(grep Size /proc/$$/status | cut -f 2); [ -n \"$a\" ] && [ \"$a\" = \"$b\" ] && echo same", "same\n"));
+    CHECK(sh_prints("set -x -- p q; set +x; echo $1 $#", "p 2\n"));                     /* Options and arguments at once */
+
+    /* getopts: grouped letters, an argument joined and apart, the end at a
+     * word that is not an option, and at --. (The loops are bounded: a
+     * getopts that never moves on must fail them, not hang them.) */
+    CHECK(sh_prints("set -- -ab val -cfoo rest; n=0; while [ $n -lt 9 ] && getopts ab:c: o; do n=$((n + 1)); echo $o [$OPTARG]; done; "
+                    "shift $((OPTIND - 1)); echo left $*",
+                    "a []\nb [val]\nc [foo]\nleft rest\n"));
+    CHECK(sh_prints("set -- -a -- -b; n=0; while [ $n -lt 9 ] && getopts ab o; do n=$((n + 1)); echo $o; done; echo $OPTIND", "a\n3\n"));
+    CHECK(sh_prints("set -- -x; getopts ab o; echo $? $o", "0 ?\n"));                     /* Not in the list */
+    CHECK(sh_prints("set -- -x; getopts :ab o; echo $o $OPTARG", "? x\n"));               /* Silent */
+    CHECK(sh_prints("set -- -b; getopts :ab: o; echo $o $OPTARG", ": b\n"));              /* Silent, argument missing */
+    CHECK(sh_prints("getopts a o -a; echo $? $o", "0 a\n"));                           /* From the words given */
+    CHECK(sh_prints("set -- plain; getopts a o; echo $? $OPTIND", "1 1\n"));
+    CHECK(sh_ends("getopts", "", 2));
+}
+
 /* set -e and each of its exceptions, set -u, set -x, '!', shift, local,
  * $$ and trap */
 static void check_shell_options(void) {
@@ -4315,6 +4349,7 @@ int main(void) {
     check_sessions_and_terminal();
     check_shell_control();
     check_shell_options();
+    check_shell_arguments();
     check_shell_redirects();
     check_shell_variables();
     check_shell_case_functions();

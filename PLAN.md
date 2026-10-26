@@ -1979,7 +1979,7 @@ out, the memory limit); `tools/test_net.py` exchanges an 8 KiB UDP
 datagram with the host in both directions (the host's stack fragments and
 reassembles: something we did not write).
 
-### S4. `set -- ARGS`, `$*` and `getopts` in the shell (S)
+### S4. `set -- ARGS`, `$*` and `getopts` in the shell (S) — done
 
 The shell cannot set its arguments ("set -- a b" is refused, Q3), has no
 `$*`, and no `getopts`. Add `set -- ARGS` (and `set ARGS`), `$*` and
@@ -1987,6 +1987,17 @@ The shell cannot set its arguments ("set -- a b" is refused, Q3), has no
 `OPTIND` and `OPTARG`, as POSIX describes. **Check:** syscheck, a check
 per case (`set --` with none, `"$@"` against `"$*"`, `getopts` with
 grouped options, an argument joined and apart, an unknown option, `--`).
+
+Done (`user/sh.c`; syscheck's `check_shell_arguments`). Values are never
+split into words here (only `$(...)` output is), so unquoted `$*` is one
+word per argument, like `$@`. What a function's `set --` makes is the
+function's and is freed when it returns. Sabotage: a `set` that changed
+nothing failed nine checks; `"$*"` not joined failed one; a `getopts` that
+lost its place in "-ab" first hung the check (bounded since), then failed
+it; a function's array never freed printed nothing different at all, and
+was caught only by a check that the shell's size stays the same over
+2,000 calls, which itself first passed because `cut -f2` (no space) gave
+two empty strings that compared equal (it now wants a value).
 
 ---
 
@@ -2085,7 +2096,8 @@ R1                               done
 R2                               done
 R3                               done
         |
-S4, S1, S3, S2                   next (planned, not started)
+S4                               done
+S1, S3, S2                       next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
