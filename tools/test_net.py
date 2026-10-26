@@ -237,6 +237,7 @@ def main():
     tcp_forward_port = free_tcp_port()
     tcp_payload = os.urandom(TCP_ECHO_BYTES)
     tcp_echoed = []
+    tcp_echo_seconds = []   # How long the echo took, from the first byte sent to the last received
 
     def echo_through_guest():
         deadline = time.monotonic() + 80
@@ -258,9 +259,12 @@ def main():
                         received.extend(data)
                 except OSError:
                     pass
+                finished.append(time.monotonic())
 
+            finished = []
             thread = threading.Thread(target=reader, daemon=True)
             thread.start()
+            started = time.monotonic()
             try:
                 conn.sendall(tcp_payload)
                 conn.shutdown(socket.SHUT_WR)
@@ -272,6 +276,8 @@ def main():
             # closes the connection at once: try again
             if received:
                 tcp_echoed.append(bytes(received))
+                if finished:
+                    tcp_echo_seconds.append(finished[0] - started)
 
     tcp_talker = threading.Thread(target=echo_through_guest, daemon=True)
 
@@ -381,7 +387,7 @@ def main():
             print("network: FAILED:", problem)
         return 1
     megabytes = TCP_ECHO_BYTES // (1024 * 1024)
-    print(f"network (UDP both ways; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed; DHCP lease, renewed twice; DNS lookup): ok")
+    print(f"network (UDP both ways; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed in {tcp_echo_seconds[0] if tcp_echo_seconds else 0:.2f} s; DHCP lease, renewed twice; DNS lookup): ok")
     return 0
 
 

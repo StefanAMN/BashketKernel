@@ -114,10 +114,14 @@ struct tcp_socket {
     uint32_t snd_max;               // Highest ever sent + 1
     uint32_t snd_wnd;               // How much the other end will take from snd_una on
     uint16_t mss;                   // Largest segment the other end takes
+    bool scaling;                   // Both SYNs carried the window scale option (RFC 7323 2)
+    uint8_t snd_shift;              // ... then the other end's windows count in units of 2^snd_shift
+    uint8_t rcv_shift;              // ... and ours in units of 2^rcv_shift (0 without scaling)
     bool syn_acked;
     bool fin_queued;                // A FIN follows the data in the ring
     uint8_t *tx;
     size_t tx_head, tx_len;
+    size_t tx_size;                 // The ring's size (grow_ring)
 
     uint8_t dupacks;                // Duplicate acknowledgements of snd_una in a row
     bool retransmit_one;            // Fast retransmit: send the segment at snd_una again, alone
@@ -133,6 +137,8 @@ struct tcp_socket {
     uint8_t dup_acks_owed;          // Out-of-order arrivals not yet each acknowledged on their own
     uint8_t *rx;
     size_t rx_head, rx_len;
+    size_t rx_size;                 // The ring's size (grow_ring)
+    bool rx_filled;                 // It ran out of room since it last grew: maybe it is too small
     tcp_ooo_t ooo;                  // What is kept beyond rcv_nxt
     bool fin_known;                 // The other end's FIN has arrived, at fin_seq,
     uint32_t fin_seq;               // ... perhaps ahead of data still missing
@@ -206,6 +212,20 @@ bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv
     return found;
 }
 
+bool tcp_test_windows(uint16_t local_port, uint16_t remote_port, tcp_test_windows_t *out) {
+    bool found = false;
+    uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
+    for (int i = 0; i < TCP_MAX_SOCKETS && !found; i++) {
+        struct tcp_socket *s = &sockets[i];
+        if (!s->used || s->state == TCP_LISTEN || s->local_port != local_port || s->remote_port != remote_port) continue;
+        found = true;
+        *out = (tcp_test_windows_t){ s->scaling, s->snd_shift, s->rcv_shift, s->snd_wnd,
+                                     (uint32_t)s->rx_size, (uint32_t)s->tx_size };
+    }
+    spinlock_release_irqrestore(&tcp_lock, flags);
+    return found;
+}
+
 void tcp_test_trace_cwnd(uint16_t port) {
     uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
     trace_port = port;
@@ -226,7 +246,7 @@ size_t tcp_describe(char *buf, size_t size) {
         "closed", "listen", "syn-sent", "syn-received", "established", "fin-wait-1",
         "fin-wait-2", "close-wait", "closing", "last-ack", "time-wait",
     };
-    size_t len = ksnprintf(buf, size, "local  remote                state         cwnd  ssthresh  srtt(us)  rto(ms)\n");
+    size_t len = ksnprintf(buf, size, "local  remote                state         cwnd  ssthresh  srtt(us)  rto(ms)  scale  rcvbuf  sndbuf\n");
     uint64_t flags = spinlock_acquire_irqsave(&tcp_lock);
     for (int i = 0; i < TCP_MAX_SOCKETS && len + 1 < size; i++) {
         const struct tcp_socket *s = &sockets[i];
@@ -235,11 +255,14 @@ size_t tcp_describe(char *buf, size_t size) {
         const char *state = (unsigned)s->state < sizeof(state_names) / sizeof(state_names[0])
                           ? state_names[s->state] : "?";
         bool has_window = s->syn_acked && s->state != TCP_LISTEN;
-        len += ksnprintf(buf + len, size - len, "%5u  %u.%u.%u.%u:%u  %s  %u  %u  %u  %u\n",
+        char scale[8];
+        if (s->scaling) ksnprintf(scale, sizeof(scale), "%u/%u", (unsigned)s->snd_shift, (unsigned)s->rcv_shift);
+        else ksnprintf(scale, sizeof(scale), "-");
+        len += ksnprintf(buf + len, size - len, "%5u  %u.%u.%u.%u:%u  %s  %u  %u  %u  %u  %s  %u  %u\n",
                          (unsigned)s->local_port, ip >> 24, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF,
                          (unsigned)s->remote_port, state, has_window ? s->cc.cwnd : 0,
                          has_window ? s->cc.ssthresh : 0, s->rtt.measured ? s->rtt.srtt_us : 0,
-                         s->rto * TCP_US_PER_TICK / 1000);
+                         s->rto * TCP_US_PER_TICK / 1000, scale, (unsigned)s->rx_size, (unsigned)s->tx_size);
     }
     spinlock_release_irqrestore(&tcp_lock, flags);
     return len;
@@ -401,6 +424,9 @@ static void cwnd_changed(struct tcp_socket *sock) {
 // congestion window. Caller holds tcp_lock.
 static void start_congestion_control(struct tcp_socket *sock) {
     tcp_cc_init(&sock->cc, sock->mss, sock->iss);
+    // "Arbitrarily high" is the largest window the other end can offer,
+    // which scaling makes larger than tcp_cc_init's 64 KiB
+    sock->cc.ssthresh = 65535u << sock->snd_shift;
     cwnd_changed(sock);
 }
 
@@ -449,7 +475,31 @@ static void abort_connection(struct tcp_socket *sock, int error) {
 // (Data kept out of order lies inside it, at the place its sequence number
 // gives it: it is in the window, and is counted once it is in order.)
 static size_t rx_free(const struct tcp_socket *sock) {
-    return TCP_BUFFER_SIZE - sock->rx_len;
+    return sock->rx_size - sock->rx_len;
+}
+
+// The largest a ring may grow to: a window larger than 64 KiB can only be
+// offered or used with scaling
+static size_t ring_limit(const struct tcp_socket *sock) {
+    return sock->scaling ? TCP_BUFFER_MAX : TCP_BUFFER_MAX_UNSCALED;
+}
+
+// Double a ring (*ring of *size bytes, its contents starting at *head),
+// keeping every byte at the same distance from the start: in the receive
+// ring that is also where data kept out of order lies. Nothing happens if
+// it is already as large as it may be or there is no memory. Caller holds
+// tcp_lock. Returns whether it grew.
+static bool grow_ring(const struct tcp_socket *sock, uint8_t **ring, size_t *size, size_t *head) {
+    size_t new_size = *size * 2;
+    if (new_size > ring_limit(sock)) return false;
+    uint8_t *bigger = kmalloc(new_size);
+    if (!bigger) return false;
+    for (size_t i = 0; i < *size; i++) bigger[i] = (*ring)[(*head + i) % *size];
+    kfree(*ring);
+    *ring = bigger;
+    *size = new_size;
+    *head = 0;
+    return true;
 }
 
 // Is any socket on local port `port`? Caller holds tcp_lock.
@@ -470,6 +520,7 @@ static struct tcp_socket *alloc_socket(void) {
         memset(sock, 0, sizeof(*sock));
         sock->tx = kmalloc(TCP_BUFFER_SIZE);
         sock->rx = kmalloc(TCP_BUFFER_SIZE);
+        sock->tx_size = sock->rx_size = TCP_BUFFER_SIZE;
         if (!sock->tx || !sock->rx) {
             kfree(sock->tx);
             kfree(sock->rx);
@@ -530,9 +581,11 @@ static void reset_for_segment(uint32_t ip, const struct tcp_header *tcp, size_t 
 // looked up (ARP). The timer thread may not: every connection waits on it.
 // It only ever sends to machines we have already exchanged segments with,
 // or repeats a send that a caller who could wait has made.
+// A SYN carries our maximum segment size, and the window scale option with
+// shift `wscale` unless that is negative.
 static void transmit(uint32_t ip, uint16_t local_port, uint16_t remote_port, uint32_t seq, uint32_t ack,
-                     uint8_t flags, uint16_t window, const uint8_t *data, size_t len, bool can_block) {
-    uint8_t segment[TCP_HEADER_LEN + 4 + TCP_OUR_MSS];
+                     uint8_t flags, uint16_t window, int wscale, const uint8_t *data, size_t len, bool can_block) {
+    uint8_t segment[TCP_HEADER_LEN + 8 + TCP_OUR_MSS];
     struct tcp_header *tcp = (struct tcp_header *)segment;
     size_t header_len = TCP_HEADER_LEN;
 
@@ -551,6 +604,14 @@ static void transmit(uint32_t ip, uint16_t local_port, uint16_t remote_port, uin
         segment[header_len++] = 4;
         segment[header_len++] = (uint8_t)(TCP_OUR_MSS >> 8);
         segment[header_len++] = (uint8_t)(TCP_OUR_MSS & 0xFF);
+        if (wscale >= 0) {
+            // Window scale (RFC 7323 2.2): kind 3, length 3, the shift,
+            // after a no-operation that keeps the header a multiple of 4
+            segment[header_len++] = 1;
+            segment[header_len++] = 3;
+            segment[header_len++] = 3;
+            segment[header_len++] = (uint8_t)wscale;
+        }
     }
     tcp->data_offset = (uint8_t)((header_len / 4) << 4);
 
@@ -599,7 +660,7 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
             // data: tcp_input asks for it only while data is outstanding.)
             sock->retransmit_one = false;
             len = sock->tx_len < sock->mss ? sock->tx_len : sock->mss;
-            for (size_t i = 0; i < len; i++) data[i] = sock->tx[(sock->tx_head + i) % TCP_BUFFER_SIZE];
+            for (size_t i = 0; i < len; i++) data[i] = sock->tx[(sock->tx_head + i) % sock->tx_size];
             seq = sock->snd_una;
             flags = TCP_ACK | TCP_PSH;
             fast = true;
@@ -637,7 +698,7 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
             if (len > usable) len = usable;
             if (len > sock->mss) len = sock->mss;
             for (size_t i = 0; i < len; i++) {
-                data[i] = sock->tx[(sock->tx_head + offset + i) % TCP_BUFFER_SIZE];
+                data[i] = sock->tx[(sock->tx_head + offset + i) % sock->tx_size];
             }
             if (len > 0) {
                 flags = TCP_ACK | TCP_PSH;
@@ -681,11 +742,18 @@ static void send_what_is_due(struct tcp_socket *sock, bool can_block) {
         uint32_t ip = sock->remote_ip;
         uint16_t local_port = sock->local_port, remote_port = sock->remote_port;
         uint32_t ack = (flags & TCP_ACK) ? sock->rcv_nxt : 0;
+        // The window we offer: in a SYN never scaled (RFC 7323 2.2), and
+        // otherwise in our units, rounded down so that it never offers
+        // room we do not have
         size_t room = rx_free(sock);
+        if (!(flags & TCP_SYN)) room >>= sock->rcv_shift;
         uint16_t window = (uint16_t)(room > 0xFFFF ? 0xFFFF : room);
+        // Our SYN offers scaling; our SYN+ACK only accepts it if offered
+        int wscale = -1;
+        if ((flags & TCP_SYN) && (sock->state == TCP_SYN_SENT || sock->scaling)) wscale = TCP_WSCALE_OURS;
         spinlock_release_irqrestore(&tcp_lock, irq);
 
-        transmit(ip, local_port, remote_port, seq, ack, flags, window, data, len, can_block);
+        transmit(ip, local_port, remote_port, seq, ack, flags, window, wscale, data, len, can_block);
 
         if (!takes_sequence_space && !more_acks) return; // A bare acknowledgement: nothing more can be due
     }
@@ -717,9 +785,8 @@ static void output(struct tcp_socket *sock, bool can_block) {
 
 // --- Receiving -------------------------------------------------------------------
 
-// The largest segment the other end takes, from the options of its SYN
-// (bounds-checked: they come from the network), at most our own
-static uint16_t mss_from_options(const uint8_t *options, size_t len) {
+void tcp_parse_options(const uint8_t *options, size_t len, tcp_options_t *out) {
+    memset(out, 0, sizeof(*out));
     for (size_t i = 0; i < len; ) {
         uint8_t kind = options[i];
         if (kind == 0) break;                       // End of the list
@@ -728,12 +795,32 @@ static uint16_t mss_from_options(const uint8_t *options, size_t len) {
         uint8_t option_len = options[i + 1];
         if (option_len < 2 || i + option_len > len) break; // Malformed: stop
         if (kind == 2 && option_len == 4) {
-            uint16_t mss = (uint16_t)((options[i + 2] << 8) | options[i + 3]);
-            if (mss >= 64) return mss < TCP_OUR_MSS ? mss : TCP_OUR_MSS;
+            out->has_mss = true;
+            out->mss = (uint16_t)((options[i + 2] << 8) | options[i + 3]);
+        } else if (kind == 3 && option_len == 3) {
+            out->has_wscale = true;
+            out->wscale = options[i + 2] > TCP_WSCALE_MAX ? TCP_WSCALE_MAX : options[i + 2];
         }
         i += option_len;
     }
-    return TCP_DEFAULT_MSS;
+}
+
+// Take what the options of the other end's SYN say: the largest segment it
+// takes (at most our own), and whether it scales windows, and by how much.
+// Called with the options of the SYN (from a listener) or SYN+ACK (when we
+// connected, and so offered scaling ourselves). Caller holds tcp_lock.
+static void apply_syn_options(struct tcp_socket *sock, const uint8_t *options, size_t len) {
+    tcp_options_t o;
+    tcp_parse_options(options, len, &o);
+    sock->mss = (o.has_mss && o.mss >= 64) ? (o.mss < TCP_OUR_MSS ? o.mss : TCP_OUR_MSS) : TCP_DEFAULT_MSS;
+    sock->scaling = o.has_wscale;
+    sock->snd_shift = o.has_wscale ? o.wscale : 0;
+    sock->rcv_shift = o.has_wscale ? TCP_WSCALE_OURS : 0;
+}
+
+// The window field of a segment that is not a SYN, in bytes
+static uint32_t peer_window(const struct tcp_socket *sock, const struct tcp_header *tcp) {
+    return (uint32_t)swap16(tcp->window) << sock->snd_shift;
 }
 
 // The connection these addresses and ports belong to, or NULL. Caller
@@ -775,8 +862,8 @@ static void accept_syn(struct tcp_socket *listener, uint32_t src, const struct t
     sock->remote_port = swap16(tcp->src_port);
     sock->irs = swap32(tcp->seq);
     sock->rcv_nxt = sock->irs + 1;                  // The SYN counts as one
-    sock->snd_wnd = swap16(tcp->window);
-    sock->mss = mss_from_options(options, options_len);
+    sock->snd_wnd = swap16(tcp->window);           // (In a SYN never scaled)
+    apply_syn_options(sock, options, options_len);
     start_sequence(sock);
     kick_tcpd();                                    // To send the SYN+ACK
 }
@@ -799,7 +886,7 @@ static void process_ack(struct tcp_socket *sock, uint32_t ack) {
     size_t data_acked = acked < sock->tx_len ? acked : sock->tx_len;
     bool fin_acked = sock->fin_queued && acked > sock->tx_len; // One more than the data: our FIN
 
-    sock->tx_head = (sock->tx_head + data_acked) % TCP_BUFFER_SIZE;
+    sock->tx_head = (sock->tx_head + data_acked) % sock->tx_size;
     sock->tx_len -= data_acked;
     sock->snd_una = ack;
     if (SEQ_LT(sock->snd_nxt, sock->snd_una)) sock->snd_nxt = sock->snd_una;
@@ -882,8 +969,8 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
             sock->rcv_nxt = seq + 1;
             sock->snd_una = ack;
             sock->syn_acked = true;
-            sock->snd_wnd = swap16(tcp->window);
-            sock->mss = mss_from_options(segment + TCP_HEADER_LEN, header_len - TCP_HEADER_LEN);
+            sock->snd_wnd = swap16(tcp->window);   // (In a SYN never scaled)
+            apply_syn_options(sock, segment + TCP_HEADER_LEN, header_len - TCP_HEADER_LEN);
             start_congestion_control(sock);
             sock->rto = TCP_RTO_INITIAL;
             ack_timed(sock, ack);                   // The SYN's round trip, unless it was sent twice
@@ -946,7 +1033,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         process_ack(sock, ack);
         if (!sock->used) goto done; // That was the last thing it was waiting for
     } else if (ack == sock->snd_una && data_len == 0 && !(flags & TCP_FIN) && sock->tx_len > 0 &&
-               sock->snd_una != sock->snd_max && swap16(tcp->window) == sock->snd_wnd) {
+               sock->snd_una != sock->snd_max && peer_window(sock, tcp) == sock->snd_wnd) {
         // A duplicate acknowledgement (RFC 5681, 2: nothing new acknowledged,
         // no data, the window the same, data outstanding). The third in a
         // row says the segment at snd_una was lost while later ones arrived:
@@ -964,8 +1051,8 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
 
     // Any acceptable segment shows the other end is alive and tells us its window
     sock->retries = 0;
-    bool window_opened = sock->snd_wnd == 0 && swap16(tcp->window) > 0;
-    sock->snd_wnd = swap16(tcp->window);
+    bool window_opened = sock->snd_wnd == 0 && peer_window(sock, tcp) > 0;
+    sock->snd_wnd = peer_window(sock, tcp);
     if (window_opened && sock->snd_una != sock->snd_max) {
         // What is outstanding is the probe byte, which the other end had no
         // room for. Send from there again now rather than when the (by now
@@ -1012,8 +1099,8 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
         if (receiving && keeping && offset < room) {
             size_t fits = data_len < room - offset ? data_len : room - offset;
             if (fits == 0 || tcp_ooo_add(&sock->ooo, seq, seq + (uint32_t)fits)) {
-                size_t tail = (sock->rx_head + sock->rx_len) % TCP_BUFFER_SIZE;
-                for (size_t i = 0; i < fits; i++) sock->rx[(tail + offset + i) % TCP_BUFFER_SIZE] = data[i];
+                size_t tail = (sock->rx_head + sock->rx_len) % sock->rx_size;
+                for (size_t i = 0; i < fits; i++) sock->rx[(tail + offset + i) % sock->rx_size] = data[i];
                 if (fits > 0) stats.out_of_order_kept++;
                 if (fin && fits == data_len) {
                     sock->fin_known = true;
@@ -1034,8 +1121,9 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len) {
             accepted = data_len;                    // Its owner has closed it: take it and drop it
         } else {
             accepted = data_len < rx_free(sock) ? data_len : rx_free(sock);
-            size_t tail = (sock->rx_head + sock->rx_len) % TCP_BUFFER_SIZE;
-            for (size_t i = 0; i < accepted; i++) sock->rx[(tail + i) % TCP_BUFFER_SIZE] = data[i];
+            if (rx_free(sock) - accepted < TCP_OUR_MSS) sock->rx_filled = true;   // The window held the sender back
+            size_t tail = (sock->rx_head + sock->rx_len) % sock->rx_size;
+            for (size_t i = 0; i < accepted; i++) sock->rx[(tail + i) % sock->rx_size] = data[i];
         }
         sock->rcv_nxt += (uint32_t)accepted;
         if (fin && accepted == data_len) {
@@ -1154,7 +1242,7 @@ static void tcpd(void) {
         for (size_t i = 0; i < sizeof(to_send) / sizeof(to_send[0]); i++) {
             if (!to_send[i].used) continue;
             transmit(to_send[i].ip, to_send[i].local_port, to_send[i].remote_port,
-                     to_send[i].seq, to_send[i].ack, to_send[i].flags, 0, NULL, 0, false);
+                     to_send[i].seq, to_send[i].ack, to_send[i].flags, 0, -1, NULL, 0, false);
         }
         for (int i = 0; i < TCP_MAX_SOCKETS; i++) output(&sockets[i], false);
     }
@@ -1296,9 +1384,17 @@ int64_t tcp_read(tcp_socket_t *sock, void *buf, size_t len) {
     size_t room_before = rx_free(sock);
     size_t n = len < sock->rx_len ? len : sock->rx_len;
     uint8_t *out = buf;
-    for (size_t i = 0; i < n; i++) out[i] = sock->rx[(sock->rx_head + i) % TCP_BUFFER_SIZE];
-    sock->rx_head = (sock->rx_head + n) % TCP_BUFFER_SIZE;
+    for (size_t i = 0; i < n; i++) out[i] = sock->rx[(sock->rx_head + i) % sock->rx_size];
+    sock->rx_head = (sock->rx_head + n) % sock->rx_size;
     sock->rx_len -= n;
+
+    // The ring filled up, and the reader has now taken everything: the
+    // reader keeps up and it was the window that held the sender back, so
+    // offer a larger one (the acknowledgement below says so at once)
+    if (sock->rx_filled && sock->rx_len == 0) {
+        sock->rx_filled = false;
+        if (grow_ring(sock, &sock->rx, &sock->rx_size, &sock->rx_head)) room_before = 0;
+    }
 
     // If the other end had been told there was (nearly) no room, tell it
     // there is again; otherwise it would have to find out by probing
@@ -1324,7 +1420,12 @@ int64_t tcp_write(tcp_socket_t *sock, const void *buf, size_t len) {
             else if (sock->state != TCP_ESTABLISHED && sock->state != TCP_CLOSE_WAIT) {
                 failure = (sock->state == TCP_CLOSED || sock->state == TCP_LISTEN) ? -ENOTCONN : -EPIPE;
             }
-            if (failure || sock->tx_len < TCP_BUFFER_SIZE) break;
+            if (failure || sock->tx_len < sock->tx_size) break;
+            // Full, with both windows allowing more in flight than the
+            // ring holds: the ring is what holds the connection back
+            uint32_t allowed = sock->snd_wnd < sock->cc.cwnd ? sock->snd_wnd : sock->cc.cwnd;
+            if (sock->syn_acked && allowed > sock->tx_size &&
+                grow_ring(sock, &sock->tx, &sock->tx_size, &sock->tx_head)) break;
             if (sched_interrupted()) { failure = -EINTR; break; }
             sched_sleep(sock, &tcp_lock, 0);   // The buffer is full: wait for acknowledgements
         }
@@ -1333,10 +1434,10 @@ int64_t tcp_write(tcp_socket_t *sock, const void *buf, size_t len) {
             return done > 0 ? (int64_t)done : failure;
         }
 
-        size_t room = TCP_BUFFER_SIZE - sock->tx_len;
+        size_t room = sock->tx_size - sock->tx_len;
         size_t n = len - done < room ? len - done : room;
-        size_t tail = (sock->tx_head + sock->tx_len) % TCP_BUFFER_SIZE;
-        for (size_t i = 0; i < n; i++) sock->tx[(tail + i) % TCP_BUFFER_SIZE] = in[done + i];
+        size_t tail = (sock->tx_head + sock->tx_len) % sock->tx_size;
+        for (size_t i = 0; i < n; i++) sock->tx[(tail + i) % sock->tx_size] = in[done + i];
         sock->tx_len += n;
         done += n;
         spinlock_release_irqrestore(&tcp_lock, irq);
@@ -1441,7 +1542,7 @@ int tcp_poll(tcp_socket_t *sock) {
         if (sock->error) events |= POLLIN | POLLERR | POLLHUP;                  // A read returns the error at once
         else if (sock->state == TCP_CLOSED) events |= POLLHUP;
         if ((sock->state == TCP_ESTABLISHED || sock->state == TCP_CLOSE_WAIT) && !sock->error &&
-            sock->tx_len < TCP_BUFFER_SIZE) events |= POLLOUT;
+            sock->tx_len < sock->tx_size) events |= POLLOUT;
     }
     spinlock_release_irqrestore(&tcp_lock, irq);
     return events;

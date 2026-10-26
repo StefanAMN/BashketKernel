@@ -1957,7 +1957,7 @@ syscheck (mapping refused without owning the screen, refused past its
 size; `poll` on console and mouse reports the one that has input); a
 screenshot taken after the owner is killed shows the console again.
 
-### S2. TCP window scaling (M)
+### S2. TCP window scaling (M) — done
 
 A connection's window stops at 64 KiB (no window scale option, RFC 7323
 section 2), which limits a transfer to one window per round trip. Offer
@@ -1967,6 +1967,30 @@ option (offered, accepted, refused when the other end does not offer it,
 a shift above 14 clamped); `make test-net` against the host's TCP (which
 scales), with the transfer time before and after written down; the
 reassembly and congestion tests of O1 and P1 keep passing.
+
+Done (`src/net/tcp.c`, `tcp_parse_options`). Every SYN we send offers a
+shift of 3 (256 KiB >> 3 fits the field); a SYN+ACK carries the option only
+if the SYN did, and scaling is used only when both carried it. Windows in
+SYNs are never scaled; the one we advertise is rounded down so it never
+offers room we lack; ssthresh starts at 65535 in the other end's units.
+The rings start at 8 KiB and double up to 256 KiB (64 KiB unscaled): the
+receive ring when it filled and the reader then emptied it, the send ring
+when it is full while both windows allow more in flight. `/proc/tcp` shows
+the shifts and ring sizes.
+
+The plan was wrong about the host: the guest's TCP peer is QEMU's
+user-mode network (slirp), not the host's kernel, and its SYN+ACK does not
+carry the option (seen in a capture: our SYN `wscale 3`, its answer `mss
+1460` only). So against the host every connection is unscaled, which at
+least exercises "the other end does not offer it" against a TCP we did
+not write. Times, 2 MiB echoed through `tcpecho` (`make test-net`, three
+runs each): before 0.09, 0.10, 0.11 s; after 0.12 s each. Over loopback,
+4 MiB with both rings grown to 256 KiB took 140 ms, and 149 ms with the
+rings held at 8 KiB. Neither path has latency to speak of, so a larger
+window buys almost nothing here; the gain needs a network with a real
+round trip. Sabotage: rings that never grow, the other end's windows or
+ours left unscaled, and scaling assumed without the option each failed
+the new checks.
 
 ### S3. IPv4 fragments (M)
 
@@ -2097,7 +2121,8 @@ R2                               done
 R3                               done
         |
 S4                               done
-S1, S3, S2                       next (planned, not started)
+S2                               done
+S1, S3                           next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
