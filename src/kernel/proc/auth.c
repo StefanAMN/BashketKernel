@@ -42,8 +42,8 @@ bool auth_permits_groups(uint32_t uid, uint32_t gid, const uint32_t *groups, uin
 // its groups, so reading them here needs no lock.
 static bool permits_for(uint32_t uid, const vnode_t *node, int want) {
     task_t *task = sched_get_current_task();
-    if (task && task->is_user && task->uid == uid) {
-        return auth_permits_groups(uid, task->gid, task->groups, task->group_count, node, want);
+    if (task && task->is_user && task->proc->uid == uid) {
+        return auth_permits_groups(uid, task->proc->gid, task->proc->groups, task->proc->group_count, node, want);
     }
     return auth_permits(uid, GID_NONE, node, want);
 }
@@ -80,21 +80,21 @@ bool auth_may_signal(uint32_t uid, uint32_t target_uid) {
 
 uint32_t auth_current_uid(void) {
     task_t *task = sched_get_current_task();
-    return (task && task->is_user) ? task->uid : UID_ROOT;
+    return (task && task->is_user) ? task->proc->uid : UID_ROOT;
 }
 
 uint32_t auth_current_gid(void) {
     task_t *task = sched_get_current_task();
-    return (task && task->is_user) ? task->gid : GID_ROOT;
+    return (task && task->is_user) ? task->proc->gid : GID_ROOT;
 }
 
 bool auth_current_in_group(uint32_t gid) {
     task_t *task = sched_get_current_task();
     if (!task || !task->is_user) return gid == GID_ROOT;
-    return group_matches(task->gid, gid, task->groups, task->group_count);
+    return group_matches(task->proc->gid, gid, task->proc->groups, task->proc->group_count);
 }
 
 uint16_t auth_current_umask(void) {
     task_t *task = sched_get_current_task();
-    return (task && task->is_user) ? task->umask : UMASK_DEFAULT;
+    return (task && task->is_user) ? task->proc->umask : UMASK_DEFAULT;
 }

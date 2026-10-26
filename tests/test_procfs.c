@@ -432,7 +432,7 @@ TEST(proc_snapshot_is_freed_with_the_file) {
         // use: this reference is now its own
         uint64_t flags = sched_lock_irqsave();
         task_t *t = sched_find_task_locked((uint32_t)pid);
-        file_t *old = t ? fd_slot_set(t->fds, TASK_MAX_FDS - 1, file) : NULL;
+        file_t *old = t ? fd_slot_set(t->proc->fds, TASK_MAX_FDS - 1, file) : NULL;
         sched_unlock_irqrestore(flags);
         EXPECT_TRUE(t != NULL && old == NULL);
         if (!t) file_close(file);

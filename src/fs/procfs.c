@@ -120,7 +120,7 @@ static size_t gen_tasks(char *buf, size_t size) {
     for (task_t *t = sched_first_task(); t && len + 1 < size; t = t->next) {
         const char *state = (unsigned)t->state < 5 ? state_names[t->state] : "?";
         len += ksnprintf(buf + len, size - len, "%u\t%u\t%u\t%s\t%s\t%u\t%lu\t%u\t%s\n",
-                         t->pid, t->parent_pid, t->uid, state, t->is_user ? "user" : "kernel",
+                         t->pid, t->proc->parent_pid, t->proc->uid, state, t->is_user ? "user" : "kernel",
                          (unsigned)t->priority, t->cpu_ticks, t->last_cpu, t->name);
     }
     sched_unlock_irqrestore(flags);
@@ -268,9 +268,9 @@ static int64_t snapshot_status(vnode_t *node, char **out) {
         found = true;
         uint64_t mapped = 0;
         for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-            if (t->regions[i].end && !t->regions[i].program) mapped += t->regions[i].end - t->regions[i].start;
+            if (t->proc->regions[i].end && !t->proc->regions[i].program) mapped += t->proc->regions[i].end - t->proc->regions[i].start;
         }
-        uint64_t heap = t->is_user ? t->brk_end - t->brk_start : 0;
+        uint64_t heap = t->is_user ? t->proc->brk_end - t->proc->brk_start : 0;
         // Size: the program's segments, the heap and every mapped region,
         // as /proc/<pid>/maps lists them, without the stack's reservation.
         // (Not what is resident: that would mean walking another process's
@@ -285,8 +285,8 @@ static int64_t snapshot_status(vnode_t *node, char **out) {
         }
         uint64_t program = 0;
         if (t->is_user && t->state != TASK_ZOMBIE) {
-            for (uint32_t i = 0; i < t->image_segment_count && i < ELF_REPORTED_SEGMENTS; i++) {
-                program += t->image_segments[i].end - t->image_segments[i].start;
+            for (uint32_t i = 0; i < t->proc->image_segment_count && i < ELF_REPORTED_SEGMENTS; i++) {
+                program += t->proc->image_segments[i].end - t->proc->image_segments[i].start;
             }
         }
         char syscall_text[12] = "-";
@@ -296,9 +296,9 @@ static int64_t snapshot_status(vnode_t *node, char **out) {
                         "Uid:\t%u\nRuid:\t%u\nGid:\t%u\nRgid:\t%u\nKind:\t%s\nPriority:\t%u\n"
                         "Ticks:\t%lu\nCpu:\t%u\nHeap:\t%lu kB\nMapped:\t%lu kB\nUntouched:\t%lu kB\nSize:\t%lu kB\n"
                         "Resident:\t%lu kB\nShared:\t%lu kB\nSyscall:\t%s\n",
-                        t->name, (unsigned)t->state < 5 ? state_words[t->state] : "?", t->pid, t->parent_pid, t->pgid, t->sid,
-                        t->uid, t->ruid, t->gid, t->rgid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
-                        t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->promised_pages * 4,
+                        t->name, (unsigned)t->state < 5 ? state_words[t->state] : "?", t->pid, t->proc->parent_pid, t->proc->pgid, t->proc->sid,
+                        t->proc->uid, t->proc->ruid, t->proc->gid, t->proc->rgid, t->is_user ? "user" : "kernel", (unsigned)t->priority,
+                        t->cpu_ticks, t->last_cpu, heap / 1024, mapped / 1024, (uint64_t)t->proc->promised_pages * 4,
                         (program + heap + mapped) / 1024, (uint64_t)resident * 4, (uint64_t)shared * 4, syscall_text);
     }
     sched_unlock_irqrestore(flags);
@@ -318,8 +318,8 @@ static int64_t snapshot_cmdline(vnode_t *node, char **out) {
     task_t *t = sched_find_task_locked(pid_of(node));
     if (t) {
         found = true;
-        len = t->cmdline_len;
-        memcpy(text, t->cmdline, len);
+        len = t->proc->cmdline_len;
+        memcpy(text, t->proc->cmdline, len);
     }
     sched_unlock_irqrestore(flags);
     return give_text(text, len, found, out);
@@ -345,18 +345,18 @@ static size_t copy_maps(const task_t *t, map_line_t *lines, char name[32]) {
     if (!t->is_user || t->state == TASK_ZOMBIE) return 0;  // A zombie has given its memory back
     memcpy(name, t->name, 31);
     name[31] = '\0';
-    for (uint32_t i = 0; i < t->image_segment_count && i < ELF_REPORTED_SEGMENTS; i++) {
-        const elf_segment_t *seg = &t->image_segments[i];
+    for (uint32_t i = 0; i < t->proc->image_segment_count && i < ELF_REPORTED_SEGMENTS; i++) {
+        const elf_segment_t *seg = &t->proc->image_segments[i];
         lines[n++] = (map_line_t){ seg->start, seg->end, seg->prot, "program", NULL, 0 };
     }
-    if (t->brk_end > t->brk_start) {
-        lines[n++] = (map_line_t){ t->brk_start, t->brk_end, PROT_READ | PROT_WRITE, "heap", NULL, 0 };
+    if (t->proc->brk_end > t->proc->brk_start) {
+        lines[n++] = (map_line_t){ t->proc->brk_start, t->proc->brk_end, PROT_READ | PROT_WRITE, "heap", NULL, 0 };
     }
-    if (t->stack_top >= USER_STACK_MAX) {
-        lines[n++] = (map_line_t){ t->stack_top - USER_STACK_MAX, t->stack_top, PROT_READ | PROT_WRITE, "stack", NULL, 0 };
+    if (t->proc->stack_top >= USER_STACK_MAX) {
+        lines[n++] = (map_line_t){ t->proc->stack_top - USER_STACK_MAX, t->proc->stack_top, PROT_READ | PROT_WRITE, "stack", NULL, 0 };
     }
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        const mem_region_t *r = &t->regions[i];
+        const mem_region_t *r = &t->proc->regions[i];
         if (r->end == 0 || r->program) continue;    // (Shown above, as part of the program)
         lines[n++] = (map_line_t){ r->start, r->end, r->prot, r->node ? "file" : "anonymous", r->node, r->file_offset };
     }
@@ -465,7 +465,7 @@ static int64_t snapshot_fd(vnode_t *node, char **out) {
     *out = NULL;
     uint64_t flags = sched_lock_irqsave();
     task_t *t = sched_find_task_locked(pid_of(node));
-    file_t *file = t ? fd_slot_dup(t->fds, fd_of(node)) : NULL;
+    file_t *file = t ? fd_slot_dup(t->proc->fds, fd_of(node)) : NULL;
     sched_unlock_irqrestore(flags);
     if (!file) return -ENOENT;
 
@@ -550,9 +550,9 @@ static void fd_dir_refresh(vnode_t *dir) {
     uint64_t flags = sched_lock_irqsave();
     task_t *t = sched_find_task_locked(pid_of(dir));
     if (t) {
-        mask = fd_slot_mask(t->fds);
-        uid = t->uid;
-        gid = t->gid;
+        mask = fd_slot_mask(t->proc->fds);
+        uid = t->proc->uid;
+        gid = t->proc->gid;
     }
     sched_unlock_irqrestore(flags);
 
@@ -646,8 +646,8 @@ static void proc_refresh(vnode_t *dir) {
     flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t && n < room; t = t->next) {
         tasks[n].pid = t->pid;
-        tasks[n].uid = t->uid;
-        tasks[n++].gid = t->gid;
+        tasks[n].uid = t->proc->uid;
+        tasks[n++].gid = t->proc->gid;
     }
     sched_unlock_irqrestore(flags);
 

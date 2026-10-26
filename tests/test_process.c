@@ -232,7 +232,7 @@ TEST(programs_are_read_page_by_page) {
     if (!task) return;
     size_t program_regions = 0, program_pages = 0;
     for (int i = 0; i < TASK_MAX_REGIONS; i++) {
-        const mem_region_t *r = &task->regions[i];
+        const mem_region_t *r = &task->proc->regions[i];
         if (r->end == 0 || !r->program) continue;
         EXPECT_TRUE(r->node == file && !(r->prot & PROT_WRITE));
         program_regions++;
@@ -244,8 +244,8 @@ TEST(programs_are_read_page_by_page) {
     // enough: once in make check the task was seen blocked before it had
     // run its first instruction, with every program page untouched.)
     TEST_WAIT(task->in_syscall == SYS_SLEEP + 1, 300);
-    EXPECT_TRUE(task->promised_pages > 0);                    // Pages of it never touched, so never read...
-    EXPECT_TRUE(task->promised_pages < program_pages);        // ...and some that were (its first instruction)
+    EXPECT_TRUE(task->proc->promised_pages > 0);                    // Pages of it never touched, so never read...
+    EXPECT_TRUE(task->proc->promised_pages < program_pages);        // ...and some that were (its first instruction)
     EXPECT_EQ(file->exec_count, exec_before + program_regions);
 
     file_t *writer = NULL;
@@ -359,7 +359,7 @@ TEST(orphans_are_adopted_and_collected_by_init) {
     uint64_t flags = sched_lock_irqsave();
     for (task_t *t = sched_first_task(); t; t = t->next) {
         if (strcmp(t->name, "/bin/orphan") == 0 || strcmp(t->name, "orphan") == 0) {
-            child_parent = (pid_t)t->parent_pid;
+            child_parent = (pid_t)t->proc->parent_pid;
             child_detached = t->detached;
         }
     }
