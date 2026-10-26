@@ -8,6 +8,8 @@
 #include "kstring.h"
 #include "virtio_pci.h"
 #include "kerrno.h"
+#include "ipfrag.h"
+#include "timer.h"
 
 TEST(pci_finds_the_devices_qemu_provides) {
     // By type: a device that offers only the modern interface has another
@@ -144,9 +146,13 @@ TEST(udp_sockets_over_loopback) {
     EXPECT_EQ(memcmp(buf, "0123xxxx", 8), 0);
 
     // The largest datagram goes through whole; one byte more is refused
+    // (It is 64 KiB, sent in 45 fragments and put back together)
     static uint8_t big[UDP_PAYLOAD_MAX + 1], big_back[UDP_PAYLOAD_MAX];
-    for (size_t i = 0; i < sizeof(big); i++) big[i] = (uint8_t)(i * 11);
+    for (size_t i = 0; i < sizeof(big); i++) big[i] = (uint8_t)(i * 11 + i / 509);
+    uint64_t fragmented = net_stats()->fragmented_sent, reassembled = ipfrag_stats()->reassembled;
     EXPECT_EQ(udp_sendto(client, NET_LOCAL_IP, 7000, big, UDP_PAYLOAD_MAX), UDP_PAYLOAD_MAX);
+    EXPECT_TRUE(net_stats()->fragmented_sent == fragmented + 1);
+    EXPECT_TRUE(ipfrag_stats()->reassembled == reassembled + 1);
     EXPECT_EQ(udp_recvfrom(server, big_back, sizeof(big_back), NULL, NULL, 100), UDP_PAYLOAD_MAX);
     EXPECT_EQ(memcmp(big, big_back, UDP_PAYLOAD_MAX), 0);
     EXPECT_EQ(udp_sendto(client, NET_LOCAL_IP, 7000, big, UDP_PAYLOAD_MAX + 1), -EMSGSIZE);
@@ -291,14 +297,18 @@ TEST(net_drops_malformed_frames) {
     EXPECT_DROPPED(bad[14 + 20 + 6] = 0x12, len);            // UDP checksum present and wrong
 #undef EXPECT_DROPPED
 
-    // A fragment (the "more fragments" flag set), with a correct IP checksum
+    // A fragment (the "more fragments" flag set), with a correct IP
+    // checksum, but whose length is not a multiple of 8: refused by
+    // reassembly, and nothing is kept
     memcpy(bad, frame, len);
     bad[14 + 6] = 0x20; bad[14 + 10] = 0; bad[14 + 11] = 0;
     uint16_t sum = net_checksum(bad + 14, 20);
     bad[14 + 10] = (uint8_t)(sum >> 8); bad[14 + 11] = (uint8_t)sum;
-    uint64_t dropped_before = net_stats()->dropped;
+    uint64_t refused = ipfrag_stats()->refused;
     net_handle_frame(bad, len);
-    EXPECT_TRUE(net_stats()->dropped == dropped_before + 1);
+    EXPECT_TRUE(ipfrag_stats()->refused == refused + 1);
+    EXPECT_EQ(ipfrag_expire(timer_ticks()), 0);              // Nothing in progress
+    uint64_t dropped_before;
 
     // ARP packets with wrong sizes or cut short
     static uint8_t arp[64];
@@ -325,6 +335,208 @@ TEST(net_drops_malformed_frames) {
 
     // And the stack still works
     EXPECT_EQ(net_ping(NET_GATEWAY, 200, NULL), 0);
+}
+
+// --- Fragments ---------------------------------------------------------------------
+
+// A UDP datagram (header and `n` bytes of payload) for `port` from port
+// 12345, without a checksum, into `out`. Returns its length.
+static size_t make_udp_datagram(uint8_t *out, uint16_t port, size_t n) {
+    out[0] = 0x30; out[1] = 0x39;
+    out[2] = (uint8_t)(port >> 8); out[3] = (uint8_t)port;
+    out[4] = (uint8_t)((8 + n) >> 8); out[5] = (uint8_t)(8 + n);
+    out[6] = out[7] = 0;                                     // "Not computed"
+    for (size_t i = 0; i < n; i++) out[8 + i] = (uint8_t)(i * 13 + i / 7);
+    return 8 + n;
+}
+
+// Hand the stack one fragment of `datagram` (bytes offset..offset+len; zeros
+// if it is NULL) as a frame from 10.0.2.77, with identification `id`
+static void send_fragment(uint16_t id, const uint8_t *datagram, size_t offset, size_t len, bool more) {
+    static uint8_t frame[14 + 20 + 1480];
+    uint8_t mac[6];
+    virtio_net_get_mac(mac);
+    memset(frame, 0, 14 + 20);
+    memcpy(frame, mac, 6);
+    frame[6] = 0x02; frame[11] = 0x01;
+    frame[12] = 0x08; frame[13] = 0x00;                      // IPv4
+
+    uint8_t *ip = frame + 14;
+    uint16_t total = (uint16_t)(20 + len);
+    uint16_t fragment = (uint16_t)((more ? 0x2000 : 0) | (offset / 8));
+    ip[0] = 0x45; ip[2] = (uint8_t)(total >> 8); ip[3] = (uint8_t)total;
+    ip[4] = (uint8_t)(id >> 8); ip[5] = (uint8_t)id;
+    ip[6] = (uint8_t)(fragment >> 8); ip[7] = (uint8_t)fragment;
+    ip[8] = 64; ip[9] = 17;                                  // TTL, protocol UDP
+    ip[12] = 10; ip[13] = 0; ip[14] = 2; ip[15] = 77;
+    ip[16] = 10; ip[17] = 0; ip[18] = 2; ip[19] = 15;
+    uint16_t sum = net_checksum(ip, 20);
+    ip[10] = (uint8_t)(sum >> 8); ip[11] = (uint8_t)sum;
+    if (datagram) memcpy(ip + 20, datagram + offset, len);
+    else memset(ip + 20, 0, len);
+    net_handle_frame(frame, 14 + 20 + len);
+}
+
+// Fragments put together in any order, duplicates ignored, overlaps and
+// contradictions refused with their whole datagram
+TEST(ipv4_fragments_are_reassembled) {
+    size_t heap_before = kheap_get_allocated_bytes();
+    static uint8_t dgram[8 + 3000], buf[4000];
+    const ipfrag_stats_t *fs = ipfrag_stats();
+    udp_socket_t *sock = udp_open();
+    EXPECT_EQ(udp_bind(sock, 7200), 0);
+    size_t n = make_udp_datagram(dgram, 7200, 3000);
+
+    // In order: nothing is delivered until the last piece is in
+    uint64_t done = fs->reassembled;
+    send_fragment(1, dgram, 0, 1024, true);
+    send_fragment(1, dgram, 1024, 1024, true);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);
+    send_fragment(1, dgram, 2048, n - 2048, false);
+    memset(buf, 0, sizeof(buf));
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 5), 3000);
+    EXPECT_EQ(memcmp(buf, dgram + 8, 3000), 0);
+    EXPECT_TRUE(fs->reassembled == done + 1);
+
+    // Last first, with two pieces arriving twice
+    uint64_t duplicates = fs->duplicates;
+    send_fragment(2, dgram, 2048, n - 2048, false);
+    send_fragment(2, dgram, 0, 1024, true);
+    send_fragment(2, dgram, 0, 1024, true);
+    send_fragment(2, dgram, 2048, n - 2048, false);
+    send_fragment(2, dgram, 1024, 1024, true);
+    memset(buf, 0, sizeof(buf));
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 5), 3000);
+    EXPECT_EQ(memcmp(buf, dgram + 8, 3000), 0);
+    EXPECT_TRUE(fs->duplicates == duplicates + 2);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);   // Once
+
+    // Two datagrams at once, their fragments interleaved, told apart by id
+    send_fragment(3, dgram, 0, 1024, true);
+    send_fragment(4, dgram, 2048, n - 2048, false);
+    send_fragment(4, dgram, 1024, 1024, true);
+    send_fragment(3, dgram, 1024, 1024, true);
+    send_fragment(4, dgram, 0, 1024, true);
+    send_fragment(3, dgram, 2048, n - 2048, false);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 5), 3000);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 5), 3000);
+    EXPECT_EQ(memcmp(buf, dgram + 8, 3000), 0);
+
+    // A piece that overlaps another: the datagram is given up, and the
+    // pieces that follow cannot complete it
+    uint64_t refused = fs->refused;
+    send_fragment(5, dgram, 0, 1024, true);
+    send_fragment(5, dgram, 512, 1024, true);
+    EXPECT_TRUE(fs->refused == refused + 1);
+    send_fragment(5, dgram, 1024, 1024, true);
+    send_fragment(5, dgram, 2048, n - 2048, false);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);
+    // The same piece again but shorter or longer is an overlap, not a duplicate
+    send_fragment(6, dgram, 0, 1024, true);
+    send_fragment(6, dgram, 0, 512, true);
+    EXPECT_TRUE(fs->refused == refused + 2);
+
+    // Two different ends, data beyond the end, and an end beyond what IPv4
+    // can carry ("ping of death": offset 65512 plus 24 bytes)
+    send_fragment(7, dgram, 2048, n - 2048, false);
+    send_fragment(7, dgram, 1024, 1024, false);
+    EXPECT_TRUE(fs->refused == refused + 3);
+    send_fragment(8, dgram, 2048, n - 2048, true);
+    send_fragment(8, dgram, 1024, 1024, false);              // (At offset 0 it would be a whole datagram)
+    EXPECT_TRUE(fs->refused == refused + 4);
+    send_fragment(9, NULL, 65512, 24, false);
+    EXPECT_TRUE(fs->refused == refused + 5);
+    // A fragment that is not the last must carry a multiple of 8 bytes
+    send_fragment(10, dgram, 0, 1024, true);
+    send_fragment(10, dgram, 1024, 100, true);
+    EXPECT_TRUE(fs->refused == refused + 6);
+
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);   // None of it got through
+    ipfrag_expire(UINT64_MAX);                               // What the refusals left started
+    udp_close(sock);
+    EXPECT_EQ(ipfrag_expire(timer_ticks()), 0);
+    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
+}
+
+// A datagram missing a piece is given up when its time is out, by whoever
+// calls ipfrag_expire, and by the receive thread without being asked
+TEST(ipv4_fragments_time_out) {
+    size_t heap_before = kheap_get_allocated_bytes();
+    static uint8_t dgram[8 + 3000], buf[4000];
+    const ipfrag_stats_t *fs = ipfrag_stats();
+    udp_socket_t *sock = udp_open();
+    EXPECT_EQ(udp_bind(sock, 7201), 0);
+    size_t n = make_udp_datagram(dgram, 7201, 3000);
+
+    uint64_t timeouts = fs->timeouts;
+    uint64_t t0 = timer_ticks();
+    send_fragment(20, dgram, 0, 1024, true);
+    send_fragment(20, dgram, 2048, n - 2048, false);
+    uint64_t t1 = timer_ticks();
+    uint64_t next = ipfrag_expire(t0 + IPFRAG_TIMEOUT_TICKS - 1);
+    EXPECT_TRUE(next >= t0 + IPFRAG_TIMEOUT_TICKS && next <= t1 + IPFRAG_TIMEOUT_TICKS);
+    EXPECT_TRUE(fs->timeouts == timeouts);                   // Not yet
+    EXPECT_EQ(ipfrag_expire(t1 + IPFRAG_TIMEOUT_TICKS), 0);
+    EXPECT_TRUE(fs->timeouts == timeouts + 1);
+    // The missing piece, too late: it begins a datagram of its own
+    send_fragment(20, dgram, 1024, 1024, true);
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 2), -ETIMEDOUT);
+    ipfrag_expire(UINT64_MAX);
+
+    // Nobody calls ipfrag_expire here: the receive thread learns of the new
+    // deadline and gives the datagram up itself
+    ipfrag_test_timeout(20);
+    timeouts = fs->timeouts;
+    send_fragment(21, dgram, 0, 1024, true);
+    TEST_WAIT(fs->timeouts == timeouts + 1, 200);
+    EXPECT_TRUE(fs->timeouts == timeouts + 1);
+    ipfrag_test_timeout(0);
+
+    udp_close(sock);
+    EXPECT_EQ(ipfrag_expire(timer_ticks()), 0);
+    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
+}
+
+// Fragments cost memory that a sender who never finishes could hold: no
+// more than IPFRAG_SLOTS datagrams and IPFRAG_MEMORY bytes are kept, the
+// oldest giving way, and a whole datagram still gets through after a flood
+TEST(ipv4_fragments_memory_is_limited) {
+    size_t heap_before = kheap_get_allocated_bytes();
+    static uint8_t dgram[8 + 60000], buf[60000];
+    const ipfrag_stats_t *fs = ipfrag_stats();
+    udp_socket_t *sock = udp_open();
+    EXPECT_EQ(udp_bind(sock, 7202), 0);
+    size_t n = make_udp_datagram(dgram, 7202, 60000);
+
+    // More datagrams than slots: the oldest are given up
+    uint64_t evicted = fs->evicted;
+    for (uint16_t id = 100; id < 100 + IPFRAG_SLOTS + 3; id++) send_fragment(id, dgram, 0, 1024, true);
+    EXPECT_TRUE(fs->evicted == evicted + 3);
+    ipfrag_expire(UINT64_MAX);
+
+    // Eight datagrams of 60 KB, each missing its last piece: 480 KB, more
+    // than the limit, so the oldest give way and the heap holds about the limit
+    evicted = fs->evicted;
+    size_t peak = 0;
+    for (uint16_t id = 200; id < 208; id++) {
+        for (size_t offset = 0; offset + 1480 < n; offset += 1480) send_fragment(id, dgram, offset, 1480, true);
+        size_t used = kheap_get_allocated_bytes() - heap_before;
+        if (used > peak) peak = used;
+    }
+    EXPECT_TRUE(fs->evicted >= evicted + 4);
+    EXPECT_TRUE(peak <= IPFRAG_MEMORY + IPFRAG_MEMORY / 4);
+
+    // A whole one still arrives (the last datagram above makes way for it)
+    for (size_t offset = 0; offset < n; offset += 1480) {
+        size_t len = n - offset < 1480 ? n - offset : 1480;
+        send_fragment(300, dgram, offset, len, offset + len < n);
+    }
+    EXPECT_EQ(udp_recvfrom(sock, buf, sizeof(buf), NULL, NULL, 5), 60000);
+    EXPECT_EQ(memcmp(buf, dgram + 8, 60000), 0);
+
+    ipfrag_expire(UINT64_MAX);
+    udp_close(sock);
+    EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
 // The address is a setting, not a constant
@@ -438,7 +650,7 @@ TEST(net_unconfigured_broadcasts_and_listens) {
 }
 
 void test_suite_net(void) {
-    kprintf("Suite: Network (virtio-net, ARP, IPv4, ICMP, UDP)\n");
+    kprintf("Suite: Network (virtio-net, ARP, IPv4 and its fragments, ICMP, UDP)\n");
     RUN_TEST(pci_finds_the_devices_qemu_provides);
     RUN_TEST(net_checksum_known_values);
     RUN_TEST(net_card_and_stack_are_up);
@@ -447,6 +659,9 @@ void test_suite_net(void) {
     RUN_TEST(net_ping_ourselves_and_nobody);
     RUN_TEST(udp_sockets_over_loopback);
     RUN_TEST(net_drops_malformed_frames);
+    RUN_TEST(ipv4_fragments_are_reassembled);
+    RUN_TEST(ipv4_fragments_time_out);
+    RUN_TEST(ipv4_fragments_memory_is_limited);
     RUN_TEST(net_configuration_can_be_changed);
     RUN_TEST(net_unconfigured_broadcasts_and_listens);
 }

@@ -472,6 +472,7 @@ void task_free(task_t *t) {
         kstack_free(t->kernel_stack);
     }
     kfree(t->io_buffer);
+    kfree(t->datagram_buffer);
     kfree(t);
 }
 
