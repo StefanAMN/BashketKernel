@@ -1887,7 +1887,7 @@ reported, then read after `fg`; `echo &` with `tostop`). Sabotage: no
 terminal checks failed five syscheck checks and the scenario; no orphan
 rule and a `setsid` that changed nothing failed four.
 
-### R3. Work moves between busy CPUs; sleepers per CPU (M)
+### R3. Work moves between busy CPUs; sleepers per CPU (M) — done
 
 Only an idle CPU takes work (Q2): three tasks waiting on one CPU and one
 on another stay so. Let a CPU whose queue is longer than the shortest by
@@ -1898,6 +1898,23 @@ longer walks every task under the scheduler lock. **Check:**
 bound to one CPU, unbinds them, and sees them spread over four; the
 yield measurement of Q2 stays at no waits; `/proc/timers` shows sleepers
 per CPU.
+
+Done. At a busy CPU's tick, `hand_over_work` moves its oldest movable task
+to the least loaded CPU when its load is more than one above that one's
+(its own queue lock held, the other's taken with a try-lock, as in steal).
+Timed sleepers go into their CPU's list, sorted by deadline, under the
+scheduler lock that sleeping and waking already hold; a one-shot timer
+wakes from the front of its own list, the periodic tick from the front of
+each, with every deadline kept on one scale. `/proc/timers` says how many
+sleep with a deadline on each CPU. Tests: `busy_cpus_hand_work_over` (two
+tasks bound to each other CPU keep it busy and never dry, so only handing
+over can move the six waiting on CPU 0) and
+`sleepers_wake_in_deadline_order` (eight sleepers started latest deadline
+first). Sabotage: no handing over failed the first; appending sleepers out
+of order failed the second and four older tests of sleeping and `poll`.
+The second first failed by itself with the periodic tick: it looked for
+the sleepers one tick after they had started, not once they slept.
+Still open: the scheduler lock is taken for every wake-up, as before.
 
 ### R4. Interrupt lines spread over the CPUs (S) — done
 
@@ -2014,7 +2031,7 @@ Q1, Q2, Q3, Q4                   done
 R4                               done
 R1                               done
 R2                               done
-R3                               next (planned, not started)
+R3                               done
 ```
 
 (Track A, once the recommended first step because everything built on

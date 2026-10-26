@@ -55,6 +55,9 @@ typedef struct task {
     struct task *next;       // Next task in the list of all tasks (under the scheduler lock)
     struct task *run_next;   // Next in the run queue it waits in (under that queue's lock)
     int32_t queued_on;       // The CPU whose run queue holds it, or -1 (under that queue's lock)
+    struct task *sleep_prev, *sleep_next; // In its CPU's list of timed sleepers (under the scheduler lock)
+    int32_t sleeping_on;     // The CPU whose list of timed sleepers holds it, or -1
+    uint64_t sleep_key_ns;   // There: its deadline, on the clock_ns scale (earliest first)
 
     // --- CPU time ---
     uint8_t priority;        // PRIO_HIGH, PRIO_NORMAL or PRIO_LOW: sets the time slice length

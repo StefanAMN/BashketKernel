@@ -450,6 +450,106 @@ TEST(pinned_tasks_stay_and_unpinned_ones_move) {
     EXPECT_TRUE(reaped == cpus + 1);
 }
 
+static volatile int balancers_stop, balancers_done;
+static volatile uint64_t unbound_cpus_seen;      // Bit n: a task not bound to a CPU ran on CPU n
+
+// Uses the CPU until told to stop, noting where it ran while unbound
+static void balancer_entry(void) {
+    while (!balancers_stop) {
+        uint64_t flags = irq_save();
+        uint32_t here = this_cpu()->cpu_id;
+        bool unbound = cpu_current_task()->affinity == TASK_ANY_CPU;
+        irq_restore(flags);
+        if (unbound) __atomic_or_fetch(&unbound_cpus_seen, 1ULL << here, __ATOMIC_SEQ_CST);
+    }
+    __atomic_add_fetch(&balancers_done, 1, __ATOMIC_SEQ_CST);
+}
+
+// Busy CPUs hand work over: each CPU but the first is kept busy by two
+// tasks bound to it (one running, one waiting: it never runs dry, so it
+// never takes work by itself), and six tasks wait on CPU 0. Unbound, they
+// are soon seen on the other CPUs, which only CPU 0 handing them over can
+// do (R3).
+TEST(busy_cpus_hand_work_over) {
+    uint32_t cpus = online_cpus();
+    if (cpus < 2) return;
+    balancers_stop = 0; balancers_done = 0; unbound_cpus_seen = 0;
+    int created = 0;
+    for (uint32_t cpu = 1; cpu < cpus; cpu++) {
+        for (int i = 0; i < 2; i++) {
+            task_t *t = task_alloc("balancer", balancer_entry);
+            EXPECT_TRUE(t != NULL);
+            if (!t) continue;
+            t->affinity = (int32_t)cpu;                  // Bound before it ever runs
+            sched_add(t);
+            created++;
+        }
+    }
+    task_t *waiting[6];
+    for (int i = 0; i < 6; i++) {
+        waiting[i] = task_alloc("balancer", balancer_entry);
+        EXPECT_TRUE(waiting[i] != NULL);
+        if (!waiting[i]) continue;
+        waiting[i]->affinity = 0;
+        sched_add(waiting[i]);
+        created++;
+    }
+    sched_sleep_ticks(10);                               // All under way where they belong
+    EXPECT_TRUE(unbound_cpus_seen == 0);
+    for (int i = 0; i < 6; i++) if (waiting[i]) task_set_affinity(waiting[i], -1);
+    uint64_t others = (cpus >= 64 ? ~0ULL : (1ULL << cpus) - 1) & ~1ULL;
+    TEST_WAIT((unbound_cpus_seen & others) != 0, 300);
+    EXPECT_TRUE((unbound_cpus_seen & others) != 0);
+    if ((unbound_cpus_seen & others) == 0) {
+        for (uint32_t i = 0; i < cpus; i++) kprintf("    CPU %u: %u waiting\n", i, sched_queue_length(i));
+    }
+    balancers_stop = 1;
+    TEST_WAIT(balancers_done == created, 300);
+    EXPECT_EQ(balancers_done, created);
+    size_t reaped = 0;
+    TEST_WAIT((reaped += sched_reap()) >= (size_t)created, 300);
+    EXPECT_TRUE(reaped == (size_t)created);
+}
+
+static volatile int sleepers_awake;
+static volatile int wake_order[8];               // wake_order[k]: which sleeper woke k-th
+static volatile int sleeper_index;               // Handed to each sleeper as it starts
+
+// Sleeps until its own deadline (later for lower indices), then notes
+// its place in the order of waking
+static void sleeper_entry(void) {
+    int me = __atomic_fetch_add(&sleeper_index, 1, __ATOMIC_SEQ_CST);
+    nanosleep((uint64_t)(8 - me) * 20000000ULL);    // 160 ms for the first, 20 ms for the last
+    int at = __atomic_fetch_add(&sleepers_awake, 1, __ATOMIC_SEQ_CST);
+    wake_order[at] = me;
+}
+
+// The timed sleepers in every CPU's list
+static uint32_t sleeper_total(void) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) n += sched_sleeper_count(i);
+    return n;
+}
+
+// Timed sleepers are kept per CPU in deadline order: eight that go to
+// sleep latest-deadline first wake earliest-deadline first, and while they
+// sleep the per-CPU lists (/proc/timers) account for all of them
+TEST(sleepers_wake_in_deadline_order) {
+    sleepers_awake = 0; sleeper_index = 0;
+    uint32_t before = sleeper_total();
+    for (int i = 0; i < 8; i++) EXPECT_TRUE(task_create("sleeper", sleeper_entry) != NULL);
+    // Started is not asleep (CLAUDE.md): wait for the lists to hold all
+    // eight, or for one to have woken already
+    uint32_t during = 0;
+    TEST_WAIT((during = sleeper_total()) >= before + 8 || sleepers_awake > 0, 300);
+    EXPECT_TRUE(sleepers_awake > 0 || during >= before + 8);
+    TEST_WAIT(sleepers_awake == 8, 300);
+    EXPECT_EQ(sleepers_awake, 8);
+    for (int k = 0; k < 8; k++) EXPECT_EQ(wake_order[k], 7 - k);    // The last to start woke first
+    size_t reaped = 0;
+    TEST_WAIT((reaped += sched_reap()) >= 8, 300);
+}
+
 static volatile int yielders_stop, yielders_done;
 static volatile uint64_t yields;
 
@@ -567,5 +667,7 @@ void test_suite_smp(void) {
     RUN_TEST(more_cpus_do_more_work);
     RUN_TEST(pinned_tasks_stay_and_unpinned_ones_move);
     RUN_TEST(yields_spare_the_scheduler_lock);
+    RUN_TEST(busy_cpus_hand_work_over);
+    RUN_TEST(sleepers_wake_in_deadline_order);
     RUN_TEST(other_cpus_forget_removed_kernel_mappings);
 }
