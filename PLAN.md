@@ -1415,7 +1415,8 @@ constants (`0x1f`, `010`); a variable must hold a number (blanks and a
 sign allowed) or be empty; `&&` and `||` skip their right side, errors
 in it included (`x != 0 && 10 / x`); overflow wraps, `LONG_MIN / -1`
 too, instead of trapping. Not done: assignments inside (`=`, `+=`,
-`++`), the bit operators, `?:`, and `$(...)` inside `$((...))`. `read`
+`++`), the bit operators and `?:` (all three done in T3), and `$(...)`
+inside `$((...))`. `read`
 takes a byte at a time, so the rest of the input is left for the next
 reader; it runs in the shell itself (it sets the shell's variables),
 its redirections applied there and undone after, and in a child when it
@@ -2083,7 +2084,7 @@ with fewer retransmission timeouts and less time than with SACK refused,
 both written down; a peer that does not offer it still served by
 NewReno (QEMU's own TCP does not).
 
-### T3. Assignment and the remaining operators in `$(( ))` (S)
+### T3. Assignment and the remaining operators in `$(( ))` (S) — done
 
 The shell's arithmetic has no assignments (`=`, `+=` and the other
 compound forms, `++` and `--`), no bit operators (`& | ^ ~ << >>`) and
@@ -2093,6 +2094,17 @@ and `&& ||` evaluate only the side taken. **Check:** syscheck: each
 operator, precedence against the existing ones, `x=5` leaving x set,
 `i++` in a `while` loop, shifts by more than 63 defined as in the shell's
 64-bit integers (said so), errors (assigning to a number, `1 ? 2`).
+
+Done (`user/sh.c`, the `arith_` functions; syscheck's
+`check_shell_arith_read`). Shift counts are taken modulo 64, as the x86
+shift instructions and bash do, and `>>` keeps the sign. `++` and `--`
+apply to names only, so `--5` is still -(-5), and `$x++` is refused (a
+value, not a variable), as in bash. As in C, `c ? p = 1 : q = 2` does not
+parse (`(c ? p = 1 : q) = 2`): the branches that assign need parentheses.
+Sabotage: an assignment that stored nothing failed four checks; a postfix
+`++` giving the value after failed three; `&` taking the first half of
+`&&` failed three; `?:` evaluating its middle when the condition is false
+passed until a check with the condition false was added.
 
 ## Smaller repairs (any time, each S)
 
@@ -2192,7 +2204,8 @@ R3                               done
 S4                               done
 S1, S3                           done
 S2                               next (planned, not started)
-T3, T1, T2                       next (planned, not started)
+T3                               done
+T1, T2                           next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
