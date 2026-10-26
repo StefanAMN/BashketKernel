@@ -219,7 +219,7 @@ static bool load_user_image_locked(const char *path, char *const argv[], char *c
         if (ok) image->lazy_pages = pages;
         for (uint32_t i = 0; ok && i < program->lazy_count; i++) {
             const elf_lazy_t *lazy = &program->lazy[i];
-            image->lazy[i] = (mem_region_t){ lazy->start, lazy->end, lazy->prot, file, lazy->file_offset, true, false };
+            image->lazy[i] = (mem_region_t){ lazy->start, lazy->end, lazy->prot, file, lazy->file_offset, true, false, false };
             region_hold_program(file, +1);
             image->lazy_count++;
         }
