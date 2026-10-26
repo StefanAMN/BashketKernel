@@ -95,6 +95,8 @@ typedef struct task {
     struct file *fds[TASK_MAX_FDS]; // Open files; the index is the file descriptor
     uint32_t fd_cloexec;     // Bit n set: descriptor n is closed when the process execs a new program
     void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
+    void *datagram_buffer;   // For sendto() and recvfrom() when a page is not enough (allocated on first use)
+    size_t datagram_buffer_size;
     uint32_t uid;            // Effective user: whose rights this process has (0: root, may do anything)
     uint32_t ruid;           // Real user: who started it (differs from uid only in a set-uid program)
     uint32_t gid;            // Effective group: the one permission checks use

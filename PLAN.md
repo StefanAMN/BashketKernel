@@ -1943,7 +1943,7 @@ run); the boot CPU is last in the turn, not left out.
 Planned 2026-10-26, after track R, from limits the README and earlier
 tracks wrote down (each checked in the code first).
 
-### S1. The screen mapped into a program, and mouse and keyboard at once (M)
+### S1. The screen mapped into a program, and mouse and keyboard at once (M) — done
 
 `/dev/fb0` can only be written with `write()` and `lseek()`, and nothing
 has waited for the mouse and the keyboard together (both answer `poll`,
@@ -1956,6 +1956,26 @@ screen back or dies), and make `/bin/paint` draw through the mapping and
 syscheck (mapping refused without owning the screen, refused past its
 size; `poll` on console and mouse reports the one that has input); a
 screenshot taken after the owner is killed shows the console again.
+
+Done. A vnode operation `map_page` gives a device's physical page for an
+offset (`/dev/fb0`: the framebuffer's address in the direct map, less the
+map's offset). Its pages are mapped with a software bit, `VMM_DEVICE` (bit
+52), with `VMM_SHARED`: unmapping and destroying skip giving them back,
+`fork` copies them without counting owners, swap skips shared pages
+already. A device region promises no memory, and holds the device through
+its `opened`/`closed` operations, once per piece. Mapped as the kernel's
+direct map has it (the same caching for both views). Checks: syscheck's
+`check_screen_mapping` (read-only descriptor, past the end, private all
+refused; a pixel written through the mapping is read back through the
+file; with the descriptor closed, the mapping alone keeps the console off
+the screen); `make test-paint` (draws through the mapping, polls both
+devices, a third session ends with `q`; the killed session is now one
+holding a mapping); the paint and SMP program runs refuse "PMM WARNING".
+Sabotage: unmapping that gave the device's page to the frame allocator
+printed that warning; a mapping that held nothing failed the holding
+check; `map_page` ignoring the offset failed two checks and the
+screenshots. (A mouse event and a typed line arriving together is only
+exercised by `paint` itself.)
 
 ### S2. TCP window scaling (M) — done
 
@@ -1992,7 +2012,7 @@ round trip. Sabotage: rings that never grow, the other end's windows or
 ours left unscaled, and scaling assumed without the option each failed
 the new checks.
 
-### S3. IPv4 fragments (M)
+### S3. IPv4 fragments (M) — done
 
 Fragments are dropped on arrival, and nothing larger than the link's MTU
 can be sent ("don't fragment" is set). Reassemble arriving fragments
@@ -2002,6 +2022,25 @@ unit tests (out of order, duplicates, overlaps, a missing piece timing
 out, the memory limit); `tools/test_net.py` exchanges an 8 KiB UDP
 datagram with the host in both directions (the host's stack fragments and
 reassembles: something we did not write).
+
+Done (`src/net/ipfrag.c`; `ipv4_send_parts` in `net.c`). The holes of RFC
+815 are the gaps between the pieces held, kept in order of offset; a
+fragment must fall inside one. An exact repeat is ignored, any other
+overlap gives up the datagram, as does a second end, data beyond the end,
+an end past 65,515 bytes, or a non-final fragment that is not a multiple
+of 8 bytes. At most 8 datagrams and 256 KiB are in progress (each piece
+charged 32 bytes besides its data), and the oldest gives way. A datagram
+not complete 30 s after its first fragment is given up by the receive
+thread, which now waits for that deadline as well as for frames. UDP
+datagrams go up to 65,507 bytes; `sendto` and `recvfrom` copy through a
+buffer the task owns, since 64 KiB does not fit on a kernel stack. The
+IPv4 identification is now taken atomically: two CPUs could give two
+datagrams the same number, which reassembly would mix. Sabotage: no
+overlap check failed five checks; the receive thread not told of a new
+deadline failed the timeout check; no memory limit failed two; fragments
+not a multiple of 8 failed the 64 KiB loopback test and syscheck; no
+reassembled datagram delivered failed `make test-net` ("echoed 2 of 3").
+Not done: the ICMP "reassembly time exceeded" message (RFC 1122, 3.3.2).
 
 ### S4. `set -- ARGS`, `$*` and `getopts` in the shell (S) — done
 
@@ -2121,8 +2160,7 @@ R2                               done
 R3                               done
         |
 S4                               done
-S2                               done
-S1, S3                           next (planned, not started)
+S1, S2, S3                       done
 ```
 
 (Track A, once the recommended first step because everything built on

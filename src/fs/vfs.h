@@ -104,6 +104,12 @@ typedef struct vnode_ops {
     // provides it calls poll_notify() whenever the answer may change.
     int (*poll)(struct vnode *node);
 
+    // mmap of a device whose contents are memory (the screen): the physical
+    // address of the page at `offset` (page-aligned) into *phys, 0; or a
+    // negative error (past the end). The page is the device's own: it is
+    // mapped as it is (VMM_DEVICE), never copied, counted or swapped.
+    int (*map_page)(struct vnode *node, uint64_t offset, uint64_t *phys);
+
     // stat(): correct what the VFS filled in from the node (the link count,
     // the inode number) with what the filesystem stores. May read the disk.
     // 0 or a negative error number.
