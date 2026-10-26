@@ -713,8 +713,9 @@ static int64_t sys_brk(uint64_t new_brk) {
 // touched; shared: given frames at once and shared with forked children),
 // or part of a file opened for reading: a private copy, or (MAP_SHARED)
 // the file itself, whose changes reach the file (region.h), writable only
-// if the file was opened for writing too. Returns the address or a
-// negative error.
+// if the file was opened for writing too; or a device whose contents are
+// memory (/dev/fb0: the screen itself), shared only. Returns the address
+// or a negative error.
 static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
     // Always at an address the kernel chooses
     if (addr != 0 || (flags & MAP_FIXED) || length == 0) return -EINVAL;
@@ -745,7 +746,18 @@ static int64_t sys_mmap(uint64_t addr, size_t length, int prot, int flags, int f
     if (file->kind != FILE_VNODE || file->node->type != VFS_FILE || !file->readable) return -EACCES;
     if (offset & (PAGE_SIZE - 1)) return -EINVAL;
     if (shared && (prot & PROT_WRITE) && !file->writable) return -EACCES;
-    if (shared && !pcache_cacheable(file->node)) return -ENODEV;
+
+    // A device whose contents are memory (the screen): its own pages, shared
+    // only, and no further than its end
+    vnode_t *node = file->node;
+    if (node->ops && node->ops->map_page) {
+        if (!shared) return -EINVAL;
+        if (length > page_align_up(node->size) || offset > page_align_up(node->size) - length) return -EINVAL;
+        int error = 0;
+        uint64_t mapped = region_map(task, length, prot, node, offset, false, &error);
+        return mapped ? (int64_t)mapped : error;
+    }
+    if (shared && !pcache_cacheable(node)) return -ENODEV;
 
     int error = 0;
     uint64_t mapped = region_map(task, length, prot, file->node, offset, shared, &error);

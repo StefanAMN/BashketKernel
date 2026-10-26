@@ -59,6 +59,8 @@ typedef struct {
                                 // exists the file may not be written (vnode exec_count)
     bool shared;                // MAP_SHARED: writes reach the file; while writable, the file
                                 // counts as open for writing (vnode write_count: not runnable)
+    bool device;                // A device's own memory (the screen: vnode map_page), mapped as it is;
+                                // the mapping holds the device as an open descriptor would
 } mem_region_t;
 
 #define REGION_NO_MEMORY    (-1)  // region_fault: promised, but there is no frame for it
