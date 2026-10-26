@@ -844,8 +844,11 @@ static volatile uint64_t grow_bytes, grow_errors;
 static volatile uint16_t grow_peer_port;
 static tcp_test_windows_t grow_server_windows;
 
-// Accepts one connection and reads it to the end in large pieces, keeping
-// up with the sender; notes the connection's windows before closing it
+// Accepts one connection and reads it to the end, a tick apart, taking
+// everything there is each time; notes the connection's windows before
+// closing it. The tick stands in for a round trip: without it, on several
+// CPUs the acknowledgements come back so fast that the sender never uses
+// even a small window, and rightly nothing grows.
 static void grow_reader_entry(void) {
     int error = 0;
     tcp_socket_t *conn = tcp_accept(grow_listener, &error);
@@ -856,7 +859,7 @@ static void grow_reader_entry(void) {
         grow_peer_port = port;
         static uint8_t buf[65536];
         int64_t n;
-        while ((n = tcp_read(conn, buf, sizeof(buf))) > 0) {
+        while (sched_sleep_ticks(1), (n = tcp_read(conn, buf, sizeof(buf))) > 0) {
             for (int64_t i = 0; i < n; i++) {
                 if (buf[i] != pattern_byte(grow_bytes + (uint64_t)i)) grow_errors++;
             }
@@ -869,9 +872,10 @@ static void grow_reader_entry(void) {
     grow_done = 1;
 }
 
-// With scaling, a reader that keeps up and a writer with more to send, both
-// rings grow past what a 16-bit window could describe, up to TCP_BUFFER_MAX
-TEST(tcp_rings_grow_past_64k) {
+// With scaling, a sender held back by the window and a reader that empties
+// the ring each time, the receive ring grows past what a 16-bit window
+// could describe, up to TCP_BUFFER_MAX
+TEST(tcp_receive_ring_grows_past_64k) {
     size_t sockets_before = tcp_sockets_in_use();
     grow_done = 0; grow_bytes = 0; grow_errors = 0; grow_peer_port = 0;
     grow_listener = tcp_open();
@@ -890,11 +894,6 @@ TEST(tcp_rings_grow_past_64k) {
         sent += sizeof(chunk);
     }
     EXPECT_TRUE(sent == GROW_BYTES);
-    TEST_WAIT(grow_peer_port != 0, 100);
-    tcp_test_windows_t w;
-    EXPECT_TRUE(tcp_test_windows(grow_peer_port, 7111, &w));
-    EXPECT_TRUE(w.tx_size > 65536 && w.tx_size <= TCP_BUFFER_MAX);
-    kprintf("    sender's ring %u bytes, ", (unsigned)w.tx_size);
     tcp_close(client);
 
     TEST_WAIT(grow_done, 6000);
@@ -902,9 +901,77 @@ TEST(tcp_rings_grow_past_64k) {
     EXPECT_EQ(grow_done, 1);
     EXPECT_TRUE(grow_bytes == GROW_BYTES && grow_errors == 0);
     EXPECT_TRUE(grow_server_windows.rx_size > 65536 && grow_server_windows.rx_size <= TCP_BUFFER_MAX);
-    kprintf("receiver's %u; %lu ms for %u MiB\n", (unsigned)grow_server_windows.rx_size, elapsed_ms,
+    kprintf("    receiver's ring %u bytes; %lu ms for %u MiB\n", (unsigned)grow_server_windows.rx_size, elapsed_ms,
             (unsigned)(GROW_BYTES >> 20));
     tcp_close(grow_listener);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
+static tcp_socket_t *writer_conn;
+static volatile int writer_done;
+static volatile int64_t writer_result;
+
+// Writes GROW_BYTES to writer_conn, then says how it went
+static void ring_writer_entry(void) {
+    static uint8_t chunk[16384];
+    int64_t total = 0;
+    while (total < GROW_BYTES) {
+        int64_t n = tcp_write(writer_conn, chunk, sizeof(chunk));
+        if (n <= 0) { total = n; break; }
+        total += n;
+    }
+    writer_result = total;
+    writer_done = 1;
+}
+
+// The send ring grows when it is full while both windows would let more be
+// in flight. Over loopback the acknowledgements come back at once and the
+// ring never is, so the receiver is played by hand from port 40112: it
+// offers 8192 << 5 = 256 KiB, and once a tick acknowledges everything sent
+// a segment at a time (so that slow start doubles the congestion window
+// each round), while everything sent to it is dropped.
+TEST(tcp_send_ring_grows_past_64k) {
+    size_t sockets_before = tcp_sockets_in_use();
+    tcp_socket_t *listener = tcp_open();
+    EXPECT_TRUE(listener != NULL);
+    EXPECT_EQ(tcp_bind(listener, 7112), 0);
+    EXPECT_EQ(tcp_listen(listener, 1), 0);
+
+    const uint16_t peer = 40112;
+    const uint32_t s = 7000;                     // The peer's first sequence number
+    uint32_t rcv_nxt = 0, sent = 0, una = 0;
+    tcp_test_drop_every(1);
+    static const uint8_t scale_5[] = { 2, 4, 0x05, 0xB4, 1, 3, 3, 5 };
+    inject_syn(peer, 7112, s, scale_5, sizeof(scale_5));
+    TEST_WAIT(tcp_test_sequences(7112, peer, &rcv_nxt, &sent, &una) && sent == una + 1, 100);
+    inject(peer, 7112, s + 1, una + 1, 0x10, NULL, 0);             // ACK of the SYN+ACK
+    int error = 0;
+    writer_conn = tcp_accept(listener, &error);
+    EXPECT_TRUE(writer_conn != NULL);
+    writer_done = 0;
+    writer_result = 0;
+    EXPECT_TRUE(task_create("tcp_writer", ring_writer_entry) != NULL);
+
+    tcp_test_windows_t w = {0};
+    uint64_t deadline = timer_ticks() + 1000;
+    while (!writer_done && timer_ticks() < deadline) {
+        sched_sleep_ticks(1);
+        if (!tcp_test_sequences(7112, peer, &rcv_nxt, &sent, &una)) break;
+        for (uint32_t a = una + 1460; (int32_t)(a - sent) < 0; a += 1460) inject(peer, 7112, s + 1, a, 0x10, NULL, 0);
+        inject(peer, 7112, s + 1, sent, 0x10, NULL, 0);
+        tcp_test_windows(7112, peer, &w);
+    }
+    EXPECT_EQ(writer_done, 1);
+    EXPECT_TRUE(writer_result == GROW_BYTES);
+    EXPECT_TRUE(w.scaling && w.snd_shift == 5);
+    EXPECT_TRUE(w.tx_size > 65536 && w.tx_size <= TCP_BUFFER_MAX);
+    kprintf("    sender's ring %u bytes\n", (unsigned)w.tx_size);
+
+    tcp_close(writer_conn);
+    inject(peer, 7112, s + 1, 0, 0x04, NULL, 0);                    // A reset from the peer ends it
+    tcp_test_drop_every(0);
+    tcp_close(listener);
     wait_for_sockets_to_go(sockets_before);
     EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
 }
@@ -930,5 +997,6 @@ void test_suite_tcp(void) {
     RUN_TEST(tcp_sender_keeps_to_the_congestion_window);
     RUN_TEST(tcp_options_are_read);
     RUN_TEST(tcp_window_scaling_is_negotiated);
-    RUN_TEST(tcp_rings_grow_past_64k);
+    RUN_TEST(tcp_receive_ring_grows_past_64k);
+    RUN_TEST(tcp_send_ring_grows_past_64k);
 }
