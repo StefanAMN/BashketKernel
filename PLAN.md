@@ -2086,6 +2086,26 @@ plan:
     kept as its difference from the CMOS clock. The test allows 3 s at any
     uptime, and `time_of_day_is_put_right_by_the_cmos_clock` puts the clock
     10 s out each way (a check that measures without correcting fails it).
+13. (Found and fixed 2026-10-26.) A `/proc` file was made afresh for every
+    `read()`, so a program that read one in small pieces got pieces of
+    different moments: a process whose `State:` changed length between two
+    reads shifted every line after it (a unit test reading a status in
+    7-byte pieces lost the `Pid:` line, and found `PPid:` instead, on four
+    CPUs). Now the text is taken once, at the first read, and kept with
+    the open file until it is closed, as Linux's `seq_file` does. A
+    `/proc` node gives a `snapshot` operation (the whole text, in a buffer
+    of its own) instead of `read`; `file_read` keeps that buffer in the
+    `file_t` and serves every read from it, and `file_close` frees it, so a
+    process killed with the file open gives it back with its other files.
+    A read at position 0 (after `lseek` back, or the first) takes a new
+    one, so a program that rewinds sees the present. `/proc/kmsg` too:
+    the log is a ring, and once full its offsets move under a reader.
+    Readers without an open file (`vfs_read`: the kernel shell's
+    `cat` used it, and now opens the file) get one snapshot per call.
+    Tests: `proc_status_read_in_pieces_is_one_moment` renames a sleeping
+    process between 7-byte reads, `proc_snapshot_is_freed_with_the_file`
+    counts heap bytes after a close and after a kill, and syscheck grows
+    its own heap between reads of `/proc/self/status`.
 
 ---
 

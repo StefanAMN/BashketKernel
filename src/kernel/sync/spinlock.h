@@ -29,6 +29,7 @@
 enum {
     LOCK_RANK_NONE = 0,
     LOCK_RANK_FS       = 10, // File system trees and volumes
+    LOCK_RANK_FILE_SNAPSHOT = 15, // The /proc texts kept with open files (takes nothing under it)
     LOCK_RANK_NET      = 20, // Network stack tables and sockets
     LOCK_RANK_IPC      = 30, // Shared memory segments
     LOCK_RANK_PIPE     = 40,
