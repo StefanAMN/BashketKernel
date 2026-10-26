@@ -15,6 +15,8 @@
 #include "kerrno.h"
 #include "random.h"
 #include "poll.h"
+#include "ipfrag.h"
+#include "timer.h"
 
 #define ETHERTYPE_IPV4 0x0800
 #define ETHERTYPE_ARP  0x0806
@@ -191,7 +193,10 @@ uint32_t net_source_for(uint32_t dst) {
 
 // The UDP and TCP checksums also cover a "pseudo header" of fields from the
 // IP header: both addresses, the protocol number and the segment length
-uint16_t net_transport_checksum(uint8_t protocol, uint32_t src_ip, uint32_t dst_ip, const void *segment, size_t len) {
+//
+// pseudo_header_sum is the sum of that header alone, for a segment of `len`
+// bytes, to which the segment's own bytes are then added
+static uint32_t pseudo_header_sum(uint8_t protocol, uint32_t src_ip, uint32_t dst_ip, size_t len) {
     uint8_t pseudo[12];
     uint32_t src = htonl(src_ip), dst = htonl(dst_ip);
     uint16_t length = htons((uint16_t)len);
@@ -200,7 +205,11 @@ uint16_t net_transport_checksum(uint8_t protocol, uint32_t src_ip, uint32_t dst_
     pseudo[8] = 0;
     pseudo[9] = protocol;
     memcpy(pseudo + 10, &length, 2);
-    return checksum_finish(checksum_add(checksum_add(0, pseudo, sizeof(pseudo)), segment, len));
+    return checksum_add(0, pseudo, sizeof(pseudo));
+}
+
+uint16_t net_transport_checksum(uint8_t protocol, uint32_t src_ip, uint32_t dst_ip, const void *segment, size_t len) {
+    return checksum_finish(checksum_add(pseudo_header_sum(protocol, src_ip, dst_ip, len), segment, len));
 }
 
 // The UDP checksum of a datagram (header and payload) between two addresses
@@ -394,41 +403,50 @@ int net_set_config(const net_config_t *config) {
 
 static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac);
 
-// Send `len` bytes of `payload` as an IPv4 packet. `can_block` says whether
-// the caller may sleep waiting for an ARP answer (the receive thread may not:
-// it is the one that would process the answer).
-static int ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t len, bool can_block) {
+#define IPV4_SEND_WAIT_TICKS 20 // How long a burst of fragments may wait for the card
+
+// Hand one frame to the card. When its send buffers are all in flight and
+// the caller may sleep, wait a tick at a time (up to IPV4_SEND_WAIT_TICKS)
+// for the card to finish some: a fragmented datagram is a burst of frames,
+// longer than the card has buffers for, and losing one fragment loses all.
+static int send_frame(const void *frame, size_t len, bool can_block) {
+    for (int waited = 0; virtio_net_send(frame, len) != 0; waited++) {
+        if (!can_block || waited >= IPV4_SEND_WAIT_TICKS) return -ENETDOWN;
+        if (!sched_sleep_ticks(1)) return -EINTR;
+    }
+    return 0;
+}
+
+// Send `head_len` bytes of `head` followed by `body_len` bytes of `body` as
+// the payload of one IPv4 datagram (two parts, so that a transport header
+// need not be copied in front of the data first). A datagram that does not
+// fit in one frame goes as fragments (RFC 791, 2.3): each carries the same
+// identification, the offset of its data in units of 8 bytes, and "more
+// fragments" on all but the last. One that fits keeps "don't fragment", so
+// that a router with a smaller link refuses it instead of cutting it up
+// (TCP sizes its segments to fit). `can_block` says whether the caller may
+// sleep waiting for an ARP answer or for the card (the receive thread may
+// not: it is the one that would process the answer).
+static int ipv4_send_parts(uint32_t dst, uint8_t protocol, const void *head, size_t head_len,
+                           const void *body, size_t body_len, bool can_block) {
     if (!up) return -ENETDOWN;
-    if (len > 1500 - sizeof(struct ipv4_header)) return -EMSGSIZE;
+    size_t len = head_len + body_len;
+    if (len > IPV4_PAYLOAD_MAX) return -EMSGSIZE;
 
     uint8_t frame[ETH_FRAME_MAX];
     struct eth_header *eth = (struct eth_header *)frame;
     struct ipv4_header *ip = (struct ipv4_header *)(frame + sizeof(*eth));
+    // Shared by every CPU: two datagrams given the same number would be
+    // mixed up by a receiver reassembling both
     static uint16_t next_id = 1;
-
-    ip->version_ihl = 0x45;                // IPv4, 5 words (20 bytes) of header
-    ip->tos = 0;
-    ip->total_length = htons((uint16_t)(sizeof(*ip) + len));
-    ip->id = htons(next_id++);
-    ip->flags_fragment = htons(0x4000);    // "Don't fragment"
-    ip->ttl = 64;
-    ip->protocol = protocol;
-    ip->checksum = 0;
-    ip->src = htonl(net_source_for(dst));
-    ip->dst = htonl(dst);
-    ip->checksum = htons(net_checksum(ip, sizeof(*ip)));
-    memcpy(frame + sizeof(*eth) + sizeof(*ip), payload, len);
+    uint16_t id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
 
     uint32_t our_ip = local_ip, netmask = local_netmask;
+    bool loopback = (our_ip != 0 && dst == our_ip) || (dst >> 24) == 127;
 
-    // To ourselves: no need to involve the card
-    if ((our_ip != 0 && dst == our_ip) || (dst >> 24) == 127) {
-        ipv4_input(frame + sizeof(*eth), sizeof(*ip) + len, our_mac);
-        return 0;
-    }
-
-    bool broadcast = dst == NET_BROADCAST || (our_ip != 0 && dst == (our_ip | ~netmask));
-    if (broadcast) {
+    if (loopback) {
+        // To ourselves: no need to involve the card
+    } else if (dst == NET_BROADCAST || (our_ip != 0 && dst == (our_ip | ~netmask))) {
         // To everyone on the wire: no address to look up
         memcpy(eth->dst, broadcast_mac, 6);
     } else if (our_ip == 0) {
@@ -441,10 +459,54 @@ static int ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t
         int err = arp_resolve(next_hop, eth->dst, can_block);
         if (err != 0) return err;
     }
-
     memcpy(eth->src, our_mac, 6);
     eth->ethertype = htons(ETHERTYPE_IPV4);
-    return virtio_net_send(frame, sizeof(*eth) + sizeof(*ip) + len) == 0 ? 0 : -ENETDOWN;
+
+    // The largest multiple of 8 that fits after the header: every fragment
+    // but the last carries exactly that much
+    const size_t per_fragment = (1500 - sizeof(*ip)) & ~(size_t)7;
+    bool fragmented = len > 1500 - sizeof(*ip);
+    if (fragmented) stats.fragmented_sent++;
+
+    size_t offset = 0;
+    do {
+        size_t n = len - offset < per_fragment ? len - offset : per_fragment;
+        bool more = offset + n < len;
+
+        ip->version_ihl = 0x45;            // IPv4, 5 words (20 bytes) of header
+        ip->tos = 0;
+        ip->total_length = htons((uint16_t)(sizeof(*ip) + n));
+        ip->id = htons(id);
+        ip->flags_fragment = htons(fragmented ? (uint16_t)((more ? 0x2000 : 0) | (offset / 8))
+                                              : 0x4000); // "More fragments" and the offset, or "don't fragment"
+        ip->ttl = 64;
+        ip->protocol = protocol;
+        ip->checksum = 0;
+        ip->src = htonl(net_source_for(dst));
+        ip->dst = htonl(dst);
+        ip->checksum = htons(net_checksum(ip, sizeof(*ip)));
+
+        // This fragment's share of head and body
+        uint8_t *out = frame + sizeof(*eth) + sizeof(*ip);
+        size_t from_head = offset < head_len ? head_len - offset : 0;
+        if (from_head > n) from_head = n;
+        if (from_head) memcpy(out, (const uint8_t *)head + offset, from_head);
+        if (n > from_head) memcpy(out + from_head, (const uint8_t *)body + (offset + from_head - head_len), n - from_head);
+
+        if (loopback) {
+            ipv4_input(frame + sizeof(*eth), sizeof(*ip) + n, our_mac);
+        } else {
+            int err = send_frame(frame, sizeof(*eth) + sizeof(*ip) + n, can_block);
+            if (err != 0) return err;
+        }
+        offset += n;
+    } while (offset < len);
+    return 0;
+}
+
+// Send `len` bytes of `payload` as one IPv4 datagram (ipv4_send_parts)
+static int ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t len, bool can_block) {
+    return ipv4_send_parts(dst, protocol, payload, len, NULL, 0, can_block);
 }
 
 int net_ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t len, bool can_block) {
@@ -458,15 +520,18 @@ static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
     const struct icmp_header *icmp = (const struct icmp_header *)data;
 
     if (icmp->type == ICMP_ECHO_REQUEST && icmp->code == 0) {
-        // The reply is the request with the type changed and the checksum redone
-        uint8_t reply[1500 - sizeof(struct ipv4_header)];
-        if (len > sizeof(reply)) { stats.dropped++; return; }
+        // The reply is the request with the type changed and the checksum
+        // redone (as long as the request was: up to 64 KiB, if it came in
+        // fragments, and goes back the same way)
+        uint8_t *reply = kmalloc(len);
+        if (!reply) { stats.dropped++; return; }
         memcpy(reply, data, len);
         struct icmp_header *out = (struct icmp_header *)reply;
         out->type = ICMP_ECHO_REPLY;
         out->checksum = 0;
         out->checksum = htons(net_checksum(reply, len));
         if (ipv4_send(src, IP_PROTO_ICMP, reply, len, false) == 0) stats.echo_replies_sent++;
+        kfree(reply);
     } else if (icmp->type == ICMP_ECHO_REPLY) {
         uint64_t flags = spinlock_acquire_irqsave(&net_lock);
         for (size_t i = 0; i < sizeof(pings) / sizeof(pings[0]); i++) {
@@ -534,8 +599,16 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
     }
 }
 
-// A received IPv4 packet (header checked, fragments refused): hand its
-// payload to ICMP, UDP or TCP if it is for us
+// Hand a datagram's payload to ICMP, UDP or TCP
+static void deliver(uint8_t protocol, uint32_t src, uint32_t dst, const uint8_t *payload, size_t len) {
+    if (protocol == IP_PROTO_ICMP) icmp_input(src, payload, len);
+    else if (protocol == IP_PROTO_UDP) udp_input(src, dst, payload, len);
+    else if (protocol == IP_PROTO_TCP) tcp_input(src, dst, payload, len);
+    else stats.dropped++;
+}
+
+// A received IPv4 packet: check its header, and if it is for us hand its
+// payload on, or to reassembly first if it is a fragment
 static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac) {
     if (len < sizeof(struct ipv4_header)) { stats.dropped++; return; }
     const struct ipv4_header *ip = (const struct ipv4_header *)packet;
@@ -549,7 +622,6 @@ static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac
         stats.dropped++;
         return;
     }
-    if (ntohs(ip->flags_fragment) & 0x3FFF) { stats.dropped++; return; } // A fragment: not supported
     // For us? Our address, a loopback address, or a broadcast. While we
     // have no address, whatever reached our card is for us: a DHCP server
     // answers to the address it is about to give out.
@@ -569,10 +641,28 @@ static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac
     const uint8_t *payload = packet + header_len;
     size_t payload_len = total_len - header_len;
 
-    if (ip->protocol == IP_PROTO_ICMP) icmp_input(src, payload, payload_len);
-    else if (ip->protocol == IP_PROTO_UDP) udp_input(src, ntohl(ip->dst), payload, payload_len);
-    else if (ip->protocol == IP_PROTO_TCP) tcp_input(src, ntohl(ip->dst), payload, payload_len);
-    else stats.dropped++;
+    // Bits 15..13 of the field: reserved, "don't fragment", "more
+    // fragments"; bits 12..0: the offset in units of 8 bytes. A packet with
+    // more to come or a non-zero offset is a fragment.
+    uint16_t fragment = ntohs(ip->flags_fragment);
+    bool more = fragment & 0x2000;
+    size_t offset = (size_t)(fragment & 0x1FFF) * 8;
+    if (!more && offset == 0) {
+        deliver(ip->protocol, src, to, payload, payload_len);
+        return;
+    }
+
+    size_t whole_len = 0;
+    bool started = false;
+    uint8_t *whole = ipfrag_input(src, to, ip->protocol, ntohs(ip->id), offset, more,
+                                  payload, payload_len, timer_ticks(), &whole_len, &started);
+    // A new datagram brings a new deadline, which the receive thread must
+    // wait for (it is the one that gives up incomplete datagrams)
+    if (started) virtio_net_wake_rx();
+    if (whole) {
+        deliver(ip->protocol, src, to, whole, whole_len);
+        kfree(whole);
+    }
 }
 
 void net_handle_frame(const uint8_t *frame, size_t len) {
@@ -723,18 +813,20 @@ int64_t udp_sendto(udp_socket_t *sock, uint32_t ip, uint16_t port, const void *d
     spinlock_release_irqrestore(&net_lock, flags);
     if (src_port == 0) return -EADDRINUSE;
 
-    uint8_t packet[sizeof(struct udp_header) + UDP_PAYLOAD_MAX];
-    struct udp_header *udp = (struct udp_header *)packet;
-    udp->src_port = htons(src_port);
-    udp->dst_port = htons(port);
-    udp->length = htons((uint16_t)(sizeof(*udp) + len));
-    udp->checksum = 0;
-    memcpy(packet + sizeof(*udp), data, len);
+    // The header goes in front of the data as the datagram is cut into
+    // frames, so the data (up to 64 KiB) is not copied an extra time here
+    struct udp_header udp;
+    udp.src_port = htons(src_port);
+    udp.dst_port = htons(port);
+    udp.length = htons((uint16_t)(sizeof(udp) + len));
+    udp.checksum = 0;
 
-    uint16_t checksum = udp_checksum(net_source_for(ip), ip, packet, sizeof(*udp) + len);
-    udp->checksum = htons(checksum == 0 ? 0xFFFF : checksum); // 0 on the wire means "none"
+    // The header's length is even, so the data's sum can follow it
+    uint32_t sum = pseudo_header_sum(IP_PROTO_UDP, net_source_for(ip), ip, sizeof(udp) + len);
+    uint16_t checksum = checksum_finish(checksum_add(checksum_add(sum, &udp, sizeof(udp)), data, len));
+    udp.checksum = htons(checksum == 0 ? 0xFFFF : checksum); // 0 on the wire means "none"
 
-    int err = ipv4_send(ip, IP_PROTO_UDP, packet, sizeof(*udp) + len, true);
+    int err = ipv4_send_parts(ip, IP_PROTO_UDP, &udp, sizeof(udp), data, len, true);
     return err == 0 ? (int64_t)len : err;
 }
 
@@ -773,8 +865,8 @@ int64_t udp_recvfrom(udp_socket_t *sock, void *buf, size_t len, uint32_t *src_ip
 
 // --- Start-up --------------------------------------------------------------------
 
-// The receive thread: hand every arriving frame to the stack, sleep when
-// there are none.
+// The receive thread: hand every arriving frame to the stack, give up
+// fragmented datagrams that took too long, sleep when there is nothing to do.
 static void netd(void) {
     static uint8_t frame[ETH_FRAME_MAX];
     for (;;) {
@@ -783,7 +875,9 @@ static void netd(void) {
             net_handle_frame(frame, len);
         }
 
-        virtio_net_wait_rx();
+        // Datagrams whose fragments did not all come in time are given up
+        // here, so the thread wakes for the next such deadline too
+        virtio_net_wait_rx(ipfrag_expire(timer_ticks()));
     }
 }
 

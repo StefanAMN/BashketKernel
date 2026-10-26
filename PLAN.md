@@ -1988,7 +1988,7 @@ a shift above 14 clamped); `make test-net` against the host's TCP (which
 scales), with the transfer time before and after written down; the
 reassembly and congestion tests of O1 and P1 keep passing.
 
-### S3. IPv4 fragments (M)
+### S3. IPv4 fragments (M) — done
 
 Fragments are dropped on arrival, and nothing larger than the link's MTU
 can be sent ("don't fragment" is set). Reassemble arriving fragments
@@ -1998,6 +1998,25 @@ unit tests (out of order, duplicates, overlaps, a missing piece timing
 out, the memory limit); `tools/test_net.py` exchanges an 8 KiB UDP
 datagram with the host in both directions (the host's stack fragments and
 reassembles: something we did not write).
+
+Done (`src/net/ipfrag.c`; `ipv4_send_parts` in `net.c`). The holes of RFC
+815 are the gaps between the pieces held, kept in order of offset; a
+fragment must fall inside one. An exact repeat is ignored, any other
+overlap gives up the datagram, as does a second end, data beyond the end,
+an end past 65,515 bytes, or a non-final fragment that is not a multiple
+of 8 bytes. At most 8 datagrams and 256 KiB are in progress (each piece
+charged 32 bytes besides its data), and the oldest gives way. A datagram
+not complete 30 s after its first fragment is given up by the receive
+thread, which now waits for that deadline as well as for frames. UDP
+datagrams go up to 65,507 bytes; `sendto` and `recvfrom` copy through a
+buffer the task owns, since 64 KiB does not fit on a kernel stack. The
+IPv4 identification is now taken atomically: two CPUs could give two
+datagrams the same number, which reassembly would mix. Sabotage: no
+overlap check failed five checks; the receive thread not told of a new
+deadline failed the timeout check; no memory limit failed two; fragments
+not a multiple of 8 failed the 64 KiB loopback test and syscheck; no
+reassembled datagram delivered failed `make test-net` ("echoed 2 of 3").
+Not done: the ICMP "reassembly time exceeded" message (RFC 1122, 3.3.2).
 
 ### S4. `set -- ARGS`, `$*` and `getopts` in the shell (S) — done
 
@@ -2117,8 +2136,8 @@ R2                               done
 R3                               done
         |
 S4                               done
-S1                               done
-S3, S2                           next (planned, not started)
+S1, S3                           done
+S2                               next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on

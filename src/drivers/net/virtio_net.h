@@ -58,9 +58,17 @@ size_t virtio_net_poll(void *frame, size_t max);
 
 /**
  * @brief Sleep (uninterruptibly: for the receive thread) until the card has
- *        a received frame waiting.
+ *        a received frame waiting, virtio_net_wake_rx is called, or the
+ *        timer reaches `deadline` (in ticks; 0: no limit).
  */
-void virtio_net_wait_rx(void);
+void virtio_net_wait_rx(uint64_t deadline);
+
+/**
+ * @brief Make the receive thread's virtio_net_wait_rx return (once) even
+ *        though nothing arrived: it has a new deadline to take into account.
+ *        Takes the card's lock; may be called from any task.
+ */
+void virtio_net_wake_rx(void);
 
 /**
  * @brief Frames received since boot.

@@ -13,9 +13,9 @@
  *
  * The configuration is fixed: address 10.0.2.15, netmask 255.255.255.0,
  * gateway 10.0.2.2, which is what QEMU's user-mode network provides. There
- * is no DHCP, no TCP, no IPv6, no fragmentation (larger datagrams are
- * refused or dropped) and no routing table beyond "local network or
- * gateway".
+ * is no IPv6 and no routing table beyond "local network or gateway".
+ * Datagrams larger than a frame are sent in fragments and reassembled on
+ * arrival (ipfrag.h).
  *
  * Received frames are handled by a kernel thread (netd). Everything in a
  * received frame is untrusted and checked against the frame's real length.
@@ -52,7 +52,7 @@ typedef struct {
     uint8_t padding[2];
 } net_config_t;
 
-#define UDP_PAYLOAD_MAX 1472   // 1500 (Ethernet payload) - 20 (IPv4 header) - 8 (UDP header)
+#define UDP_PAYLOAD_MAX 65507  // 65535 (IPv4 total length) - 20 (IPv4 header) - 8 (UDP header): sent in fragments above 1472
 #define UDP_QUEUE_BYTES 65536  // What a socket holds before new datagrams are dropped: each
                                // costs its payload plus UDP_DATAGRAM_OVERHEAD, so that
                                // empty ones are not free
@@ -68,6 +68,7 @@ typedef struct {
     uint64_t udp_delivered;      // Datagrams put on a socket's queue
     uint64_t udp_no_socket;      // Datagrams for a port nobody listens on
     uint64_t udp_queue_full;
+    uint64_t fragmented_sent;    // Datagrams sent in fragments (ipfrag.h has the receiving side's counters)
 } net_stats_t;
 
 typedef struct udp_socket udp_socket_t;
