@@ -69,6 +69,9 @@ typedef struct {
     uint64_t udp_no_socket;      // Datagrams for a port nobody listens on
     uint64_t udp_queue_full;
     uint64_t fragmented_sent;    // Datagrams sent in fragments (ipfrag.h has the receiving side's counters)
+    uint64_t icmp_errors_sent;   // Unreachable and time exceeded messages we sent
+    uint64_t icmp_errors_limited; // ... and did not send, over the rate limit
+    uint64_t icmp_errors_received;
 } net_stats_t;
 
 typedef struct udp_socket udp_socket_t;

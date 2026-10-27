@@ -87,6 +87,8 @@ typedef struct {
     uint64_t partial_acks;       // Partial acknowledgements in recovery (RFC 6582)
     uint64_t cwnd_timeouts;      // Timer expiries that set a congestion window to one segment
     uint64_t dropped_for_test;   // See tcp_test_drop_every
+    uint64_t icmp_errors;        // ICMP errors that matched a connection and were acted on
+    uint64_t icmp_ignored;       // ... and those that did not
 } tcp_stats_t;
 
 // --- Pieces with no state of their own, public for the tests ---
@@ -204,6 +206,20 @@ void tcp_init(void);
  * @brief A segment from the IP layer.
  */
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len);
+
+/**
+ * @brief An ICMP error (type, code) quoting a segment we sent to
+ *        remote_ip from local_port to remote_port with sequence number
+ *        `seq`. Believed only if that names a connection and a sequence
+ *        number it has in flight (RFC 5927 4.1: anyone can send ICMP).
+ *        Destination unreachable codes 2 to 4 (protocol, port,
+ *        fragmentation needed) end the connection (RFC 1122 4.2.3.9:
+ *        ECONNREFUSED, or EMSGSIZE for the last); other unreachable codes
+ *        are remembered and become the error if the connection then times
+ *        out (EHOSTUNREACH, ENETUNREACH). Takes tcp_lock; never sends.
+ */
+void tcp_icmp_error(uint32_t remote_ip, uint16_t local_port, uint16_t remote_port, uint32_t seq,
+                    uint8_t type, uint8_t code);
 
 /**
  * @brief A new, unconnected socket (NULL if there are none left).
