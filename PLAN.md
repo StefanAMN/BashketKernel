@@ -2140,6 +2140,15 @@ plan:
     kept as its difference from the CMOS clock. The test allows 3 s at any
     uptime, and `time_of_day_is_put_right_by_the_cmos_clock` puts the clock
     10 s out each way (a check that measures without correcting fails it).
+13. A `/proc` file is made afresh for every `read()`, so a program that
+    reads one in small pieces gets pieces of different moments: a process
+    whose `State:` changes length between two reads shifts every line
+    after it. Found 2026-10-26 when a unit test reading a status in 7-byte
+    pieces lost the `Pid:` line (and found `PPid:` instead) on four CPUs;
+    the tests now read a running process's status in one call, as `cat`
+    and `top` do. The fix is a copy made at the first read and kept with
+    the open file until it is closed (as Linux's `seq_file` does), which
+    needs a place for per-open state that `vnode_ops` reads do not have.
 
 ---
 
