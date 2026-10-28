@@ -2310,7 +2310,8 @@ Tests: syscheck's `check_threads_*`; `user/threads.c` on 2, 4 and 8 CPUs in
 the fuzzer's children start threads that make calls too. Not shown by any test
 (the reasoning rests on the code): `process_keep_private` after a `fork` beside
 another thread's call, swap keeping other threads' ranges, and a page fault
-looking again after reading a file (removing that passes every test).
+looking again after reading a file, and the lock in `fd_install` (removing
+either passes every test; the second's window is a few instructions wide).
 
 ---
 
