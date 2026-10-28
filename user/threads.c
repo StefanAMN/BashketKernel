@@ -131,6 +131,61 @@ static void check_churn(void) {
     }
 }
 
+#define RACERS 2
+
+static volatile long race_round;
+static volatile int race_ready;
+static volatile int race_op;           /* 0: close race_fd; 1: dup descriptor 0 */
+static volatile long race_fd;
+static volatile int race_closed;
+static volatile long race_dups[RACERS];
+
+/* At each new round, do the round's one call at the same moment as the other */
+static int racer(void *arg) {
+    long me = (long)arg, seen = 0;
+    for (;;) {
+        while (race_round == seen) yield();
+        seen = race_round;
+        if (seen < 0) return 0;
+        __atomic_add_fetch(&race_ready, 1, __ATOMIC_ACQ_REL);
+        while (race_ready < RACERS) {}
+        if (race_op == 0) {
+            if (close((int)race_fd) == 0) __atomic_add_fetch(&race_closed, 1, __ATOMIC_ACQ_REL);
+        } else {
+            race_dups[me] = dup(0);
+        }
+        __atomic_add_fetch(&race_ready, 1, __ATOMIC_ACQ_REL);
+    }
+}
+
+/* Start one round and wait for both racers to have made their call */
+static void race(int op) {
+    race_op = op;
+    race_ready = 0;
+    race_round++;
+    while (race_ready < 2 * RACERS) yield();
+}
+
+/* Of two threads closing one descriptor exactly one succeeds; two taking the
+ * lowest free one at once get different ones */
+static void check_descriptor_races(void) {
+    thread_t t[RACERS];
+    race_round = 0;
+    for (long i = 0; i < RACERS; i++) if (thread_create(&t[i], racer, (void *)i) != 0) fail("thread_create");
+    for (long round = 0; round < 500 * rounds; round++) {
+        race_fd = dup(0);
+        race_closed = 0;
+        race(0);
+        if (race_closed != 1) fail("one descriptor closed twice, or not at all");
+        race(1);
+        if (race_dups[0] < 0 || race_dups[0] == race_dups[1]) fail("two threads were given one descriptor");
+        close((int)race_dups[0]);
+        if (race_dups[1] != race_dups[0]) close((int)race_dups[1]);
+    }
+    race_round = -1;
+    for (int i = 0; i < RACERS; i++) thread_join(&t[i], 0);
+}
+
 static volatile char *watched;
 
 /* Read the same byte for ever: only a fault can end this */
@@ -164,6 +219,7 @@ int main(int argc, char **argv) {
     if (argc > 1) rounds = atoi(argv[1]);
     for (long i = 0; i < rounds; i++) check_first_touch();
     check_fork_snapshot();
+    check_descriptor_races();
     check_churn();
     check_unmap_reaches_other_cpus();
     if (failed) return 1;

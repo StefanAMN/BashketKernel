@@ -2309,7 +2309,8 @@ Tests: syscheck's `check_threads_*`; `user/threads.c` on 2, 4 and 8 CPUs in
 `make test-smp`; `threads_leave_nothing_behind` counts frames and heap bytes;
 the fuzzer's children start threads that make calls too. Not shown by any test
 (the reasoning rests on the code): `process_keep_private` after a `fork` beside
-another thread's call, and swap keeping other threads' ranges.
+another thread's call, swap keeping other threads' ranges, and a page fault
+looking again after reading a file (removing that passes every test).
 
 ---
 
