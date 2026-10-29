@@ -384,14 +384,14 @@ TEST(proc_status_read_in_pieces_is_one_moment) {
         read_in_pieces(file, text + first, sizeof(text) - first);
         EXPECT_TRUE(strstr(text, "Name:\tsleep\n") == text);
         EXPECT_EQ(occurrences(text, "State:\t"), 1);
-        EXPECT_EQ(occurrences(text, "\n"), 21);           // Every line of the status, once
+        EXPECT_EQ(occurrences(text, "\n"), 22);           // Every line of the status, once
         EXPECT_EQ(number_after(text, "\nPid:\t"), (int64_t)pid);
         EXPECT_TRUE(strstr(text, "\nSyscall:\t") != NULL);
 
         EXPECT_EQ(file_seek(file, 0, SEEK_SET), 0);
         read_in_pieces(file, text, sizeof(text));
         EXPECT_TRUE(strstr(text, "Name:\tsleep-with-a-longer-name\n") == text);
-        EXPECT_EQ(occurrences(text, "\n"), 21);
+        EXPECT_EQ(occurrences(text, "\n"), 22);
         file_close(file);
     }
 

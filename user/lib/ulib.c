@@ -352,6 +352,68 @@ long socket(int type)                               { return syscall1(SYS_SOCKET
 long socketpair(int fds[2])                         { return syscall1(SYS_SOCKETPAIR, fds); }
 long local_listen(const char *path, int backlog)    { return syscall2(SYS_LOCAL_LISTEN, path, backlog); }
 long local_connect(const char *path)                { return syscall1(SYS_LOCAL_CONNECT, path); }
+
+#define THREAD_STACK_SIZE (256 * 1024)
+
+/* What a new thread needs to know, at the top of its own stack */
+struct thread_start_args {
+    int (*fn)(void *);
+    void *arg;
+};
+
+/* First code of a new thread: the kernel gives it its one argument */
+static void thread_entry(struct thread_start_args *start) {
+    thread_exit(start->fn(start->arg));
+}
+
+long thread_create(thread_t *thread, int (*fn)(void *), void *arg) {
+    char *stack = mmap_anon(THREAD_STACK_SIZE);
+    if (!stack) return -ENOMEM;
+
+    /* The arguments sit at the top. RSP on entry looks as after a call: 8
+       past a multiple of 16 */
+    unsigned long top = ((unsigned long)stack + THREAD_STACK_SIZE - sizeof(struct thread_start_args)) & ~15UL;
+    struct thread_start_args *start = (struct thread_start_args *)top;
+    start->fn = fn;
+    start->arg = arg;
+    long tid = syscall3(SYS_THREAD_CREATE, thread_entry, top - 8, start);
+    if (tid < 0) {
+        munmap(stack, THREAD_STACK_SIZE);
+        return tid;
+    }
+    thread->tid = tid;
+    thread->stack = stack;
+    return 0;
+}
+
+long thread_join(thread_t *thread, int *status) {
+    long result = syscall2(SYS_THREAD_JOIN, thread->tid, status);
+    if (result == 0) munmap(thread->stack, THREAD_STACK_SIZE);
+    return result;
+}
+
+void thread_exit(int status) {
+    syscall1(SYS_THREAD_EXIT, status);
+    for (;;) {}
+}
+
+long gettid(void)                                   { return syscall0(SYS_GETTID); }
+long futex_wait(volatile unsigned *addr, unsigned expected, unsigned long timeout_ms) { return syscall3(SYS_FUTEX_WAIT, addr, expected, timeout_ms); }
+long futex_wake(volatile unsigned *addr, long count) { return syscall2(SYS_FUTEX_WAKE, addr, count); }
+
+/* The word says 0 free, 1 taken, 2 taken and someone may be waiting: an
+   unlock only enters the kernel if it could have someone to wake */
+void thread_mutex_lock(thread_mutex_t *mutex) {
+    unsigned expected = 0;
+    if (__atomic_compare_exchange_n(&mutex->state, &expected, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+    while (__atomic_exchange_n(&mutex->state, 2, __ATOMIC_ACQUIRE) != 0) {
+        futex_wait(&mutex->state, 2, 0);
+    }
+}
+
+void thread_mutex_unlock(thread_mutex_t *mutex) {
+    if (__atomic_exchange_n(&mutex->state, 0, __ATOMIC_RELEASE) == 2) futex_wake(&mutex->state, 1);
+}
 long connect(int fd, uint32_t ip, unsigned port)    { return syscall3(SYS_CONNECT, fd, ip, port); }
 long listen(int fd, int backlog)                    { return syscall2(SYS_LISTEN, fd, backlog); }
 long shutdown(int fd)                               { return syscall1(SYS_SHUTDOWN, fd); }
@@ -660,7 +722,8 @@ const char *strerror(long err) {
         case ECHILD:    return "no child processes";
         case ENOMEM:    return "out of memory";
         case EFAULT:    return "bad address";
-        case EBUSY:     return "file is in use";
+        case EAGAIN:    return "try again";
+        case EBUSY:     return "in use";
         case ETXTBSY:   return "a running program's file, or a program open for writing";
         case ENOTTY:  return "not a terminal of this session";
         case EEXIST:    return "file exists";

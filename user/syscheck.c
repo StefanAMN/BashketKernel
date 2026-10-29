@@ -1684,6 +1684,378 @@ static void local_echo_server(long listener) {
     exit(0);
 }
 
+/* What the thread checks share */
+static volatile int thread_flag;
+static volatile long thread_seen_tid;
+static int thread_fds[2];
+static char *thread_buffer;
+static thread_mutex_t thread_mutex;
+static volatile unsigned long thread_count;
+static volatile unsigned thread_word;
+static volatile long thread_word_null = 8;   /* An address nothing is mapped at (a variable: the compiler would refuse a constant) */
+
+/* Write into `out` (room for 32 bytes) `before`, the number, `after` */
+static void number_text(char *out, const char *before, long number, const char *after) {
+    char digits[24];
+    int n = 0;
+    do {
+        digits[n++] = (char)('0' + number % 10);
+        number /= 10;
+    } while (number > 0);
+    while (*before) *out++ = *before++;
+    while (n > 0) *out++ = digits[--n];
+    while (*after) *out++ = *after++;
+    *out = 0;
+}
+
+/* Whether thread `tid` of this process is asleep in system call `number` (5
+ * seconds at most, as wait_in_syscall). Asleep, not only inside: a thread just
+ * in futex_wait has not read the word yet, and one just in read has not
+ * recorded its buffer. Both looked ready to the checks that followed. */
+static int wait_thread_in_syscall(long tid, long number) {
+    char text[512];
+    char want[32], call[32];
+    number_text(want, "", tid, " blocked ");
+    number_text(call, " ", number, "\n");
+    for (int tries = 0; tries < 500; tries++) {
+        long fd = open("/proc/self/threads", O_RDONLY);
+        long got = fd >= 0 ? read((int)fd, text, sizeof(text) - 1) : -1;
+        if (fd >= 0) close((int)fd);
+        if (got > 0) {
+            text[got] = 0;
+            for (const char *line = text; *line; ) {
+                const char *end = line;
+                while (*end && *end != '\n') end++;
+                size_t len = (size_t)(end - line) + 1;
+                if (strncmp(line, want, strlen(want)) == 0 && len >= strlen(call) &&
+                    strncmp(end + 1 - strlen(call), call, strlen(call)) == 0) return 1;
+                line = *end ? end + 1 : end;
+            }
+        }
+        sleep_ms(10);
+    }
+    return 0;
+}
+
+/* Exits with what was asked, seeing what the creator wrote */
+static int thread_returns(void *arg) {
+    thread_seen_tid = gettid();
+    thread_flag = (int)(long)arg;
+    return (int)(long)arg + 1;
+}
+
+/* Count under a lock, many times */
+static int thread_counts(void *unused) {
+    (void)unused;
+    for (int i = 0; i < 5000; i++) {
+        thread_mutex_lock(&thread_mutex);
+        unsigned long c = thread_count;
+        if (i % 512 == 0) yield();
+        thread_count = c + 1;
+        thread_mutex_unlock(&thread_mutex);
+    }
+    return 0;
+}
+
+/* Wait for the first thread to have ended, then end with status 5: the last
+ * thread's is the process's */
+static int thread_outlives_first(void *unused) {
+    (void)unused;
+    char text[256];
+    for (int tries = 0; tries < 500; tries++) {
+        long fd = open("/proc/self/threads", O_RDONLY);
+        long got = fd >= 0 ? read((int)fd, text, sizeof(text) - 1) : -1;
+        if (fd >= 0) close((int)fd);
+        if (got > 0) {
+            text[got] = 0;
+            if (has_text(text, "zombie")) return 5;
+        }
+        sleep_ms(10);
+    }
+    return 6;
+}
+
+/* Sleep until thread_word changes */
+static int thread_waits(void *unused) {
+    (void)unused;
+    long r = futex_wait(&thread_word, 0, 0);
+    return r == 0 && thread_word == 1 ? 0 : 1;
+}
+
+/* Run until the process ends */
+static int thread_spins(void *unused) {
+    (void)unused;
+    for (;;) thread_count++;
+    return 0;
+}
+
+/* Sleep for a long time */
+static int thread_sleeps(void *unused) {
+    (void)unused;
+    sleep_ms(60000);
+    return 0;
+}
+
+/* End the whole process with status 7 */
+static int thread_exits_process(void *unused) {
+    (void)unused;
+    exit(7);
+}
+
+/* Fault */
+static int thread_faults(void *unused) {
+    (void)unused;
+    syscall1(SYS_YIELD, 0);
+    return *(volatile int *)(long)thread_word_null;
+}
+
+/* Run a program in place of the whole process */
+static int thread_execs(void *unused) {
+    (void)unused;
+    char *argv[] = { "/bin/false", NULL };
+    char *envp[] = { NULL };
+    execve("/bin/false", argv, envp);
+    return 99;
+}
+
+/* Fork; the child reports how many threads it has */
+static int thread_forks(void *unused) {
+    (void)unused;
+    long pid = fork();
+    if (pid == 0) {
+        char text[256];
+        long fd = open("/proc/self/threads", O_RDONLY);
+        long got = fd >= 0 ? read((int)fd, text, sizeof(text)) : -1;
+        int lines = 0;
+        for (long i = 0; i < got; i++) if (text[i] == '\n') lines++;
+        exit(lines == 1 && gettid() == getpid() ? 0 : 1);
+    }
+    int status = -1;
+    return waitpid(pid, &status, 0) == pid ? status : 2;
+}
+
+/* Note a signal and on which thread it arrived */
+static void thread_on_signal(int sig) {
+    (void)sig;
+    thread_seen_tid = gettid();
+    thread_flag = 1;
+}
+
+/* Wait for a signal, nothing blocked */
+static int thread_takes_signal(void *unused) {
+    (void)unused;
+    while (!thread_flag) sleep_ms(5);
+    return 0;
+}
+
+/* Read a pipe into the shared buffer */
+static int thread_reads(void *unused) {
+    (void)unused;
+    long n = read(thread_fds[0], thread_buffer, 4);
+    return n == 4 && memcmp(thread_buffer, "data", 4) == 0 ? 0 : 1;
+}
+
+/* Threads: creating, joining, sharing, locks and futexes */
+static void check_threads_basics(void) {
+    CHECK(gettid() == getpid());
+    thread_t t;
+    thread_flag = 0;
+    CHECK(thread_create(&t, thread_returns, (void *)41) == 0);
+    CHECK(t.tid != getpid());
+    int status = -1;
+    CHECK(thread_join(&t, &status) == 0 && status == 42);
+    CHECK(thread_flag == 41 && thread_seen_tid == t.tid);         /* The same memory; its own id */
+    CHECK(syscall2(SYS_THREAD_JOIN, t.tid, 0) == -ESRCH);         /* Once */
+    CHECK(syscall2(SYS_THREAD_JOIN, getpid(), 0) == -EINVAL);     /* Itself */
+    CHECK(syscall2(SYS_THREAD_JOIN, 1, 0) == -ESRCH);             /* Not of this process */
+    CHECK(syscall3(SYS_THREAD_CREATE, 0, 0x10000, 0) == -EINVAL);
+    CHECK(syscall3(SYS_THREAD_CREATE, 0xffffffff80000000UL, 0x10000, 0) == -EINVAL);
+
+    /* A pid names a process: a thread's id is not one */
+    thread_word = 0;
+    CHECK(thread_create(&t, thread_waits, 0) == 0);
+    CHECK(kill(t.tid, SIGCONT) == -ESRCH);
+    char path[40];
+    number_text(path, "/proc/", t.tid, "/status");
+    CHECK(open(path, O_RDONLY) < 0);
+    CHECK(wait_thread_in_syscall(t.tid, SYS_FUTEX_WAIT));
+    thread_word = 1;
+    CHECK(futex_wake(&thread_word, 1) == 1);
+    CHECK(thread_join(&t, &status) == 0 && status == 0);
+
+    /* The limit, and what comes back afterwards */
+    long pid = fork();
+    if (pid == 0) {
+        thread_t many[32];
+        int made = 0;
+        while (made < 32 && thread_create(&many[made], thread_sleeps, 0) == 0) made++;
+        exit(made == 15 ? 0 : 1);       /* 16 with this one */
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+
+    thread_mutex_t fresh = { 0 };
+    thread_mutex = fresh;
+    thread_count = 0;
+    thread_t counters[4];
+    for (int i = 0; i < 4; i++) CHECK(thread_create(&counters[i], thread_counts, 0) == 0);
+    for (int i = 0; i < 4; i++) CHECK(thread_join(&counters[i], 0) == 0);
+    CHECK(thread_count == 20000);
+
+    /* Futexes */
+    thread_word = 5;
+    CHECK(futex_wait(&thread_word, 4, 0) == -EAGAIN);
+    CHECK(futex_wait(&thread_word, 5, 10) == -ETIMEDOUT);
+    CHECK(futex_wait((volatile unsigned *)((char *)&thread_word + 1), 5, 0) == -EINVAL);
+    CHECK(futex_wait((volatile unsigned *)0x10, 5, 0) == -EFAULT);
+    CHECK(futex_wake(&thread_word, 1) == 0);                     /* Nobody there */
+    thread_word = 0;
+    thread_t waiters[2];
+    for (int i = 0; i < 2; i++) {
+        CHECK(thread_create(&waiters[i], thread_waits, 0) == 0);
+        CHECK(wait_thread_in_syscall(waiters[i].tid, SYS_FUTEX_WAIT));
+    }
+    thread_word = 1;
+    CHECK(futex_wake(&thread_word, 1) == 1);                     /* One of them, as many as asked */
+    CHECK(futex_wake(&thread_word, 5) == 1);
+    for (int i = 0; i < 2; i++) CHECK(thread_join(&waiters[i], &status) == 0 && status == 0);
+}
+
+/* A process with threads ends as one, however it ends */
+static void check_threads_end_together(void) {
+    int status = -1;
+    thread_t t;
+
+    /* exit in a thread */
+    long pid = fork();
+    if (pid == 0) {
+        thread_create(&t, thread_spins, 0);
+        thread_create(&t, thread_exits_process, 0);
+        sleep_ms(60000);
+        exit(1);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 7);
+
+    /* A fault in a thread: its signal's status */
+    pid = fork();
+    if (pid == 0) {
+        thread_create(&t, thread_spins, 0);
+        thread_create(&t, thread_faults, 0);
+        sleep_ms(60000);
+        exit(1);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGSEGV);
+
+    /* A signal from outside */
+    pid = fork();
+    if (pid == 0) {
+        thread_create(&t, thread_spins, 0);
+        thread_create(&t, thread_sleeps, 0);
+        sleep_ms(60000);
+        exit(1);
+    }
+    CHECK(wait_in_syscall(pid, SYS_SLEEP));
+    CHECK(kill(pid, SIGKILL) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
+
+    /* The first thread leaving: the process goes on, and ends with the last */
+    pid = fork();
+    if (pid == 0) {
+        thread_create(&t, thread_outlives_first, 0);
+        thread_exit(1);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 5);
+
+    /* exec from a thread that is not the first: the same pid, one thread */
+    pid = fork();
+    if (pid == 0) {
+        thread_create(&t, thread_spins, 0);
+        thread_create(&t, thread_execs, 0);
+        sleep_ms(60000);
+        exit(0);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 1);       /* /bin/false */
+
+    /* fork from a thread: the child has that one */
+    CHECK(thread_create(&t, thread_forks, 0) == 0);
+    CHECK(thread_join(&t, &status) == 0 && status == 0);
+
+    /* Stopped: every thread, and continued: every thread */
+    pid = fork();
+    if (pid == 0) {
+        thread_create(&t, thread_spins, 0);
+        thread_create(&t, thread_sleeps, 0);
+        sleep_ms(60000);
+        exit(1);
+    }
+    CHECK(wait_in_syscall(pid, SYS_SLEEP));
+    CHECK(kill(pid, SIGSTOP) == 0);
+    CHECK(waitpid(pid, &status, WUNTRACED) == pid && WIFSTOPPED(status));
+    {
+        char path[40], text[256];
+        number_text(path, "/proc/", pid, "/threads");
+        long fd = open(path, O_RDONLY);
+        long got = fd >= 0 ? read((int)fd, text, sizeof(text) - 1) : -1;
+        if (fd >= 0) close((int)fd);
+        int lines = 0, stopped = 0;
+        for (long i = 0; i < got; i++) {
+            if (text[i] == '\n') lines++;
+            if (i + 7 < got && memcmp(text + i, "stopped", 7) == 0) stopped++;
+        }
+        CHECK(lines == 3 && stopped == 3);
+    }
+    CHECK(kill(pid, SIGCONT) == 0);
+    CHECK(kill(pid, SIGKILL) == 0);
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGKILL);
+}
+
+/* A signal for the process goes to a thread that has not blocked it; handlers
+ * are shared, masks are not */
+static void check_threads_signals(void) {
+    thread_flag = 0;
+    thread_seen_tid = 0;
+    CHECK(signal(SIGUSR1, thread_on_signal) != (void *)-1);
+    uint32_t mask = 1u << SIGUSR1, old = 0;
+    CHECK(sigprocmask(SIG_BLOCK, &mask, &old) == 0);
+    thread_t t;
+    /* (A new thread starts with its creator's mask: unblocked for the thread) */
+    CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
+    CHECK(thread_create(&t, thread_takes_signal, 0) == 0);
+    CHECK(sigprocmask(SIG_BLOCK, &mask, NULL) == 0);
+    CHECK(kill(getpid(), SIGUSR1) == 0);
+    CHECK(thread_join(&t, NULL) == 0);
+    CHECK(thread_seen_tid == t.tid);
+    CHECK(sigprocmask(SIG_SETMASK, &old, NULL) == 0);
+    CHECK(signal(SIGUSR1, (void *)SIG_DFL) != (void *)-1);
+}
+
+/* What one thread does to what another's system call is using */
+static void check_threads_share_safely(void) {
+    int status = -1;
+
+    /* Memory a call has checked cannot be taken from under it: refused */
+    thread_buffer = mmap_anon(4096);
+    CHECK(thread_buffer != NULL && pipe(thread_fds) == 0);
+    thread_t t;
+    CHECK(thread_create(&t, thread_reads, 0) == 0);
+    CHECK(wait_thread_in_syscall(t.tid, SYS_READ));
+    CHECK(munmap(thread_buffer, 4096) == -EBUSY);
+    CHECK(write(thread_fds[1], "data", 4) == 4);
+    CHECK(thread_join(&t, &status) == 0 && status == 0);
+    CHECK(munmap(thread_buffer, 4096) == 0);
+
+    /* A file another thread's call is using outlives its descriptor: the read
+     * goes on, and gets what is written. Only then is the reader gone. */
+    thread_buffer = mmap_anon(4096);
+    CHECK(thread_create(&t, thread_reads, 0) == 0);
+    CHECK(wait_thread_in_syscall(t.tid, SYS_READ));
+    CHECK(close(thread_fds[0]) == 0);
+    CHECK(write(thread_fds[1], "data", 4) == 4);
+    CHECK(thread_join(&t, &status) == 0 && status == 0);
+    CHECK(write(thread_fds[1], "x", 1) == -EPIPE);
+    close(thread_fds[1]);
+    munmap(thread_buffer, 4096);
+}
+
 /* socketpair: both ways, between two processes, with shutdown and poll */
 static void check_socketpair(void) {
     int fds[2];
@@ -4180,7 +4552,7 @@ static void check_proc(void) {
         int lines = 0;
         for (const char *c = text; *c; c++) lines += *c == '\n';
         CHECK(status_number(text, "Size") == size_before && status_number(text, "Pid") == getpid());
-        CHECK(lines == 21);
+        CHECK(lines == 22);
         CHECK(lseek((int)fd, 0, SEEK_SET) == 0);
         total = read((int)fd, text, sizeof(text) - 1);
         text[total > 0 ? total : 0] = '\0';
@@ -4690,6 +5062,10 @@ int main(void) {
     check_forged_sigreturn();
     check_socketpair();
     check_named_local_sockets();
+    check_threads_basics();
+    check_threads_end_together();
+    check_threads_signals();
+    check_threads_share_safely();
     check_screen_mapping();
     check_sessions_and_terminal();
     check_shell_control();

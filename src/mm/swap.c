@@ -15,6 +15,7 @@
 #include "kstring.h"
 #include "kprintf.h"
 #include "pcache.h"
+#include "process.h"
 
 #define SECTORS_PER_PAGE (PAGE_SIZE / VIRTIO_BLK_SECTOR_SIZE)
 
@@ -147,6 +148,7 @@ size_t swap_out_keeping(uint64_t *space, uint64_t *cursor, size_t want, const vm
             swap_slot_unref(slot);
             break;            // Nothing left that may go
         }
+        process_tlb_sync();   // Nor through another thread's old translation: what is written must be the last word
         if (virtio_blk_write_dev(swap_disk, (uint64_t)slot * SECTORS_PER_PAGE, (void *)(frame + hhdm), SECTORS_PER_PAGE) != 0) {
             vmm_swap_install(space, virt, frame); // Put it back as it was
             swap_slot_unref(slot);
@@ -191,13 +193,21 @@ int swap_in(uint64_t *space, uint64_t virt) {
 }
 
 // Swap out up to `want` of `task`'s pages (it must be the current task),
-// leaving those of the buffers its current system call has checked.
-// Nothing at all if it checked more than it could record: one of them
-// might be taken. Returns how many went.
+// leaving those of the buffers the current system calls of its process have
+// checked. Nothing at all if one checked more than it could record: one of
+// them might be taken. Returns how many went. Waits for the disk under
+// mem_lock: every fault of the process waits, and a call cannot check a new
+// range (and so add to what is left alone) until the list here has been used.
 static size_t give_up(task_t *task, size_t want) {
-    if (task->call_ranges_full) return 0;
-    return swap_out_keeping(vmm_space_from_phys((uint64_t)task->pml4_phys), &task->proc->swap_cursor, want,
-                            task->call_ranges, task->call_range_count);
+    process_t *proc = task->proc;
+    mutex_lock(&proc->mem_lock);
+    size_t count = 0, done = 0;
+    if (process_keep_ranges(task, proc->keep_ranges, &count)) {
+        done = swap_out_keeping(vmm_space_from_phys((uint64_t)task->pml4_phys), &proc->swap_cursor, want,
+                                proc->keep_ranges, count);
+    }
+    mutex_unlock(&proc->mem_lock);
+    return done;
 }
 
 size_t swap_make_room_for_fork(void) {

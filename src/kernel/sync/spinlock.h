@@ -36,6 +36,7 @@ enum {
     LOCK_RANK_TTY      = 50,
     LOCK_RANK_INPUT_WAIT = 54, // "Is there any input?", across both buffers below
     LOCK_RANK_INPUT    = 55, // Keyboard and serial receive buffers
+    LOCK_RANK_FUTEX    = 57, // Futex waiters against wakers (takes the scheduler lock under it)
     LOCK_RANK_SEM      = 58,
     LOCK_RANK_MUTEX    = 59, // The spinlock inside a mutex_t
     LOCK_RANK_DEVICE   = 60, // Driver state: virtqueues and request slots

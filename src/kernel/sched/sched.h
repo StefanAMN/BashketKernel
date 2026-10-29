@@ -52,6 +52,48 @@ void task_free(task_t *t);
  */
 task_t *sched_find_task(uint32_t pid);
 
+/**
+ * @brief The first thread of the process with this pid (scheduler lock held),
+ *        or NULL. A pid names a process: a thread's own id is not one.
+ */
+task_t *sched_find_process_locked(uint32_t pid);
+
+/**
+ * @brief Has every thread of `leader`'s process stopped, with at least one
+ *        alive? Scheduler lock held.
+ */
+bool sched_process_stopped_locked(const task_t *leader);
+
+/**
+ * @brief End only the calling thread. The last one ends the process, with
+ *        this status. Does not return.
+ */
+void task_exit_thread(int status);
+
+/**
+ * @brief Make `t`, a task from task_alloc that has not run, a new thread of
+ *        `creator`'s process and put it on the task list, calling
+ *        before_start(t) (which must take no locks) just before it can run.
+ *        False if the process is ending or has PROCESS_MAX_THREADS: `t` is as
+ *        it was, for the caller to free.
+ */
+bool sched_add_thread(task_t *t, task_t *creator, void (*before_start)(task_t *));
+
+/**
+ * @brief For exec: end the other threads of the caller's process and wait until
+ *        they have gone; the caller then has the process's pid. False if
+ *        the process is ending, or another thread is exec'ing: the caller
+ *        is about to be killed. May sleep; not ended by signals meanwhile.
+ */
+bool sched_end_other_threads(task_t *self);
+
+/**
+ * @brief Wake up to `count` threads of `proc` waiting in futex_wait on `addr`
+ *        (they are marked, so that a wake-up cannot be lost if one is not yet
+ *        asleep). Returns how many. Caller holds the futex lock.
+ */
+uint32_t sched_futex_wake(process_t *proc, uint64_t addr, uint32_t count);
+
 // The same, for a caller that holds the scheduler lock (and so may go on to
 // use the task before anyone can free it)
 task_t *sched_find_task_locked(uint32_t pid);

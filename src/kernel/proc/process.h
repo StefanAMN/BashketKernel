@@ -132,6 +132,59 @@ void process_call_range_add(struct task *task, uint64_t addr, size_t len);
  */
 void process_call_ranges_reset(struct task *task);
 
+/**
+ * @brief A new thread of the calling process, starting at `entry` in ring 3
+ *        on `stack` with `arg` in RDI. Returns its id; -EINVAL for addresses
+ *        that are not user memory, -EAGAIN if the process is ending or has
+ *        PROCESS_MAX_THREADS, -ENOMEM.
+ */
+int64_t process_thread_create(uint64_t entry, uint64_t stack, uint64_t arg);
+
+/**
+ * @brief Wait for thread `tid` of the calling process to end and free it, with
+ *        what it passed to thread_exit in *status (kernel memory, or NULL).
+ *        -ESRCH if there is no such thread (or it is the first, which cannot
+ *        be joined), -EINVAL for the caller itself, -EINTR. May sleep.
+ */
+int64_t process_thread_join(uint32_t tid, int *status);
+
+/**
+ * @brief Drop the references a system call took on the files it looked up:
+ *        when it returns, or when the task dies in it. May sleep (the last
+ *        reference closes the file).
+ */
+void process_call_files_release(struct task *task);
+
+/**
+ * @brief Say that a user page table of the calling process has just changed
+ *        in a way the other CPUs must not miss: with other threads alive,
+ *        waits until no CPU holds an old translation. Without them, nothing
+ *        to do: only this CPU runs the address space. May be called holding
+ *        spinlocks.
+ */
+void process_tlb_sync(void);
+
+/**
+ * @brief Does a system call in another thread of `task`'s process have a buffer
+ *        checked in [start, end)? It would use it without looking again, and
+ *        a kernel access to memory that has gone is a kernel fault: munmap
+ *        and the like refuse while this is so. Caller holds mem_lock.
+ */
+bool process_range_busy(struct task *task, uint64_t start, uint64_t end);
+
+/**
+ * @brief Fill `out` (room for PROCESS_MAX_THREADS * TASK_CALL_RANGES) with the
+ *        buffers the system calls of `task`'s process have checked, *count
+ *        being how many. False if one call checked more than it recorded:
+ *        then no page can be known to be free of them. Caller holds mem_lock.
+ */
+bool process_keep_ranges(struct task *task, vmm_range_t *out, size_t *count);
+
+/**
+ * @brief swap_in (swap.h) for a page of `task`'s process, under its mem_lock.
+ */
+int process_swap_in(struct task *task, uint64_t *space, uint64_t virt);
+
 // --- Jobs --------------------------------------------------------------------
 //
 // A process group is a set of processes that a shell started for one command

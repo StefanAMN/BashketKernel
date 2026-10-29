@@ -2244,7 +2244,7 @@ woke no connect each hung the reader until the time limit. That a kill in the
 wait leaks nothing rests on the design: syscheck kills such a sleeper, but does
 not count its bytes.
 
-### U3. Threads (L)
+### U3. Threads (L) — done
 
 A process is one task: `task_t` holds its memory, files and signal handlers.
 So far each address space has had exactly one running task, and much of the
@@ -2299,6 +2299,19 @@ them. Rules:
 
 Not planned: `pthread_kill`, process-shared futexes, thread-local storage
 (each thread has only its stack; `errno`-style globals are shared).
+
+Done as described. Beyond the plan: `/proc/<pid>/threads` (a test must know
+that a thread is inside a call), and the first thread may be neither joined
+nor removed before the process ends. If it calls `thread_exit`, `/proc/<pid>`
+shows the process's maps and memory as those of a dead task until the end.
+
+Tests: syscheck's `check_threads_*`; `user/threads.c` on 2, 4 and 8 CPUs in
+`make test-smp`; `threads_leave_nothing_behind` counts frames and heap bytes;
+the fuzzer's children start threads that make calls too. Not shown by any test
+(the reasoning rests on the code): `process_keep_private` after a `fork` beside
+another thread's call, swap keeping other threads' ranges, and a page fault
+looking again after reading a file, and the lock in `fd_install` (removing
+either passes every test; the second's window is a few instructions wide).
 
 ---
 

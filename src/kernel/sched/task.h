@@ -14,12 +14,15 @@
 #include "region.h"
 #include "vmm.h"
 #include "elf.h"
+#include "mutex.h"
 
 #define KERNEL_STACK_SIZE (16 * 1024) // 16 KiB kernel stack per task
 #define TASK_MAX_FDS 16               // Open file descriptors per process
 #define TASK_MAX_GROUPS 16            // Supplementary groups per process (setgroups)
 #define TASK_CALL_RANGES 8            // Buffers one system call may have checked and still keep in memory (swap.h)
 #define TASK_NSIG 32                  // Signal numbers 1..31
+#define TASK_CALL_FILES 8             // Open files one system call may be using through their descriptors
+#define PROCESS_MAX_THREADS 16        // Threads one process may have alive
 
 struct file;
 struct vnode;
@@ -46,11 +49,30 @@ typedef enum {
 } task_state_t;
 
 // What the threads of a process share. Every task has one: a kernel task's
-// is its own, and only user threads ever share theirs. Locks and rules for
-// its fields are those stated on task_t's scheduling fields, and in the files
-// that use each group.
+// is its own, and only user threads ever share theirs.
+//
+// Memory has two locks. map_mutex is held by whatever changes the set of
+// mappings (mmap, munmap, brk, msync, fork, exec) for its whole length, file
+// work included, so it is never taken with the file tree locked. mem_lock
+// guards the regions, heap limits and promised pages against page faults,
+// and is held while page tables change; a system call may fault its buffers
+// in with the tree locked (process_populate), so nothing under mem_lock may
+// lock the tree or touch a file: it only sees page tables and, for swap, the
+// raw disk. Order: map_mutex, then the tree, then mem_lock. Neither is held
+// across a wait a kill can end.
 typedef struct process {
-    uint32_t refs;           // Tasks using it (under the scheduler lock); the last one frees it
+    uint32_t refs;           // Tasks using it (atomic); the last one to be freed frees it
+    uint32_t pid;            // Its process id: the first thread's task id, or exec's caller's
+    uint32_t live;           // Threads that have not begun their last steps (scheduler lock)
+    bool group_exit;         // One thread has ended the process: the others are being killed (scheduler lock)
+    uint32_t exec_tid;       // The thread that is ending the others in order to exec, or 0 (scheduler lock)
+    int exit_status;         // What waitpid reports, valid once live is 0 (the first to end the process sets it)
+    int stop_signal;         // While every thread is stopped: the signal that did it
+    bool stop_reported;      // ...and whether waitpid has told the parent yet
+    mutex_t map_mutex;       // See above
+    mutex_t mem_lock;        // See above
+    uint32_t file_users;     // Page faults working on a region's file with mem_lock released: it stays pinned (mem_lock)
+    vmm_range_t keep_ranges[PROCESS_MAX_THREADS * TASK_CALL_RANGES]; // Scratch for what swap must leave (mem_lock)
     uint32_t parent_pid;     // PID of the task that created it
     elf_segment_t image_segments[ELF_REPORTED_SEGMENTS]; // Where the program's segments were loaded (for /proc/<pid>/maps)
     uint32_t image_segment_count; // How many of image_segments[] are in use
@@ -86,7 +108,7 @@ typedef struct process {
 
 typedef struct task {
     uint64_t rsp;            // Saved kernel stack pointer (points to saved registers frame)
-    uint32_t pid;            // Process ID
+    uint32_t pid;            // Task ID: unique among all tasks, never reused (the first thread's is the process's)
     char name[32];           // Task description name
     task_state_t state;      // Current execution state
     uint64_t *pml4_phys;     // Physical address of PML4, loaded into CR3 when this task runs
@@ -114,18 +136,19 @@ typedef struct task {
     // --- Process state (user tasks only) ---
     bool is_user;            // Owns a user address space and runs in ring 3
     bool detached;           // Nobody will wait for it: the idle loop reaps it on exit
-    int exit_status;         // Valid once state is TASK_ZOMBIE
+    int exit_status;         // Valid once state is TASK_ZOMBIE: its own (thread_join); the process's is in proc
     uint64_t user_entry;     // Ring 3 entry point for a freshly created process
     uint64_t user_rsp;       // Initial ring 3 stack pointer
     vmm_range_t call_ranges[TASK_CALL_RANGES]; // User memory the system call in progress has checked: not swapped out until it returns
     uint32_t call_range_count;  // How many of call_ranges[] are in use
     bool call_ranges_full;   // It checked more than fit: nothing of it may be swapped out until it returns
+    struct file *call_files[TASK_CALL_FILES]; // Files the call in progress found through descriptors, each with a reference: another thread's close cannot free them under it
+    uint32_t call_file_count; // How many of call_files[] are in use
+    uint64_t futex_addr;     // The address it waits for futex_wake on (0: not waiting, or woken)
     void *io_buffer;         // One page for read() and write() to copy through (allocated on first use)
     void *datagram_buffer;   // For sendto() and recvfrom() when a page is not enough (allocated on first use)
     size_t datagram_buffer_size;
     int stop_pending;        // Stop signal that will suspend this process at its next safe point (0: none)
-    int stop_signal;         // While TASK_STOPPED: the signal that did it
-    bool stop_reported;      // ...and whether waitpid has told the parent yet
     bool exiting;            // Has begun to exit: can no longer be killed or signalled
     int kill_pending;        // Signal that will end this process at its next safe point (0: none)
     uint32_t sig_pending;    // Bit n set: signal n has arrived and not yet been acted on

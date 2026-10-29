@@ -111,6 +111,8 @@ static unsigned long random_any(void) {
     }
 }
 
+static int fuzz_thread(void *unused);
+
 /* Make one system call with random arguments, keeping calls that would
  * damage the test bench itself to safe arguments (see the top) */
 static void one_call(void) {
@@ -122,6 +124,7 @@ static void one_call(void) {
         SYS_ISATTY, SYS_STAT, SYS_LSTAT, SYS_FSTAT, SYS_TRUNCATE, SYS_FTRUNCATE, SYS_UTIME,
         SYS_SETGROUPS, SYS_GETGROUPS, SYS_MSYNC, SYS_SETSID, SYS_GETSID, SYS_TTY_TOSTOP,
         SYS_SOCKETPAIR, SYS_LOCAL_LISTEN, SYS_LOCAL_CONNECT,
+        SYS_GETTID, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_THREAD_JOIN, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
     };
 
     long num = (rnd() % 10 == 0) ? (long)(rnd() % 512) : numbers[rnd() % COUNT(numbers)];
@@ -165,6 +168,20 @@ static void one_call(void) {
             } else {
                 a = shaped ? (unsigned long)safe_paths[rnd() % COUNT(safe_paths)] : random_pointer();
             }
+            break;
+        case SYS_THREAD_CREATE:  /* Random code would only be a quick death: a thread making calls too, or no such address */
+            if (shaped) {
+                thread_t thread;
+                thread_create(&thread, fuzz_thread, 0);
+                return;
+            }
+            a = pick(not_paths, COUNT(not_paths));
+            break;
+        case SYS_THREAD_EXIT:    /* From the first thread, this ends the program's judge of itself: not that */
+            if (gettid() == getpid()) return;
+            break;
+        case SYS_FUTEX_WAIT:     /* A word that says what is expected would wait for ever: not long, then */
+            c = 1 + (c % 50);
             break;
         case SYS_LOCAL_LISTEN:   /* Makes a name: as for O_CREAT above, only under /tmp, or no path */
             a = shaped ? (unsigned long)safe_paths[rnd() % 4] : pick(not_paths, COUNT(not_paths));
@@ -330,6 +347,14 @@ static void fuzz_child(unsigned long seed) {
 
     for (int i = 0; i < CALLS_PER_ROUND; i++) one_call();
     exit(0);
+}
+
+/* A second (third...) thread of a fuzzed child: more of the same, at the same
+ * time, against the same address space and descriptors */
+static int fuzz_thread(void *unused) {
+    (void)unused;
+    for (;;) one_call();
+    return 0;
 }
 
 int main(int argc, char **argv) {

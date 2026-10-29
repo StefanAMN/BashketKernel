@@ -4,6 +4,7 @@
  */
 
 #include "vmm.h"
+#include "process.h"
 #include "smp.h"
 #include "pmm.h"
 #include "kprintf.h"
@@ -335,33 +336,48 @@ bool vmm_clone_user_space(uint64_t *dst, uint64_t *src) {
                     // Read-only pages (program text) are simply shared.
                     // Shared memory is the exception: it stays writable and
                     // both processes keep seeing each other's writes.
+                    //
+                    // The look and the new owner count are one step under
+                    // the lock: another thread's copy-on-write fault decides
+                    // by the count whether it may keep this very frame. (It
+                    // takes the lock too; the caller keeps out every other
+                    // change to these tables.)
+                    uint64_t irq_flags = spinlock_acquire_irqsave(&vmm_lock);
+                    pte = pt[i1];
+                    if (!(pte & VMM_PRESENT)) {
+                        spinlock_release_irqrestore(&vmm_lock, irq_flags);
+                        continue;
+                    }
                     if ((pte & VMM_WRITABLE) && !(pte & VMM_SHARED)) {
                         pte = (pte & ~VMM_WRITABLE) | VMM_COW;
+                        pt[i1] = pte;
                     }
+                    if (!(pte & VMM_DEVICE)) pmm_ref_frame((void *)(pte & PTE_ADDR_MASK));
+                    spinlock_release_irqrestore(&vmm_lock, irq_flags);
 
                     uint64_t virt = ((uint64_t)i4 << 39) | ((uint64_t)i3 << 30) |
                                     ((uint64_t)i2 << 21) | ((uint64_t)i1 << 12);
                     uint64_t phys = pte & PTE_ADDR_MASK;
                     uint64_t flags = pte & (VMM_USER | VMM_COW | VMM_NO_EXECUTE | VMM_SHARED | VMM_WRITABLE | VMM_DEVICE);
 
-                    // Count the new owner before it exists, so a failure
+                    // The new owner was counted before it exists, so a failure
                     // below is undone by destroying dst like any other space.
                     // (A device's memory has no owners to count.)
                     bool device = (pte & VMM_DEVICE) != 0;
-                    if (!device) pmm_ref_frame((void *)phys);
                     if (!vmm_map_page(dst, virt, phys, flags | VMM_PRESENT)) {
                         if (!device) pmm_unref_frame((void *)phys);
                         ok = false;
                         break;
                     }
-                    pt[i1] = pte;
                 }
             }
         }
     }
 
     // The parent's page tables changed under a live TLB: writes it could do
-    // a moment ago must now fault. Reloading CR3 drops the stale entries.
+    // a moment ago must now fault. Reloading CR3 drops the stale entries
+    // here; on the CPUs of its other threads, the caller sees to it
+    // (process_fork).
     uint64_t cr3;
     asm volatile("mov %0, cr3" : "=r"(cr3));
     if ((cr3 & PTE_ADDR_MASK) == (uint64_t)src - hhdm) {
@@ -378,6 +394,7 @@ bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt) {
 
     uint64_t irq_flags = spinlock_acquire_irqsave(&vmm_lock);
     bool resolved = false;
+    uint64_t release = 0;
 
     uint64_t *pte = walk_to_pte(pml4, virt);
     if (pte && (*pte & VMM_PRESENT) && (*pte & VMM_COW)) {
@@ -393,7 +410,7 @@ bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt) {
             if (copy) {
                 memcpy((void *)((uint64_t)copy + hhdm), (void *)(old_phys + hhdm), PAGE_SIZE);
                 *pte = (uint64_t)copy | flags;
-                pmm_unref_frame((void *)old_phys);
+                release = old_phys;
                 resolved = true;
             }
         }
@@ -402,6 +419,11 @@ bool vmm_handle_cow_fault(uint64_t *pml4, uint64_t virt) {
     }
 
     spinlock_release_irqrestore(&vmm_lock, irq_flags);
+
+    // Before the writer goes on, and before the old frame can be anyone
+    // else's: another thread may still read through the old translation
+    if (resolved) process_tlb_sync();
+    if (release) pmm_unref_frame((void *)release);
     return resolved;
 }
 
@@ -550,9 +572,9 @@ bool vmm_unmap_page(uint64_t *pml4, uint64_t virt) {
 
     // The kernel half is mapped on every CPU, and any of them may have this
     // translation cached. (A user address space is only ever live on the
-    // one CPU running its process, and a CPU drops those translations when
-    // it switches to another address space.) Done outside the lock: the
-    // other CPUs must be able to take it while we wait for them.
+    // threads of its process, and whoever changes those says so itself:
+    // process_tlb_sync.) Done outside the lock: the other CPUs must be able
+    // to take it while we wait for them.
     if (ok && virt >= KERNEL_SPACE_START) smp_tlb_shootdown();
     return ok;
 }

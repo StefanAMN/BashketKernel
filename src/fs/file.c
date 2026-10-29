@@ -284,8 +284,8 @@ void file_close_all(file_t *fds[TASK_MAX_FDS]) {
 // process's slot is read and its file given a reference (fd_slot_dup). A
 // file in a slot holds a reference of its own, so under this lock a file
 // seen in a slot cannot reach its last file_close: the slot must be
-// emptied first, and that waits for the lock. (Filling an empty slot needs
-// no lock: the file is complete and counted before it is stored.)
+// emptied first, and that waits for the lock. Filling an empty slot takes it
+// too: another thread may be looking for an empty slot of the same table.
 static spinlock_t fd_slot_lock = SPINLOCK_RANKED("fd-slots", LOCK_RANK_FD_SLOTS);
 
 file_t *fd_slot_set(file_t *fds[TASK_MAX_FDS], int fd, file_t *file) {
@@ -294,6 +294,14 @@ file_t *fd_slot_set(file_t *fds[TASK_MAX_FDS], int fd, file_t *file) {
     fds[fd] = file;
     spinlock_release_irqrestore(&fd_slot_lock, flags);
     return old;
+}
+
+bool fd_take_back(file_t *fds[TASK_MAX_FDS], int fd, file_t *file) {
+    uint64_t flags = spinlock_acquire_irqsave(&fd_slot_lock);
+    bool there = fds[fd] == file;
+    if (there) fds[fd] = NULL;
+    spinlock_release_irqrestore(&fd_slot_lock, flags);
+    return there;
 }
 
 file_t *fd_slot_dup(file_t *fds[TASK_MAX_FDS], int fd) {
@@ -313,13 +321,17 @@ uint32_t fd_slot_mask(file_t *fds[TASK_MAX_FDS]) {
 }
 
 int fd_install(file_t *fds[TASK_MAX_FDS], file_t *file) {
+    int found = -EMFILE;
+    uint64_t flags = spinlock_acquire_irqsave(&fd_slot_lock);
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
         if (!fds[fd]) {
             fds[fd] = file;
-            return fd;
+            found = fd;
+            break;
         }
     }
-    return -EMFILE;
+    spinlock_release_irqrestore(&fd_slot_lock, flags);
+    return found;
 }
 
 // Guards every open file's snapshot and snapshot_len, and its offset while

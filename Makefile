@@ -409,9 +409,9 @@ test-smp:
 	@for n in $(SMP_PROGRAM_CPUS); do \
 		tools/qemu_shell.py --quiet --timeout 120 $(SHELL_CPU) --qemu-arg=-smp --qemu-arg=$$n \
 			--expect "SMP: $$n CPUs scheduling" --expect 'syscheck: all checks passed' \
-			--expect 'fptest: all workers computed the right values' --expect '\n$(words $(USER_PROGS)) [0-9]+ [0-9]+\n' \
+			--expect 'fptest: all workers computed the right values' --expect 'threads: all checks passed' --expect '\n$(words $(USER_PROGS)) [0-9]+ [0-9]+\n' \
 			--expect 'IRQ  4 +0 +[1-9][0-9]* ' --forbid 'LOCK RULE' --forbid 'PMM WARNING' \
-			'exec /bin/syscheck' 'exec /bin/fptest' 'exec /bin/sh -c "ls /bin | wc"' 'cat /proc/interrupts' > $(BUILD)/smp-$$n.log 2>&1 \
+			'exec /bin/syscheck' 'exec /bin/fptest' 'exec /bin/threads' 'exec /bin/sh -c "ls /bin | wc"' 'cat /proc/interrupts' > $(BUILD)/smp-$$n.log 2>&1 \
 			&& echo "$$n CPUs: programs run" \
 			|| { echo "$$n CPUs: FAILED (see $(BUILD)/smp-$$n.log)"; exit 1; }; \
 	done

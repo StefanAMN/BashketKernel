@@ -63,6 +63,41 @@ static bool default_is_stop(int sig) {
     return sig == SIGSTOP || sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU;
 }
 
+// Act on every thread of `task`'s process: `fn(thread, sig)`, for those not
+// dying. Caller holds the scheduler lock.
+static void for_each_thread(task_t *task, void (*fn)(task_t *, int), int sig) {
+    if (task->proc->live <= 1) {
+        fn(task, sig);
+        return;
+    }
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (t->proc == task->proc) fn(t, sig);
+    }
+}
+
+// sched_continue, in the form for_each_thread calls
+static void continue_thread(task_t *task, int sig) {
+    (void)sig;
+    sched_continue(task);
+}
+
+// The thread of `task`'s process to give `sig` to: `task` if it does not block
+// it, or the first that does not, or else `task`, where it stays pending. If
+// `task` itself is dead, some thread that is not. NULL if there is none.
+// Caller holds the scheduler lock.
+static task_t *receiver(task_t *task, int sig) {
+    bool usable = !task->exiting && task->state != TASK_ZOMBIE;
+    if (usable && !(task->sig_blocked & (1u << sig))) return task;
+    if (task->proc->live <= 1) return usable ? task : NULL;
+    task_t *alive = usable ? task : NULL;
+    for (task_t *t = sched_first_task(); t; t = t->next) {
+        if (t->proc != task->proc || t->exiting || t->state == TASK_ZOMBIE) continue;
+        if (!(t->sig_blocked & (1u << sig))) return t;
+        if (!alive) alive = t;
+    }
+    return alive;
+}
+
 bool signal_deliverable(const task_t *task) {
     return (task->sig_pending & ~task->sig_blocked) != 0;
 }
@@ -78,14 +113,19 @@ static void act_on_pending(task_t *task) {
         uint64_t handler = task->proc->sig_handlers[sig];
         if (handler == SIG_DFL) {
             task->sig_pending &= ~(1u << sig);
-            if (default_is_stop(sig)) sched_request_stop(task, sig);
-            else if (!default_is_ignore(sig)) sched_request_kill(task, sig);
+            if (default_is_stop(sig)) for_each_thread(task, sched_request_stop, sig);
+            else if (!default_is_ignore(sig)) for_each_thread(task, sched_request_kill, sig);
         } else if (handler == SIG_IGN) {
             task->sig_pending &= ~(1u << sig);
         } else {
             sched_interrupt_sleep(task);
         }
     }
+}
+
+// Forget that `sig` is pending for this thread
+static void drop_pending(task_t *task, int sig) {
+    task->sig_pending &= ~(1u << sig);
 }
 
 int signal_set_action(task_t *task, int sig, const struct signal_action *action, uint64_t restorer, struct signal_action *old) {
@@ -114,7 +154,7 @@ int signal_set_action(task_t *task, int sig, const struct signal_action *action,
 
         // One that is now ignored has nothing left to deliver
         bool ignored = action->handler == SIG_IGN || (action->handler == SIG_DFL && default_is_ignore(sig));
-        if (ignored) task->sig_pending &= ~(1u << sig);
+        if (ignored) for_each_thread(task, drop_pending, sig);
     }
     sched_unlock_irqrestore(flags);
     return 0;
@@ -141,23 +181,25 @@ int signal_change_mask(task_t *task, int how, uint32_t set, uint32_t *old) {
 }
 
 void signal_send_locked(task_t *task, int sig) {
-    if (!task || !task->is_user || !valid_signal(sig) || task->exiting || task->state == TASK_ZOMBIE) return;
+    if (!task || !task->is_user || !valid_signal(sig) || task->proc->live == 0) return;
 
     if (sig == SIGKILL) {
-        sched_request_kill(task, sig);          // Ends it at its next safe point, whatever it has arranged
+        for_each_thread(task, sched_request_kill, sig); // Ends it at its next safe point, whatever it has arranged
         return;
     }
 
     // Stopping and continuing cancel each other, whatever else the program
     // has arranged for these signals
     if (sig == SIGCONT) {
-        task->sig_pending &= ~STOP_SIGNALS;
-        sched_continue(task);
+        for (int stop = 1; stop < TASK_NSIG; stop++) {
+            if (STOP_SIGNALS & (1u << stop)) for_each_thread(task, drop_pending, stop);
+        }
+        for_each_thread(task, continue_thread, sig);
     } else if (default_is_stop(sig)) {
-        task->sig_pending &= ~(1u << SIGCONT);
+        for_each_thread(task, drop_pending, SIGCONT);
     }
     if (sig == SIGSTOP) {
-        sched_request_stop(task, sig);          // Like SIGKILL: not the program's to refuse
+        for_each_thread(task, sched_request_stop, sig); // Like SIGKILL: not the program's to refuse
         return;
     }
 
@@ -165,6 +207,8 @@ void signal_send_locked(task_t *task, int sig) {
     uint64_t handler = task->proc->sig_handlers[sig];
     if (handler == SIG_IGN || (handler == SIG_DFL && default_is_ignore(sig))) return;
 
+    task = receiver(task, sig);
+    if (!task) return;
     task->sig_pending |= (1u << sig);
     act_on_pending(task);                       // Does nothing while it is blocked
 }
@@ -253,6 +297,7 @@ void signal_deliver(struct registers *regs) {
     user_access_begin();
     memcpy((void *)frame_addr, &frame, sizeof(frame));
     user_access_end();
+    process_call_ranges_reset(task);        // Back to user code: this stack is no longer in use by a call
 
     // Continue in the handler: handler(sig), returning to the restorer
     regs->rip = handler;
@@ -269,7 +314,10 @@ void signal_return(struct registers *regs) {
     // The handler's `ret` popped the restorer address, so RSP now points at
     // the signo field. Everything read from here on is untrusted.
     uint64_t frame_addr = regs->rsp - sizeof(uint64_t);
-    if (frame_addr > regs->rsp || !vmm_user_range_ok(space, frame_addr, sizeof(signal_frame_t), false)) {
+    // (Populating first also records the range: another thread cannot unmap
+    // it between this check and the copy)
+    if (frame_addr > regs->rsp || !process_populate(frame_addr, sizeof(signal_frame_t)) ||
+        !vmm_user_range_ok(space, frame_addr, sizeof(signal_frame_t), false)) {
         task_exit_status(128 + SIGSEGV);
     }
 

@@ -51,5 +51,6 @@
 #define ECONNREFUSED 111 // Nobody listening on that port
 #define EHOSTUNREACH 113 // No route to host
 #define ENOTEMPTY 39 // Directory not empty
+#define EAGAIN  11   // Not now: the futex word had changed, or the process has all the threads it may
 
 #endif // KERRNO_H
