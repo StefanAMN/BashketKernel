@@ -2307,11 +2307,33 @@ shows the process's maps and memory as those of a dead task until the end.
 
 Tests: syscheck's `check_threads_*`; `user/threads.c` on 2, 4 and 8 CPUs in
 `make test-smp`; `threads_leave_nothing_behind` counts frames and heap bytes;
-the fuzzer's children start threads that make calls too. Not shown by any test
-(the reasoning rests on the code): `process_keep_private` after a `fork` beside
-another thread's call, swap keeping other threads' ranges, and a page fault
-looking again after reading a file, and the lock in `fd_install` (removing
-either passes every test; the second's window is a few instructions wide).
+the fuzzer's children start threads that make calls too. What no test showed
+at the time is V1's subject.
+
+## Track V — What the thread tests owed, and what threads still lack
+
+Planned 2026-11-01, after track U, from the limits U3 wrote down.
+
+### V1. The paths no thread test could fail (S) — done
+
+U3 listed four things that removing changed no test's result. Show each one
+failing, or say why it cannot be shown.
+
+Done, for two of the four. `swapper` has a thread asleep in `read` while all
+its memory is rewritten; with swap forgetting other threads' ranges the kernel
+takes a Page Fault of its own. `threads` makes four threads first-touch a
+private mapping of `/disk/pattern.bin`, cold because nothing else reads it;
+with no second look after the file read, 2 boots of 5 reported the lost write
+and 3 reached no verdict, none passing.
+
+Still not shown, and why:
+- `process_keep_private`: no system call writes to user memory under a spinlock,
+  so a copy-on-write fault in another thread's call normally just resolves. What
+  it prevents is that copy failing for lack of memory while the call holds the
+  file tree mutex (`stat`), which would kill the task holding it. That needs
+  memory to run out inside a window of a few instructions.
+- The lock in `fd_install`: its window is a few instructions wide. It rests on
+  the code.
 
 ---
 
@@ -2450,6 +2472,8 @@ S1, S2, S3                       done
 T3                               done
 T1                               done
 T2                               done
+U1, U2, U3                       done
+V1                               done
 ```
 
 (Track A, once the recommended first step because everything built on
