@@ -1,5 +1,6 @@
 #include "test.h"
 #include "bcache.h"
+#include "pcache.h"
 #include "region.h"
 #include "virtio_blk.h"
 #include "process.h"
@@ -406,6 +407,10 @@ TEST(orphans_are_adopted_and_collected_by_init) {
 TEST(mapped_file_pages_are_read_only_when_touched) {
     if (!virtio_blk_present()) return;
     sched_reap();
+    // (Another test's program may have left the file's pages in the page cache)
+    vnode_t *file = vfs_find(NULL, "/disk/pattern.bin");
+    EXPECT_TRUE(file != NULL);
+    pcache_drop_file(file);
     size_t free_before = test_free_frames();
     size_t promised_before = region_promised_pages();
 

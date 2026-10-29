@@ -65,8 +65,9 @@ static int file_toucher(void *arg) {
 /* The first touches of a private file mapping, with the file not yet in the
  * page cache: the fault reads the disk with its lock released, and the others
  * fault meanwhile. A slower one must look again before it installs its page,
- * or it replaces a page holding another thread's mark. /disk/pattern.bin is
- * read by nothing else, so its pages are cold once per boot; hence no rounds. */
+ * or it replaces a page holding another thread's mark. In a boot that has not
+ * read /disk/pattern.bin its pages are cold, and only then does this test the
+ * race (so only the first run in a boot, and no rounds). */
 static void check_file_first_touch(void) {
     long fd = open("/disk/pattern.bin", O_RDONLY);
     if (fd < 0) return fail("cannot open /disk/pattern.bin");
