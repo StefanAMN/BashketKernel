@@ -583,6 +583,7 @@ test-swap: iso
 		--expect 'swap: disk [0-9], 16383 pages' \
 		--expect 'swapper: 80 MiB written and read back; [0-9]{5,} pages went out to disk, [0-9]{5,} came back' \
 		--expect 'swapper: a read\(\) of 4096 kB into swapped-out memory with ([0-9]{1,3}|[0-3][0-9]{3}) kB free' \
+		--expect 'swapper: a thread.s buffer stayed while its neighbours were swapped' \
 		--expect 'syscheck: all checks passed' \
 		--expect 'SwapFree:   65532 kB' --forbid 'swapper: FAILED|could not be read back|out of memory' \
 		--expect '(swapper: 45 MiB written and read back; [0-9]+ pages went out[\s\S]*){2}' \

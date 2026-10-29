@@ -9,7 +9,10 @@
  * change pages that are on the disk at that moment: each must see its own.
  * Last, it reads 4 MiB from /dev/zero into pages that are on the disk while
  * less than that is free: the kernel has to push other pages out to bring
- * the buffer back (and must not push out the buffer itself).
+ * the buffer back (and must not push out the buffer itself). With 64 MiB or
+ * more, one more: a thread asleep in read() has a buffer checked, and all of
+ * that memory is rewritten beside it. Swap must leave the buffer alone, since
+ * the kernel cannot take a fault of its own on a page that is on the disk.
  *
  * Exits 0 if every value was right; 2 if the kernel would not promise the
  * memory (which is the right answer on a machine without a swap disk).
@@ -70,6 +73,58 @@ static void fill(unsigned long *memory, unsigned long pages, unsigned long gener
         page[255] = ~value_of(i, generation);
         page[511] = i;
     }
+}
+
+static int sleeper_ends[2];
+static char *sleeper_buffer;
+
+/* A thread: read from the pipe into a page of its own; 0 if the read worked */
+static int sleeping_reader(void *unused) {
+    (void)unused;
+    return read(sleeper_ends[0], sleeper_buffer, 5) == 5 ? 0 : 1;
+}
+
+/* Whether thread `tid` of this process is asleep in read (5 seconds at most) */
+static int reader_asleep(long tid) {
+    /* (The format of /proc/<pid>/threads: id, state, system call. Read is 0.) */
+    char want[48], text[256], digits[24];
+    int count = 0, len = 0;
+    do { digits[count++] = (char)('0' + tid % 10); tid /= 10; } while (tid);
+    while (count) want[len++] = digits[--count];
+    strcpy(want + len, " blocked 0\n");
+    for (int tries = 0; tries < 500; tries++) {
+        long fd = open("/proc/self/threads", O_RDONLY);
+        long n = fd >= 0 ? read((int)fd, text, sizeof(text) - 1) : -1;
+        if (fd >= 0) close((int)fd);
+        if (n > 0) {
+            text[n] = 0;
+            for (char *line = text; *line; line++) {
+                if ((line == text || line[-1] == '\n') && strncmp(line, want, strlen(want)) == 0) return 1;
+            }
+        }
+        sleep_ms(10);
+    }
+    return 0;
+}
+
+/* Rewrite all of `memory` while a thread sleeps in a read into another page:
+ * that page is the only one swap has to leave. 0 if all held. */
+static int check_buffer_of_a_sleeping_thread(unsigned long *memory, unsigned long pages) {
+    sleeper_buffer = mmap_anon(PAGE);
+    if (!sleeper_buffer || pipe(sleeper_ends) != 0) return 1;
+    sleeper_buffer[0] = 'x';
+    thread_t t;
+    if (thread_create(&t, sleeping_reader, 0) != 0 || !reader_asleep(t.tid)) return 2;
+    long out = meminfo("Swapped:", 0);
+    fill(memory, pages, 3);
+    if (meminfo("Swapped:", 0) == out) return 3;     /* Nothing was at risk: this tested nothing */
+    int status = -1;
+    if (write(sleeper_ends[1], "woken", 5) != 5 || thread_join(&t, &status) != 0 || status != 0) return 4;
+    if (strncmp(sleeper_buffer, "woken", 5) != 0 || check(memory, pages, 3) != 0) return 5;
+    close(sleeper_ends[0]);
+    close(sleeper_ends[1]);
+    munmap(sleeper_buffer, PAGE);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -155,6 +210,15 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("swapper: a read() of %lu kB into swapped-out memory with %ld kB free\n", call_pages * 4, free_kb);
+
+    if (megabytes >= 64) {
+        int failure = check_buffer_of_a_sleeping_thread(memory, pages);
+        if (failure) {
+            printf("swapper: FAILED, a sleeping thread's buffer (step %d)\n", failure);
+            return 1;
+        }
+        printf("swapper: a thread's buffer stayed while its neighbours were swapped\n");
+    }
 
     long out = meminfo("Swapped:", 0) - out_before, in = meminfo("Swapped:", 1) - in_before;
     munmap(memory, pages * PAGE);
