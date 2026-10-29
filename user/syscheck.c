@@ -1708,12 +1708,14 @@ static void number_text(char *out, const char *before, long number, const char *
     *out = 0;
 }
 
-/* Whether thread `tid` of this process is inside system call `number` (5
- * seconds at most, as wait_in_syscall) */
+/* Whether thread `tid` of this process is asleep in system call `number` (5
+ * seconds at most, as wait_in_syscall). Asleep, not only inside: a thread just
+ * in futex_wait has not read the word yet, and one just in read has not
+ * recorded its buffer. Both looked ready to the checks that followed. */
 static int wait_thread_in_syscall(long tid, long number) {
     char text[512];
     char want[32], call[32];
-    number_text(want, "", tid, " ");
+    number_text(want, "", tid, " blocked ");
     number_text(call, " ", number, "\n");
     for (int tries = 0; tries < 500; tries++) {
         long fd = open("/proc/self/threads", O_RDONLY);
