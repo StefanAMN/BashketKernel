@@ -263,6 +263,10 @@ code comments and commit messages; `git log` is the full history.
   switching user programs to `-fpie`, the other build tree still held non-PIE
   objects and failed at link time with a confusing relocation error. User
   objects now depend on the Makefile.
+- **`iretq` and `sysretq` leave different registers behind.** `iretq` to
+  ring 3 clears data selectors holding kernel values; `sysretq` leaves them.
+  A kernel selector in GS was visible to a program only on a CPU that had
+  not yet done an `iretq`: one failure in many runs, on four CPUs.
 - **`1 / zero` does not divide** (GCC emits a compare for a constant
   dividend); make both operands volatile to raise `#DE`.
 - **Assertion macros must evaluate their arguments once.**

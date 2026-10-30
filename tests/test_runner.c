@@ -33,6 +33,7 @@ int test_remove(const char *dir, const char *name) {
 bool run_all_tests(void) {
     kprintf("\n--- Starting Kernel Unit Tests ---\n");
     
+    test_suite_before_programs();
     test_suite_pmm();
     test_suite_vmm();
     test_suite_heap();
