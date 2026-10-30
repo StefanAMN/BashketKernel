@@ -19,13 +19,18 @@ gdt_flush:
     // RDI contains 1st argument: gdt_ptr address
     lgdt [rdi]
 
-    // Reload Data Segment registers with Kernel Data Selector (0x10)
+    // SS takes the Kernel Data Selector (0x10). DS, ES, FS and GS take the
+    // null selector: long mode ignores them in ring 0, and they stay as they
+    // are on the way to ring 3 unless the way is iretq (which clears kernel
+    // selectors; SDM Vol. 2, IRET). A program returning by sysretq on a CPU
+    // that had not yet done an iretq would read the kernel's selector.
     mov ax, 0x10
+    mov ss, ax
+    xor eax, eax
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
-    mov ss, ax
 
     // Reload CS with Kernel Code Selector (0x08) using far return (retfq)
     // Push Code Selector (0x08)
