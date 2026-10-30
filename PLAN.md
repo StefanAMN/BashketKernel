@@ -2080,7 +2080,7 @@ two empty strings that compared equal (it now wants a value).
 Planned 2026-10-26, after track S, from limits written down earlier (each
 checked in the code first).
 
-### T1. ICMP errors, sent and taken in (M)
+### T1. ICMP errors, sent and taken in (M) — done
 
 A UDP datagram for a port nobody has open is counted and dropped in
 silence, and so is every ICMP message but echo: the sender of a datagram
@@ -2104,6 +2104,26 @@ an error quoting a connecting socket ends it with ECONNREFUSED, one
 quoting a sequence number not in flight ignored); `tools/test_net.py`:
 QEMU's capture shows a correct port-unreachable message for a datagram
 from the host to a closed port, checked by a parser that is not ours.
+
+Done (`icmp_send_error` and the error branch of `icmp_input` in
+`src/net/net.c`, `tcp_icmp_error` in `tcp.c`; `ipfrag_expire` reports the
+first fragment's header). The quote is the datagram's header and its
+first 8 bytes; for a datagram put together from fragments, the last
+fragment's header made to describe the whole. Code 4 counts as hard, as
+RFC 1122 says, though with path MTU discovery (which this stack does not
+do) it would not. Errors about UDP are counted and go no further: sockets
+here are not connected, and an unconnected socket is not told. QEMU does
+not pass our port unreachable on to the host's socket (a connected socket
+there sees only timeouts), so `test_net.py` reads it from QEMU's capture
+with its own parser (checksums written from RFC 1071, the quote's
+addresses and port); `tcpdump` decodes the same packets as "udp port 9
+unreachable". The rule against errors about errors can only matter for a
+fragmented ICMP error given up in reassembly, so that is what its test
+sends. Sabotage: errors about broadcasts, any sequence number believed, no
+rate limit, the first fragment not kept, errors about errors, and no
+answer from UDP each failed a check; soft codes treated as hard passed
+until the test waited to see `connect` stay unanswered (a connection just
+ended is still found, closed, while its owner holds it).
 
 ### T2. TCP selective acknowledgement (M)
 
@@ -2255,7 +2275,8 @@ R3                               done
 S4                               done
 S1, S2, S3                       done
 T3                               done
-T1, T2                           next (planned, not started)
+T1                               done
+T2                               next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
