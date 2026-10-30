@@ -3160,6 +3160,27 @@ static void check_shell_arith_read(void) {
     CHECK(sh_ends("echo $((99999999999999999999))", "", 2));
     CHECK(sh_ends("echo $((1 / 0)) never; echo after", "after\n", 0));      /* Only that command fails */
 
+    /* Assignments, ++ and --, the bit operators and ?: (T3) */
+    CHECK(sh_prints("x=5; echo $((x += 3)) $x $((x++)) $x $((++x)) $((x--)) $((--x)) $x", "8 8 8 9 10 10 8 8\n"));
+    CHECK(sh_prints("echo $((a = b = 7)) $a $b; echo $((n = 2 + 3 * 4)) $n", "7 7 7\n14 14\n"));
+    CHECK(sh_prints("v=10; echo $((v -= 3)) $((v *= 2)) $((v /= 4)) $((v %= 2)) $v", "7 14 3 1 1\n"));
+    CHECK(sh_prints("w=6; echo $((w <<= 2)) $((w >>= 1)) $((w &= 7)) $((w |= 8)) $((w ^= 1)) $w", "24 12 4 12 13 13\n"));
+    CHECK(sh_prints("echo $((1 << 4)) $((-16 >> 2)) $((1 << 64)) $((1 << 65)) $((6 & 3)) $((6 | 3)) $((6 ^ 3)) $((~0))",
+                    "16 -4 1 2 2 7 5 -1\n"));                       /* Counts modulo 64, as said */
+    CHECK(sh_prints("echo $((1 + 2 << 1)) $((5 & 3 == 3)) $((1 | 2 ^ 3 & 4)) $((2 < 1 << 2)) $((1 || 0 ? 7 : 8))",
+                    "6 1 3 1 7\n"));                                  /* C's precedence */
+    CHECK(sh_prints("echo $((1 ? 2 : 3)) $((0 ? 2 : 3)) $((0 ? 1 : 0 ? 2 : 3)) $((x == 1)) $((x <= 1))", "2 3 3 0 1\n"));
+    CHECK(sh_prints("c=1; echo $((c ? (p = 1) : (q = 2))) [$p][$q]", "1 [1][]\n"));   /* Only the side taken */
+    CHECK(sh_prints("c=0; echo $((c ? (p = 1) : (q = 2))) [$p][$q]", "2 [][2]\n"));
+    CHECK(sh_prints("z=0; echo $((z && y++)) $((1 || y++)) [$y]", "0 1 []\n"));
+    CHECK(sh_prints("i=0; s=0; while [ $((i++)) -lt 4 ]; do s=$((s + i)); done; echo $i $s", "5 10\n"));
+    CHECK(sh_prints("echo $((--5)) $((- -5)) $((!x++)) $x", "5 5 1 1\n"));    /* -- needs a name */
+    CHECK(sh_ends("echo $((5 = 3))", "", 2));                          /* Not a variable */
+    CHECK(sh_ends("echo $((1 ? 2))", "", 2));
+    CHECK(sh_ends("z=0; echo $((z /= 0))", "", 2));
+    CHECK(sh_ends("t=abc; echo $((t += 1))", "", 2));
+    CHECK(sh_ends("echo $((1 ? 2 : ))", "", 2));
+
     static const char rd[] = "one two three four\n  lead  trail  \nlast";
     CHECK(put_file("/tmp/rd", rd, strlen(rd)));
     CHECK(sh_prints("read a b < /tmp/rd; echo [$a][$b]", "[one][two three four]\n"));
