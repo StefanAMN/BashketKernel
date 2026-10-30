@@ -89,6 +89,12 @@ static void check_gs_is_ours(void) {
     unsigned long selector = 99;
     asm volatile("mov %0, gs" : "=r"(selector));
     CHECK((selector & 0xFFFF) == 0);
+    asm volatile("mov %0, fs" : "=r"(selector));
+    CHECK((selector & 0xFFFF) == 0);
+    asm volatile("mov %0, ds" : "=r"(selector));
+    CHECK((selector & 0xFFFF) == 0);
+    asm volatile("mov %0, es" : "=r"(selector));
+    CHECK((selector & 0xFFFF) == 0);
 
     /* gs:[0] in ring 3 is address 0 (our base is 0), not the kernel's
      * per-CPU structure: the access must fault, in a child */

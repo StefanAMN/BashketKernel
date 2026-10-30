@@ -658,6 +658,35 @@ TEST(other_cpus_forget_removed_kernel_mappings) {
     pmm_free_frame(second);
 }
 
+// Note in *arg whether this CPU's DS, ES, FS and GS all hold the null selector
+static void read_data_selectors(void *arg) {
+    uint16_t ds_now, es_now, fs_now, gs_now;
+    asm volatile("mov %0, ds; mov %1, es; mov %2, fs; mov %3, gs"
+                 : "=r"(ds_now), "=r"(es_now), "=r"(fs_now), "=r"(gs_now));
+    *(volatile bool *)arg = (ds_now | es_now | fs_now | gs_now) == 0;
+}
+
+// What a program finds in the data selectors on any CPU must be nothing of
+// the kernel's. The first iretq to ring 3 on a CPU clears them there, which
+// is what hid this: syscheck read the kernel's GS selector only when it
+// returned by sysretq on a CPU that had not yet done one. So this looks
+// first of all, before any program has run.
+TEST(data_selectors_are_null_on_every_cpu) {
+    volatile bool is_null = false;
+    read_data_selectors((void *)&is_null);
+    EXPECT_TRUE(is_null);
+    for (uint32_t i = 1; i < smp_get_cpu_total(); i++) {
+        is_null = false;
+        EXPECT_TRUE(smp_call(i, read_data_selectors, (void *)&is_null, true));
+        EXPECT_TRUE(is_null);
+    }
+}
+
+void test_suite_before_programs(void) {
+    kprintf("Suite: Before any program has run\n");
+    RUN_TEST(data_selectors_are_null_on_every_cpu);
+}
+
 void test_suite_smp(void) {
     kprintf("Suite: CPUs and Spinlocks\n");
     RUN_TEST(spinlock_basic_test);
