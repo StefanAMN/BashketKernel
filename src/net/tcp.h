@@ -43,8 +43,16 @@
  *    than 1 s (2.4), and the timeout (backed off or measured) is capped
  *    at 3 s rather than at least 60 s (2.5), so a dead peer is given up
  *    after about 20 s.
- *  - No options except the maximum segment size: no window scaling (so at
- *    most 64 KiB in flight), no timestamps, no selective acknowledgement.
+ *  - Options: the maximum segment size, and window scaling (RFC 7323,
+ *    section 2), offered in every SYN we send and used only when both
+ *    SYNs carried it. The 16-bit window field then counts in units of
+ *    2^shift bytes, each side's shift its own (ours TCP_WSCALE_OURS; one
+ *    above 14 is taken as 14, 2.3), so a window can exceed 64 KiB. The
+ *    send and receive rings start at TCP_BUFFER_SIZE and double, up to
+ *    TCP_BUFFER_MAX (64 KiB without scaling), when they are what holds the
+ *    connection back: the receive ring when the other end sent all the
+ *    window offered and the reader then emptied the ring, the send ring when it is full and both windows would
+ *    let more be in flight. No timestamps, no selective acknowledgement.
  *  - No simultaneous open, no urgent data, no keep-alive.
  */
 
@@ -56,7 +64,12 @@
 #include <stdbool.h>
 
 #define TCP_MAX_SOCKETS 32
-#define TCP_BUFFER_SIZE 8192   // Per direction, per connection
+#define TCP_BUFFER_SIZE 8192   // Per direction, per connection, to begin with
+#define TCP_BUFFER_MAX (256 * 1024) // What a ring may grow to with window scaling
+#define TCP_BUFFER_MAX_UNSCALED 65536 // ... and without (the window field holds 65535)
+#define TCP_WSCALE_OURS 3      // The shift we ask for: TCP_BUFFER_MAX >> 3 fits in 16 bits
+#define TCP_WSCALE_MAX 14      // The largest shift there is (RFC 7323 2.3)
+_Static_assert((TCP_BUFFER_MAX >> TCP_WSCALE_OURS) <= 65535, "our largest window must fit the field");
 #define TCP_BACKLOG_MAX 8
 
 typedef struct tcp_socket tcp_socket_t;
@@ -101,6 +114,22 @@ bool tcp_ooo_add(tcp_ooo_t *q, uint32_t start, uint32_t end);
  */
 uint32_t tcp_ooo_take(tcp_ooo_t *q, uint32_t rcv_nxt);
 
+// The options of a segment that this TCP understands
+typedef struct {
+    bool has_mss;
+    uint16_t mss;                // Maximum segment size (kind 2)
+    bool has_wscale;
+    uint8_t wscale;              // Window scale shift (kind 3), at most TCP_WSCALE_MAX
+} tcp_options_t;
+
+/**
+ * @brief Read the options of a segment (`len` bytes after the fixed
+ *        header). Untrusted: a malformed option ends the reading, and
+ *        what was found before it stands. A shift above TCP_WSCALE_MAX is
+ *        taken as TCP_WSCALE_MAX (RFC 7323 2.3).
+ */
+void tcp_parse_options(const uint8_t *options, size_t len, tcp_options_t *out);
+
 // The round-trip estimate of RFC 6298, in microseconds
 typedef struct {
     uint32_t srtt_us, rttvar_us;
@@ -127,7 +156,7 @@ typedef struct {
     uint32_t recover;            // RFC 6582: highest sequence number sent when recovery (or a timeout) began
 } tcp_cc_t;
 
-#define TCP_CWND_MAX (4u * 65535u) // Grown no further: no window beyond 64 KiB can be used (no scaling)
+#define TCP_CWND_MAX (4u * TCP_BUFFER_MAX) // Grown no further: more could never be in flight
 
 /**
  * @brief A connection is established: the initial window (RFC 5681 3.1,
@@ -249,7 +278,9 @@ const tcp_stats_t *tcp_stats(void);
 /**
  * @brief Describe every connection as text into buf (at most size bytes,
  *        NUL-terminated): ports, peer, state, congestion window, ssthresh,
- *        smoothed round trip and timeout. For /proc/tcp.
+ *        smoothed round trip and timeout, the window scale shifts (the
+ *        other end's/ours, "-" without scaling) and the receive and send
+ *        rings' sizes. For /proc/tcp.
  * @return the length written.
  */
 size_t tcp_describe(char *buf, size_t size);
@@ -278,6 +309,21 @@ void tcp_test_drop_every(uint32_t n);
  */
 bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack,
                         uint32_t *unacked);
+
+// What tcp_test_windows reports of a connection
+typedef struct {
+    bool scaling;                // Both SYNs carried the window scale option
+    uint8_t snd_shift;           // Applied to the windows the other end sends
+    uint8_t rcv_shift;           // Applied to the windows we send
+    uint32_t snd_wnd;            // The other end's window, in bytes
+    uint32_t rx_size, tx_size;   // The rings' sizes now
+} tcp_test_windows_t;
+
+/**
+ * @brief For tests: the windows of the connection between local_port and
+ *        remote_port (at our own address). false if there is none.
+ */
+bool tcp_test_windows(uint16_t local_port, uint16_t remote_port, tcp_test_windows_t *out);
 
 #define TCP_TRACE_MAX 1024
 
