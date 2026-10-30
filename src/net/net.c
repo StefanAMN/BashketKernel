@@ -25,6 +25,13 @@
 
 #define ICMP_ECHO_REPLY   0
 #define ICMP_ECHO_REQUEST 8
+#define ICMP_DEST_UNREACHABLE 3    // Codes: 0 net, 1 host, 2 protocol, 3 port, 4 fragmentation needed, ...
+#define ICMP_TIME_EXCEEDED 11      // Code 1: fragment reassembly time exceeded
+#define ICMP_UNREACH_PROTOCOL 2
+#define ICMP_UNREACH_PORT 3
+#define ICMP_REASSEMBLY_TIMEOUT 1
+#define ICMP_ERRORS_PER_SECOND 10  // At most this many errors sent a second (RFC 1812 4.3.2.8)
+#define ICMP_QUOTE_MAX (60 + 8)    // The header quoted (options included) and 8 bytes after it (RFC 792)
 
 #define ARP_REQUEST 1
 #define ARP_REPLY   2
@@ -513,6 +520,80 @@ int net_ipv4_send(uint32_t dst, uint8_t protocol, const void *payload, size_t le
     return ipv4_send(dst, protocol, payload, len, can_block);
 }
 
+// Is `ip` an address of one machine (not 0.0.0.0, a broadcast or multicast)?
+static bool unicast_address(uint32_t ip) {
+    uint32_t our_ip = local_ip;
+    return ip != 0 && ip != NET_BROADCAST && (ip >> 28) != 0xE &&
+           !(our_ip != 0 && ip == (our_ip | ~local_netmask));
+}
+
+// Under net_lock: the errors sent in the current second, for the rate limit
+static uint64_t icmp_error_second;
+static uint32_t icmp_errors_this_second;
+
+// Send an ICMP error of `type` and `code` about the datagram whose header
+// and first bytes `quote` holds (quote_len bytes; make_quote), to whoever
+// sent it. Following RFC 1122 3.2.2, nothing is sent about a datagram to a
+// broadcast or multicast address or from one that is not a single machine,
+// about a fragment other than the first, or about an ICMP error (that
+// could go back and forth for ever); and no more than
+// ICMP_ERRORS_PER_SECOND a second (RFC 1812 4.3.2.8), so that a flood of
+// datagrams to closed ports does not make us a flood of answers. Never
+// waits (it may be the receive thread). Call without net_lock.
+static void icmp_send_error(uint8_t type, uint8_t code, const uint8_t *quote, size_t quote_len) {
+    if (quote_len < sizeof(struct ipv4_header) || quote_len > ICMP_QUOTE_MAX) return;
+    const struct ipv4_header *q = (const struct ipv4_header *)quote;
+    size_t q_header = (size_t)(q->version_ihl & 0x0F) * 4;
+    if (q_header < sizeof(*q) || q_header > quote_len) return;
+    uint32_t to = ntohl(q->src), was_for = ntohl(q->dst);
+    if (!unicast_address(to) || !unicast_address(was_for)) return;
+    if (ntohs(q->flags_fragment) & 0x1FFF) return;              // Not the first fragment
+    if (q->protocol == IP_PROTO_ICMP && quote_len > q_header) {
+        uint8_t quoted_type = quote[q_header];
+        if (quoted_type != ICMP_ECHO_REQUEST && quoted_type != ICMP_ECHO_REPLY) return;   // An error
+    }
+
+    uint64_t flags = spinlock_acquire_irqsave(&net_lock);
+    uint64_t second = timer_ticks() / TIMER_HZ;
+    if (second != icmp_error_second) { icmp_error_second = second; icmp_errors_this_second = 0; }
+    bool allowed = icmp_errors_this_second < ICMP_ERRORS_PER_SECOND;
+    if (allowed) icmp_errors_this_second++;
+    else stats.icmp_errors_limited++;
+    spinlock_release_irqrestore(&net_lock, flags);
+    if (!allowed) return;
+
+    // Type, code, checksum, four unused bytes (RFC 792), then the quote
+    uint8_t message[8 + ICMP_QUOTE_MAX];
+    memset(message, 0, 8);
+    message[0] = type;
+    message[1] = code;
+    memcpy(message + 8, quote, quote_len);
+    uint16_t sum = net_checksum(message, 8 + quote_len);
+    message[2] = (uint8_t)(sum >> 8);
+    message[3] = (uint8_t)sum;
+    if (ipv4_send(to, IP_PROTO_ICMP, message, 8 + quote_len, false) == 0) stats.icmp_errors_sent++;
+}
+
+// Into out[ICMP_QUOTE_MAX], what an ICMP error about a datagram quotes: its
+// header (as it arrived, `ip`) and the first 8 bytes of its payload; for a
+// datagram put together from fragments the header is the last fragment's
+// made to describe the whole (no fragment bits, the whole length).
+// Returns the length.
+static size_t make_quote(const struct ipv4_header *ip, const uint8_t *payload, size_t len, uint8_t *out) {
+    size_t header_len = (size_t)(ip->version_ihl & 0x0F) * 4;
+    memcpy(out, ip, header_len);
+    struct ipv4_header *q = (struct ipv4_header *)out;
+    if (ntohs(q->flags_fragment) & 0x3FFF) {
+        q->flags_fragment = htons(ntohs(q->flags_fragment) & 0x4000);
+        q->total_length = htons((uint16_t)(header_len + len > 0xFFFF ? 0xFFFF : header_len + len));
+        q->checksum = 0;
+        q->checksum = htons(net_checksum(q, header_len));
+    }
+    size_t n = len < 8 ? len : 8;
+    memcpy(out + header_len, payload, n);
+    return header_len + n;
+}
+
 // A received ICMP message: answer an echo request (without waiting for
 // ARP: this is the receive thread), or note the answer to one of our pings
 static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
@@ -532,6 +613,23 @@ static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
         out->checksum = htons(net_checksum(reply, len));
         if (ipv4_send(src, IP_PROTO_ICMP, reply, len, false) == 0) stats.echo_replies_sent++;
         kfree(reply);
+    } else if (icmp->type == ICMP_DEST_UNREACHABLE || icmp->type == ICMP_TIME_EXCEEDED) {
+        // About a datagram we sent: its header and first 8 bytes are quoted
+        stats.icmp_errors_received++;
+        const uint8_t *quote = data + 8;
+        size_t quote_len = len - 8;
+        const struct ipv4_header *q = (const struct ipv4_header *)quote;
+        size_t q_header = quote_len >= sizeof(*q) ? (size_t)(q->version_ihl & 0x0F) * 4 : 0;
+        if (q_header < sizeof(*q) || (q->version_ihl >> 4) != 4 || q_header + 8 > quote_len) {
+            stats.dropped++;
+            return;
+        }
+        if (q->protocol == IP_PROTO_TCP) {
+            const uint8_t *t = quote + q_header;      // The TCP header's first 8 bytes: ports and sequence number
+            uint16_t local_port = (uint16_t)((t[0] << 8) | t[1]), remote_port = (uint16_t)((t[2] << 8) | t[3]);
+            uint32_t seq = ((uint32_t)t[4] << 24) | ((uint32_t)t[5] << 16) | ((uint32_t)t[6] << 8) | t[7];
+            tcp_icmp_error(ntohl(q->dst), local_port, remote_port, seq, icmp->type, icmp->code);
+        }
     } else if (icmp->type == ICMP_ECHO_REPLY) {
         uint64_t flags = spinlock_acquire_irqsave(&net_lock);
         for (size_t i = 0; i < sizeof(pings) / sizeof(pings[0]); i++) {
@@ -546,9 +644,10 @@ static void icmp_input(uint32_t src, const uint8_t *data, size_t len) {
     }
 }
 
-// A received UDP datagram: queue it on the socket bound to its port, or
-// count it as undeliverable (no socket, or its queue is full)
-static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t len) {
+// A received UDP datagram (`ip` the header it came with): queue it on the
+// socket bound to its port, or count it as undeliverable (its queue full,
+// or no socket: then the sender is told, ICMP port unreachable)
+static void udp_input(const struct ipv4_header *ip, uint32_t src, uint32_t dst, const uint8_t *data, size_t len) {
     if (len < sizeof(struct udp_header)) { stats.dropped++; return; }
     const struct udp_header *udp = (const struct udp_header *)data;
 
@@ -596,15 +695,29 @@ static void udp_input(uint32_t src, uint32_t dst, const uint8_t *data, size_t le
     if (sock) {
         sched_wakeup(sock);
         poll_notify();
+    } else {
+        uint8_t quote[ICMP_QUOTE_MAX];
+        icmp_send_error(ICMP_DEST_UNREACHABLE, ICMP_UNREACH_PORT, quote, make_quote(ip, data, len, quote));
     }
 }
 
-// Hand a datagram's payload to ICMP, UDP or TCP
-static void deliver(uint8_t protocol, uint32_t src, uint32_t dst, const uint8_t *payload, size_t len) {
-    if (protocol == IP_PROTO_ICMP) icmp_input(src, payload, len);
-    else if (protocol == IP_PROTO_UDP) udp_input(src, dst, payload, len);
-    else if (protocol == IP_PROTO_TCP) tcp_input(src, dst, payload, len);
-    else stats.dropped++;
+// Hand a datagram's payload to ICMP, UDP or TCP (`ip` the header it came
+// with, for an error's quote); for any other protocol tell the sender
+static void deliver(const struct ipv4_header *ip, uint32_t src, uint32_t dst, const uint8_t *payload, size_t len) {
+    if (ip->protocol == IP_PROTO_ICMP) icmp_input(src, payload, len);
+    else if (ip->protocol == IP_PROTO_UDP) udp_input(ip, src, dst, payload, len);
+    else if (ip->protocol == IP_PROTO_TCP) tcp_input(src, dst, payload, len);
+    else {
+        stats.dropped++;
+        uint8_t quote[ICMP_QUOTE_MAX];
+        icmp_send_error(ICMP_DEST_UNREACHABLE, ICMP_UNREACH_PROTOCOL, quote, make_quote(ip, payload, len, quote));
+    }
+}
+
+// The receive thread gave up a datagram whose first fragment it held:
+// tell the sender (ipfrag.h passes the first fragment's quote)
+static void report_reassembly_timeout(const uint8_t *quote, size_t len) {
+    icmp_send_error(ICMP_TIME_EXCEEDED, ICMP_REASSEMBLY_TIMEOUT, quote, len);
 }
 
 // A received IPv4 packet: check its header, and if it is for us hand its
@@ -648,19 +761,19 @@ static void ipv4_input(const uint8_t *packet, size_t len, const uint8_t *src_mac
     bool more = fragment & 0x2000;
     size_t offset = (size_t)(fragment & 0x1FFF) * 8;
     if (!more && offset == 0) {
-        deliver(ip->protocol, src, to, payload, payload_len);
+        deliver(ip, src, to, payload, payload_len);
         return;
     }
 
     size_t whole_len = 0;
     bool started = false;
     uint8_t *whole = ipfrag_input(src, to, ip->protocol, ntohs(ip->id), offset, more,
-                                  payload, payload_len, timer_ticks(), &whole_len, &started);
+                                  ip, payload, payload_len, timer_ticks(), &whole_len, &started);
     // A new datagram brings a new deadline, which the receive thread must
     // wait for (it is the one that gives up incomplete datagrams)
     if (started) virtio_net_wake_rx();
     if (whole) {
-        deliver(ip->protocol, src, to, whole, whole_len);
+        deliver(ip, src, to, whole, whole_len);
         kfree(whole);
     }
 }
@@ -877,7 +990,7 @@ static void netd(void) {
 
         // Datagrams whose fragments did not all come in time are given up
         // here, so the thread wakes for the next such deadline too
-        virtio_net_wait_rx(ipfrag_expire(timer_ticks()));
+        virtio_net_wait_rx(ipfrag_expire(timer_ticks(), report_reassembly_timeout));
     }
 }
 

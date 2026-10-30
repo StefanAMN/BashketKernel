@@ -124,6 +124,7 @@
 #define EMSGSIZE     90
 #define EADDRINUSE   98
 #define ENETDOWN    100
+#define ENETUNREACH 101
 #define ECONNRESET  104
 #define EISCONN     106
 #define ENOTCONN    107
