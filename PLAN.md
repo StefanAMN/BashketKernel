@@ -1415,7 +1415,8 @@ constants (`0x1f`, `010`); a variable must hold a number (blanks and a
 sign allowed) or be empty; `&&` and `||` skip their right side, errors
 in it included (`x != 0 && 10 / x`); overflow wraps, `LONG_MIN / -1`
 too, instead of trapping. Not done: assignments inside (`=`, `+=`,
-`++`), the bit operators, `?:`, and `$(...)` inside `$((...))`. `read`
+`++`), the bit operators and `?:` (all three done in T3), and `$(...)`
+inside `$((...))`. `read`
 takes a byte at a time, so the rest of the input is left for the next
 reader; it runs in the shell itself (it sets the shell's variables),
 its redirections applied there and undone after, and in a child when it
@@ -2074,6 +2075,71 @@ two empty strings that compared equal (it now wants a value).
 
 ---
 
+## Track T — Errors that reach the sender, losses repaired together, arithmetic that assigns
+
+Planned 2026-10-26, after track S, from limits written down earlier (each
+checked in the code first).
+
+### T1. ICMP errors, sent and taken in (M)
+
+A UDP datagram for a port nobody has open is counted and dropped in
+silence, and so is every ICMP message but echo: the sender of a datagram
+to a closed port waits for an answer that will never come, and a TCP
+connection the network reports unreachable runs out its retransmissions
+(about 20 s) instead of failing at once. S3 also left out the "reassembly
+time exceeded" message. Send "port unreachable" for UDP to a closed port
+and "protocol unreachable" for an unknown protocol (RFC 1122 3.2.2.1, a
+SHOULD), and "fragment reassembly time exceeded" when a datagram whose
+first fragment arrived is given up (3.3.2); never in answer to an ICMP
+error, a broadcast, or a fragment other than the first (RFC 1122
+3.2.2), and no more than a few per second (rate limit, RFC 1812 4.3.2.8).
+Take in "destination unreachable": codes 2 to 4 (protocol, port,
+fragmentation needed) are hard errors and end the TCP connection they
+quote (RFC 1122 4.2.3.9), the others are soft (remembered, reported if
+the connection then times out); the quoted header must match a
+connection's addresses, ports and a sequence number in flight (RFC 5927:
+forged errors). **Check:** unit tests (a datagram to a closed port
+answered, a broadcast one not, an error not answered, the rate limit,
+an error quoting a connecting socket ends it with ECONNREFUSED, one
+quoting a sequence number not in flight ignored); `tools/test_net.py`:
+QEMU's capture shows a correct port-unreachable message for a datagram
+from the host to a closed port, checked by a parser that is not ours.
+
+### T2. TCP selective acknowledgement (M)
+
+With NewReno a window with several losses is repaired one hole per round
+trip (O2, P1 wrote it down). Offer and accept SACK (RFC 2018: the option
+in the SYN, blocks of what arrived beyond a gap in each acknowledgement
+while a gap exists, the most recent first), and as a sender keep a
+scoreboard and retransmit the holes it shows in one round trip (RFC 6675
+loss recovery). **Check:** unit tests of the blocks sent and of the
+scoreboard; the lossy loopback transfer (`tcp_survives_lost_segments`)
+with fewer retransmission timeouts and less time than with SACK refused,
+both written down; a peer that does not offer it still served by
+NewReno (QEMU's own TCP does not).
+
+### T3. Assignment and the remaining operators in `$(( ))` (S) — done
+
+The shell's arithmetic has no assignments (`=`, `+=` and the other
+compound forms, `++` and `--`), no bit operators (`& | ^ ~ << >>`) and
+no `?:`, all of which POSIX lists (XCU 2.6.4, from C). Add them with C's
+precedence; an assignment sets the shell variable and has its value; `?:`
+and `&& ||` evaluate only the side taken. **Check:** syscheck: each
+operator, precedence against the existing ones, `x=5` leaving x set,
+`i++` in a `while` loop, shifts by more than 63 defined as in the shell's
+64-bit integers (said so), errors (assigning to a number, `1 ? 2`).
+
+Done (`user/sh.c`, the `arith_` functions; syscheck's
+`check_shell_arith_read`). Shift counts are taken modulo 64, as the x86
+shift instructions and bash do, and `>>` keeps the sign. `++` and `--`
+apply to names only, so `--5` is still -(-5), and `$x++` is refused (a
+value, not a variable), as in bash. As in C, `c ? p = 1 : q = 2` does not
+parse (`(c ? p = 1 : q) = 2`): the branches that assign need parentheses.
+Sabotage: an assignment that stored nothing failed four checks; a postfix
+`++` giving the value after failed three; `&` taking the first half of
+`&&` failed three; `?:` evaluating its middle when the condition is false
+passed until a check with the condition false was added.
+
 ## Smaller repairs (any time, each S)
 
 Known limits in code that is otherwise real, carried over from the previous
@@ -2120,6 +2186,23 @@ plan:
     kept as its difference from the CMOS clock. The test allows 3 s at any
     uptime, and `time_of_day_is_put_right_by_the_cmos_clock` puts the clock
     10 s out each way (a check that measures without correcting fails it).
+13. A `/proc` file is made afresh for every `read()`, so a program that
+    reads one in small pieces gets pieces of different moments: a process
+    whose `State:` changes length between two reads shifts every line
+    after it. Found 2026-10-26 when a unit test reading a status in 7-byte
+    pieces lost the `Pid:` line (and found `PPid:` instead) on four CPUs;
+    the tests now read a running process's status in one call, as `cat`
+    and `top` do. The fix is a copy made at the first read and kept with
+    the open file until it is closed (as Linux's `seq_file` does), which
+    needs a place for per-open state that `vnode_ops` reads do not have.
+14. (Done 2026-10-30.) Every CPU started with the kernel's data selector
+    in DS, ES, FS and GS. `iretq` to ring 3 clears such selectors and
+    `sysretq` does not, so a program moved to a CPU that had not yet done an
+    `iretq` could read it: syscheck's "GS is 0" check failed once in a
+    `make check` on four CPUs. No harm to the kernel (the base registers are
+    what count), but kernel state in a program's hands. `gdt_flush` now
+    loads the null selector there. The unit test looks before any program
+    has run, since the first `iretq` hides it afterwards.
 
 ---
 
@@ -2171,6 +2254,8 @@ R3                               done
         |
 S4                               done
 S1, S2, S3                       done
+T3                               done
+T1, T2                           next (planned, not started)
 ```
 
 (Track A, once the recommended first step because everything built on
