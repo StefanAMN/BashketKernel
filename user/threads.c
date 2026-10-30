@@ -5,7 +5,8 @@
  * Each part fails in a way only sharing can: a page given twice by two faults
  * at once loses a thread's count; a page marked copy-on-write that another CPU
  * can still write through changes under a forked child; a page unmapped that
- * another CPU can still read lets the reader run on. Exit status 0 only if
+ * another CPU can still read lets the reader run on; a file page installed over
+ * one another thread has already written loses the write. Exit status 0 only if
  * all held. Mostly meant for four CPUs and more (make test-smp).
  */
 #include "ulib.h"
@@ -45,6 +46,48 @@ static void check_first_touch(void) {
         if (touched[page * PAGE / sizeof(unsigned long)] != WORKERS) fail("a first touch was lost");
     }
     munmap((void *)touched, TOUCH_PAGES * PAGE);
+}
+
+#define FILE_PAGES 24
+#define FILE_WORKERS 4
+
+static volatile char *file_memory;
+static volatile int file_go;
+
+/* Wait for the word, then write this thread's mark on every page */
+static int file_toucher(void *arg) {
+    long me = (long)arg;
+    while (!file_go) { }
+    for (long page = 0; page < FILE_PAGES; page++) file_memory[page * PAGE + me] = (char)(me + 1);
+    return 0;
+}
+
+/* The first touches of a private file mapping, with the file not yet in the
+ * page cache: the fault reads the disk with its lock released, and the others
+ * fault meanwhile. A slower one must look again before it installs its page,
+ * or it replaces a page holding another thread's mark. In a boot that has not
+ * read /disk/pattern.bin its pages are cold, and only then does this test the
+ * race (so only the first run in a boot, and no rounds). */
+static void check_file_first_touch(void) {
+    long fd = open("/disk/pattern.bin", O_RDONLY);
+    if (fd < 0) return fail("cannot open /disk/pattern.bin");
+    file_memory = mmap_file((int)fd, FILE_PAGES * PAGE, 0, PROT_READ | PROT_WRITE);
+    if (!file_memory) return fail("no mapping");
+    file_go = 0;
+    thread_t t[FILE_WORKERS];
+    for (long i = 0; i < FILE_WORKERS; i++) if (thread_create(&t[i], file_toucher, (void *)i) != 0) fail("thread_create");
+    file_go = 1;
+    for (int i = 0; i < FILE_WORKERS; i++) if (thread_join(&t[i], 0) != 0) fail("thread_join");
+    for (long page = 0; page < FILE_PAGES; page++) {
+        for (long i = 0; i < FILE_WORKERS; i++) {
+            if (file_memory[page * PAGE + i] != (char)(i + 1)) return fail("a write to a page being read in was lost");
+        }
+        /* What the disk image builder put there (tests/test_fat32.c) */
+        long at = page * PAGE + 100;
+        if (file_memory[at] != (char)(at * 7 + (at >> 8) * 13)) return fail("a file page came back wrong");
+    }
+    munmap((void *)file_memory, FILE_PAGES * PAGE);
+    close((int)fd);
 }
 
 static volatile int writers_stop;
@@ -218,6 +261,7 @@ static void check_unmap_reaches_other_cpus(void) {
 int main(int argc, char **argv) {
     if (argc > 1) rounds = atoi(argv[1]);
     for (long i = 0; i < rounds; i++) check_first_touch();
+    check_file_first_touch();
     check_fork_snapshot();
     check_descriptor_races();
     check_churn();
