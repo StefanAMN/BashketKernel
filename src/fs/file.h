@@ -50,6 +50,8 @@ typedef struct file {
     bool append;       // Every write goes to the end of the file
     vnode_t *node;     // FILE_VNODE
     size_t offset;     // FILE_VNODE: position; for a directory, the entry index
+    char *snapshot;    // FILE_VNODE with a snapshot operation (/proc): the text reads come from (kmalloc), or NULL
+    size_t snapshot_len;
     pipe_t *pipe;      // FILE_PIPE
     struct udp_socket *socket; // FILE_SOCKET
     struct tcp_socket *tcp;    // FILE_TCP
@@ -136,7 +138,8 @@ file_t *file_dup(file_t *file);
 
 /**
  * @brief Drop a reference; the file is really closed when the last one goes
- *        (the node's open count drops, a pipe end or socket is closed).
+ *        (the node's open count drops, a pipe end or socket is closed, a
+ *        /proc text kept for it is freed).
  *        May sleep: call without spinlocks held.
  */
 void file_close(file_t *file);
@@ -150,7 +153,10 @@ void file_close_all(file_t *fds[TASK_MAX_FDS]);
 /**
  * @brief Read up to `count` bytes at the file's position into the kernel
  *        buffer `buf`, and move the position past them. May sleep (console,
- *        pipes, sockets, disks).
+ *        pipes, sockets, disks). A /proc file (a node with a snapshot
+ *        operation) is read from a copy of its text taken at the first
+ *        read and at every read from position 0, and kept until close, so
+ *        reads in small pieces fit together.
  * @return Bytes read, 0 at end-of-file, or a negative error number (EBADF
  *         if not open for reading, EISDIR for a directory, EINVAL for a UDP
  *         socket, or the device's error).

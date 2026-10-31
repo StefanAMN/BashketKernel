@@ -25,6 +25,7 @@
 #include "mount.h"
 #include "bench.h"
 #include "kerrno.h"
+#include "file.h"
 
 // Read a decimal number from the start of `str` (stops at the first
 // non-digit; 0 if there is none)
@@ -146,15 +147,18 @@ static void cmd_ls(const char *path) {
     vfs_unlock();
 }
 
-// cat FILE: print a file's contents
+// cat FILE: print a file's contents, read through an open file (which
+// keeps it from being removed meanwhile, and a /proc file's text still)
 static void cmd_cat(const char *filename) {
-    vnode_t *file = vfs_find(NULL, filename);
-    if (!file) {
-        kprintf("cat: file '%s' not found!\n", filename);
+    file_t *file = NULL;
+    int error = file_open(filename, O_RDONLY, &file);
+    if (error == -EISDIR || (error == 0 && file->node->type == VFS_DIRECTORY)) {
+        kprintf("cat: '%s' is a directory\n", filename);
+        file_close(file);
         return;
     }
-    if (file->type == VFS_DIRECTORY) {
-        kprintf("cat: '%s' is a directory\n", filename);
+    if (error != 0) {
+        kprintf("cat: file '%s' not found!\n", filename);
         return;
     }
 
@@ -162,12 +166,13 @@ static void cmd_cat(const char *filename) {
     // shell has no Ctrl-C of its own
     char buf[256];
     size_t offset = 0;
-    size_t read_bytes;
-    while (offset < 64 * 1024 && (read_bytes = vfs_read(file, offset, sizeof(buf) - 1, buf)) > 0) {
+    int64_t read_bytes;
+    while (offset < 64 * 1024 && (read_bytes = file_read(file, buf, sizeof(buf) - 1)) > 0) {
         buf[read_bytes] = '\0';
         kprintf("%s", buf);
-        offset += read_bytes;
+        offset += (size_t)read_bytes;
     }
+    file_close(file);
     kprintf("\n");
 }
 
