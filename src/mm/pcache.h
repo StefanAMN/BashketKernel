@@ -115,6 +115,14 @@ uint64_t pcache_get_shared(struct vnode *node, uint64_t index, bool writable);
 void pcache_file_written(struct vnode *node, uint64_t offset, const void *buf, size_t len);
 
 /**
+ * @brief A write is about to leave a gap after the end of `node`, at
+ *        `old_size`: the rest of a shared page holding that end reads
+ *        zeros, whatever a mapping wrote there (it was never the file's).
+ *        Call before the write. Same lock rules as pcache_file_written.
+ */
+void pcache_file_gap(struct vnode *node, uint64_t old_size);
+
+/**
  * @brief `node` now ends at `size`: its pages past that go (a shared
  *        mapping's included: see pcache_truncations), the page it ends in
  *        reads zeros past the end, and other cached pages are dropped.
