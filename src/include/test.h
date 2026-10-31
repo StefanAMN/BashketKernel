@@ -85,6 +85,7 @@ void test_suite_net(void);       /* The network stack: ARP, IPv4, ICMP, UDP, mal
 void test_suite_tcp(void);       /* TCP: connect and close, resets, early data, large transfers, loss, dead peers, bad segments */
 void test_suite_rtc(void);       /* The CMOS clock, the time of day, dates and Unix time */
 void test_suite_pipe(void);      /* Pipes */
+void test_suite_localsock(void); /* Local sockets */
 void test_suite_ansi(void);      /* The ANSI escape parser and the console */
 void test_suite_priority(void);  /* Priority scheduling */
 void test_suite_sem(void);       /* Semaphores and blocking */

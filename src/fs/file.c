@@ -16,6 +16,7 @@
 #include "dev.h"
 #include "pcache.h"
 #include "process.h"
+#include "localsock.h"
 
 // Open files are small, all the same size, and created and destroyed
 // constantly (every open, pipe and exit), which is what a slab cache is for.
@@ -96,6 +97,7 @@ static int open_as_locked(uint32_t uid, vnode_t *base, const char *path, int fla
     }
     if (!node) return -ENOENT;
     if (node->type == VFS_DIRECTORY && writable) return -EISDIR;
+    if (node->type == VFS_SOCKET) return -ENXIO;           // Reached with local_connect, as in POSIX
     if (node->read_only && writable) return -EROFS;
     if (access != O_WRONLY && !auth_may_access(uid, node, false)) return -EACCES;
     if (writable && !auth_may_access(uid, node, true)) return -EACCES;
@@ -150,6 +152,44 @@ int file_open_pipe(file_t **out_read, file_t **out_write) {
     writer->pipe = pipe;
     *out_read = reader;
     *out_write = writer;
+    return 0;
+}
+
+int file_open_local_pair(file_t **a, file_t **b) {
+    pipe_t *one = pipe_create();
+    pipe_t *other = pipe_create();
+    file_t *first = file_alloc(FILE_LOCAL, true, true);
+    file_t *second = file_alloc(FILE_LOCAL, true, true);
+    if (!one || !other || !first || !second) {
+        kfree(one);
+        kfree(other);
+        file_free(first);
+        file_free(second);
+        return -ENOMEM;
+    }
+    first->local_in = one;
+    first->local_out = other;
+    second->local_in = other;
+    second->local_out = one;
+    *a = first;
+    *b = second;
+    return 0;
+}
+
+file_t *file_open_local_listener(struct local_listener *listener) {
+    file_t *file = file_alloc(FILE_LOCAL_LISTENER, true, true);   // So that read and write reach "use accept"
+    if (!file) {
+        local_listener_close(listener);
+        return NULL;
+    }
+    file->listener = listener;
+    return file;
+}
+
+int file_local_shutdown(file_t *file) {
+    if (!file || file->kind != FILE_LOCAL) return -EINVAL;
+    // Only once: the end is also closed when the file is
+    if (!__atomic_exchange_n(&file->local_shut, true, __ATOMIC_ACQ_REL)) pipe_close_writer(file->local_out);
     return 0;
 }
 
@@ -223,6 +263,11 @@ void file_close(file_t *file) {
         udp_close(file->socket);
     } else if (file->kind == FILE_TCP) {
         tcp_close(file->tcp);
+    } else if (file->kind == FILE_LOCAL) {
+        pipe_close_reader(file->local_in);
+        file_local_shutdown(file);
+    } else if (file->kind == FILE_LOCAL_LISTENER) {
+        local_listener_close(file->listener);
     }
     kfree(file->snapshot);
     file_free(file);
@@ -336,6 +381,10 @@ int64_t file_read(file_t *file, void *buf, size_t count) {
             return -EINVAL; // Datagrams have addresses: use recvfrom
         case FILE_TCP:
             return tcp_read(file->tcp, buf, count);
+        case FILE_LOCAL:
+            return pipe_read(file->local_in, buf, count);
+        case FILE_LOCAL_LISTENER:
+            return -EINVAL; // Connections come from accept
         case FILE_VNODE: {
             if (file->node->type == VFS_DIRECTORY) return -EISDIR;
             if (file->node->ops && file->node->ops->snapshot) return read_snapshot(file, buf, count);
@@ -373,6 +422,11 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
             return -EINVAL; // ... and sendto
         case FILE_TCP:
             return tcp_write(file->tcp, buf, count);
+        case FILE_LOCAL:
+            if (__atomic_load_n(&file->local_shut, __ATOMIC_ACQUIRE)) return -EPIPE;
+            return pipe_write(file->local_out, buf, count);
+        case FILE_LOCAL_LISTENER:
+            return -EINVAL;
         case FILE_VNODE: {
             if (file->node->ops) {
                 if (!file->node->ops->write) return -EINVAL; // Read-only device

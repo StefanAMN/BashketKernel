@@ -4,6 +4,7 @@
  */
 
 #include "poll.h"
+#include "localsock.h"
 #include "pipe.h"
 #include "tty.h"
 #include "net.h"
@@ -30,6 +31,10 @@ int file_poll(file_t *file) {
         case FILE_PIPE:    return pipe_poll(file->pipe, file->readable);
         case FILE_SOCKET:  return udp_poll(file->socket);
         case FILE_TCP:     return tcp_poll(file->tcp);
+        case FILE_LOCAL:
+            return pipe_poll(file->local_in, true) |
+                   (__atomic_load_n(&file->local_shut, __ATOMIC_ACQUIRE) ? 0 : pipe_poll(file->local_out, false));
+        case FILE_LOCAL_LISTENER: return local_listener_poll(file->listener);
         case FILE_VNODE:
             // A device says for itself; anything else (a file, a directory)
             // never makes a reader or a writer wait

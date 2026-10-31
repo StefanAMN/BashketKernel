@@ -104,6 +104,9 @@
 #define SYS_MSYNC       323  // (addr, length, flags): write what shared mappings in the range wrote to their files
 #define SYS_SETSID      324  // (): a session and group of one's own, without a terminal; the session's number
 #define SYS_GETSID      325  // (pid): the session of a process (0: the caller); 0 is the console's
+#define SYS_SOCKETPAIR  327  // (int fds[2]): two connected local stream sockets
+#define SYS_LOCAL_LISTEN 328 // (path, backlog): make `path` a local socket, as a descriptor to accept on
+#define SYS_LOCAL_CONNECT 329 // (path): connect to a local socket, as a descriptor; needs write permission on it
 #define SYS_TTY_TOSTOP  326  // (on): 1 sets the terminal's tostop (background writers stop), 0 clears it; -1 asks
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105
