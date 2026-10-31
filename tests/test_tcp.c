@@ -1026,6 +1026,308 @@ TEST(tcp_icmp_errors_end_a_connection) {
     EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
 }
 
+// --- Selective acknowledgement (RFC 2018, RFC 6675) ----------------------------
+
+// The SACK options, the blocks a receiver reports and a sender's scoreboard
+TEST(tcp_sack_options_and_scoreboard) {
+    tcp_options_t o;
+    static const uint8_t permitted[] = { 2, 4, 0x05, 0xB4, 1, 1, 4, 2 };
+    tcp_parse_options(permitted, sizeof(permitted), &o);
+    EXPECT_TRUE(o.has_mss && o.sack_permitted && o.sack_count == 0);
+    static const uint8_t two[] = { 1, 1, 5, 18, 0, 0, 0x10, 0, 0, 0, 0x20, 0, 0, 0, 0x30, 0, 0, 0, 0x40, 0 };
+    tcp_parse_options(two, sizeof(two), &o);
+    EXPECT_TRUE(o.sack_count == 2 && o.sack[0][0] == 0x1000 && o.sack[0][1] == 0x2000);
+    EXPECT_TRUE(o.sack[1][0] == 0x3000 && o.sack[1][1] == 0x4000);
+    static const uint8_t bad_len[] = { 5, 12, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0 };          // 10 is not 8n
+    tcp_parse_options(bad_len, sizeof(bad_len), &o);
+    EXPECT_TRUE(o.sack_count == 0);
+    static uint8_t five[2 + 40];                                                   // 5 blocks: too many
+    memset(five, 0, sizeof(five));
+    five[0] = 5; five[1] = 42;
+    tcp_parse_options(five, sizeof(five), &o);
+    EXPECT_TRUE(o.sack_count == 0);
+
+    // A receiver's blocks: the stretch with the latest segment first
+    tcp_ooo_t held = { .count = 0 };
+    tcp_ooo_add(&held, 3000, 4000);
+    tcp_ooo_add(&held, 1000, 2000);
+    tcp_ooo_add(&held, 5000, 6000);
+    uint32_t blocks[4][2];
+    EXPECT_EQ(tcp_sack_blocks(&held, 5000, blocks, 4), 3);
+    EXPECT_TRUE(blocks[0][0] == 5000 && blocks[1][0] == 1000 && blocks[2][0] == 3000);
+    EXPECT_EQ(tcp_sack_blocks(&held, 3500, blocks, 2), 2);
+    EXPECT_TRUE(blocks[0][0] == 3000 && blocks[0][1] == 4000 && blocks[1][0] == 1000);
+
+    // A sender's scoreboard: holes, bytes, and forgetting what is acknowledged
+    tcp_ooo_t sb = { .count = 0 };
+    tcp_ooo_add(&sb, 2000, 3000);
+    tcp_ooo_add(&sb, 4000, 5000);
+    EXPECT_EQ(tcp_sack_bytes(&sb), 2000);
+    uint32_t start = 0, len = 0;
+    EXPECT_TRUE(tcp_sack_next_hole(&sb, 1000, &start, &len) && start == 1000 && len == 1000);
+    EXPECT_TRUE(tcp_sack_next_hole(&sb, 2500, &start, &len) && start == 3000 && len == 1000);
+    EXPECT_TRUE(!tcp_sack_next_hole(&sb, 5000, &start, &len));        // Nothing reported beyond
+    EXPECT_EQ(tcp_sack_hole_bytes(&sb, 1000), 2000);
+    EXPECT_EQ(tcp_sack_hole_bytes(&sb, 3500), 500);
+    tcp_sack_prune(&sb, 2500);
+    EXPECT_TRUE(sb.count == 2 && sb.range[0].start == 2500 && tcp_sack_bytes(&sb) == 1500);
+    tcp_sack_prune(&sb, 4500);
+    EXPECT_TRUE(sb.count == 1 && sb.range[0].start == 4500);
+    tcp_sack_prune(&sb, 6000);
+    EXPECT_EQ(sb.count, 0);
+    // Across the wrap of sequence numbers
+    tcp_ooo_t wrap = { .count = 0 };
+    tcp_ooo_add(&wrap, 0xFFFFF000u, 0x00000800u);
+    EXPECT_TRUE(tcp_sack_next_hole(&wrap, 0xFFFFE000u, &start, &len) && start == 0xFFFFE000u && len == 0x1000);
+    EXPECT_EQ(tcp_sack_bytes(&wrap), 0x1800);
+}
+
+// An ACK from port `from_port` carrying SACK blocks (window 8192)
+static void inject_sack(uint16_t from_port, uint16_t to_port, uint32_t seq, uint32_t ack,
+                        const uint32_t blocks[][2], size_t count) {
+    static uint8_t segment[20 + 40];
+    size_t options = 4 + 8 * count;
+    memset(segment, 0, sizeof(segment));
+    *(uint16_t *)(segment + 0) = be16(from_port);
+    *(uint16_t *)(segment + 2) = be16(to_port);
+    *(uint32_t *)(segment + 4) = be32(seq);
+    *(uint32_t *)(segment + 8) = be32(ack);
+    segment[12] = (uint8_t)(((20 + options) / 4) << 4);
+    segment[13] = 0x10;
+    *(uint16_t *)(segment + 14) = be16(8192);
+    segment[20] = 1; segment[21] = 1; segment[22] = 5; segment[23] = (uint8_t)(2 + 8 * count);
+    for (size_t b = 0; b < count; b++) {
+        *(uint32_t *)(segment + 24 + 8 * b) = be32(blocks[b][0]);
+        *(uint32_t *)(segment + 28 + 8 * b) = be32(blocks[b][1]);
+    }
+    *(uint16_t *)(segment + 16) = be16(net_transport_checksum(IP_PROTO_TCP, NET_LOCAL_IP, NET_LOCAL_IP, segment, 20 + options));
+    tcp_input(NET_LOCAL_IP, NET_LOCAL_IP, segment, 20 + options);
+}
+
+// Offered by both ends of ours; not used when the other end does not
+// offer it, or when we were told not to
+TEST(tcp_sack_is_negotiated) {
+    size_t sockets_before = tcp_sockets_in_use();
+    tcp_socket_t *listener = tcp_open();
+    EXPECT_EQ(tcp_bind(listener, 7140), 0);
+    EXPECT_EQ(tcp_listen(listener, 4), 0);
+    tcp_test_windows_t w;
+
+    tcp_socket_t *client = tcp_open();
+    EXPECT_EQ(tcp_connect(client, NET_LOCAL_IP, 7140), 0);
+    int error = 0;
+    tcp_socket_t *server = tcp_accept(listener, &error);
+    uint32_t ip;
+    uint16_t client_port = 0;
+    tcp_peer(server, &ip, &client_port);
+    EXPECT_TRUE(tcp_test_windows(7140, client_port, &w) && w.sack);
+    EXPECT_TRUE(tcp_test_windows(client_port, 7140, &w) && w.sack);
+    tcp_close(client);
+    tcp_close(server);
+
+    tcp_test_refuse_sack(true);                                     // Neither side offers now
+    client = tcp_open();
+    EXPECT_EQ(tcp_connect(client, NET_LOCAL_IP, 7140), 0);
+    server = tcp_accept(listener, &error);
+    tcp_peer(server, &ip, &client_port);
+    EXPECT_TRUE(tcp_test_windows(7140, client_port, &w) && !w.sack);
+    EXPECT_TRUE(tcp_test_windows(client_port, 7140, &w) && !w.sack);
+    tcp_close(client);
+    tcp_close(server);
+    tcp_test_refuse_sack(false);
+
+    tcp_test_drop_every(1);                                         // A peer without it
+    static const uint8_t mss_only[] = { 2, 4, 0x05, 0xB4 };
+    inject_syn(40140, 7140, 3000, mss_only, sizeof(mss_only));
+    EXPECT_TRUE(tcp_test_windows(7140, 40140, &w) && !w.sack);
+    inject(40140, 7140, 3001, 0, 0x04, NULL, 0);
+    tcp_test_drop_every(0);
+    tcp_close(listener);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
+static tcp_socket_t *sack_writer_conn;
+static volatile int sack_writer_done;
+
+// Writes 20000 bytes to sack_writer_conn (until it fails), then says so
+static void sack_writer_entry(void) {
+    static uint8_t chunk[20000];
+    tcp_write(sack_writer_conn, chunk, sizeof(chunk));
+    sack_writer_done = 1;
+}
+
+// Is `seq` among trace[from..n)?
+static bool sent_after(const uint32_t *trace, size_t from, size_t n, uint32_t seq) {
+    for (size_t i = from; i < n; i++) if (trace[i] == seq) return true;
+    return false;
+}
+
+// The connection to port 7141 the receiver tests play by hand
+typedef struct {
+    tcp_socket_t *listener;
+    uint16_t peer;               // The hand-played end's port
+    uint32_t s;                  // Its sequence number (it sends no data)
+    uint32_t base;               // The first byte of the second flight
+} hand_flight_t;
+
+// Open a connection to port 7141 from `peer` with the given SYN options,
+// with a writer task behind it; take its first flight (three segments, the
+// initial window) whole, and wait until the second is out: up to the
+// window of 8192 bytes, A B C D E and a short F from f->base on. Everything
+// the connection sends is dropped (tcp_test_drop_every(1)).
+static void hand_flight_start(hand_flight_t *f, uint16_t peer, const uint8_t *syn_opts, size_t syn_opts_len) {
+    f->peer = peer;
+    f->s = 11000;
+    f->listener = tcp_open();
+    tcp_bind(f->listener, 7141);
+    tcp_listen(f->listener, 1);
+    uint32_t rcv_nxt = 0, sent = 0, iss = 0;
+    tcp_test_drop_every(1);
+    tcp_test_trace_sent(peer);
+    inject_syn(peer, 7141, f->s, syn_opts, syn_opts_len);
+    TEST_WAIT(tcp_test_sequences(7141, peer, &rcv_nxt, &sent, &iss) && sent == iss + 1, 100);
+    inject(peer, 7141, f->s + 1, iss + 1, 0x10, NULL, 0);
+    int error = 0;
+    sack_writer_conn = tcp_accept(f->listener, &error);
+    sack_writer_done = 0;
+    task_create("tcp_sack_writer", sack_writer_entry);
+
+    uint32_t data = iss + 1;
+    TEST_WAIT(tcp_test_sequences(7141, peer, &rcv_nxt, &sent, &iss) && sent == data + 3 * 1460, 100);
+    for (uint32_t k = 1; k <= 3; k++) inject(peer, 7141, f->s + 1, data + k * 1460, 0x10, NULL, 0);
+    f->base = data + 3 * 1460;
+    TEST_WAIT(tcp_test_sequences(7141, peer, &rcv_nxt, &sent, &iss) && sent == f->base + 8192, 100);
+}
+
+// End a hand_flight_start connection: the peer resets, the writer ends
+static void hand_flight_end(hand_flight_t *f) {
+    tcp_test_trace_sent(0);
+    inject(f->peer, 7141, f->s + 1, 0, 0x04, NULL, 0);
+    TEST_WAIT(sack_writer_done, 100);
+    tcp_close(sack_writer_conn);
+    tcp_test_drop_every(0);
+    tcp_close(f->listener);
+}
+
+// Report the second flight of a hand_flight_start connection from `peer`
+// with two holes (A and C) by three duplicate acknowledgements. Returns
+// whether the sender, before any further acknowledgement, sent C again as
+// well as A; *a_resent whether it sent A; *window_grew whether a fourth
+// duplicate grew the congestion window; *scoreboard_left the bytes on the
+// scoreboard once everything sent in the window is acknowledged.
+static bool both_holes_resent(uint16_t peer, const uint8_t *syn_opts, size_t syn_opts_len, bool *a_resent,
+                              bool *window_grew, uint32_t *scoreboard_left) {
+    hand_flight_t f;
+    hand_flight_start(&f, peer, syn_opts, syn_opts_len);
+    uint32_t s = f.s, base = f.base;
+    static uint32_t trace[TCP_SENT_TRACE_MAX];
+    size_t before = tcp_test_sent_trace(trace, TCP_SENT_TRACE_MAX);
+
+    // Three duplicates of the acknowledgement of A, reporting B and D..F
+    uint32_t b_block[2] = { base + 1460, base + 2920 };
+    uint32_t blocks[2][2] = { { base + 4380, base + 5840 }, { b_block[0], b_block[1] } };
+    inject_sack(peer, 7141, s + 1, base, (const uint32_t (*)[2])&b_block, 1);
+    inject_sack(peer, 7141, s + 1, base, (const uint32_t (*)[2])blocks, 2);
+    blocks[0][1] = base + 8192;
+    inject_sack(peer, 7141, s + 1, base, (const uint32_t (*)[2])blocks, 2);
+    // A fourth duplicate at once (before the retransmission timer could end
+    // recovery): with SACK the window stays where recovery put it (pipe
+    // paces the sending), with NewReno it grows by a segment
+    tcp_test_windows_t w;
+    tcp_test_windows(7141, peer, &w);
+    uint32_t cwnd = w.cwnd;
+    inject_sack(peer, 7141, s + 1, base, (const uint32_t (*)[2])blocks, 2);
+    tcp_test_windows(7141, peer, &w);
+    *window_grew = w.cwnd > cwnd;
+    size_t n = 0;
+    TEST_WAIT((n = tcp_test_sent_trace(trace, TCP_SENT_TRACE_MAX)) > before &&
+              sent_after(trace, before, n, base) && sent_after(trace, before, n, base + 2920), 30);
+    n = tcp_test_sent_trace(trace, TCP_SENT_TRACE_MAX);
+    *a_resent = sent_after(trace, before, n, base);
+    bool c_resent = sent_after(trace, before, n, base + 2920);
+
+    // Everything acknowledged: nothing is left on the scoreboard
+    inject(peer, 7141, s + 1, base + 8192, 0x10, NULL, 0);
+    tcp_test_windows(7141, peer, &w);
+    *scoreboard_left = w.sacked;
+    hand_flight_end(&f);
+    return c_resent;
+}
+
+// With SACK, both holes of a window go again in the round trip after the
+// third duplicate; without it (NewReno) only the first does
+TEST(tcp_sack_repairs_two_holes_in_one_round_trip) {
+    size_t sockets_before = tcp_sockets_in_use();
+    uint64_t sack_before = tcp_stats()->sack_retransmissions;
+    bool a = false, grew = false;
+    uint32_t left = 1;
+    static const uint8_t with_sack[] = { 2, 4, 0x05, 0xB4, 1, 1, 4, 2 };
+    EXPECT_TRUE(both_holes_resent(40141, with_sack, sizeof(with_sack), &a, &grew, &left));
+    EXPECT_TRUE(a);
+    EXPECT_TRUE(!grew);
+    EXPECT_EQ(left, 0);
+    EXPECT_TRUE(tcp_stats()->sack_retransmissions > sack_before);
+    wait_for_sockets_to_go(sockets_before);
+
+    static const uint8_t without[] = { 2, 4, 0x05, 0xB4 };
+    a = false;
+    EXPECT_TRUE(!both_holes_resent(40142, without, sizeof(without), &a, &grew, &left));
+    EXPECT_TRUE(a);
+    EXPECT_TRUE(grew);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
+// A receiver may agree to SACK and then report nothing. Recovery then has
+// no hole on its scoreboard to fill, and a partial acknowledgement must
+// send the segment it points at again at once, as NewReno would, rather
+// than leave it to the retransmission timer (200 ms at least: the check
+// waits 100 ms)
+TEST(tcp_sack_without_blocks_recovers_as_newreno) {
+    size_t sockets_before = tcp_sockets_in_use();
+    static const uint8_t with_sack[] = { 2, 4, 0x05, 0xB4, 1, 1, 4, 2 };
+    hand_flight_t f;
+    hand_flight_start(&f, 40143, with_sack, sizeof(with_sack));
+    tcp_test_windows_t w;
+    EXPECT_TRUE(tcp_test_windows(7141, 40143, &w) && w.sack);
+    for (int i = 0; i < 3; i++) inject(f.peer, 7141, f.s + 1, f.base, 0x10, NULL, 0);    // No blocks
+    static uint32_t trace[TCP_SENT_TRACE_MAX];
+    size_t before = tcp_test_sent_trace(trace, TCP_SENT_TRACE_MAX);
+    inject(f.peer, 7141, f.s + 1, f.base + 1460, 0x10, NULL, 0);    // A arrived; B is the next missing
+    size_t n = 0;
+    TEST_WAIT((n = tcp_test_sent_trace(trace, TCP_SENT_TRACE_MAX)) > before &&
+              sent_after(trace, before, n, f.base + 1460), 10);
+    n = tcp_test_sent_trace(trace, TCP_SENT_TRACE_MAX);
+    EXPECT_TRUE(sent_after(trace, before, n, f.base + 1460));
+    hand_flight_end(&f);
+    wait_for_sockets_to_go(sockets_before);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
+// The same lossy transfer with SACK refused and with it: both arrive
+// whole; the numbers are printed (and written down in PLAN.md T2)
+TEST(tcp_lossy_transfer_with_and_without_sack) {
+    size_t sockets_before = tcp_sockets_in_use();
+    const tcp_stats_t *st = tcp_stats();
+    for (int with = 0; with <= 1; with++) {
+        tcp_test_refuse_sack(!with);
+        uint64_t timeouts = st->retransmissions, fast = st->fast_retransmissions, holes = st->sack_retransmissions;
+        uint64_t started = clock_ns();
+        tcp_test_drop_every(9);
+        transfer(with ? 7151 : 7150);
+        tcp_test_drop_every(0);
+        kprintf("    %s SACK: %lu ms, %lu timer retransmissions, %lu fast, %lu holes from the scoreboard\n",
+                with ? "with" : "without", (clock_ns() - started) / 1000000, st->retransmissions - timeouts,
+                st->fast_retransmissions - fast, st->sack_retransmissions - holes);
+        if (with) EXPECT_TRUE(st->sack_retransmissions > holes);
+        else EXPECT_TRUE(st->sack_retransmissions == holes);
+        wait_for_sockets_to_go(sockets_before);
+    }
+    tcp_test_refuse_sack(false);
+    EXPECT_TRUE(tcp_sockets_in_use() == sockets_before);
+}
+
 void test_suite_tcp(void) {
     kprintf("Suite: TCP\n");
     if (!net_up()) {
@@ -1050,4 +1352,9 @@ void test_suite_tcp(void) {
     RUN_TEST(tcp_receive_ring_grows_past_64k);
     RUN_TEST(tcp_send_ring_grows_past_64k);
     RUN_TEST(tcp_icmp_errors_end_a_connection);
+    RUN_TEST(tcp_sack_options_and_scoreboard);
+    RUN_TEST(tcp_sack_is_negotiated);
+    RUN_TEST(tcp_sack_repairs_two_holes_in_one_round_trip);
+    RUN_TEST(tcp_sack_without_blocks_recovers_as_newreno);
+    RUN_TEST(tcp_lossy_transfer_with_and_without_sack);
 }
