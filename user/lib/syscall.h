@@ -79,6 +79,8 @@
 #define SYS_THREAD_JOIN 333
 #define SYS_FUTEX_WAIT 334
 #define SYS_FUTEX_WAKE 335
+#define SYS_SET_FS_BASE 336
+#define SYS_GET_FS_BASE 337
 #define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230

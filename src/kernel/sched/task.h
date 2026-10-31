@@ -159,6 +159,7 @@ typedef struct task {
     // FPU/SSE registers while the task is not running (FXSAVE format).
     // FXSAVE needs 16-byte alignment: kmalloc guarantees it for the struct,
     // the attribute for this member within it.
+    uint64_t fs_base;              // Base of FS in ring 3: this thread's own (0: none), loaded when it is switched to
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 } task_t;
 

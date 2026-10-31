@@ -399,6 +399,8 @@ void thread_exit(int status) {
 
 long gettid(void)                                   { return syscall0(SYS_GETTID); }
 long futex_wait(volatile unsigned *addr, unsigned expected, unsigned long timeout_ms) { return syscall3(SYS_FUTEX_WAIT, addr, expected, timeout_ms); }
+long set_fs_base(void *base) { return syscall1(SYS_SET_FS_BASE, base); }
+void *get_fs_base(void) { return (void *)syscall0(SYS_GET_FS_BASE); }
 long futex_wake(volatile unsigned *addr, long count) { return syscall2(SYS_FUTEX_WAKE, addr, count); }
 
 /* The word says 0 free, 1 taken, 2 taken and someone may be waiting: an

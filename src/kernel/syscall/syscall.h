@@ -113,6 +113,8 @@
 #define SYS_THREAD_JOIN 333  // (tid, status): wait for a thread of this process to end
 #define SYS_FUTEX_WAIT 334   // (addr, expected, timeout_ms): sleep while the word at addr is expected
 #define SYS_FUTEX_WAKE 335   // (addr, count): wake threads of this process waiting on addr
+#define SYS_SET_FS_BASE 336  // (base): what FS addresses, for this thread
+#define SYS_GET_FS_BASE 337  // (): what it was set to
 #define SYS_TTY_TOSTOP  326  // (on): 1 sets the terminal's tostop (background writers stop), 0 clears it; -1 asks
 #define SYS_REALTIME    311  // (): the time of day, nanoseconds since 1970-01-01 UTC
 #define SYS_SETTIME     312  // (nanoseconds since 1970): root only; -EINVAL outside 1980..2105

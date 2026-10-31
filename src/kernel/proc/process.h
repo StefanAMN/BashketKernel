@@ -148,6 +148,16 @@ int64_t process_thread_create(uint64_t entry, uint64_t stack, uint64_t arg);
  */
 int64_t process_thread_join(uint32_t tid, int *status);
 
+/*
+ * process_set_fs_base: make `base` what FS addresses in ring 3, for the calling
+ * thread only (a thread's own data; 0 for none). fork keeps it, exec clears
+ * it, and a new thread starts with none.
+ * @return 0, or -EINVAL if base is not in user space or the caller is not a
+ *         user task. Never sleeps. The address is not checked further: a bad
+ *         one is the program's own fault, when it uses it.
+ */
+int64_t process_set_fs_base(uint64_t base);
+
 /**
  * @brief Drop the references a system call took on the files it looked up:
  *        when it returns, or when the task dies in it. May sleep (the last
