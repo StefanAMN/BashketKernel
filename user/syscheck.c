@@ -1591,6 +1591,16 @@ static void check_shared_mapping_of(const char *path) {
     CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGBUS);
     CHECK(memcmp(map + 10, "child", 5) == 0 && map[100] == 0 && map[4095] == 0);   /* Past 100: zeros */
 
+    /* What a mapping writes past the end is not the file's: neither growing
+     * the file nor a write that leaves a gap brings it in (U1) */
+    map[200] = 'x';
+    CHECK(ftruncate((int)fd, 300) == 0 && map[200] == 0);
+    map[400] = 'y';
+    CHECK(lseek((int)fd, 500, SEEK_SET) == 500 && write((int)fd, "z", 1) == 1);
+    CHECK(map[400] == 0 && map[500] == 'z');
+    buf[0] = 'q';
+    CHECK(lseek((int)fd, 400, SEEK_SET) == 400 && read((int)fd, buf, 1) == 1 && buf[0] == 0);
+
     /* munmap writes it to the file: read back with no mapping left */
     memcpy(map, "unmapped", 8);
     CHECK(munmap(map, 4 * 4096) == 0);
@@ -1662,6 +1672,83 @@ static void check_shared_mappings(void) {
     CHECK(fd >= 0 && syscall6(SYS_MMAP, 0, 4096, PROT_READ, MAP_SHARED, fd, 0) == -ENODEV);   /* A device: no pages to share */
     close((int)fd);
     CHECK(meminfo("Promised:") == promised_before);
+}
+
+/* The frame sigreturn reads, as the kernel lays it out (signal.c): the stack
+ * pointer at the call is just past `restorer`. Everything but `rip`, `rsp`
+ * and the checks' own fields can be left as zeros. */
+typedef struct {
+    unsigned long restorer, signo, blocked;
+    unsigned long r15, r14, r13, r12, r11, r10, r9, r8;
+    unsigned long rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    unsigned long int_no, err_code;
+    unsigned long rip, cs, rflags, rsp, ss;
+    unsigned char fpu[512] __attribute__((aligned(16)));
+} forged_frame_t;
+
+static forged_frame_t forged __attribute__((aligned(16)));
+static unsigned long forged_stack[512] __attribute__((aligned(16)));
+
+/* Where a forged frame "returns" to: exit 0 if this is ring 3 with user
+ * selectors, interrupts on, no I/O privilege and no nested-task flag, and
+ * the MXCSR the kernel may load */
+static void forged_landing(void) {
+    unsigned long flags;
+    unsigned short code, stack;
+    unsigned mxcsr;
+    asm volatile("pushfq\n\tpop %0\n\tmov %w1, cs\n\tmov %w2, ss\n\tstmxcsr %3"
+                 : "=r"(flags), "=r"(code), "=r"(stack), "=m"(mxcsr));
+    int good = code == 0x23 && stack == 0x1B && (flags & 0x200) && !(flags & 0x3000) && !(flags & 0x4000)
+               && !(mxcsr & 0x40);
+    exit(good ? 0 : 1);
+}
+
+/* Call sigreturn with the stack pointer at `frame_end_of_restorer`; does not
+ * come back */
+static void forged_sigreturn(unsigned long stack_pointer) {
+    asm volatile("mov rsp, %0\n\tmov eax, 302\n\tsyscall\n\tud2" : : "r"(stack_pointer) : "rax", "rcx", "r11", "memory");
+    exit(99);
+}
+
+/* In a child: sigreturn with a frame that asks for rip and rsp, and for
+ * everything a program must not have. Returns its exit status. */
+static int forged_child(unsigned long rip, unsigned long rsp) {
+    long pid = fork();
+    if (pid == 0) {
+        memset(&forged, 0, sizeof(forged));
+        asm volatile("fxsave %0" : "=m"(forged.fpu));
+        *(unsigned *)(forged.fpu + 24) = 0xFFFFFFFFu;        /* Reserved MXCSR bits: fxrstor would fault */
+        forged.rip = rip;
+        forged.rsp = rsp;
+        forged.cs = 0x08;                                    /* The kernel's code */
+        forged.ss = 0x10;                                    /* ...and data */
+        forged.rflags = 0x3000 | 0x4000;                     /* I/O privilege 3, nested task, interrupts off */
+        forged_sigreturn((unsigned long)&forged + 8);
+    }
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    return status;
+}
+
+/* A signal frame is the program's to write: sigreturn keeps it in ring 3
+ * with what a program may have, and ends it for addresses iretq would fault
+ * on in the kernel. (This also shows the frame layout above is the kernel's:
+ * the first case lands where it was told.) */
+static void check_forged_sigreturn(void) {
+    unsigned long good_stack = (unsigned long)(forged_stack + 512) - 8;   /* As just after a call */
+    CHECK(forged_child((unsigned long)forged_landing, good_stack) == 0);
+    CHECK(forged_child(0xFFFFFFFF80000000UL, good_stack) == 128 + SIGSEGV);    /* The kernel's text */
+    CHECK(forged_child(0x0000800000000000UL, good_stack) == 128 + SIGSEGV);    /* Not canonical */
+    CHECK(forged_child((unsigned long)forged_landing, 0xFFFF800000000000UL) == 128 + SIGSEGV);
+
+    long pid = fork();                                        /* A frame nowhere mapped */
+    if (pid == 0) forged_sigreturn(0x1000);
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGSEGV);
+    pid = fork();                                             /* A frame in the kernel */
+    if (pid == 0) forged_sigreturn(0xFFFFFFFF80000000UL);
+    status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGSEGV);
 }
 
 /* A signal ends a sleeping read, sleep or waitpid with -EINTR, and an
@@ -4449,6 +4536,7 @@ int main(void) {
     check_running_program_file();
     check_shell_words();
     check_shared_mappings();
+    check_forged_sigreturn();
     check_screen_mapping();
     check_sessions_and_terminal();
     check_shell_control();

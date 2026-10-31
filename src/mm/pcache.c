@@ -256,6 +256,17 @@ void pcache_file_written(vnode_t *node, uint64_t offset, const void *buf, size_t
     free_taken(taken);
 }
 
+void pcache_file_gap(vnode_t *node, uint64_t old_size) {
+    if (!pcache_cacheable(node) || old_size % PAGE_SIZE == 0) return;
+    uint64_t flags = spinlock_acquire_irqsave(&pcache_lock);
+    pcache_entry_t *e = find_locked(node, old_size / PAGE_SIZE);
+    if (e && e->shared) {
+        uint8_t *view = (uint8_t *)(e->frame + pmm_get_hhdm_offset());
+        memset(view + old_size % PAGE_SIZE, 0, PAGE_SIZE - old_size % PAGE_SIZE);
+    }
+    spinlock_release_irqrestore(&pcache_lock, flags);
+}
+
 void pcache_file_truncated(vnode_t *node, uint64_t size) {
     if (!pcache_cacheable(node)) return;
     __atomic_add_fetch(&node->cache_generation, 1, __ATOMIC_SEQ_CST);

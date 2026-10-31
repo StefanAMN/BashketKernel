@@ -377,6 +377,7 @@ int64_t file_write(file_t *file, const void *buf, size_t count) {
             if (file->node->ops) {
                 if (!file->node->ops->write) return -EINVAL; // Read-only device
                 if (file->append) file->offset = file->node->size;
+                if (file->offset > file->node->size) pcache_file_gap(file->node, file->node->size);
                 int64_t n = file->node->ops->write(file->node, file->offset, buf, count);
                 if (n > 0) {
                     pcache_file_written(file->node, file->offset, buf, (size_t)n);  // Its cached pages say what it said before

@@ -162,6 +162,12 @@ TEST(shared_pages_are_the_files_copy) {
     EXPECT_EQ(pcache_truncations(), truncations + 1);
     EXPECT_TRUE(view(first)[99] == 't' && view(first)[100] == 0 && view(first)[4095] == 0);
     EXPECT_EQ(pmm_get_frame_ref((void *)second), 1u);         // Only the "mapping" has it now
+
+    // A write that leaves a gap: what the mapping wrote past the old end is
+    // not the file's, and the gap reads as zeros
+    ((uint8_t *)view(first))[200] = 'x';
+    EXPECT_EQ(vfs_write(file, 300, 1, "z"), 1u);
+    EXPECT_TRUE(view(first)[200] == 0 && view(first)[300] == 'z');
     pmm_unref_frame((void *)first);
     pmm_unref_frame((void *)second);
     EXPECT_EQ(vfs_unlink(tmp, "pcache-shared"), 0);
