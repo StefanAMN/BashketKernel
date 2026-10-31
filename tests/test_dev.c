@@ -6,6 +6,7 @@
 #include "file.h"
 #include "kstring.h"
 
+// /dev/null swallows writes and reads as empty; /dev/zero gives zeros without end
 TEST(dev_null_and_zero) {
     file_t *file = NULL;
     uint8_t buf[64];
@@ -26,6 +27,8 @@ TEST(dev_null_and_zero) {
     file_close(file);
 }
 
+// /dev/random differs between reads, has its bits about half set, and fills
+// exactly the length asked for
 TEST(dev_random_varies) {
     file_t *file = NULL;
     uint8_t a[32], b[32];

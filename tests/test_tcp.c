@@ -62,6 +62,8 @@ static void read_fully(tcp_socket_t *sock, uint8_t *buf, size_t want, size_t *go
     }
 }
 
+// A whole connection over loopback with the echo server: connect, data both
+// ways, shutdown, and the calls that are refused at each stage
 TEST(tcp_connect_exchange_close) {
     size_t sockets_before = tcp_sockets_in_use();
     size_t heap_before = kheap_get_allocated_bytes();
@@ -107,6 +109,8 @@ TEST(tcp_connect_exchange_close) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// A connection nobody listens for ends in a reset, and bind, listen and connect
+// refuse bad arguments
 TEST(tcp_refuses_resets_and_rejects) {
     size_t sockets_before = tcp_sockets_in_use();
     uint64_t resets_before = tcp_stats()->resets_sent;
@@ -271,6 +275,8 @@ static void print_trace(size_t n) {
     kprintf(n > 48 ? " ... (%zu values)\n" : " (%zu values)\n", n);
 }
 
+// A large transfer arrives intact, round trips are measured, slow start grows
+// the window, and every socket is given back
 TEST(tcp_large_transfer_arrives_intact) {
     size_t sockets_before = tcp_sockets_in_use();
     uint64_t samples_before = tcp_stats()->rtt_samples;
@@ -521,7 +527,9 @@ TEST(tcp_congestion_window_follows_rfc5681) {
 
 // --- Segments made by hand, to put them in the order a test wants ------------
 
+// A 16-bit value in network byte order (the same call converts back)
 static uint16_t be16(uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); }
+// A 32-bit value in network byte order (the same call converts back)
 static uint32_t be32(uint32_t v) { return (v << 24) | ((v << 8) & 0xFF0000) | ((v >> 8) & 0xFF00) | (v >> 24); }
 
 // Deliver a segment to tcp_input as if from NET_LOCAL_IP:from_port to

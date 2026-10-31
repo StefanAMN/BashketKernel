@@ -12,6 +12,7 @@ static bool log_ends_with(const char *text) {
     return klog_read(held - len, tail, len) == len && memcmp(tail, text, len) == 0;
 }
 
+// What kprintf prints is in the log, and reads stop at its end
 TEST(klog_records_kernel_messages) {
     // Everything kprintf prints lands in the log, including this
     kprintf("klog-test-marker-%d\n", 12345);
@@ -29,6 +30,7 @@ TEST(klog_records_kernel_messages) {
     EXPECT_EQ(klog_read(held + 1000, buf, sizeof(buf)), 0u);
 }
 
+// A log written past its size keeps the newest text, in order
 TEST(klog_keeps_the_newest_text_when_full) {
     // Write more than the buffer holds: 3000 numbered 32-byte records
     char record[40];
@@ -58,6 +60,7 @@ TEST(klog_keeps_the_newest_text_when_full) {
     }
 }
 
+// /proc/kmsg gives the log, read in odd-sized pieces
 TEST(klog_is_readable_as_a_file) {
     kprintf("kmsg-file-marker\n");
 

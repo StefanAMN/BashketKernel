@@ -39,6 +39,7 @@ def main():
     block_bitmap, inode_bitmap, inode_table = struct.unpack_from("<III", image, group)
 
     def inode_offset(ino):
+        """Where inode `ino` is in the image."""
         # Inodes are numbered across the block groups: inodes_per_group in
         # each, in that group's own table (its descriptor says where)
         g, index = divmod(ino - 1, inodes_per_group)
@@ -46,6 +47,7 @@ def main():
         return table * BLOCK + index * inode_size
 
     def first_block(ino):
+        """The first block number in inode `ino`'s block list."""
         return struct.unpack_from("<I", image, inode_offset(ino) + 40)[0]
 
     def lookup(dir_ino, name):

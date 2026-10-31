@@ -39,6 +39,8 @@ static size_t swapped_count(uint64_t *space) {
     return n;
 }
 
+// swap_parse_header refuses short disks, unknown versions and bad page lists, and
+// the disk mkswap made was accepted at boot
 TEST(swap_header_is_checked) {
     static uint8_t page[PAGE_SIZE];
     uint32_t slots = 0;
@@ -70,6 +72,8 @@ TEST(swap_header_is_checked) {
     EXPECT_TRUE(swap_total_pages() >= 1024 && swap_free_pages() == swap_total_pages());
 }
 
+// Pages swapped out free their frames and keep their permissions in the entry, and
+// come back with what they held
 TEST(pages_go_out_and_come_back) {
     size_t frames_before = test_free_frames(), slots_before = swap_free_pages();
     uint64_t out_before = swap_pages_out(), in_before = swap_pages_in();

@@ -39,6 +39,8 @@ TEST(vfs_basic_tree) {
     EXPECT_EQ(vfs_unlink(tmp, "vfs-basic"), 0);
 }
 
+// vfs_write: copying a constant before changing it, overwriting the middle, and a
+// gap past the end that reads as zeros
 TEST(vfs_write_semantics) {
     size_t heap_before = kheap_get_allocated_bytes();
     vnode_t *tmp = vfs_find(NULL, "/tmp");
@@ -95,6 +97,8 @@ TEST(vfs_write_semantics) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// Path lookup: parents, leaf names, bad parents, ".", "..", repeated slashes and
+// relative lookups
 TEST(vfs_paths) {
     char leaf[VFS_NAME_MAX];
     EXPECT_TRUE(vfs_find_parent("/tmp/new.txt", leaf) == vfs_find(NULL, "/tmp"));
@@ -164,6 +168,8 @@ TEST(vfs_paths) {
     EXPECT_TRUE(vfs_find(NULL, "/bin/") == vfs_find(NULL, "/bin"));
 }
 
+// file_open, read, write and their errors: positions, access modes and separate
+// opens of one file
 TEST(open_files_and_descriptors) {
     size_t heap_before = kheap_get_allocated_bytes();
     file_t *file = NULL;
@@ -350,6 +356,7 @@ TEST(stat_describes_nodes) {
     EXPECT_EQ(vfs_unlink(tmp, "described"), 0);
 }
 
+// Symbolic links: absolute, relative, through a directory, dangling and in a loop
 TEST(symbolic_links_in_memory) {
     vnode_t *tmp = vfs_find(NULL, "/tmp");
     vnode_t *dir = NULL, *file = NULL, *link = NULL;

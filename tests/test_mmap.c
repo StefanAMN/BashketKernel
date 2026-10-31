@@ -4,6 +4,8 @@
 #include "pmm.h"
 #include "cow.h"
 
+// Two address spaces have separate user pages and one kernel half, and destroying
+// them returns every frame
 TEST(address_space_is_isolated_and_freed) {
     size_t free_before = test_free_frames();
 
@@ -35,6 +37,8 @@ TEST(address_space_is_isolated_and_freed) {
     EXPECT_TRUE(test_free_frames() == free_before);
 }
 
+// vmm_user_range_ok: exact bounds, read-only pages, kernel addresses, wrapping
+// lengths and empty ranges
 TEST(user_range_validation) {
     uint64_t *space = vmm_create_address_space();
     EXPECT_EQ(user_map_range(space, 0x600000, 2 * PAGE_SIZE, PROT_READ | PROT_WRITE), 0);
@@ -96,6 +100,7 @@ TEST(mmap_and_unmap) {
     EXPECT_TRUE(test_free_frames() == free_before);
 }
 
+// A frame with two references is freed only by the second release
 TEST(frame_sharing_counts) {
     void *frame = pmm_alloc_frame();
     size_t free_after_alloc = test_free_frames();
@@ -112,6 +117,8 @@ TEST(frame_sharing_counts) {
     EXPECT_TRUE(test_free_frames() == free_after_alloc + 1);
 }
 
+// vmm_clone_user_space shares frames and marks writable ones copy-on-write; a
+// read-only page stays shared and writing it stays an error
 TEST(copy_on_write_clone) {
     size_t free_before = test_free_frames();
     uint64_t hhdm = pmm_get_hhdm_offset();

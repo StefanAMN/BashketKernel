@@ -4,6 +4,7 @@
 #include <string.h>
 #include "hrtimer.h"
 
+// A block from kmalloc can be written and read back
 TEST(heap_allocation) {
     char *str = (char *)kmalloc(64);
     EXPECT_TRUE(str != NULL);
@@ -20,6 +21,7 @@ TEST(heap_allocation) {
     kfree(str);
 }
 
+// Two blocks live at once each keep what was written to them
 TEST(heap_multiple_allocations) {
     int *arr1 = (int *)kmalloc(100 * sizeof(int));
     int *arr2 = (int *)kmalloc(200 * sizeof(int));
@@ -37,6 +39,8 @@ TEST(heap_multiple_allocations) {
     kfree(arr2);
 }
 
+// The heap grows for a large block, gives the frames back when it is freed, loses
+// nothing per round, and refuses absurd sizes
 TEST(heap_returns_memory_and_refuses_cleanly) {
     size_t mapped_before = kheap_get_mapped_bytes();
     size_t free_before = pmm_get_free_frames();

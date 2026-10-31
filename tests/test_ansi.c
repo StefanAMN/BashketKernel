@@ -15,6 +15,7 @@ static ansi_action_t feed(ansi_parser_t *p, const char *text, int *printed) {
     return last;
 }
 
+// Text, colours and cursor commands become the right actions
 TEST(ansi_parses_sequences) {
     ansi_parser_t p;
     ansi_init(&p);
@@ -59,6 +60,7 @@ TEST(ansi_parses_sequences) {
     EXPECT_TRUE(a.kind == ANSI_PRINT && a.ch == 'k');
 }
 
+// Unknown, overlong and cut-off sequences do no harm, and text after them is normal
 TEST(ansi_survives_malformed_input) {
     ansi_parser_t p;
     ansi_init(&p);

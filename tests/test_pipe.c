@@ -5,6 +5,7 @@
 #include "kerrno.h"
 #include "kstring.h"
 
+// Bytes come out in order, and a short read leaves the rest queued
 TEST(pipe_passes_bytes_in_order) {
     pipe_t *p = pipe_create();
     EXPECT_TRUE(p != NULL);
@@ -23,6 +24,8 @@ TEST(pipe_passes_bytes_in_order) {
     pipe_close_reader(p);
 }
 
+// With the writer gone a reader drains the pipe and gets end-of-file; with the
+// reader gone a write fails; closing both frees it
 TEST(pipe_end_of_file_and_broken_pipe) {
     size_t heap_before = kheap_get_allocated_bytes();
     char byte = 'x';
@@ -65,6 +68,8 @@ static void big_writer_entry(void) {
     writer_finished = 1;
 }
 
+// A writer sleeps on a full pipe and a reader on an empty one, and a transfer much
+// larger than the pipe arrives whole and in order
 TEST(pipe_blocks_writer_when_full_and_reader_when_empty) {
     shared_pipe = pipe_create();
     writer_result = 0;

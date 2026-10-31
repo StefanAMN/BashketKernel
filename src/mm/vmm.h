@@ -172,10 +172,13 @@ void *vmm_map_device(uint64_t phys, size_t length);
 
 // --- Swapped-out pages (swap.h) ---
 
+// Does this page-table entry describe a page that is out on the swap disk?
 static inline bool vmm_pte_swapped(uint64_t pte) {
     return !(pte & VMM_PRESENT) && (pte & VMM_SWAPPED);
 }
 
+// The swap slot of an entry for which vmm_pte_swapped is true: it is kept
+// where a present entry has its frame address
 static inline uint32_t vmm_pte_swap_slot(uint64_t pte) {
     return (uint32_t)((pte & PTE_ADDR_MASK) >> 12);
 }

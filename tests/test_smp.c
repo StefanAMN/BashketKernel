@@ -14,6 +14,7 @@
 static spinlock_t test_lock = SPINLOCK_INIT;
 static volatile int counter = 0;
 
+// A spinlock taken and released says whether it is held
 TEST(spinlock_basic_test) {
     uint64_t flags = spinlock_acquire_irqsave(&test_lock);
     counter++;
@@ -23,6 +24,7 @@ TEST(spinlock_basic_test) {
     EXPECT_TRUE(!spinlock_held(&test_lock));
 }
 
+// Every CPU of the machine started and has its own local APIC ID
 TEST(smp_cpus_report_in) {
     // However many CPUs the machine has (make test uses one; make test-smp
     // boots with four), every one of them must have started
@@ -76,6 +78,8 @@ TEST(per_cpu_data_and_exceptions) {
 static spinlock_t outer_lock = SPINLOCK_RANKED("test-outer", LOCK_RANK_FS);
 static spinlock_t inner_lock = SPINLOCK_RANKED("test-inner", LOCK_RANK_PMM);
 
+// The lock-order check stays quiet for correct nesting and counts a violation made
+// on purpose
 TEST(lock_rules_are_checked) {
     // The violations caused on purpose are forgotten again before the test
     // ends; meanwhile no timer may report them. Interrupts off covers this
@@ -144,6 +148,7 @@ static void remote_hello(void *arg) {
     (*(volatile int *)arg)++;
 }
 
+// smp_call runs a function on each other CPU, and refuses this CPU and absent ones
 TEST(functions_run_on_other_cpus) {
     static volatile int calls = 0;
     calls = 0;
@@ -249,6 +254,8 @@ static void hammer_task(void) {
     __atomic_add_fetch(&hammer_tasks_done, 1, __ATOMIC_SEQ_CST);
 }
 
+// All CPUs at once in the heap, frames, page tables, locks and semaphores: counts
+// come out exact, nothing leaks and no lock rule breaks
 TEST(cpus_share_the_kernel_safely) {
     uint32_t others = smp_get_cpu_total() - 1;
     sem_init(&hammer_sem, 0);
@@ -312,6 +319,8 @@ static uint32_t online_cpus(void) {
     return n;
 }
 
+// With more runnable tasks than CPUs every CPU runs one at the same moment, tasks
+// spread to all of them, and a task tied to a CPU stays there
 TEST(tasks_run_on_every_cpu_at_once) {
     uint32_t cpus = online_cpus();
     EXPECT_TRUE(cpus == smp_get_cpu_total());    // Every CPU that started takes part
@@ -586,6 +595,7 @@ TEST(yields_spare_the_scheduler_lock) {
     EXPECT_TRUE(reaped == cpus);
 }
 
+// Workers on all CPUs finish sooner than one after another (see the bound below)
 TEST(more_cpus_do_more_work) {
     uint32_t cpus = online_cpus();
     int workers = cpus > 4 ? 4 : (int)cpus;
@@ -622,6 +632,8 @@ static void probe_read(void *arg) {
     probe_value = *(volatile uint64_t *)PROBE_VA; // Leaves the lookup in this CPU's TLB
 }
 
+// After a kernel mapping changes, every other CPU reads the new frame, not one
+// from a stale TLB entry
 TEST(other_cpus_forget_removed_kernel_mappings) {
     uint64_t hhdm = pmm_get_hhdm_offset();
     void *first = pmm_alloc_frame();

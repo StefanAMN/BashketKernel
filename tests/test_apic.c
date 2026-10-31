@@ -5,6 +5,7 @@
 #include "ext2.h"
 #include "bcache.h"
 
+// The boot CPU reads its own local APIC ID, 0
 TEST(apic_initialization_test) {
     uint32_t id = lapic_get_id();
     EXPECT_TRUE(id == 0); // Primary CPU APIC ID 0

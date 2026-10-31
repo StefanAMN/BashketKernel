@@ -11,6 +11,8 @@
 #include "ipfrag.h"
 #include "timer.h"
 
+// The PCI scan finds the disk and the one network card by type, and configuration
+// reads agree with it
 TEST(pci_finds_the_devices_qemu_provides) {
     // By type: a device that offers only the modern interface has another
     // id (0x1040 + type) than one that still offers the legacy one
@@ -29,6 +31,7 @@ TEST(pci_finds_the_devices_qemu_provides) {
     EXPECT_TRUE(pci_read16(&dev, PCI_COMMAND) & 0x4);       // Bus mastering was switched on
 }
 
+// net_checksum: the RFC 1071 example, a real IPv4 header, odd lengths and no bytes
 TEST(net_checksum_known_values) {
     // The worked example of RFC 1071, section 3
     static const uint8_t rfc[] = { 0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7 };
@@ -45,6 +48,7 @@ TEST(net_checksum_known_values) {
     EXPECT_EQ(net_checksum(odd, 0), 0xFFFF);
 }
 
+// The card is present, the stack is up, and the address is QEMU's default
 TEST(net_card_and_stack_are_up) {
     EXPECT_TRUE(virtio_net_present());
     EXPECT_TRUE(net_up());
@@ -90,6 +94,8 @@ TEST(net_arp_answers_age) {
     EXPECT_TRUE(!net_arp_age(NET_IP(10, 0, 2, 99), 1));                   // (Unknown: nothing to age)
 }
 
+// Pinging ourselves stays off the card; pinging an address nobody has fails after
+// the ARP timeout and leaves no ARP entry
 TEST(net_ping_ourselves_and_nobody) {
     // To our own address: delivered inside the stack, without the card
     uint64_t sent_before = virtio_net_tx_count();
@@ -108,6 +114,7 @@ TEST(net_ping_ourselves_and_nobody) {
     EXPECT_TRUE(!net_arp_known(NET_IP(10, 0, 2, 99)));
 }
 
+// UDP over loopback: binding rules, an automatic port, and data in both directions
 TEST(udp_sockets_over_loopback) {
     size_t heap_before = kheap_get_allocated_bytes();
     char buf[64];

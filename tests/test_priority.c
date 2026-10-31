@@ -2,6 +2,8 @@
 #include "priority.h"
 #include "sched.h"
 
+// A task keeps the priority set for it, out of range means lowest, and a higher
+// priority gets a longer time slice
 TEST(priority_is_stored_and_clamped) {
     task_t *current = sched_get_current_task();
     EXPECT_EQ(task_get_priority(current), PRIO_NORMAL);

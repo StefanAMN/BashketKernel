@@ -2,6 +2,8 @@
 #include "kprintf.h"
 #include "kstring.h"
 
+// memset, memcpy and memmove at every short length and several alignments, with
+// overlap both ways, and the direction flag clear afterwards
 TEST(memory_routines) {
     static uint8_t a[300], b[300];
 
@@ -48,6 +50,8 @@ TEST(memory_routines) {
     EXPECT_TRUE((rflags & (1 << 10)) == 0);
 }
 
+// strstr and strchr: first matches, none, empty strings, and backing up after a
+// partial match
 TEST(string_search) {
     const char *text = "one two three two";
     EXPECT_TRUE(strstr(text, "two") == text + 4);          // The first match
@@ -63,6 +67,8 @@ TEST(string_search) {
     EXPECT_TRUE(strchr(text, '\0') == text + 17);
 }
 
+// ksnprintf: every conversion, widths and padding, 64-bit values, and truncation
+// that stays terminated and inside the buffer
 TEST(ksnprintf_formats_and_truncates) {
     char buf[64];
 
