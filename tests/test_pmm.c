@@ -1,6 +1,7 @@
 #include "test.h"
 #include "pmm.h"
 
+// One frame out and back: the free count follows
 TEST(pmm_allocation) {
     size_t free_before = pmm_get_free_frames();
     void *frame = pmm_alloc_frame();
@@ -11,6 +12,7 @@ TEST(pmm_allocation) {
     EXPECT_EQ(pmm_get_free_frames(), free_before);
 }
 
+// A run of four frames out and back: the free count follows
 TEST(pmm_multi_allocation) {
     size_t free_before = pmm_get_free_frames();
     void *frames = pmm_alloc_frames(4);
@@ -21,6 +23,7 @@ TEST(pmm_multi_allocation) {
     EXPECT_EQ(pmm_get_free_frames(), free_before);
 }
 
+// The frame count describes RAM, not the top of the physical address space
 TEST(pmm_sized_from_ram) {
     // Total frames must describe RAM, not the top of the physical address
     // space: nearly all of it should have been free at boot.
@@ -30,6 +33,8 @@ TEST(pmm_sized_from_ram) {
     EXPECT_TRUE(pmm_get_free_frames() > total / 2);
 }
 
+// Every frame can be taken, the next request fails cleanly, and all of them can
+// be given back
 TEST(pmm_exhaustion_and_recovery) {
     size_t free_before = pmm_get_free_frames();
     uint64_t hhdm = pmm_get_hhdm_offset();

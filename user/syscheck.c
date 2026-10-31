@@ -977,6 +977,7 @@ static void check_signal_masks(void) {
 /* --- Stopping, continuing, process groups ----------------------------------- */
 
 static volatile int tstp_calls;
+/* SIGTSTP handler: count the delivery */
 static void count_tstp(int sig) { (void)sig; tstp_calls++; }
 
 /* Process groups, the terminal's foreground group, stopping and continuing */
@@ -2022,6 +2023,8 @@ static int as_user(unsigned uid, void (*checks)(void)) {
 
 static long root_pid;   /* The process running the checks as root */
 
+/* Run as uid 1000, in a child (as_user): what is for root alone is refused, and
+ * what a user may do to their own files works. CHECK reports each failure. */
 static void checks_as_alice(void) {
     char buf[16];
 

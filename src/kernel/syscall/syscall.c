@@ -82,6 +82,7 @@ void syscall_init(void) {
 
 // --- User memory access -----------------------------------------------------
 
+// The top page table (PML4) of the calling process, through the direct map
 static uint64_t *current_space(void) {
     task_t *task = sched_get_current_task();
     return vmm_space_from_phys((uint64_t)task->pml4_phys);
@@ -940,6 +941,8 @@ static int64_t sys_chdir(uint64_t user_path) {
 
 // --- Shared memory segments ---------------------------------------------------
 
+// shmat: map shared memory segment `id` at the process's next free mapping
+// address, and move that address on. Returns the address, or -EINVAL.
 static int64_t sys_shmat(int id) {
     task_t *task = sched_get_current_task();
     uint64_t addr = shm_attach(id, current_space(), &task->mmap_next);
@@ -948,6 +951,8 @@ static int64_t sys_shmat(int id) {
 
 // --- Network -----------------------------------------------------------------
 
+// A timeout in milliseconds as timer ticks, rounded up so it never ends early,
+// and at most an hour
 static uint64_t ms_to_ticks(uint64_t ms) {
     if (ms > 3600 * 1000) ms = 3600 * 1000; // An hour is plenty, and keeps the arithmetic small
     return (ms * TIMER_HZ + 999) / 1000;

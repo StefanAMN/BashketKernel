@@ -51,6 +51,7 @@ static int64_t number_after(const char *text, const char *label) {
     return value;
 }
 
+// /proc/version, meminfo, tasks and uptime report the live state of the kernel
 TEST(procfs_files_report_live_state) {
     vfs_find(NULL, "/proc/version");   // Brings /proc/<pid> up to date first: that is not what is counted
     size_t heap_before = kheap_get_allocated_bytes();
@@ -310,6 +311,8 @@ static void status_reader_entry(void) {
     reader_done = 1;
 }
 
+// /proc/<pid>/status read over and over while processes exec and exit never shows
+// an absurd Resident
 TEST(status_of_exiting_and_execing_processes) {
     reader_stop = 0; reader_done = 0; reader_reads = 0; reader_absurd = 0; watched_pid = 0;
     EXPECT_TRUE(task_create("status-reader", status_reader_entry) != NULL);

@@ -16,10 +16,13 @@
 //   readme.txt, pattern.bin (100 KiB, byte i = i*7 + (i>>8)*13),
 //   notes/hello.txt, notes/empty.txt, bin/hello (the user program)
 
+// The byte pattern.bin holds at offset `i` (see above)
 static uint8_t pattern_byte(size_t i) {
     return (uint8_t)(i * 7 + (i >> 8) * 13);
 }
 
+// The image built on the host appears under /disk: names in their given case,
+// sizes, no "." or ".." children, and stat
 TEST(fat32_tree_is_mounted) {
     EXPECT_TRUE(fat32_mounted());
 
@@ -54,6 +57,7 @@ TEST(fat32_tree_is_mounted) {
     EXPECT_TRUE(st.type == VFS_DIRECTORY && st.links == 2 && st.ino >= 2);
 }
 
+// Files on the disk read back with the contents the image was built with
 TEST(fat32_file_contents) {
     char text[128] = {0};
     file_t *file = NULL;
@@ -133,6 +137,7 @@ static int64_t load(const char *path, void *buf, size_t size) {
     return (int64_t)total;
 }
 
+// Creating, overwriting and appending, each read back through a separate open
 TEST(fat32_write_and_read_back) {
     char buf[128];
 
@@ -235,6 +240,8 @@ TEST(fat32_cluster_accounting) {
     EXPECT_EQ(fat32_free_clusters(), free_at_start);
 }
 
+// New directories, nested ones, refusing to remove a full one, and a directory
+// that outgrows its cluster
 TEST(fat32_directories) {
     uint32_t free_at_start = fat32_free_clusters();
 

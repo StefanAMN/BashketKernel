@@ -7,6 +7,8 @@
 #include "heap.h"
 #include "kerrno.h"
 
+// Two address spaces and a fork see the same frames of a segment, zeroed at first,
+// and removing it frees them
 TEST(shm_segments_are_shared_and_freed) {
     size_t frames_before = test_free_frames();
     size_t heap_before = kheap_get_allocated_bytes();
@@ -60,6 +62,8 @@ TEST(shm_segments_are_shared_and_freed) {
     EXPECT_TRUE(kheap_get_allocated_bytes() == heap_before);
 }
 
+// Bad sizes and ids are refused, a full table refuses new keys but finds old ones,
+// and refused requests keep nothing
 TEST(shm_limits) {
     size_t frames_before = test_free_frames();
 

@@ -7,6 +7,7 @@
 #include "percpu.h"
 #include "tcp.h"
 
+// Sleeping 10 ticks lasts 10 to 12 of them; sleeping 0 returns at once
 TEST(sleep_lasts_as_long_as_asked) {
     uint64_t before = timer_ticks();
     sched_sleep_ticks(10);
@@ -72,6 +73,8 @@ TEST(clock_without_a_timestamp_counter) {
     EXPECT_TRUE(clock_ns() - before >= 3000000);
 }
 
+// clock_ns: a believable TSC rate, never backwards, fine-grained, and in
+// agreement with the timer
 TEST(clock_is_calibrated_and_monotonic) {
     // The TSC of anything QEMU emulates runs between 100 MHz and 10 GHz
     EXPECT_TRUE(hrtimer_tsc_hz() >= 100000000ULL && hrtimer_tsc_hz() <= 10000000000ULL);
@@ -116,6 +119,7 @@ static uint64_t best_nanosleep(uint64_t ns, int attempts, int *all_long_enough) 
     return best;
 }
 
+// nanosleep gets close to times shorter than a tick and is never short
 TEST(nanosleep_is_finer_than_a_tick) {
     int never_short = 1;
 
@@ -133,6 +137,7 @@ TEST(nanosleep_is_finer_than_a_tick) {
 
 // --- One-shot timers ----------------------------------------------------------
 
+// Keep this CPU busy, without sleeping, for `ticks` timer ticks
 static void spin_ticks(uint64_t ticks) {
     uint64_t until = timer_ticks() + ticks;
     while (timer_ticks() < until) asm volatile("pause");
@@ -247,6 +252,7 @@ static void reaper_waiter(void) {
     reaper_woke = 1;
 }
 
+// A task that does nothing and ends
 static void dies_at_once(void) {}
 
 // What the kernel's own reaper sleeps in: nothing wakes it but a task

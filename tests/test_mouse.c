@@ -24,6 +24,8 @@ static bool next_event(int *buttons, int *dx, int *dy) {
     return true;
 }
 
+// PS/2 packets become events: signed movement, button changes, and movements
+// added up while nobody reads
 TEST(mouse_packets_become_events) {
     int buttons = 0, dx = 0, dy = 0;
     mouse_flush();
@@ -129,6 +131,7 @@ static void blocked_reader(void) {
     reader_got = n;
 }
 
+// A reader of the mouse sleeps until an event arrives, then gets it
 TEST(mouse_read_sleeps_until_the_mouse_moves) {
     mouse_flush();
     reader_got = -1;

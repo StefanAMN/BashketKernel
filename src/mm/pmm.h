@@ -64,8 +64,11 @@ size_t pmm_get_total_frames(void);
  * @brief Number of allocation requests refused for lack of memory since boot.
  */
 size_t pmm_get_failed_allocations(void);
+// Frames free now
 size_t pmm_get_free_frames(void);
+// Frames allocated now
 size_t pmm_get_used_frames(void);
+// Where the direct map starts: add this to a physical address to reach it
 uint64_t pmm_get_hhdm_offset(void);
 
 #endif // PMM_H

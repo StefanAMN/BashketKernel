@@ -85,7 +85,8 @@ void timer_periodic_tick(void) {
 
 // --- One-shot mode --------------------------------------------------------------
 
-static uint64_t earlier(uint64_t a, uint64_t b) { // Of two times, where 0 means "none"
+// The earlier of two times, where 0 means "none"
+static uint64_t earlier(uint64_t a, uint64_t b) {
     if (a == 0) return b;
     if (b == 0) return a;
     return a < b ? a : b;

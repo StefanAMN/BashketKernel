@@ -176,6 +176,10 @@ code comments and commit messages; `git log` is the full history.
   stays mapped), so the test kernel fills freed frames with 0xFF: a walk
   over freed page tables that went unnoticed 8,600 times then faulted at
   once.
+- **A checker's 0 means what it can see.** `undocumented.py` printed 0 for
+  months with 166 functions undocumented: it never looked at one-liners,
+  `TEST()` bodies or headers, and took a banner for a comment. Scan by a
+  second method before believing a count, and sabotage the checker too.
 - **Run long, run small, run hostile.** A 200-command session found a 5x
   console slowdown; a 64 MB machine (`make test-lowmem`) found that a failed
   heap growth kept all the memory; random system calls (`make fuzz`) and

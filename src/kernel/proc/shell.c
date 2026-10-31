@@ -45,6 +45,8 @@ static int parse_int(const char *str) {
 // noinline + volatile keep the compiler from optimizing the faults away.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Winfinite-recursion" // That is the point
+// Call itself without end, each frame 512 bytes, until the stack runs out and
+// the guard page faults; never returns. The `crash stack` command.
 __attribute__((noinline)) static uint64_t crash_recurse(uint64_t depth) {
     volatile uint8_t pad[512];
     pad[0] = (uint8_t)depth;
