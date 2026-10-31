@@ -31,9 +31,10 @@
  * needs a slot or memory that is not there, the oldest datagram in progress
  * is given up for it.
  *
- * Not done: the ICMP "fragment reassembly time exceeded" message that RFC
- * 1122 (3.3.2) says a host SHOULD send when it gives up a datagram whose
- * first fragment it holds.
+ * A datagram given up for time whose first fragment arrived is reported
+ * to the caller of ipfrag_expire with that fragment's header and first 8
+ * bytes, for the ICMP "fragment reassembly time exceeded" message RFC 1122
+ * (3.3.2) asks for.
  */
 
 #ifndef IPFRAG_H
@@ -62,6 +63,8 @@ typedef struct {
 /**
  * @brief Take in one fragment of a datagram addressed to us.
  * @param src, dst, protocol, id  What identifies the datagram (RFC 791)
+ * @param header The fragment's IPv4 header (20 bytes are kept from the
+ *        first fragment, for the error ipfrag_expire may report)
  * @param offset Where the fragment's data goes, in bytes (the header's field times 8)
  * @param more The "more fragments" flag: clear on the last fragment
  * @param data, len The fragment's payload (copied; the caller keeps its buffer)
@@ -76,14 +79,21 @@ typedef struct {
  *         Takes the reassembly lock; allocates; never sleeps.
  */
 uint8_t *ipfrag_input(uint32_t src, uint32_t dst, uint8_t protocol, uint16_t id, size_t offset, bool more,
-                      const uint8_t *data, size_t len, uint64_t now, size_t *total, bool *started);
+                      const void *header, const uint8_t *data, size_t len, uint64_t now, size_t *total, bool *started);
+
+#define IPFRAG_QUOTE_LEN (20 + 8) // The first fragment's header and the first 8 bytes of its data
+
+// Told of a datagram given up for time whose first fragment had arrived:
+// `quote` is that fragment's header and first bytes (len of them)
+typedef void (*ipfrag_report_t)(const uint8_t *quote, size_t len);
 
 /**
  * @brief Give up every datagram whose time ran out by `now` (in ticks) and
- *        free what it held.
+ *        free what it held. Those whose first fragment had arrived are
+ *        passed to `report` (unless it is NULL), after the lock is let go.
  * @return When the next one runs out (in ticks), or 0 if none is in progress.
  */
-uint64_t ipfrag_expire(uint64_t now);
+uint64_t ipfrag_expire(uint64_t now, ipfrag_report_t report);
 
 /**
  * @brief The counters (read without a lock: each is a plain number).

@@ -1004,15 +1004,19 @@ static long substitute(const char *command, char *out, size_t size) {
 
 /* --- Arithmetic: $((...)) ---------------------------------------------------
  *
- * 64-bit signed integers, with C's operators and precedence for the ones
- * there are: unary ! - +, then * / %, + -, < <= > >=, == !=, &&, ||, and
- * parentheses. A name is a variable holding a number (unset or empty: 0);
- * $NAME, ${NAME}, $?, $# and $1.. work too. Constants are decimal, octal
- * (a leading 0) or hexadecimal (0x), as in C. Overflow wraps around as
- * two's complement (unlike C, where it is undefined); division by zero is
- * an error. && and || do not evaluate their right side when the left
- * decides, so "x != 0 && 10 / x" is safe. Not done: assignments (=, +=,
- * ++), the bit operators, ?:, and $(...) inside. */
+ * 64-bit signed integers, with C's operators and precedence (POSIX XCU
+ * 2.6.4): postfix ++ --, then prefix ++ -- and unary ! ~ - +, * / %, + -,
+ * << >>, < <= > >=, == !=, &, ^, |, &&, ||, ?:, and the assignments = *=
+ * /= %= += -= <<= >>= &= ^= |= (right to left), with parentheses. A name
+ * is a variable holding a number (unset or empty: 0); $NAME, ${NAME}, $?,
+ * $# and $1.. work too. Constants are decimal, octal (a leading 0) or
+ * hexadecimal (0x), as in C. An assignment sets the shell variable and has
+ * the value assigned; ++ and -- apply to names only (so "--5" is still
+ * -(-5)). Overflow wraps around as two's complement (unlike C, where it is
+ * undefined); a shift counts modulo 64, as the x86 shift instructions and
+ * bash do, and >> keeps the sign; division by zero is an error. &&, ||
+ * and ?: do not evaluate the side not taken, so "x != 0 && 10 / x" is
+ * safe and "c ? a++ : b++" changes one. Not done: $(...) inside. */
 
 typedef struct {
     const char *p;            /* Where the parser is */
@@ -1076,16 +1080,40 @@ static long arith_variable(arith_t *a, const char *text, const char *what) {
     return 0;
 }
 
-static long arith_or(arith_t *a, int live);
+static long arith_assign(arith_t *a, int live);
+static void long_text(long v, char text[24]);
 
-/* A number, a variable, or ( expression ). With `live` 0 (the side of an
- * && or || that does not count) nothing is reported. */
+/* Give the variable `name` the value v (where it counts). v. */
+static long arith_store(arith_t *a, const char *name, long v, int live) {
+    if (!live || a->error) return v;
+    char text[24];
+    long_text(v, text);
+    if (set_variable(name, text) < 0 && !a->error) a->error = "cannot set the variable";
+    return v;
+}
+
+/* Read a name at a->p (after blanks) into name[32] without moving a->p;
+ * the characters it takes, 0 if there is none */
+static size_t arith_peek_name(arith_t *a, char name[32]) {
+    const char *c = a->p;
+    size_t n = 0;
+    if (!is_name_char(*c) || (*c >= '0' && *c <= '9')) return 0;
+    while (is_name_char(*c) && n < 31) name[n++] = *c++;
+    if (is_name_char(*c)) return 0;                       /* Longer than any name */
+    name[n] = '\0';
+    return n;
+}
+
+/* A number, a variable (NAME++ and NAME-- too: the value before, the
+ * variable changed), or ( expression ). With `live` 0 (the side of an &&,
+ * || or ?: that does not count) nothing is reported or changed. */
 static long arith_primary(arith_t *a, int live) {
     arith_blanks(a);
     const char *c = a->p;
+    int dollar = (*c == '$');                 /* $NAME is a value: ++ and -- do not apply */
     if (*c == '(') {
         a->p++;
-        long v = arith_or(a, live);
+        long v = arith_assign(a, live);
         arith_blanks(a);
         if (*a->p != ')') { if (!a->error) a->error = "')' expected"; return 0; }
         a->p++;
@@ -1132,14 +1160,35 @@ static long arith_primary(arith_t *a, int live) {
     name[n] = '\0';
     a->p = c;
     if (!is_name(name, NULL)) { if (!a->error) a->error = "bad name"; return 0; }
-    return live ? arith_variable(a, get_variable(name), name) : 0;   /* (Not a number: only an error where it counts) */
+    long v = live ? arith_variable(a, get_variable(name), name) : 0;   /* (Not a number: only an error where it counts) */
+    /* Postfix ++ and --: the value before, the variable changed */
+    arith_blanks(a);
+    if ((a->p[0] == '+' || a->p[0] == '-') && a->p[1] == a->p[0] && !dollar) {
+        int up = a->p[0] == '+';
+        a->p += 2;
+        arith_store(a, name, (long)((unsigned long)v + (up ? 1UL : ~0UL)), live);
+    }
+    return v;
 }
 
-/* ! - + in front (any number of them) */
+/* ! ~ - + in front (any number of them), and prefix ++ and -- on a name:
+ * the variable changed, the value after */
 static long arith_unary(arith_t *a, int live) {
     arith_blanks(a);
     char op = *a->p;
     if (op == '!' && a->p[1] != '=') { a->p++; return !arith_unary(a, live); }
+    if (op == '~') { a->p++; return ~arith_unary(a, live); }
+    if ((op == '+' || op == '-') && a->p[1] == op) {
+        const char *after = a->p + 2;
+        while (is_blank(*after)) after++;
+        char name[32];
+        arith_t at = { after, NULL };
+        if (arith_peek_name(&at, name)) {
+            a->p = after + strlen(name);
+            long v = live ? arith_variable(a, get_variable(name), name) : 0;
+            return arith_store(a, name, (long)((unsigned long)v + (op == '+' ? 1UL : ~0UL)), live);
+        }
+    }
     if (op == '-' || op == '+') {
         a->p++;
         unsigned long v = (unsigned long)arith_unary(a, live);
@@ -1155,7 +1204,7 @@ static long arith_mul(arith_t *a, int live) {
     for (;;) {
         arith_blanks(a);
         char op = *a->p;
-        if (op != '*' && op != '/' && op != '%') return v;
+        if ((op != '*' && op != '/' && op != '%') || a->p[1] == '=') return v;
         a->p++;
         long w = arith_unary(a, live);
         if (op == '*') {
@@ -1177,22 +1226,35 @@ static long arith_add(arith_t *a, int live) {
     for (;;) {
         arith_blanks(a);
         char op = *a->p;
-        if (op != '+' && op != '-') return v;
+        if ((op != '+' && op != '-') || a->p[1] == '=') return v;
         a->p++;
         unsigned long w = (unsigned long)arith_mul(a, live);
         v = (long)(op == '+' ? (unsigned long)v + w : (unsigned long)v - w);
     }
 }
 
-/* < <= > >= : 1 or 0 */
-static long arith_compare(arith_t *a, int live) {
+/* << >> (left to right). The count is taken modulo 64; >> keeps the sign. */
+static long arith_shift(arith_t *a, int live) {
     long v = arith_add(a, live);
     for (;;) {
         arith_blanks(a);
-        if (*a->p != '<' && *a->p != '>') return v;
+        if (!((a->p[0] == '<' || a->p[0] == '>') && a->p[1] == a->p[0] && a->p[2] != '=')) return v;
+        int left = a->p[0] == '<';
+        a->p += 2;
+        unsigned int count = (unsigned int)((unsigned long)arith_add(a, live) & 63);
+        v = left ? (long)((unsigned long)v << count) : v >> count;
+    }
+}
+
+/* < <= > >= : 1 or 0 */
+static long arith_compare(arith_t *a, int live) {
+    long v = arith_shift(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if ((*a->p != '<' && *a->p != '>') || a->p[1] == a->p[0]) return v;
         int less = (*a->p == '<'), equal = (a->p[1] == '=');
         a->p += equal ? 2 : 1;
-        long w = arith_add(a, live);
+        long w = arith_shift(a, live);
         v = less ? (equal ? v <= w : v < w) : (equal ? v >= w : v > w);
     }
 }
@@ -1210,14 +1272,47 @@ static long arith_equal(arith_t *a, int live) {
     }
 }
 
+/* & (not && or &=) */
+static long arith_bitand(arith_t *a, int live) {
+    long v = arith_equal(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if (a->p[0] != '&' || a->p[1] == '&' || a->p[1] == '=') return v;
+        a->p++;
+        v &= arith_equal(a, live);
+    }
+}
+
+/* ^ (not ^=) */
+static long arith_bitxor(arith_t *a, int live) {
+    long v = arith_bitand(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if (a->p[0] != '^' || a->p[1] == '=') return v;
+        a->p++;
+        v ^= arith_bitand(a, live);
+    }
+}
+
+/* | (not || or |=) */
+static long arith_bitor(arith_t *a, int live) {
+    long v = arith_bitxor(a, live);
+    for (;;) {
+        arith_blanks(a);
+        if (a->p[0] != '|' || a->p[1] == '|' || a->p[1] == '=') return v;
+        a->p++;
+        v |= arith_bitxor(a, live);
+    }
+}
+
 /* && : 1 or 0; the right side counts only if the left is not 0 */
 static long arith_and(arith_t *a, int live) {
-    long v = arith_equal(a, live);
+    long v = arith_bitor(a, live);
     for (;;) {
         arith_blanks(a);
         if (!(a->p[0] == '&' && a->p[1] == '&')) return v;
         a->p += 2;
-        long w = arith_equal(a, live && v != 0);
+        long w = arith_bitor(a, live && v != 0);
         v = v != 0 && w != 0;
     }
 }
@@ -1234,12 +1329,64 @@ static long arith_or(arith_t *a, int live) {
     }
 }
 
+/* c ? x : y (right to left): only the side taken counts */
+static long arith_conditional(arith_t *a, int live) {
+    long c = arith_or(a, live);
+    arith_blanks(a);
+    if (*a->p != '?') return c;
+    a->p++;
+    long x = arith_assign(a, live && c != 0);
+    arith_blanks(a);
+    if (*a->p != ':') { if (!a->error) a->error = "':' expected"; return 0; }
+    a->p++;
+    long y = arith_conditional(a, live && c == 0);
+    return c != 0 ? x : y;
+}
+
+/* NAME op= expression (right to left), or a conditional. The variable
+ * takes the value, which is also the result. */
+static long arith_assign(arith_t *a, int live) {
+    arith_blanks(a);
+    char name[32];
+    size_t n = arith_peek_name(a, name);
+    if (n > 0) {
+        const char *c = a->p + n;
+        while (is_blank(*c)) c++;
+        /* The operator: "=" (not "=="), or one of * / % + - << >> & ^ | then "=" */
+        static const char *const ops[] = { "<<=", ">>=", "*=", "/=", "%=", "+=", "-=", "&=", "^=", "|=", "=" };
+        for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+            size_t len = strlen(ops[i]);
+            if (strncmp(c, ops[i], len) != 0 || (len == 1 && c[1] == '=')) continue;
+            a->p = c + len;
+            long w = arith_assign(a, live);
+            if (len == 1) return arith_store(a, name, w, live);
+            long v = live ? arith_variable(a, get_variable(name), name) : 0;
+            unsigned long uv = (unsigned long)v, uw = (unsigned long)w;
+            switch (ops[i][0]) {
+                case '*': v = (long)(uv * uw); break;
+                case '+': v = (long)(uv + uw); break;
+                case '-': v = (long)(uv - uw); break;
+                case '&': v &= w; break;
+                case '^': v ^= w; break;
+                case '|': v |= w; break;
+                case '<': v = (long)(uv << (uw & 63)); break;
+                case '>': v >>= (uw & 63); break;
+                default:                                   /* / and % */
+                    if (w == 0) { if (live && !a->error) a->error = "division by zero"; return 0; }
+                    if (w == -1) v = ops[i][0] == '/' ? (long)(0UL - uv) : 0;
+                    else v = ops[i][0] == '/' ? v / w : v % w;
+            }
+            return arith_store(a, name, v, live);
+        }
+    }
+    return arith_conditional(a, live);
+}
 
 /* Evaluate `expr` into *value. 0, or -1 with a message printed (and
  * expand_failed set). */
 static int arith_eval(const char *expr, long *value) {
     arith_t a = { expr, NULL };
-    *value = arith_or(&a, 1);
+    *value = arith_assign(&a, 1);
     arith_blanks(&a);
     if (!a.error && *a.p) a.error = "unexpected text";
     if (a.error) {

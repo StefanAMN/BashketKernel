@@ -27,6 +27,11 @@ The same two directions over TCP:
   names           ping gateway and host GateWay must find 10.0.2.2 in
                   /etc/hosts, without asking a DNS server.
 
+  errors          a datagram from the host to a guest port where nothing
+                  listens is answered with ICMP port unreachable; QEMU does
+                  not pass that on to the host's socket, so its packet
+                  capture is checked instead (checksums, the quote).
+
 Then a second boot, on a network whose addresses are not the ones the kernel
 starts with: /bin/dhcp must obtain an address from QEMU's DHCP server and the
 machine must work with it; /bin/host must get an answer from a DNS server
@@ -106,6 +111,49 @@ def udp_packets(pcap_path):
         packets.append((socket.inet_ntoa(frame[26:30]), socket.inet_ntoa(frame[30:34]),
                         source_port, destination_port, udp[8:]))
     return packets
+
+
+def internet_checksum(data):
+    """RFC 1071, written here from the RFC: the kernel's own is not judged by itself"""
+    if len(data) % 2:
+        data += b"\0"
+    total = sum(struct.unpack(f">{len(data) // 2}H", data))
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return ~total & 0xFFFF
+
+
+def port_unreachables(pcap_path, source, destination, port):
+    """How many well-formed ICMP port unreachable messages from `source` to
+    `destination` the capture holds that quote a UDP datagram from
+    `destination` to `source` port `port` (RFC 792: IP and ICMP checksums
+    right, the quoted header and the first 8 bytes of the datagram)"""
+    with open(pcap_path, "rb") as f:
+        data = f.read()
+    found, pos = 0, 24
+    while pos + 16 <= len(data):
+        length = struct.unpack_from("<I", data, pos + 8)[0]
+        frame = data[pos + 16:pos + 16 + length]
+        pos += 16 + length
+        if len(frame) < 14 + 20 + 8 or frame[12:14] != b"\x08\x00" or frame[23] != 1:
+            continue                            # Not IPv4, or not ICMP
+        ip = frame[14:]
+        header = (ip[0] & 0x0F) * 4
+        total = struct.unpack_from(">H", ip, 2)[0]
+        if internet_checksum(ip[:header]) != 0 or total > len(ip):
+            continue
+        if (socket.inet_ntoa(ip[12:16]), socket.inet_ntoa(ip[16:20])) != (source, destination):
+            continue
+        icmp = ip[header:total]
+        if len(icmp) < 8 + 20 + 8 or icmp[0] != 3 or icmp[1] != 3 or internet_checksum(icmp) != 0:
+            continue
+        quoted = icmp[8:]
+        quoted_header = (quoted[0] & 0x0F) * 4
+        if quoted[9] != 17 or (socket.inet_ntoa(quoted[12:16]), socket.inet_ntoa(quoted[16:20])) != (destination, source):
+            continue
+        if len(quoted) >= quoted_header + 8 and struct.unpack_from(">H", quoted, quoted_header + 2)[0] == port:
+            found += 1
+    return found
 
 
 def dhcp_type(payload):
@@ -238,6 +286,7 @@ def main():
     tcp_forward_port = free_tcp_port()
     tcp_payload = os.urandom(TCP_ECHO_BYTES)
     tcp_echoed = []
+    tcp_echo_seconds = []   # How long the echo took, from the first byte sent to the last received
 
     def echo_through_guest():
         deadline = time.monotonic() + 80
@@ -259,9 +308,12 @@ def main():
                         received.extend(data)
                 except OSError:
                     pass
+                finished.append(time.monotonic())
 
+            finished = []
             thread = threading.Thread(target=reader, daemon=True)
             thread.start()
+            started = time.monotonic()
             try:
                 conn.sendall(tcp_payload)
                 conn.shutdown(socket.SHUT_WR)
@@ -273,6 +325,8 @@ def main():
             # closes the connection at once: try again
             if received:
                 tcp_echoed.append(bytes(received))
+                if finished:
+                    tcp_echo_seconds.append(finished[0] - started)
 
     tcp_talker = threading.Thread(target=echo_through_guest, daemon=True)
 
@@ -323,9 +377,28 @@ def main():
     talker = threading.Thread(target=talk_to_guest, daemon=True)
     talker.start()
 
+    # A datagram from the host to a port where nothing listens in the guest
+    # (QEMU forwards it to port 9): the guest must answer "port unreachable",
+    # which QEMU keeps to itself but its capture shows
+    closed_port = free_udp_port()
+    capture = tempfile.NamedTemporaryFile(suffix=".pcap", delete=False)
+    capture.close()
+
+    def knock_on_closed_port():
+        time.sleep(4)
+        knocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for _ in range(3):
+            knocker.sendto(b"anyone there?", ("127.0.0.1", closed_port))
+            time.sleep(1)
+        knocker.close()
+
+    threading.Thread(target=knock_on_closed_port, daemon=True).start()
+
     command = [os.path.join(HERE, "qemu_shell.py"), "--quiet", "--timeout", "150",
                "--net-forward", f"udp:127.0.0.1:{forward_port}-:7",
-               "--net-forward", f"tcp:127.0.0.1:{tcp_forward_port}-:7"] + extra + [
+               "--net-forward", f"tcp:127.0.0.1:{tcp_forward_port}-:7",
+               "--net-forward", f"udp:127.0.0.1:{closed_port}-:9",
+               "--qemu-arg=-object", f"--qemu-arg=filter-dump,id=capture,netdev=n0,file={capture.name}"] + extra + [
         f"exec /bin/udpsend 10.0.2.2 {host_port} ping-from-guest",
         # A retried datagram may reach the server twice, so let it handle a
         # few more than the three messages
@@ -348,6 +421,10 @@ def main():
     problems = []
     if result.returncode != 0:
         problems.append(f"qemu_shell.py exited with status {result.returncode}")
+    unreachables = port_unreachables(capture.name, "10.0.2.15", "10.0.2.2", 9)
+    os.unlink(capture.name)
+    if unreachables < 1:
+        problems.append("no well-formed ICMP port unreachable for the datagrams to a closed port")
     if b"ping-from-guest" not in from_guest:
         problems.append("the host never received the guest's datagram")
     if f"answer from 10.0.2.2 port {host_port}: pong-from-host" not in output:
@@ -385,7 +462,7 @@ def main():
             print("network: FAILED:", problem)
         return 1
     megabytes = TCP_ECHO_BYTES // (1024 * 1024)
-    print(f"network (UDP both ways; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed; DHCP lease, renewed twice; DNS lookup): ok")
+    print(f"network (UDP both ways, port unreachable answered; TCP: a {len(sent_file)}-byte file out, {megabytes} MiB echoed in {tcp_echo_seconds[0] if tcp_echo_seconds else 0:.2f} s; DHCP lease, renewed twice; DNS lookup): ok")
     return 0
 
 

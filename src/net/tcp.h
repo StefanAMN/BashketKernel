@@ -31,10 +31,8 @@
  *    it began is acknowledged. /proc/tcp shows each connection's window.
  *
  * What is not, and what follows from it:
- *  - No limited transmit (RFC 3042) and no selective acknowledgement: in
- *    a window with several losses, NewReno repairs one hole per round
- *    trip. After a timeout, everything from the oldest unacknowledged
- *    byte is sent again ("go-back-N"), but at the pace slow start allows.
+ *  - After a timeout, everything from the oldest unacknowledged byte is
+ *    sent again ("go-back-N"), but at the pace slow start allows.
  *  - No congestion window validation (RFC 7661): a connection limited by
  *    the receiver's window keeps growing its congestion window, up to
  *    TCP_CWND_MAX.
@@ -43,8 +41,31 @@
  *    than 1 s (2.4), and the timeout (backed off or measured) is capped
  *    at 3 s rather than at least 60 s (2.5), so a dead peer is given up
  *    after about 20 s.
- *  - No options except the maximum segment size: no window scaling (so at
- *    most 64 KiB in flight), no timestamps, no selective acknowledgement.
+ *  - Selective acknowledgement (RFC 2018), offered in every SYN and used
+ *    when both SYNs carried it. As receiver, every acknowledgement sent
+ *    while data is held beyond a gap carries up to four blocks, the
+ *    stretch with the latest segment first. As sender, the blocks go on a
+ *    scoreboard, and in recovery the window stays at ssthresh while "pipe"
+ *    (outstanding, less what was reported held, less the holes below the
+ *    highest report not yet sent again) is below it, a segment is sent:
+ *    the next hole first, then new data (RFC 6675's loss recovery, with
+ *    every hole below the highest block counted as lost). Several holes
+ *    are so repaired in one round trip; NewReno, one. A partial
+ *    acknowledgement with no hole on the scoreboard (a receiver that
+ *    agreed to SACK but reports nothing) sends the segment it points at
+ *    again, as NewReno does. Without SACK the connection recovers as
+ *    NewReno. The scoreboard is forgotten at a
+ *    timeout (the receiver may throw away what it reported, 2018 8).
+ *  - Options: the maximum segment size, and window scaling (RFC 7323,
+ *    section 2), offered in every SYN we send and used only when both
+ *    SYNs carried it. The 16-bit window field then counts in units of
+ *    2^shift bytes, each side's shift its own (ours TCP_WSCALE_OURS; one
+ *    above 14 is taken as 14, 2.3), so a window can exceed 64 KiB. The
+ *    send and receive rings start at TCP_BUFFER_SIZE and double, up to
+ *    TCP_BUFFER_MAX (64 KiB without scaling), when they are what holds the
+ *    connection back: the receive ring when the other end sent all the
+ *    window offered and the reader then emptied the ring, the send ring when it is full and both windows would
+ *    let more be in flight. No timestamps.
  *  - No simultaneous open, no urgent data, no keep-alive.
  */
 
@@ -56,7 +77,12 @@
 #include <stdbool.h>
 
 #define TCP_MAX_SOCKETS 32
-#define TCP_BUFFER_SIZE 8192   // Per direction, per connection
+#define TCP_BUFFER_SIZE 8192   // Per direction, per connection, to begin with
+#define TCP_BUFFER_MAX (256 * 1024) // What a ring may grow to with window scaling
+#define TCP_BUFFER_MAX_UNSCALED 65536 // ... and without (the window field holds 65535)
+#define TCP_WSCALE_OURS 3      // The shift we ask for: TCP_BUFFER_MAX >> 3 fits in 16 bits
+#define TCP_WSCALE_MAX 14      // The largest shift there is (RFC 7323 2.3)
+_Static_assert((TCP_BUFFER_MAX >> TCP_WSCALE_OURS) <= 65535, "our largest window must fit the field");
 #define TCP_BACKLOG_MAX 8
 
 typedef struct tcp_socket tcp_socket_t;
@@ -74,6 +100,10 @@ typedef struct {
     uint64_t partial_acks;       // Partial acknowledgements in recovery (RFC 6582)
     uint64_t cwnd_timeouts;      // Timer expiries that set a congestion window to one segment
     uint64_t dropped_for_test;   // See tcp_test_drop_every
+    uint64_t sack_blocks_sent;   // SACK blocks put in acknowledgements
+    uint64_t sack_retransmissions; // Holes sent again in recovery, chosen from the scoreboard
+    uint64_t icmp_errors;        // ICMP errors that matched a connection and were acted on
+    uint64_t icmp_ignored;       // ... and those that did not
 } tcp_stats_t;
 
 // --- Pieces with no state of their own, public for the tests ---
@@ -101,6 +131,66 @@ bool tcp_ooo_add(tcp_ooo_t *q, uint32_t start, uint32_t end);
  */
 uint32_t tcp_ooo_take(tcp_ooo_t *q, uint32_t rcv_nxt);
 
+#define TCP_SACK_BLOCKS_MAX 4    // Blocks in one option: 2 + 4 * 8 = 34 of the 40 bytes options may take
+
+// The options of a segment that this TCP understands
+typedef struct {
+    bool has_mss;
+    uint16_t mss;                // Maximum segment size (kind 2)
+    bool has_wscale;
+    uint8_t wscale;              // Window scale shift (kind 3), at most TCP_WSCALE_MAX
+    bool sack_permitted;         // SACK-permitted (kind 4, in a SYN)
+    uint8_t sack_count;          // SACK blocks (kind 5): [start, end) each
+    uint32_t sack[TCP_SACK_BLOCKS_MAX][2];
+} tcp_options_t;
+
+/**
+ * @brief Read the options of a segment (`len` bytes after the fixed
+ *        header). Untrusted: a malformed option ends the reading, and
+ *        what was found before it stands. A shift above TCP_WSCALE_MAX is
+ *        taken as TCP_WSCALE_MAX (RFC 7323 2.3). A SACK option must hold
+ *        1 to TCP_SACK_BLOCKS_MAX blocks of 8 bytes (RFC 2018 3), or it is
+ *        malformed.
+ */
+void tcp_parse_options(const uint8_t *options, size_t len, tcp_options_t *out);
+
+// --- Selective acknowledgement (RFC 2018), with no state of its own ---
+
+/**
+ * @brief The SACK blocks a receiver holding `held` beyond a gap reports:
+ *        first the stretch containing `recent` (the latest segment kept,
+ *        RFC 2018 4: the most recent first), then the others in order, at
+ *        most `max`. Writes them to out and returns how many.
+ */
+size_t tcp_sack_blocks(const tcp_ooo_t *held, uint32_t recent, uint32_t out[][2], size_t max);
+
+/**
+ * @brief A sender's scoreboard (what the receiver has said it holds beyond
+ *        snd_una) after the acknowledgement moved to `una`: forget what is
+ *        below it, cutting a stretch that straddles it.
+ */
+void tcp_sack_prune(tcp_ooo_t *scoreboard, uint32_t una);
+
+/**
+ * @brief Bytes the scoreboard holds.
+ */
+uint32_t tcp_sack_bytes(const tcp_ooo_t *scoreboard);
+
+/**
+ * @brief The first hole at or after `from`: bytes not reported held that
+ *        lie below the highest one reported (evidence that they were lost
+ *        rather than still on their way). Sets [*start, *start + *len),
+ *        up to the next reported stretch.
+ * @return false if there is no such hole.
+ */
+bool tcp_sack_next_hole(const tcp_ooo_t *scoreboard, uint32_t from, uint32_t *start, uint32_t *len);
+
+/**
+ * @brief Bytes in the holes at or after `from` (tcp_sack_next_hole's,
+ *        all of them).
+ */
+uint32_t tcp_sack_hole_bytes(const tcp_ooo_t *scoreboard, uint32_t from);
+
 // The round-trip estimate of RFC 6298, in microseconds
 typedef struct {
     uint32_t srtt_us, rttvar_us;
@@ -127,7 +217,7 @@ typedef struct {
     uint32_t recover;            // RFC 6582: highest sequence number sent when recovery (or a timeout) began
 } tcp_cc_t;
 
-#define TCP_CWND_MAX (4u * 65535u) // Grown no further: no window beyond 64 KiB can be used (no scaling)
+#define TCP_CWND_MAX (4u * TCP_BUFFER_MAX) // Grown no further: more could never be in flight
 
 /**
  * @brief A connection is established: the initial window (RFC 5681 3.1,
@@ -175,6 +265,20 @@ void tcp_init(void);
  * @brief A segment from the IP layer.
  */
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *segment, size_t len);
+
+/**
+ * @brief An ICMP error (type, code) quoting a segment we sent to
+ *        remote_ip from local_port to remote_port with sequence number
+ *        `seq`. Believed only if that names a connection and a sequence
+ *        number it has in flight (RFC 5927 4.1: anyone can send ICMP).
+ *        Destination unreachable codes 2 to 4 (protocol, port,
+ *        fragmentation needed) end the connection (RFC 1122 4.2.3.9:
+ *        ECONNREFUSED, or EMSGSIZE for the last); other unreachable codes
+ *        are remembered and become the error if the connection then times
+ *        out (EHOSTUNREACH, ENETUNREACH). Takes tcp_lock; never sends.
+ */
+void tcp_icmp_error(uint32_t remote_ip, uint16_t local_port, uint16_t remote_port, uint32_t seq,
+                    uint8_t type, uint8_t code);
 
 /**
  * @brief A new, unconnected socket (NULL if there are none left).
@@ -249,7 +353,9 @@ const tcp_stats_t *tcp_stats(void);
 /**
  * @brief Describe every connection as text into buf (at most size bytes,
  *        NUL-terminated): ports, peer, state, congestion window, ssthresh,
- *        smoothed round trip and timeout. For /proc/tcp.
+ *        smoothed round trip and timeout, the window scale shifts (the
+ *        other end's/ours, "-" without scaling) and the receive and send
+ *        rings' sizes. For /proc/tcp.
  * @return the length written.
  */
 size_t tcp_describe(char *buf, size_t size);
@@ -278,6 +384,46 @@ void tcp_test_drop_every(uint32_t n);
  */
 bool tcp_test_sequences(uint16_t local_port, uint16_t remote_port, uint32_t *rcv_nxt, uint32_t *ack,
                         uint32_t *unacked);
+
+// What tcp_test_windows reports of a connection
+typedef struct {
+    bool scaling;                // Both SYNs carried the window scale option
+    uint8_t snd_shift;           // Applied to the windows the other end sends
+    uint8_t rcv_shift;           // Applied to the windows we send
+    uint32_t snd_wnd;            // The other end's window, in bytes
+    uint32_t rx_size, tx_size;   // The rings' sizes now
+    bool sack;                   // Both SYNs carried SACK-permitted
+    uint32_t sacked;             // Bytes on the scoreboard
+    uint32_t cwnd;               // The congestion window
+} tcp_test_windows_t;
+
+/**
+ * @brief For tests: the windows of the connection between local_port and
+ *        remote_port (at our own address). false if there is none.
+ */
+bool tcp_test_windows(uint16_t local_port, uint16_t remote_port, tcp_test_windows_t *out);
+
+/**
+ * @brief For tests: neither offer nor accept SACK on connections opened
+ *        from now on (false: the default, offered and accepted).
+ */
+void tcp_test_refuse_sack(bool refuse);
+
+#define TCP_SENT_TRACE_MAX 64
+
+/**
+ * @brief For tests: record the sequence number of each segment carrying
+ *        data sent to remote port `port` (TCP_SENT_TRACE_MAX at most,
+ *        whether or not tcp_test_drop_every then drops it); 0 stops, and
+ *        starting clears. tcp_test_sent_trace copies them out.
+ */
+void tcp_test_trace_sent(uint16_t port);
+
+/**
+ * @brief For tests: copy up to `max` recorded sequence numbers into out.
+ * @return how many there are.
+ */
+size_t tcp_test_sent_trace(uint32_t *out, size_t max);
 
 #define TCP_TRACE_MAX 1024
 
