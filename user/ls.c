@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
             format_date(entry.mtime, when);
             when[16] = '\0';                       /* To the minute */
         }
-        printf("%c%s %3u %5u %5u %8lu %s %s%s%s\n", entry.type == DT_DIR ? 'd' : entry.type == DT_LNK ? 'l' : '-',
+        printf("%c%s %3u %5u %5u %8lu %s %s%s%s\n", entry.type == DT_DIR ? 'd' : entry.type == DT_LNK ? 'l' : entry.type == DT_SOCK ? 's' : '-',
                perms, links, entry.uid, entry.gid, (unsigned long)entry.size, when, entry.name,
                entry.type == DT_LNK ? " -> " : "", target);
     }

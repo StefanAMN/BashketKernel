@@ -70,6 +70,9 @@
 #define SYS_SETSID    324
 #define SYS_GETSID    325
 #define SYS_TTY_TOSTOP 326
+#define SYS_SOCKETPAIR 327
+#define SYS_LOCAL_LISTEN 328
+#define SYS_LOCAL_CONNECT 329
 #define UTIME_NOW ((unsigned long)-1)   /* utime(): the time now */
 #define SYS_SETTIME  312
 #define SYS_NANOSLEEP 230
@@ -128,6 +131,8 @@
 #define ECONNRESET  104
 #define EISCONN     106
 #define ENOTCONN    107
+#define EOPNOTSUPP  95
+#define ENXIO       6
 #define ETIMEDOUT   110
 #define ECONNREFUSED 111
 #define EHOSTUNREACH 113
@@ -163,6 +168,7 @@
 #define DT_FILE 1
 #define DT_DIR  2
 #define DT_LNK  3
+#define DT_SOCK 5
 
 /* Where a datagram came from. 10.0.2.2 is the number 0x0A000202. */
 struct net_address {

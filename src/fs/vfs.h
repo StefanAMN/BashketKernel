@@ -19,6 +19,9 @@
 #define STAT_PIPE     4
 #define STAT_SOCKET   5
 #define STAT_TERMINAL 6
+// A name of a local socket (localsock.h), which private_data holds the number
+// of. In memory only. A node of this type stats as what it is.
+#define VFS_SOCKET    STAT_SOCKET
 
 struct vfs_stat {
     uint32_t type;

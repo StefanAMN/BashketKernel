@@ -2219,12 +2219,30 @@ Sabotage: forcing no user `cs` made the kernel take a General Protection Fault
 in ring 0, keeping the frame's `rflags` or MXCSR failed the landing check; the
 gap checks failed four times (twice each in memory and on ext2) before the fix.
 
-### U2. Local sockets (M)
+### U2. Local sockets (M) — done
 
 Programs on one machine can talk over a pipe (one way, related processes) or
 loopback TCP (a port number, the whole network stack). Add `socketpair` and
 named stream sockets: a socket file in the tree that `listen` waits on and
 `connect` finds by path, with file permissions deciding who may connect.
+
+Done: `socketpair(fds)`, `local_listen(path, backlog)`, `local_connect(path)`,
+and `accept` and `shutdown` as for TCP. These are this kernel's calls, like its
+`connect(fd, ip, port)`, not POSIX's `sockaddr` forms. A connection is two
+pipes. A listener sits in a table under a number never reused, and the socket
+node holds only the number, so the name and the listener can go in either
+order. A kill ends a sleeper without unwinding, so a connect waiting for room
+holds nothing and looks the listener up again when it wakes (the first draft
+held two open files and a reference across the wait).
+Not done: names on a disk (`EOPNOTSUPP`: nothing could answer them after a
+reboot), datagrams, passing descriptors, and asking who the peer is.
+Tests: `tests/test_localsock.c`, syscheck's `check_socketpair` and
+`check_named_local_sockets`; the fuzzer calls all three. Sabotage: no permission
+check and a queue that ignored its size failed syscheck's checks; a shutdown that
+closed nothing, a closing listener that dropped its queue, and an accept that
+woke no connect each hung the reader until the time limit. That a kill in the
+wait leaks nothing rests on the design: syscheck kills such a sleeper, but does
+not count its bytes.
 
 ### U3. Threads (L)
 

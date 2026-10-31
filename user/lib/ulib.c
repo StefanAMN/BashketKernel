@@ -349,6 +349,9 @@ long parse_date(const char *text, unsigned long *seconds) {
 /* --- Network ---------------------------------------------------------------- */
 
 long socket(int type)                               { return syscall1(SYS_SOCKET, type); }
+long socketpair(int fds[2])                         { return syscall1(SYS_SOCKETPAIR, fds); }
+long local_listen(const char *path, int backlog)    { return syscall2(SYS_LOCAL_LISTEN, path, backlog); }
+long local_connect(const char *path)                { return syscall1(SYS_LOCAL_CONNECT, path); }
 long connect(int fd, uint32_t ip, unsigned port)    { return syscall3(SYS_CONNECT, fd, ip, port); }
 long listen(int fd, int backlog)                    { return syscall2(SYS_LISTEN, fd, backlog); }
 long shutdown(int fd)                               { return syscall1(SYS_SHUTDOWN, fd); }
@@ -678,6 +681,8 @@ const char *strerror(long err) {
         case ETIMEDOUT: return "timed out";
         case ECONNRESET: return "connection reset";
         case ECONNREFUSED: return "connection refused";
+        case EOPNOTSUPP: return "operation not supported";
+        case ENXIO: return "no such device or address";
         case ENOTCONN:  return "not connected";
         case EISCONN:   return "already connected";
         case EHOSTUNREACH: return "host unreachable";

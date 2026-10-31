@@ -34,6 +34,7 @@
 #include "hrtimer.h"
 #include "walltime.h"
 #include "poll.h"
+#include "localsock.h"
 #include "power.h"
 #include "auth.h"
 #include "pcache.h"
@@ -983,6 +984,106 @@ static int64_t sys_socket(uint64_t type) {
     return fd;
 }
 
+// socketpair(fds): two local stream sockets connected to each other
+static int64_t sys_socketpair(uint64_t user_fds) {
+    if (!user_range_ok(user_fds, 2 * sizeof(int), true)) return -EFAULT;
+    file_t *a = NULL, *b = NULL;
+    int err = file_open_local_pair(&a, &b);
+    if (err != 0) return err;
+
+    task_t *task = sched_get_current_task();
+    int fd_a = fd_install(task->fds, a);
+    int fd_b = (fd_a >= 0) ? fd_install(task->fds, b) : -EMFILE;
+    if (fd_b < 0) {
+        if (fd_a >= 0) fd_slot_set(task->fds, fd_a, NULL);
+        file_close(a);
+        file_close(b);
+        return -EMFILE;
+    }
+    int *out = (int *)user_fds;
+    user_access_begin();
+    out[0] = fd_a;
+    out[1] = fd_b;
+    user_access_end();
+    return 0;
+}
+
+// local_listen(path, backlog): make `path` the name of a new local socket and
+// return a descriptor to accept on. As for any new name, the directory must
+// be writable; the mode decides who may connect. A name on a disk would
+// outlive the listener across a reboot, with nothing meant by it: such
+// directories refuse.
+static int64_t sys_local_listen(uint64_t user_path, int backlog) {
+    char path[PATH_MAX];
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+    task_t *task = sched_get_current_task();
+
+    uint64_t id = 0;
+    local_listener_t *listener = local_listener_create(backlog, &id);
+    if (!listener) return -ENOMEM;
+    file_t *file = file_open_local_listener(listener);     // Closes the listener if it fails
+    if (!file) return -ENOMEM;
+    int fd = fd_install(task->fds, file);
+    if (fd < 0) {
+        file_close(file);
+        return fd;
+    }
+
+    char name[VFS_NAME_MAX];
+    vnode_t *parent = NULL;
+    vnode_t *node = NULL;
+    vfs_lock();
+    int err = vfs_find_parent_as(task->uid, task->cwd, path, &parent, name);
+    if (err == 0 && !auth_may_access(task->uid, parent, true)) err = -EACCES;
+    if (err == 0 && parent->ops && parent->ops->create) err = -EOPNOTSUPP;
+    if (err == 0) err = vfs_create(parent, name, VFS_SOCKET, &node);
+    if (err == 0) {
+        node->private_data = id;
+        node->uid = task->uid;
+        node->gid = auth_new_entry_group(parent, task->gid);
+        node->mode = (uint16_t)(PERM_NEW_FILE & ~task->umask);
+    }
+    vfs_unlock();
+    if (err != 0) {
+        fd_slot_set(task->fds, fd, NULL);
+        file_close(file);
+        return err;
+    }
+    return fd;
+}
+
+// local_connect(path): connect to the local socket at `path`, which needs
+// write permission on it (as Linux asks). Returns once the listener's queue
+// has taken the connection, which may be before it is accepted.
+static int64_t sys_local_connect(uint64_t user_path) {
+    char path[PATH_MAX];
+    int64_t path_len = copy_string_from_user(path, user_path, sizeof(path));
+    if (path_len < 0) return path_len;
+    task_t *task = sched_get_current_task();
+
+    vnode_t *node = NULL;
+    vfs_lock();
+    int err = vfs_lookup_as(task->uid, task->cwd, path, true, &node);
+    uint64_t id = 0;
+    if (err == 0 && node->type != VFS_SOCKET) err = -ECONNREFUSED;
+    if (err == 0 && !auth_may_access(task->uid, node, true)) err = -EACCES;
+    if (err == 0) id = node->private_data;
+    vfs_unlock();
+    if (err != 0) return err;
+
+    bool have_slot = false;
+    for (int i = 0; i < TASK_MAX_FDS; i++) if (!task->fds[i]) have_slot = true;
+    if (!have_slot) return -EMFILE;
+
+    file_t *file = NULL;
+    err = local_connect(id, &file);
+    if (err != 0) return err;
+    int fd = fd_install(task->fds, file);
+    if (fd < 0) file_close(file);
+    return fd;
+}
+
 // connect(fd, ip, port): connect a TCP socket; waits until the connection
 // is made or refused
 static int64_t sys_connect(int fd, uint64_t ip, uint64_t port) {
@@ -995,8 +1096,10 @@ static int64_t sys_connect(int fd, uint64_t ip, uint64_t port) {
 // accept(fd, from): wait for a connection on a listening TCP socket and
 // return it as a new descriptor; the peer's address goes to *from if given
 static int64_t sys_accept(int fd, uint64_t user_from) {
+    file_t *held = fd_to_file(fd);
+    bool local = held && held->kind == FILE_LOCAL_LISTENER;
     tcp_socket_t *listener = fd_to_tcp(fd);
-    if (!listener) return -EBADF;
+    if (!listener && !local) return -EBADF;
     if (user_from != 0 && !user_range_ok(user_from, sizeof(struct net_address), true)) return -EFAULT;
 
     // Make sure there is a descriptor to give the connection before taking
@@ -1005,6 +1108,23 @@ static int64_t sys_accept(int fd, uint64_t user_from) {
     bool have_slot = false;
     for (int i = 0; i < TASK_MAX_FDS; i++) if (!task->fds[i]) have_slot = true;
     if (!have_slot) return -EMFILE;
+
+    if (local) {                       // A local peer has no address: *from is all zeros
+        file_t *connection = NULL;
+        int err = local_accept(held->listener, &connection);
+        if (err != 0) return err;
+        int new_fd = fd_install(task->fds, connection);
+        if (new_fd < 0) {
+            file_close(connection);
+            return new_fd;
+        }
+        if (user_from != 0) {
+            user_access_begin();
+            memset((void *)user_from, 0, sizeof(struct net_address));
+            user_access_end();
+        }
+        return new_fd;
+    }
 
     int error = 0;
     tcp_socket_t *connection = tcp_accept(listener, &error);
@@ -1368,11 +1488,15 @@ static int64_t dispatch(struct registers *regs) {
             return shm_remove((int)regs->rdi);
 
         case SYS_SOCKET:   return sys_socket(regs->rdi);
+        case SYS_SOCKETPAIR: return sys_socketpair(regs->rdi);
+        case SYS_LOCAL_LISTEN: return sys_local_listen(regs->rdi, (int)regs->rsi);
+        case SYS_LOCAL_CONNECT: return sys_local_connect(regs->rdi);
         case SYS_CONNECT:  return sys_connect((int)regs->rdi, regs->rsi, regs->rdx);
         case SYS_ACCEPT:   return sys_accept((int)regs->rdi, regs->rsi);
         case SYS_SHUTDOWN: {
             tcp_socket_t *stream = fd_to_tcp((int)regs->rdi);
-            return stream ? tcp_shutdown(stream) : -EBADF;
+            if (stream) return tcp_shutdown(stream);
+            return file_local_shutdown(fd_to_file((int)regs->rdi)) == 0 ? 0 : -EBADF;
         }
         case SYS_LISTEN: {
             tcp_socket_t *listener = fd_to_tcp((int)regs->rdi);

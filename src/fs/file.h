@@ -39,7 +39,9 @@ typedef enum {
     FILE_VNODE,   // A file or directory in the VFS
     FILE_PIPE,    // One end of a pipe (which end: readable or writable)
     FILE_SOCKET,  // A UDP socket: used with sendto/recvfrom, not read/write
-    FILE_TCP      // A TCP socket: read and write once connected
+    FILE_TCP,     // A TCP socket: read and write once connected
+    FILE_LOCAL,   // One end of a local connection: read and write, both ways
+    FILE_LOCAL_LISTENER // A named local socket: connections come from accept
 } file_kind_t;
 
 typedef struct file {
@@ -55,6 +57,10 @@ typedef struct file {
     pipe_t *pipe;      // FILE_PIPE
     struct udp_socket *socket; // FILE_SOCKET
     struct tcp_socket *tcp;    // FILE_TCP
+    pipe_t *local_in;  // FILE_LOCAL: the pipe it reads from...
+    pipe_t *local_out; // ...and the one it writes to (the other end has them crossed)
+    bool local_shut;   // FILE_LOCAL: shutdown has closed local_out (changed atomically)
+    struct local_listener *listener; // FILE_LOCAL_LISTENER
 } file_t;
 
 // One directory entry, as returned to user programs by readdir
@@ -116,6 +122,28 @@ file_t *file_open_socket(void);
  *        file, and also if this fails.
  */
 file_t *file_open_tcp(struct tcp_socket *tcp);
+
+/**
+ * @brief Two connected local stream ends (socketpair): what is written to
+ *        one is read from the other, in both directions.
+ * @return 0, or -ENOMEM with nothing made.
+ */
+int file_open_local_pair(file_t **a, file_t **b);
+
+/**
+ * @brief An open file for a listener (localsock.h). It takes over the
+ *        caller's reference, and closes the listener if this fails.
+ * @return The file, or NULL.
+ */
+file_t *file_open_local_listener(struct local_listener *listener);
+
+/**
+ * @brief shutdown on a local stream: nothing more will be written. The other
+ *        end reads end-of-file once it has what was sent; this end may still
+ *        read, and its writes fail with -EPIPE.
+ * @return 0, or -EINVAL if `file` is no local stream.
+ */
+int file_local_shutdown(file_t *file);
 
 /**
  * @brief fstat(): describe an open file. A file or directory as vfs_stat

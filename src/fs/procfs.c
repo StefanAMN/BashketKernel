@@ -442,6 +442,8 @@ static size_t describe_file(const file_t *file, char *text, size_t size) {
         case FILE_PIPE:    return ksnprintf(text, size, file->readable ? "pipe (read end)\n" : "pipe (write end)\n");
         case FILE_SOCKET:  return ksnprintf(text, size, "socket (UDP)\n");
         case FILE_TCP:     return ksnprintf(text, size, "socket (TCP)\n");
+        case FILE_LOCAL:   return ksnprintf(text, size, "socket (local)\n");
+        case FILE_LOCAL_LISTENER: return ksnprintf(text, size, "socket (local, listening)\n");
         case FILE_VNODE:   break;
     }
     // An open node cannot be removed (its open count pins it)
