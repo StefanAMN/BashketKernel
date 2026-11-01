@@ -2335,6 +2335,26 @@ Still not shown, and why:
 - The lock in `fd_install`: its window is a few instructions wide. It rests on
   the code.
 
+### V2. A thread's own data (S) — done
+
+Threads share every global, and nothing but a stack tells one from another. Give
+each thread the register that compilers and C libraries use for this: FS's base
+(`IA32_FS_BASE`, Intel SDM vol. 4), per thread, set by `set_fs_base` and loaded
+at every task switch. A base outside user space is refused: a non-canonical one
+would fault at the `wrmsr`, in the kernel. `fork` keeps it, `exec` clears it, a
+new thread has none.
+
+Done. Not done: `__thread` (it needs the loader to lay out a `PT_TLS` segment;
+programs here set up their own block) and `errno` (the C library returns errors
+as negative values, so it has none to make per thread).
+
+Tests: syscheck's `check_fs_base`, `threads`' `check_own_fs_base` (8 threads on
+2, 4 and 8 CPUs), `fs_base_is_refused_for_a_kernel_task`. Sabotage: no load at
+the switch, no check of the base, `exec` keeping it and `fork` losing it each
+failed. The check rests partly on the manual: with it removed, QEMU took a
+non-canonical base at the `wrmsr` without a fault, so what the test shows is the
+refusal, not the fault in ring 0 that the SDM describes.
+
 ---
 
 ## Smaller repairs (any time, each S)
@@ -2473,7 +2493,7 @@ T3                               done
 T1                               done
 T2                               done
 U1, U2, U3                       done
-V1                               done
+V1, V2                           done
 ```
 
 (Track A, once the recommended first step because everything built on

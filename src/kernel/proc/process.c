@@ -3,6 +3,7 @@
  * @brief User process creation and lifecycle
  */
 
+#include "cpu.h"
 #include "process.h"
 #include "sched.h"
 #include "kprintf.h"
@@ -258,6 +259,8 @@ static void apply_image(task_t *task, const user_image_t *image) {
     task->proc->mmap_next = USER_MMAP_BASE + ((uint64_t)(get_random_u32() & 0xFFFFF) << 12); // Up to 4 GiB in
     task->proc->stack_top = image->stack_top;
     fpu_state_init(task->fpu_state); // A new program starts with clean FPU registers
+    task->fs_base = 0;               // What it pointed at is gone
+    if (task == sched_get_current_task()) wrmsr(MSR_FS_BASE, 0);
     strncpy(task->name, image->name, sizeof(task->name) - 1);
     task->name[sizeof(task->name) - 1] = '\0';
     task->proc->cmdline_len = image->cmdline_len < TASK_CMDLINE_MAX ? image->cmdline_len : TASK_CMDLINE_MAX;
@@ -613,6 +616,7 @@ pid_t process_fork(struct registers *regs) {
     // The parent is running, so its FPU registers are in the CPU, not in its
     // task struct: save them straight into the child.
     fpu_save(child->fpu_state);
+    child->fs_base = parent->fs_base;   // (Its copy of what that points at, at the same address)
 
     // The child shares the parent's open files, positions included
     for (int fd = 0; fd < TASK_MAX_FDS; fd++) {
@@ -973,6 +977,19 @@ int64_t process_thread_create(uint64_t entry, uint64_t stack, uint64_t arg) {
         return -EAGAIN;
     }
     return tid;
+}
+
+int64_t process_set_fs_base(uint64_t base) {
+    task_t *self = sched_get_current_task();
+    // The CPU faults on a non-canonical base, in ring 0, at the wrmsr. Anything
+    // from the kernel's half would only be refused later by the page tables,
+    // but is no use to a program either.
+    if (!self || !self->is_user || base >= USER_SPACE_END) return -EINVAL;
+    // In this order: preempted between the two, the next switch loads the new
+    // value and the write below repeats it, on whichever CPU that is
+    self->fs_base = base;
+    wrmsr(MSR_FS_BASE, base);
+    return 0;
 }
 
 int64_t process_thread_join(uint32_t tid, int *status) {

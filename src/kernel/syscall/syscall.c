@@ -1466,6 +1466,8 @@ static int64_t dispatch(struct registers *regs) {
         case SYS_THREAD_JOIN: return sys_thread_join(regs->rdi, regs->rsi);
         case SYS_FUTEX_WAIT:  return sys_futex_wait(regs->rdi, (uint32_t)regs->rsi, regs->rdx);
         case SYS_FUTEX_WAKE:  return sys_futex_wake(regs->rdi, regs->rsi);
+        case SYS_SET_FS_BASE: return process_set_fs_base(regs->rdi);
+        case SYS_GET_FS_BASE: return (int64_t)sched_get_current_task()->fs_base;
         case SYS_GETPPID:
             return (int64_t)task->proc->parent_pid;
         case SYS_SETPGID:

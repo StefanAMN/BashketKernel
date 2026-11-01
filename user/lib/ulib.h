@@ -166,6 +166,8 @@ void thread_exit(int status) __attribute__((noreturn)); /* End this thread only 
 long gettid(void);                                    /* This thread's id; the first thread's is the pid */
 long futex_wait(volatile unsigned *addr, unsigned expected, unsigned long timeout_ms); /* Sleep while *addr is expected (0: no limit); 0, -EAGAIN, -ETIMEDOUT, -EINTR */
 long futex_wake(volatile unsigned *addr, long count); /* Wake that many waiting on addr, in this process; how many */
+long set_fs_base(void *base);   /* Thread-local data: FS addresses this, for the calling thread alone. fork keeps it, exec clears it, a new thread has none. 0 or -EINVAL */
+void *get_fs_base(void);        /* What set_fs_base last set in this thread */
 typedef struct { volatile unsigned state; } thread_mutex_t; /* Starts all zero: free */
 void thread_mutex_lock(thread_mutex_t *mutex);        /* Take it, sleeping while another thread has it */
 void thread_mutex_unlock(thread_mutex_t *mutex);      /* Give it up, waking one waiter if there is any */

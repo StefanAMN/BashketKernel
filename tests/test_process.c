@@ -98,6 +98,16 @@ TEST(threads_leave_nothing_behind) {
     EXPECT_EQ(kheap_get_allocated_bytes(), heap_before);
 }
 
+// An FS base is for user tasks, and only in user space: the CPU would fault on
+// a non-canonical one at the wrmsr, in the kernel. A kernel task (this one)
+// has no ring 3 to use it, and the register is left as it was.
+TEST(fs_base_is_refused_for_a_kernel_task) {
+    uint64_t before = rdmsr(MSR_FS_BASE);
+    EXPECT_EQ(process_set_fs_base(0x1000), (int64_t)-EINVAL);
+    EXPECT_EQ(process_set_fs_base(USER_SPACE_END), (int64_t)-EINVAL);
+    EXPECT_TRUE(rdmsr(MSR_FS_BASE) == before);
+}
+
 // Running a program returns every frame and heap byte
 TEST(processes_leave_nothing_behind) {
     sched_reap();
@@ -546,6 +556,7 @@ void test_suite_process(void) {
     RUN_TEST(spawn_rejects_bad_targets);
     RUN_TEST(faulting_programs_are_killed);
     RUN_TEST(threads_leave_nothing_behind);
+    RUN_TEST(fs_base_is_refused_for_a_kernel_task);
     RUN_TEST(processes_leave_nothing_behind);
     RUN_TEST(shell_pipelines_and_redirection);
     RUN_TEST(kill_takes_effect_at_a_safe_point);

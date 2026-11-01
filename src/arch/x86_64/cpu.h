@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define MSR_FS_BASE 0xC0000100     // The base FS uses (Intel SDM vol. 4: IA32_FS_BASE)
+
 // Write `val` to model-specific register `msr` of the calling CPU (a #GP
 // if the CPU has no such register)
 static inline void wrmsr(uint32_t msr, uint64_t val) {

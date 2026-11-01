@@ -2056,6 +2056,51 @@ static void check_threads_share_safely(void) {
     munmap(thread_buffer, 4096);
 }
 
+/* A thread's FS base: refused outside user space, and what fork and exec do */
+static void check_fs_base(void) {
+    long word = 0x1234, read_back = 0;
+    CHECK(get_fs_base() == NULL);
+    /* Kernel half, non-canonical, the first address past user space: a wrmsr of
+     * the middle one would fault in the kernel */
+    CHECK(set_fs_base((void *)0xffffffff80000000UL) == -EINVAL);
+    CHECK(set_fs_base((void *)0x0123456789abcdefUL) == -EINVAL);
+    CHECK(set_fs_base((void *)0x0000800000000000UL) == -EINVAL);
+    CHECK(get_fs_base() == NULL);
+
+    CHECK(set_fs_base(&word) == 0);
+    CHECK(get_fs_base() == &word);
+    asm volatile("mov %0, fs:[0]" : "=r"(read_back));
+    CHECK(read_back == 0x1234);
+    sleep_ms(20);                                   /* Off this CPU and back */
+    asm volatile("mov %0, fs:[0]" : "=r"(read_back));
+    CHECK(read_back == 0x1234);
+
+    /* The child has it, reaching its own copy; its change stays there */
+    int status = -1;
+    long pid = fork();
+    if (pid == 0) {
+        long seen;
+        word = 0x5678;
+        asm volatile("mov %0, fs:[0]" : "=r"(seen));
+        long other = 0;
+        exit(seen == 0x5678 && set_fs_base(&other) == 0 ? 0 : 1);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 0);
+    CHECK(get_fs_base() == &word);
+    asm volatile("mov %0, fs:[0]" : "=r"(read_back));
+    CHECK(read_back == 0x1234);
+
+    /* exec clears it: FS then addresses 0, which faults */
+    pid = fork();
+    if (pid == 0) {
+        char *args[] = { "/bin/fault", "fs", NULL };
+        execve("/bin/fault", args, NULL);
+        exit(9);
+    }
+    CHECK(waitpid(pid, &status, 0) == pid && status == 128 + SIGSEGV);
+    CHECK(set_fs_base(NULL) == 0);
+}
+
 /* socketpair: both ways, between two processes, with shutdown and poll */
 static void check_socketpair(void) {
     int fds[2];
@@ -5066,6 +5111,7 @@ int main(void) {
     check_threads_end_together();
     check_threads_signals();
     check_threads_share_safely();
+    check_fs_base();
     check_screen_mapping();
     check_sessions_and_terminal();
     check_shell_control();

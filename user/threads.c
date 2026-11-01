@@ -258,6 +258,38 @@ static void check_unmap_reaches_other_cpus(void) {
     if (status != 128 + SIGSEGV) fail("a thread went on reading an unmapped page");
 }
 
+static volatile int own_stop;
+
+/* Set FS to a word on this stack holding this thread's number, and keep finding
+ * that number through FS while the threads move between CPUs */
+static int own_data(void *arg) {
+    volatile long mine = (long)arg;
+    if (get_fs_base() != NULL) return 1;     /* A new thread has none */
+    if (set_fs_base((void *)&mine) != 0) return 2;
+    while (!own_stop) {
+        long seen;
+        asm volatile("mov %0, fs:[0]" : "=r"(seen));
+        if (seen != (long)arg) return 3;
+        yield();
+    }
+    return get_fs_base() == (void *)&mine ? 0 : 4;
+}
+
+/* More threads than CPUs, each with its own FS base: every switch must load
+ * the one coming in, on whichever CPU it lands */
+static void check_own_fs_base(void) {
+    thread_t t[8];
+    own_stop = 0;
+    for (long i = 0; i < 8; i++) if (thread_create(&t[i], own_data, (void *)(i + 100)) != 0) fail("thread_create");
+    sleep_ms(200);
+    own_stop = 1;
+    for (int i = 0; i < 8; i++) {
+        int status = -1;
+        thread_join(&t[i], &status);
+        if (status != 0) fail("a thread found another's data through FS");
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) rounds = atoi(argv[1]);
     for (long i = 0; i < rounds; i++) check_first_touch();
@@ -266,6 +298,7 @@ int main(int argc, char **argv) {
     check_descriptor_races();
     check_churn();
     check_unmap_reaches_other_cpus();
+    check_own_fs_base();
     if (failed) return 1;
     printf("threads: all checks passed\n");
     return 0;

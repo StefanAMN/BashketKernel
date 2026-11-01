@@ -392,7 +392,7 @@ so the numbering has gaps.
 
 ---
 
-**Threads** (`src/kernel/sched/task.h`: `process_t`) share what a process is and keep what a running program is: start with the comment on `process_t` for its two memory locks, then `task_end` in `sched.c` for what goes when, `fault_once` in `region.c` for why a file is never read under `mem_lock`, `process_tlb_sync` for why "live on one CPU" had to go, and `fd_to_file` for why a system call's file references belong to the task. `user/threads.c` is what each of them is tested by.
+**Threads** (`src/kernel/sched/task.h`: `process_t`) share what a process is and keep what a running program is: start with the comment on `process_t` for its two memory locks, then `task_end` in `sched.c` for what goes when, `fault_once` in `region.c` for why a file is never read under `mem_lock`, `process_tlb_sync` for why "live on one CPU" had to go, and `fd_to_file` for why a system call's file references belong to the task. `user/threads.c` is what each of them is tested by. A thread's own data is reached through FS: `process_set_fs_base` for why the base is checked before the `wrmsr`, and the task switch in `sched.c` for why it is reloaded (Intel SDM vol. 4, IA32_FS_BASE).
 
 **Local sockets** (`src/fs/localsock.c`) connect programs on one machine without the network: a connection is two pipes, and a named listener is found through a socket node in the tree, which holds only a number. Read `file_open_local_pair`, then `local_connect` for why a sleeper must hold nothing.
 

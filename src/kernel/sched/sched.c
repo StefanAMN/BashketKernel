@@ -3,6 +3,7 @@
  * @brief Implementation of Round-Robin Preemptive Multitasking Scheduler
  */
 
+#include "cpu.h"
 #include "sched.h"
 #include "region.h"
 #include "pcache.h"
@@ -729,6 +730,8 @@ static void schedule(bool holding_sched) {
     // uses them, so only user tasks have any to keep.
     if (old_task->is_user) fpu_save(old_task->fpu_state);
     if (next_task->is_user) fpu_restore(next_task->fpu_state);
+    // Nor is FS's base, and the kernel does not use that either
+    if (next_task->is_user) wrmsr(MSR_FS_BASE, next_task->fs_base);
 
     rq->release_sched = holding_sched;
     ctx_switch((uint64_t **)&old_task->rsp, (uint64_t *)next_task->rsp, next_task->pml4_phys);
