@@ -357,6 +357,13 @@ static int fuzz_thread(void *unused) {
     return 0;
 }
 
+/* Shared memory segments outlive whoever made them, and the rounds leave them
+ * behind. The table has 16 places: left full, it fails the next program to ask
+ * (as it did syscheck's shmget as alice, one boot in about 50). */
+static void remove_segments(void) {
+    for (long id = 0; id < 32; id++) shmrm(id);
+}
+
 int main(int argc, char **argv) {
     unsigned long seed = argc > 1 ? (unsigned long)atoi(argv[1]) : 1;
     long rounds = argc > 2 ? atoi(argv[2]) : 50;
@@ -410,6 +417,7 @@ int main(int argc, char **argv) {
         unlink("/tmp/fuzz-b");
     }
 
+    remove_segments();
     printf("fuzz: seed %lu, %ld rounds: %d ended normally, %d killed, %d stopped by watchdog\n",
            seed, rounds, ended_normally, killed, timed_out);
     printf("fuzz: done\n");

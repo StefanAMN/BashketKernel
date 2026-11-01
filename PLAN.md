@@ -2438,6 +2438,13 @@ plan:
     braces, in `.c` and `.h`, checks Python docstrings under `tools/`, and
     refuses both false comments; each case was shown to fail. All 166 have
     comments now.
+16. (Found and fixed 2026-11-01.) Signals to a process whose first thread had
+    called `thread_exit`, with one thread left, marked only the dead first
+    thread: `kill -9` ended nothing, and `SIGTERM` was dropped. The pid finds the
+    first thread, and `for_each_thread` and `receiver` both took "one live
+    thread" to mean that one. Seen as a fuzz boot that never finished, 1 in about
+    50, under load. `check_signal_after_first_thread` failed on both before the
+    fix.
 
 ---
 

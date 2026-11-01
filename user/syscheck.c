@@ -1920,6 +1920,45 @@ static void check_threads_basics(void) {
     for (int i = 0; i < 2; i++) CHECK(thread_join(&waiters[i], &status) == 0 && status == 0);
 }
 
+/* Whether process `pid` shows a thread that has ended beside one still alive
+ * (5 seconds at most) */
+static int wait_first_thread_gone(long pid) {
+    char path[40], text[256];
+    number_text(path, "/proc/", pid, "/threads");
+    for (int tries = 0; tries < 500; tries++) {
+        long fd = open(path, O_RDONLY);
+        long got = fd >= 0 ? read((int)fd, text, sizeof(text) - 1) : -1;
+        if (fd >= 0) close((int)fd);
+        if (got > 0) {
+            text[got] = 0;
+            if (has_text(text, "zombie")) return 1;
+        }
+        sleep_ms(10);
+    }
+    return 0;
+}
+
+/* A signal to a process whose first thread has left must reach the one that is
+ * left, though the pid still finds the first. (A kill that only marked the dead
+ * one left a process nothing could end: found by a fuzz run that never ended.) */
+static void check_signal_after_first_thread(int sig) {
+    thread_t t;
+    long pid = fork();
+    if (pid == 0) {
+        thread_create(&t, thread_sleeps, 0);
+        thread_exit(1);
+    }
+    CHECK(wait_first_thread_gone(pid));
+    CHECK(kill(pid, sig) == 0);
+    int status = -1;
+    long reaped = 0;
+    for (int tries = 0; tries < 500 && reaped == 0; tries++) {
+        reaped = waitpid(pid, &status, WNOHANG);
+        if (reaped == 0) sleep_ms(10);
+    }
+    CHECK(reaped == pid && status == 128 + sig);
+}
+
 /* A process with threads ends as one, however it ends */
 static void check_threads_end_together(void) {
     int status = -1;
@@ -1964,6 +2003,8 @@ static void check_threads_end_together(void) {
         thread_exit(1);
     }
     CHECK(waitpid(pid, &status, 0) == pid && status == 5);
+    check_signal_after_first_thread(SIGKILL);
+    check_signal_after_first_thread(SIGTERM);
 
     /* exec from a thread that is not the first: the same pid, one thread */
     pid = fork();
