@@ -570,6 +570,9 @@ code comments and commit messages; `git log` is the full history.
   rather than what it took from the slot, so two threads closing one descriptor
   freed the file twice (seen as a corrupt slab free list, one run in several on
   eight CPUs, not on four). Look for look-then-act on anything shared.
+  "One thread left" was the same mistake: the shortcut signalled the task the
+  pid finds, and with the first thread gone that is a zombie, so `kill -9`
+  ended nothing. Found as one fuzz boot in 50 that never finished.
 - **Without exception tables a checked user range must stay valid.** The kernel
   cannot recover from its own fault on user memory, so "checked" has to mean
   "held": the call ranges that protected buffers from swap now also make

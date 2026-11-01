@@ -66,10 +66,8 @@ static bool default_is_stop(int sig) {
 // Act on every thread of `task`'s process: `fn(thread, sig)`, for those not
 // dying. Caller holds the scheduler lock.
 static void for_each_thread(task_t *task, void (*fn)(task_t *, int), int sig) {
-    if (task->proc->live <= 1) {
-        fn(task, sig);
-        return;
-    }
+    // (Always the walk: `task` is the first thread, found by the pid, and that
+    // one may be dead with one other left, so "live is 1" does not mean `task`)
     for (task_t *t = sched_first_task(); t; t = t->next) {
         if (t->proc == task->proc) fn(t, sig);
     }
@@ -88,7 +86,6 @@ static void continue_thread(task_t *task, int sig) {
 static task_t *receiver(task_t *task, int sig) {
     bool usable = !task->exiting && task->state != TASK_ZOMBIE;
     if (usable && !(task->sig_blocked & (1u << sig))) return task;
-    if (task->proc->live <= 1) return usable ? task : NULL;
     task_t *alive = usable ? task : NULL;
     for (task_t *t = sched_first_task(); t; t = t->next) {
         if (t->proc != task->proc || t->exiting || t->state == TASK_ZOMBIE) continue;

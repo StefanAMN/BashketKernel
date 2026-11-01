@@ -288,7 +288,8 @@ fuzz: iso
 			--expect 'syscheck: all checks passed' --forbid '\[pid [0-9]+ exited with status' \
 			"exec /bin/fuzz $$seed $(FUZZ_ROUNDS)" 'exec /bin/syscheck' > $(BUILD)/fuzz-$$seed.log 2>&1 \
 			&& echo "fuzz seed $$seed: ok ($$(grep -a -o '[0-9]* ended normally.*' $(BUILD)/fuzz-$$seed.log))" \
-			|| { echo "fuzz seed $$seed: FAILED (see $(BUILD)/fuzz-$$seed.log)"; exit 1; }; \
+			|| { echo "fuzz seed $$seed: FAILED (see $(BUILD)/fuzz-$$seed.log)"; \
+				grep -a -E 'qemu_shell:|syscheck: FAIL|CPU EXCEPTION|PANIC' $(BUILD)/fuzz-$$seed.log | cut -c1-200 | head -20; exit 1; }; \
 	done
 
 # The disk keeps its contents across reboots: write a sector in one boot of
